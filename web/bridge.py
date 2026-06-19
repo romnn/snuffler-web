@@ -127,6 +127,10 @@ def make_example() -> str:
     channels = ["HHZ", "HHN", "HHE"]
     t = np.arange(n) * deltat
     rng = np.random.default_rng(42)
+    # Band-limited (microseism-like) smoothing kernel so the synthetic background
+    # looks like a real broadband seismogram rather than white noise.
+    kn = np.hanning(64)
+    kn /= kn.sum()
 
     traces: List[ptrace.Trace] = []
     for si, sta in enumerate(stations):
@@ -134,8 +138,8 @@ def make_example() -> str:
         env = np.exp(-((t - arrival) ** 2) / (2.0 * 8.0 ** 2))
         event = env * np.sin(2.0 * np.pi * 1.5 * (t - arrival))
         for cha in channels:
-            # mild "colored" noise
-            noise = np.convolve(rng.standard_normal(n), np.ones(8) / 8.0, "same")
+            noise = np.convolve(rng.standard_normal(n + 128), kn, "same")[64:64 + n]
+            noise /= noise.std() or 1.0
             y = 0.3 * noise + event
             traces.append(
                 ptrace.Trace(
@@ -170,20 +174,23 @@ def load_bytes(name: str, data: Any, fmt: str) -> str:
 
 
 def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, float]:
-    """Max-abs decimation to ~`npx` points (keeps the visually dominant sample
-    of each bin). Mirrors the native Rust stub. Returns (f32 array, count, dt)."""
+    """Min/max envelope decimation (what snuffler/obspy draw): per pixel bin emit
+    the min then the max, so the rendered polyline traces the full amplitude
+    envelope instead of a single spiky sample. Returns (f32 array, count, dt).
+    Below ~2 samples/pixel the raw samples are returned unchanged."""
     n = len(y)
     npx = max(npx, 16)
     if n <= npx * 2:
         return y.astype(np.float32), n, deltat
     stride = (n + npx - 1) // npx
-    nb = (n + stride - 1) // stride
-    pad = nb * stride - n
-    yp = np.concatenate([y, np.zeros(pad)]) if pad else y
-    yp = yp.reshape(nb, stride)
-    idx = np.argmax(np.abs(yp), axis=1)
-    out = yp[np.arange(nb), idx].astype(np.float32)
-    return out, nb, deltat * stride
+    nb = n // stride
+    if nb < 1:
+        return y.astype(np.float32), n, deltat
+    head = y[: nb * stride].reshape(nb, stride)
+    out = np.empty(nb * 2, dtype=np.float32)
+    out[0::2] = head.min(axis=1)  # bin minima (drawn at the bin start)
+    out[1::2] = head.max(axis=1)  # bin maxima (drawn at the bin middle)
+    return out, nb * 2, deltat * stride / 2.0
 
 
 def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace]:
