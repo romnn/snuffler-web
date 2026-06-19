@@ -1,0 +1,376 @@
+"""Type-checked pyrocko shim that runs inside Pyodide and drives the egui
+frontend.
+
+This module is the *only* place that touches pyrocko. It exposes a tiny, stable,
+JSON-friendly API to the JavaScript bridge (`web/bridge.js`), which in turn is
+called from Rust (`src/bridge.rs`). The TypedDicts below mirror the serde structs
+on the Rust side exactly — that mirroring is what makes the boundary type-checked
+on both ends.
+
+pyrocko itself is left completely unmodified; we only call its public API
+(`pyrocko.trace.Trace`, `pyrocko.io.load`).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from typing import Any, List, Optional, Tuple, TypedDict
+
+import numpy as np
+
+from pyrocko import io as pio
+from pyrocko import trace as ptrace
+
+
+# The TypedDicts below mirror the serde structs in src/bridge.rs.
+class TraceMeta(TypedDict):
+    net: str
+    sta: str
+    loc: str
+    cha: str
+    label: str
+    tmin: float
+    tmax: float
+    deltat: float
+    nsamples: int
+
+
+class SceneMeta(TypedDict):
+    tmin: float
+    tmax: float
+    tracks: List[TraceMeta]
+
+
+class ViewTrack(TypedDict):
+    net: str
+    sta: str
+    loc: str
+    cha: str
+    label: str
+    t0_rel: float
+    dt: float
+    count: int
+    offset: int
+    ymin: float
+    ymax: float
+    ymean: float
+    nf: int       # spectrogram freq bins (0 ⇒ plain wiggle)
+    nt: int       # spectrogram time bins
+    fmax: float   # spectrogram max frequency (Hz)
+
+
+class ViewMeta(TypedDict):
+    view_tmin: float
+    view_tmax: float
+    tracks: List[ViewTrack]
+
+
+# The current set of loaded traces (snuffler's "pile").
+_TRACES: List[ptrace.Trace] = []
+
+
+def _meta(tr: ptrace.Trace) -> TraceMeta:
+    net, sta, loc, cha = tr.nslc_id
+    return TraceMeta(
+        net=net,
+        sta=sta,
+        loc=loc,
+        cha=cha,
+        label=".".join(tr.nslc_id),
+        tmin=float(tr.tmin),
+        tmax=float(tr.tmax),
+        deltat=float(tr.deltat),
+        nsamples=int(tr.data_len()),
+    )
+
+
+def _scene_json() -> str:
+    metas = [_meta(tr) for tr in _TRACES]
+    tmin = min((m["tmin"] for m in metas), default=0.0)
+    tmax = max((m["tmax"] for m in metas), default=1.0)
+    scene: SceneMeta = SceneMeta(tmin=tmin, tmax=tmax, tracks=metas)
+    return json.dumps(scene)
+
+
+def make_example() -> str:
+    """Synthesize a small multi-station / 3-component dataset (noise + a
+    travelling event packet), so the viewer is populated without any file IO."""
+    deltat = 0.02  # 50 Hz
+    n = 30_000  # 600 s
+    tmin = 1_700_000_000.0
+    stations = ["STA01", "STA02", "STA03", "STA04", "STA05", "STA06"]
+    channels = ["HHZ", "HHN", "HHE"]
+    t = np.arange(n) * deltat
+    rng = np.random.default_rng(42)
+
+    traces: List[ptrace.Trace] = []
+    for si, sta in enumerate(stations):
+        arrival = 180.0 + si * 18.0
+        env = np.exp(-((t - arrival) ** 2) / (2.0 * 8.0 ** 2))
+        event = env * np.sin(2.0 * np.pi * 1.5 * (t - arrival))
+        for cha in channels:
+            # mild "colored" noise
+            noise = np.convolve(rng.standard_normal(n), np.ones(8) / 8.0, "same")
+            y = 0.3 * noise + event
+            traces.append(
+                ptrace.Trace(
+                    network="XX",
+                    station=sta,
+                    location="",
+                    channel=cha,
+                    deltat=deltat,
+                    tmin=tmin,
+                    ydata=y.astype(np.float64),
+                )
+            )
+
+    global _TRACES
+    _TRACES = traces
+    return _scene_json()
+
+
+def load_bytes(name: str, data: Any, fmt: str) -> str:
+    """Write the given file bytes into Pyodide's virtual FS and load them with
+    pyrocko's `io.load`. `data` arrives as a JS Uint8Array."""
+    raw = bytes(data.to_py()) if hasattr(data, "to_py") else bytes(data)
+    os.makedirs("/data", exist_ok=True)
+    path = "/data/" + (name or "data")
+    with open(path, "wb") as f:
+        f.write(raw)
+    fmt2 = "detect" if fmt in (None, "", "detect") else fmt
+    traces = list(pio.load(path, format=fmt2))
+    global _TRACES
+    _TRACES = traces
+    return _scene_json()
+
+
+def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, float]:
+    """Max-abs decimation to ~`npx` points (keeps the visually dominant sample
+    of each bin). Mirrors the native Rust stub. Returns (f32 array, count, dt)."""
+    n = len(y)
+    npx = max(npx, 16)
+    if n <= npx * 2:
+        return y.astype(np.float32), n, deltat
+    stride = (n + npx - 1) // npx
+    nb = (n + stride - 1) // stride
+    pad = nb * stride - n
+    yp = np.concatenate([y, np.zeros(pad)]) if pad else y
+    yp = yp.reshape(nb, stride)
+    idx = np.argmax(np.abs(yp), axis=1)
+    out = yp[np.arange(nb), idx].astype(np.float32)
+    return out, nb, deltat * stride
+
+
+def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace]:
+    """Rotate horizontal component pairs (N/E or 1/2) by `deg` degrees, like
+    snuffler's rotate control. Aligned, equal-length pairs only."""
+    if not deg:
+        return traces
+    a = math.radians(deg)
+    ca, sa = math.cos(a), math.sin(a)
+    groups: dict = {}
+    for tr in traces:
+        groups.setdefault(tr.nslc_id[:3], []).append(tr)
+
+    out: List[ptrace.Trace] = []
+    for grp in groups.values():
+        by_comp = {t.channel[-1].upper(): t for t in grp if t.channel}
+        rotated: set[int] = set()
+        for n, e in (("N", "E"), ("1", "2")):
+            tn, te = by_comp.get(n), by_comp.get(e)
+            if (
+                tn is not None and te is not None
+                and tn.ydata is not None and te.ydata is not None
+                and len(tn.ydata) == len(te.ydata)
+                and tn.deltat == te.deltat and tn.tmin == te.tmin
+            ):
+                yn = tn.ydata.astype(np.float64)
+                ye = te.ydata.astype(np.float64)
+                tn2, te2 = tn.copy(), te.copy()
+                tn2.set_ydata(ca * yn + sa * ye)
+                te2.set_ydata(-sa * yn + ca * ye)
+                out.extend((tn2, te2))
+                rotated.update((id(tn), id(te)))
+        out.extend(t for t in grp if id(t) not in rotated)
+    return out
+
+
+def _remove_response(traces: List[ptrace.Trace], enabled: bool) -> List[ptrace.Trace]:
+    """Deconvolve the instrument response. The demo data carries no response
+    metadata, so this is a no-op; with responses one would call
+    ``tr.transfer(tfade, freqlimits, resp, invert=True)`` per trace."""
+    if not enabled:
+        return traces
+    # No response metadata in the demo data — nothing to deconvolve yet.
+    return traces
+
+
+def _spectrogram(seg: ptrace.Trace, npx: int):
+    """Return (flat [time][freq] float32, nf, nt, fmax, vmin, vmax, t0_rel, dt)."""
+    from scipy import signal as sps
+
+    y = seg.ydata.astype(np.float64)
+    n = len(y)
+    if n < 32:
+        return None
+    fs = 1.0 / float(seg.deltat)
+    nperseg = int(min(256, max(32, 2 ** int(np.log2(max(32, n // 64))))))
+    f, t, sxx = sps.spectrogram(
+        y, fs=fs, nperseg=nperseg, noverlap=nperseg // 2, scaling="spectrum"
+    )
+    power = 10.0 * np.log10(sxx + 1e-20)  # dB
+    # cap time columns to ~npx for transport
+    nt_target = max(1, min(int(npx), 600))
+    if power.shape[1] > nt_target:
+        idx = np.linspace(0, power.shape[1] - 1, nt_target).astype(int)
+        power = power[:, idx]
+        t = t[idx]
+    nf, nt = power.shape
+    flat = np.ascontiguousarray(power.T, dtype="<f4").ravel()  # [time][freq]
+    vmin = float(np.percentile(power, 5))
+    vmax = float(np.percentile(power, 99))
+    dt = float(t[1] - t[0]) if nt > 1 else float(seg.deltat)
+    return flat, nf, nt, float(f[-1]), vmin, vmax, float(t[0]), dt
+
+
+def get_view(params_json: str) -> dict:
+    """Compute the requested view (wiggle waveforms or a waterfall spectrogram).
+
+    Returns {meta: <ViewMeta JSON>, ys: <float32 bytes>}. For wiggles `ys` holds
+    decimated samples; for the waterfall it holds per-track [time][freq] log-power
+    (nf*nt values). Rust copies the Float32Array and renders accordingly."""
+    p = json.loads(params_json)
+    tmin = float(p["tmin"])
+    tmax = float(p["tmax"])
+    npx = int(p["npx"])
+    hp: Optional[float] = p.get("highpass")
+    lp: Optional[float] = p.get("lowpass")
+    sort = p.get("sort", "name")
+    rotate = float(p.get("rotate", 0.0) or 0.0)
+    remove_response = bool(p.get("remove_response", False))
+    mode = p.get("mode", "wiggle")
+
+    order = sorted(range(len(_TRACES)), key=lambda i: _TRACES[i].nslc_id)
+    work = [_TRACES[i] for i in order]
+    if sort == "name_reverse":
+        work = work[::-1]
+    work = _apply_rotation(work, rotate)
+    work = _remove_response(work, remove_response)
+
+    ys_parts: List[np.ndarray] = []
+    tracks: List[ViewTrack] = []
+    offset = 0
+    for tr in work:
+        try:
+            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
+        except Exception:
+            continue
+        if seg.ydata is None or len(seg.ydata) == 0:
+            continue
+        seg.ydata = seg.ydata.astype(np.float64)
+        try:
+            if hp is not None and lp is not None and hp < lp:
+                seg.bandpass(2, float(hp), float(lp))
+            elif hp is not None:
+                seg.highpass(4, float(hp))
+            elif lp is not None:
+                seg.lowpass(4, float(lp))
+        except Exception:
+            pass
+
+        net, sta, loc, cha = tr.nslc_id
+        label = ".".join(tr.nslc_id)
+
+        if mode == "waterfall":
+            spec = _spectrogram(seg, npx)
+            if spec is None:
+                continue
+            flat, nf, nt, fmax, vmin, vmax, t0_rel, dt = spec
+            tracks.append(ViewTrack(
+                net=net, sta=sta, loc=loc, cha=cha, label=label,
+                t0_rel=(float(seg.tmin) - tmin) + t0_rel, dt=dt,
+                count=int(nf * nt), offset=int(offset),
+                ymin=vmin, ymax=vmax, ymean=0.0,
+                nf=int(nf), nt=int(nt), fmax=fmax,
+            ))
+            ys_parts.append(flat)
+            offset += int(nf * nt)
+        else:
+            y, count, dt = _decimate(seg.ydata, float(seg.deltat), npx)
+            tracks.append(ViewTrack(
+                net=net, sta=sta, loc=loc, cha=cha, label=label,
+                t0_rel=float(seg.tmin) - tmin, dt=dt,
+                count=int(count), offset=int(offset),
+                ymin=float(y.min()) if count else 0.0,
+                ymax=float(y.max()) if count else 0.0,
+                ymean=float(y.mean()) if count else 0.0,
+                nf=0, nt=0, fmax=0.0,
+            ))
+            ys_parts.append(y.astype("<f4"))
+            offset += int(count)
+
+    ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, dtype="<f4")
+    meta: ViewMeta = ViewMeta(view_tmin=tmin, view_tmax=tmax, tracks=tracks)
+    return {"meta": json.dumps(meta), "ys": ys.tobytes()}
+
+
+def get_spectrum(params_json: str) -> dict:
+    """Amplitude spectrum (|rFFT|) of each visible trace — a built-in snuffling.
+
+    Returns {meta: <JSON>, ys: <float32 bytes>} with per-track log10-amplitude
+    sampled on a shared log-frequency axis [fmin, fmax]."""
+    p = json.loads(params_json)
+    tmin, tmax = float(p["tmin"]), float(p["tmax"])
+    hp, lp = p.get("highpass"), p.get("lowpass")
+    rotate = float(p.get("rotate", 0.0) or 0.0)
+    nbins = 400
+
+    order = sorted(range(len(_TRACES)), key=lambda i: _TRACES[i].nslc_id)
+    work = _apply_rotation([_TRACES[i] for i in order], rotate)
+
+    fmin_global, fmax_global = 1e30, 0.0
+    specs = []
+    for tr in work:
+        try:
+            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
+        except Exception:
+            continue
+        if seg.ydata is None or len(seg.ydata) < 8:
+            continue
+        seg.ydata = seg.ydata.astype(np.float64)
+        try:
+            if hp is not None and lp is not None and hp < lp:
+                seg.bandpass(2, float(hp), float(lp))
+            elif hp is not None:
+                seg.highpass(4, float(hp))
+            elif lp is not None:
+                seg.lowpass(4, float(lp))
+        except Exception:
+            pass
+        y = seg.ydata - seg.ydata.mean()
+        amp = np.abs(np.fft.rfft(y)) * float(seg.deltat)
+        freq = np.fft.rfftfreq(len(y), d=float(seg.deltat))
+        if len(freq) > 2:
+            fmin_global = min(fmin_global, freq[1])
+            fmax_global = max(fmax_global, freq[-1])
+        specs.append((".".join(tr.nslc_id), freq, amp))
+
+    if not specs or fmax_global <= 0:
+        return {"meta": json.dumps({"fmin": 0.1, "fmax": 1.0, "tracks": []}),
+                "ys": np.zeros(0, "<f4").tobytes()}
+
+    fmin_global = max(fmin_global, fmax_global * 1e-4)
+    grid = np.logspace(np.log10(fmin_global), np.log10(fmax_global), nbins)
+    ys_parts, tracks, offset = [], [], 0
+    for label, freq, amp in specs:
+        resamp = np.interp(grid, freq, amp, left=0.0, right=0.0)
+        logamp = np.log10(resamp + 1e-20).astype("<f4")
+        tracks.append({"label": label, "offset": int(offset), "count": int(nbins),
+                       "ymin": float(logamp.min()), "ymax": float(logamp.max())})
+        ys_parts.append(logamp)
+        offset += nbins
+    ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, "<f4")
+    meta = {"fmin": float(fmin_global), "fmax": float(fmax_global), "tracks": tracks}
+    return {"meta": json.dumps(meta), "ys": ys.tobytes()}
