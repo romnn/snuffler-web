@@ -1,12 +1,28 @@
 .DS_Store
 
-# trunk output folder
-dist
+# Trunk web build output
+/dist
 
-# Rust compile target directories:
-target
-target_ra
-target_wasm
+# Rust + JS build artifacts
+/target
+/node_modules
+
+# pyrocko is NOT vendored — fetched on demand (pinned) into sources/ by
+# `mise run fetch-pyrocko`. Keep it out of git.
+/sources
+
+# pyodide wheel build: keep the scripts (build-wheel.sh, setup.py, bootstrap),
+# drop the cross-compiled wheel + all generated toolchain caches.
+/dist-py
+/pybuild/build
+/pybuild/*.log
+/pybuild/.emscripten-version
+/.venv-pyodide
+/.pyodide-xbuildenv-*
+/.mypy_cache
+
+# Playwright/debug screenshots
+/snuffler-*.png
 
 # https://github.com/lycheeverse/lychee
 .lycheecache
