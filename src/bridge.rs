@@ -166,6 +166,9 @@ pub struct SnufMarker {
     pub phase: Option<String>,
     #[serde(default)]
     pub kind: u8,
+    /// Drawn as an event triangle on the time axis (catalog events).
+    #[serde(default)]
+    pub is_event: bool,
 }
 
 /// Result of running a built-in snuffling: a text report and/or markers to add.
@@ -291,6 +294,18 @@ mod web {
 
         #[wasm_bindgen(js_name = runSnuffling, catch)]
         async fn js_run_snuffling(name: String, params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = downloadWaveforms, catch)]
+        async fn js_download_waveforms(params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = catalogSearch, catch)]
+        async fn js_catalog_search(params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = fetchStations, catch)]
+        async fn js_fetch_stations(params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = fetchResponses, catch)]
+        async fn js_fetch_responses(params_json: String) -> Result<JsValue, JsValue>;
     }
 
     fn jsval_to_string(v: JsValue) -> String {
@@ -480,6 +495,113 @@ mod web {
             });
         }
 
+        /// Download waveforms from a CORS-enabled FDSN dataselect service and
+        /// replace the pile with the result (browser fetch; pyrocko parses).
+        pub fn download_waveforms(&self, ctx: &egui::Context, params_json: String) {
+            self.inner.borrow_mut().status = Status::Loading("Downloading waveforms…".into());
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_download_waveforms(params_json).await {
+                    Ok(v) => parse_scene(v),
+                    Err(e) => Err(jsval_to_string(e)),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    match parsed {
+                        Ok(scene) => {
+                            i.scene = Some(scene);
+                            i.scene_gen += 1;
+                            i.status = Status::Ready;
+                            i.view = None;
+                            i.applied = None;
+                        }
+                        Err(e) => i.status = Status::Error(e),
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Search a CORS-enabled FDSN event service; results become event markers.
+        pub fn catalog_search(&self, ctx: &egui::Context, params_json: String) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_catalog_search(params_json).await {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                    Err(e) => Some(SnufflingResult {
+                        text: jsval_to_string(e),
+                        markers: Vec::new(),
+                    }),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    if let Some(r) = parsed {
+                        i.snuffling = Some(r);
+                        i.snuffling_gen += 1;
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Fetch station coordinates (FDSN station service) to enable distance /
+        /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
+        pub fn fetch_stations(&self, ctx: &egui::Context, params_json: String) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_fetch_stations(params_json).await {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                    Err(e) => Some(SnufflingResult {
+                        text: jsval_to_string(e),
+                        markers: Vec::new(),
+                    }),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    if let Some(r) = parsed {
+                        i.snuffling = Some(r);
+                        i.snuffling_gen += 1;
+                    }
+                    i.applied = None; // re-dispatch so distance/azimuth sort recomputes
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Fetch instrument responses (StationXML) so Deconvolution can run;
+        /// forces a re-dispatch so the deconvolved view recomputes.
+        pub fn fetch_responses(&self, ctx: &egui::Context, params_json: String) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_fetch_responses(params_json).await {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                    Err(e) => Some(SnufflingResult {
+                        text: jsval_to_string(e),
+                        markers: Vec::new(),
+                    }),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    if let Some(r) = parsed {
+                        i.snuffling = Some(r);
+                        i.snuffling_gen += 1;
+                    }
+                    i.applied = None; // re-dispatch so deconvolution applies
+                }
+                ctx.request_repaint();
+            });
+        }
+
         /// Request a view for the given params, coalescing rapid changes so that
         /// at most one Python call is in flight at a time.
         pub fn ensure_view(&self, ctx: &egui::Context, params: ViewParams) {
@@ -576,6 +698,16 @@ mod native {
         pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: ViewParams) {}
 
         pub fn run_snuffling(&self, _ctx: &egui::Context, _name: String, _params: ViewParams) {}
+
+        pub fn download_waveforms(&self, _ctx: &egui::Context, _params_json: String) {
+            self.inner.borrow_mut().status = Status::Error(MSG.into());
+        }
+
+        pub fn catalog_search(&self, _ctx: &egui::Context, _params_json: String) {}
+
+        pub fn fetch_stations(&self, _ctx: &egui::Context, _params_json: String) {}
+
+        pub fn fetch_responses(&self, _ctx: &egui::Context, _params_json: String) {}
 
         pub fn ensure_view(&self, _ctx: &egui::Context, _params: ViewParams) {}
     }

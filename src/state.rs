@@ -327,6 +327,21 @@ pub struct AppState {
     /// "Snuffler controls" / "About" help windows.
     pub show_help: bool,
     pub show_about: bool,
+
+    // --- FDSN network forms (browser fetch) ---
+    pub show_download: bool,
+    pub show_catalog: bool,
+    pub dl_datacenter: String,
+    pub dl_net: String,
+    pub dl_sta: String,
+    pub dl_loc: String,
+    pub dl_cha: String,
+    pub dl_start: String,
+    pub dl_end: String,
+    pub cat_datacenter: String,
+    pub cat_minmag: f64,
+    pub cat_start: String,
+    pub cat_end: String,
 }
 
 impl Default for AppState {
@@ -381,6 +396,20 @@ impl Default for AppState {
             show_controls: true,
             show_help: false,
             show_about: false,
+            show_download: false,
+            show_catalog: false,
+            // Pre-filled with a real example (2023-02-06 Turkey M7.8, GE.WLF).
+            dl_datacenter: "geofon".into(),
+            dl_net: "GE".into(),
+            dl_sta: "WLF".into(),
+            dl_loc: "*".into(),
+            dl_cha: "BH?".into(),
+            dl_start: "2023-02-06T01:17:00".into(),
+            dl_end: "2023-02-06T01:47:00".into(),
+            cat_datacenter: "usgs".into(),
+            cat_minmag: 6.0,
+            cat_start: "2023-02-06".into(),
+            cat_end: "2023-02-07".into(),
         }
     }
 }

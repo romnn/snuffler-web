@@ -97,6 +97,21 @@ impl App {
         });
     }
 
+    fn data_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Data", |ui| {
+            if ui.button("Download waveforms (FDSN)…").clicked() {
+                self.state.show_download = true;
+                ui.close();
+            }
+            if ui.button("Catalog search (events)…").clicked() {
+                self.state.show_catalog = true;
+                ui.close();
+            }
+            ui.separator();
+            ui.label("Real data via the browser's fetch() (CORS-enabled FDSN).");
+        });
+    }
+
     fn view_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("View", |ui| {
             ui.label("Theme");
@@ -149,8 +164,8 @@ impl App {
             ui.checkbox(&mut self.state.demean, "Demean");
             ui.checkbox(&mut self.state.remove_response, "Deconvolution")
                 .on_hover_text(
-                    "Deconvolve the instrument response. Needs response metadata \
-                     (StationXML/RESP); the demo data has none, so this is a no-op.",
+                    "Deconvolve the instrument response to displacement. Fetch \
+                     responses first via Data ▸ Download ▸ Fetch responses.",
                 );
             ui.checkbox(&mut self.state.distances_3d, "3D distances")
                 .on_hover_text("Use station depth in distance sorting (needs coordinates).");
@@ -307,6 +322,7 @@ impl eframe::App for App {
         egui::Panel::top("menu").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 self.file_menu(ui, &ctx);
+                self.data_menu(ui);
                 self.view_menu(ui);
                 self.options_menu(ui);
                 self.scaling_menu(ui);
@@ -392,18 +408,160 @@ impl eframe::App for App {
             self.state.show_about = open;
         }
 
+        if self.state.show_download {
+            let mut open = true;
+            let mut submit = false;
+            let mut submit_st = false;
+            let mut submit_resp = false;
+            egui::Window::new("Download waveforms (FDSN)")
+                .open(&mut open)
+                .default_width(420.0)
+                .show(&ctx, |ui| {
+                    egui::ComboBox::from_label("Data center")
+                        .selected_text(self.state.dl_datacenter.clone())
+                        .show_ui(ui, |ui| {
+                            for dc in ["geofon", "earthscope", "orfeus"] {
+                                ui.selectable_value(
+                                    &mut self.state.dl_datacenter,
+                                    dc.to_string(),
+                                    dc,
+                                );
+                            }
+                        });
+                    egui::Grid::new("dl_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .show(ui, |ui| {
+                            for (lbl, val) in [
+                                ("Network", &mut self.state.dl_net),
+                                ("Station", &mut self.state.dl_sta),
+                                ("Location", &mut self.state.dl_loc),
+                                ("Channel", &mut self.state.dl_cha),
+                                ("Start (UTC)", &mut self.state.dl_start),
+                                ("End (UTC)", &mut self.state.dl_end),
+                            ] {
+                                ui.label(lbl);
+                                ui.text_edit_singleline(val);
+                                ui.end_row();
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Fetch waveforms").clicked() {
+                            submit = true;
+                        }
+                        if ui.button("Fetch station coords").clicked() {
+                            submit_st = true;
+                        }
+                        if ui.button("Fetch responses").clicked() {
+                            submit_resp = true;
+                        }
+                    });
+                    ui.small(
+                        "Wildcards * and ? allowed (e.g. channel BH? = BHZ/BHN/BHE). \
+                         Responses enable Options ▸ Deconvolution.",
+                    );
+                });
+            if submit {
+                let p = serde_json::json!({
+                    "datacenter": self.state.dl_datacenter, "net": self.state.dl_net,
+                    "sta": self.state.dl_sta, "loc": self.state.dl_loc, "cha": self.state.dl_cha,
+                    "start": self.state.dl_start, "end": self.state.dl_end,
+                })
+                .to_string();
+                self.bridge.download_waveforms(&ctx, p);
+            }
+            if submit_st || submit_resp {
+                let p = serde_json::json!({
+                    "datacenter": self.state.dl_datacenter, "net": self.state.dl_net,
+                    "sta": self.state.dl_sta, "cha": self.state.dl_cha,
+                })
+                .to_string();
+                if submit_st {
+                    self.bridge.fetch_stations(&ctx, p.clone());
+                }
+                if submit_resp {
+                    self.bridge.fetch_responses(&ctx, p);
+                }
+            }
+            self.state.show_download = open;
+        }
+
+        if self.state.show_catalog {
+            let mut open = true;
+            let mut submit = false;
+            egui::Window::new("Catalog search (events)")
+                .open(&mut open)
+                .default_width(380.0)
+                .show(&ctx, |ui| {
+                    egui::ComboBox::from_label("Catalog")
+                        .selected_text(self.state.cat_datacenter.clone())
+                        .show_ui(ui, |ui| {
+                            for dc in ["usgs", "geofon"] {
+                                ui.selectable_value(
+                                    &mut self.state.cat_datacenter,
+                                    dc.to_string(),
+                                    dc,
+                                );
+                            }
+                        });
+                    egui::Grid::new("cat_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Start (UTC)");
+                        ui.text_edit_singleline(&mut self.state.cat_start);
+                        ui.end_row();
+                        ui.label("End (UTC)");
+                        ui.text_edit_singleline(&mut self.state.cat_end);
+                        ui.end_row();
+                    });
+                    ui.add(
+                        egui::Slider::new(&mut self.state.cat_minmag, 0.0..=9.0)
+                            .text("Min magnitude"),
+                    );
+                    if ui.button("Search").clicked() {
+                        submit = true;
+                    }
+                    ui.small("Events become markers on the time axis at their origin times.");
+                });
+            if submit {
+                let p = serde_json::json!({
+                    "datacenter": self.state.cat_datacenter, "minmag": self.state.cat_minmag,
+                    "start": self.state.cat_start, "end": self.state.cat_end,
+                })
+                .to_string();
+                self.bridge.catalog_search(&ctx, p);
+            }
+            self.state.show_catalog = open;
+        }
+
         // Apply a snuffling result (markers + text) exactly once per run.
         let sg = self.bridge.snuffling_gen();
         if sg != self.last_snuffling_gen {
             self.last_snuffling_gen = sg;
             if let Some(r) = self.bridge.snuffling() {
+                let (mut ev_min, mut ev_max, mut any_ev) =
+                    (f64::INFINITY, f64::NEG_INFINITY, false);
                 for m in &r.markers {
                     let mut mk = Marker::new(m.t, m.t, m.kind);
                     mk.phase = m.phase.clone();
+                    mk.is_event = m.is_event;
+                    if m.is_event {
+                        any_ev = true;
+                        ev_min = ev_min.min(m.t);
+                        ev_max = ev_max.max(m.t);
+                    }
                     self.state.markers.push(mk);
                 }
                 self.state.snuffling_text = r.text;
                 self.state.show_snuffling = true;
+                // Catalog events are at absolute times; if they fell outside the
+                // current window, jump the view so the markers are visible.
+                if any_ev
+                    && ev_max >= ev_min
+                    && (ev_max < self.state.tmin || ev_min > self.state.tmax)
+                {
+                    let pad = ((ev_max - ev_min) * 0.1).max(120.0);
+                    self.state.tmin = ev_min - pad;
+                    self.state.tmax = ev_max + pad;
+                }
             }
         }
         if self.state.show_snuffling {

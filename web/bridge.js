@@ -143,7 +143,45 @@ export async function runSnuffling(name, paramsJson) {
   return bridge.run_snuffling(name, paramsJson); // -> JSON string {text, markers}
 }
 
+// --- FDSN network: Python builds the URL + parses; the browser does fetch() ---
+
+export async function downloadWaveforms(paramsJson) {
+  await boot();
+  const url = bridge.dataselect_url(paramsJson);
+  const r = await fetch(url);
+  if (!r.ok && r.status !== 204) throw new Error(`dataselect HTTP ${r.status} ${r.statusText}`);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  return bridge.load_waveform_bytes(buf); // -> scene JSON string
+}
+
+export async function catalogSearch(paramsJson) {
+  await boot();
+  const url = bridge.event_url(paramsJson);
+  const r = await fetch(url);
+  const text = r.ok ? await r.text() : "";
+  return bridge.parse_events(text); // -> JSON string {text, markers}
+}
+
+export async function fetchStations(paramsJson) {
+  await boot();
+  const url = bridge.station_url(paramsJson);
+  const r = await fetch(url);
+  const text = r.ok ? await r.text() : "";
+  return bridge.parse_stations(text); // -> JSON string {text, markers}
+}
+
+export async function fetchResponses(paramsJson) {
+  await boot();
+  const url = bridge.response_url(paramsJson);
+  const r = await fetch(url);
+  const text = r.ok ? await r.text() : "";
+  return bridge.load_responses(text); // -> JSON string {text, markers}
+}
+
 // Debug hook so the bridge can be exercised from the devtools/tests.
 if (typeof window !== "undefined") {
-  window.snuffler = { makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling };
+  window.snuffler = {
+    makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling,
+    downloadWaveforms, catalogSearch, fetchStations, fetchResponses,
+  };
 }

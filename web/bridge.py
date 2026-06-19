@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 import math
 import os
-from typing import Any, List, Optional, Tuple, TypedDict
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 import numpy as np
 
@@ -70,6 +71,27 @@ class ViewMeta(TypedDict):
 
 # The current set of loaded traces (snuffler's "pile").
 _TRACES: List[ptrace.Trace] = []
+
+# Station coordinates (net, sta) -> (lat, lon, elevation) and the active event
+# (lat, lon, depth_m, time), populated by the FDSN fetch helpers below. Used for
+# distance/azimuth sorting. The browser does the actual fetch (CORS); all URL
+# building, parsing and geo math happen here in pyrocko/Python.
+_STATIONS: Dict[Tuple[str, str], Tuple[float, float, float]] = {}
+_ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
+# Instrument responses (a parsed FDSNStationXML), used by Deconvolution.
+_STATIONXML: Any = None
+
+# CORS-enabled FDSN web services (verified to allow cross-origin fetch).
+_FDSN = {
+    "geofon": "https://geofon.gfz.de",
+    "earthscope": "https://service.earthscope.org",
+    "usgs": "https://earthquake.usgs.gov",
+    "orfeus": "https://www.orfeus-eu.org",
+}
+
+
+def _fdsn_base(name: str, default: str = "geofon") -> str:
+    return _FDSN.get(name, _FDSN[default])
 
 
 def _meta(tr: ptrace.Trace) -> TraceMeta:
@@ -199,13 +221,23 @@ def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace
 
 
 def _remove_response(traces: List[ptrace.Trace], enabled: bool) -> List[ptrace.Trace]:
-    """Deconvolve the instrument response. The demo data carries no response
-    metadata, so this is a no-op; with responses one would call
-    ``tr.transfer(tfade, freqlimits, resp, invert=True)`` per trace."""
-    if not enabled:
+    """Deconvolve the instrument response to displacement using StationXML fetched
+    from an FDSN station service (Data ▸ Download ▸ Fetch responses). A no-op until
+    responses are loaded; traces without a matching response pass through."""
+    if not enabled or _STATIONXML is None:
         return traces
-    # No response metadata in the demo data — nothing to deconvolve yet.
-    return traces
+    out: List[ptrace.Trace] = []
+    for tr in traces:
+        try:
+            resp = _STATIONXML.get_pyrocko_response(
+                tr.nslc_id, timespan=(tr.tmin, tr.tmax), fake_input_units="M")
+            nyq = 0.5 / float(tr.deltat)
+            freqlimits = (0.005, 0.01, 0.8 * nyq, 0.9 * nyq)
+            tfade = min(60.0, max(1.0, (tr.tmax - tr.tmin) * 0.25))
+            out.append(tr.transfer(tfade, freqlimits, resp, invert=True))
+        except Exception:
+            out.append(tr)
+    return out
 
 
 # Subsort -> order of nslc elements for the sort/grouping key (snuffler's subsort).
@@ -221,15 +253,39 @@ _SUBSORT = {
 
 
 def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int]:
-    """Index order for the traces. Distance/azimuth sorts need station coords +
-    an active event (not available for the demo), so they fall back to name order."""
+    """Index order for the traces. Distance/azimuth sorts use station coordinates
+    (from a station fetch) + the active event; without them they fall back to name
+    order. All geo math is pyrocko's (orthodrome)."""
     perm = _SUBSORT.get(subsort, (0, 1, 2, 3))
 
-    def key(tr: ptrace.Trace):
+    def namekey(tr: ptrace.Trace):
         nslc = tr.nslc_id
         return tuple(nslc[i] for i in perm)
 
-    return sorted(range(len(traces)), key=lambda i: key(traces[i]))
+    geo = sort in ("distance", "azimuth", "azimuth_blocks", "backazimuth")
+    if geo and _ACTIVE_EVENT is not None and _STATIONS:
+        from pyrocko import orthodrome as od
+
+        elat, elon, _edep, _et = _ACTIVE_EVENT
+
+        def geokey(tr: ptrace.Trace):
+            st = _STATIONS.get((tr.nslc_id[0], tr.nslc_id[1]))
+            if st is None:
+                return (1e30, namekey(tr))
+            slat, slon, _ele = st
+            dist = float(od.distance_accurate50m(elat, elon, slat, slon))
+            if sort == "distance":
+                return (dist, namekey(tr))
+            if sort == "backazimuth":
+                return (float(od.azimuth(slat, slon, elat, elon)) % 360.0, dist)
+            azi = float(od.azimuth(elat, elon, slat, slon)) % 360.0
+            if sort == "azimuth":
+                return (azi, dist)
+            return (float(int(azi // 30.0)), dist)  # azimuth_blocks: 30° sectors
+
+        return sorted(range(len(traces)), key=lambda i: geokey(traces[i]))
+
+    return sorted(range(len(traces)), key=lambda i: namekey(traces[i]))
 
 
 def _group_key(t: "ViewTrack", group: str):
@@ -558,3 +614,178 @@ def run_snuffling(name: str, params_json: str) -> str:
         })
 
     return json.dumps({"text": "Unknown snuffling: %s" % name, "markers": []})
+
+
+# --- FDSN web services (network) -------------------------------------------
+# The browser performs the actual fetch (it has CORS); these helpers only build
+# the request URLs and parse the responses, so all logic stays in Python.
+
+
+def dataselect_url(params_json: str) -> str:
+    """FDSN dataselect (waveform) query URL."""
+    p = json.loads(params_json)
+    base = _fdsn_base(p.get("datacenter", "geofon"))
+    q = "&".join([
+        "net=%s" % (p.get("net") or "*"),
+        "sta=%s" % (p.get("sta") or "*"),
+        "loc=%s" % (p.get("loc") or "*"),
+        "cha=%s" % (p.get("cha") or "*"),
+        "starttime=%s" % p["start"],
+        "endtime=%s" % p["end"],
+        "nodata=204",
+    ])
+    return "%s/fdsnws/dataselect/1/query?%s" % (base, q)
+
+
+def load_waveform_bytes(data: Any) -> str:
+    """Load fetched MiniSEED bytes into the pile and return the scene JSON."""
+    raw = bytes(data.to_py()) if hasattr(data, "to_py") else bytes(data)
+    if not raw:
+        return json.dumps(SceneMeta(tmin=0.0, tmax=1.0, tracks=[]))
+    os.makedirs("/data", exist_ok=True)
+    path = "/data/fdsn.mseed"
+    with open(path, "wb") as f:
+        f.write(raw)
+    traces = list(pio.load(path, format="mseed"))
+    global _TRACES
+    _TRACES = traces
+    return _scene_json()
+
+
+def event_url(params_json: str) -> str:
+    """FDSN event (catalog) query URL (text format)."""
+    p = json.loads(params_json)
+    base = _fdsn_base(p.get("datacenter", "usgs"))
+    q = "&".join([
+        "format=text",
+        "starttime=%s" % p["start"],
+        "endtime=%s" % p["end"],
+        "minmagnitude=%s" % p.get("minmag", 5.0),
+        "orderby=time",
+        "limit=1000",
+    ])
+    return "%s/fdsnws/event/1/query?%s" % (base, q)
+
+
+def _ftime(s: str) -> float:
+    s = s.strip().rstrip("Z")
+    try:
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+    except Exception:
+        return 0.0
+
+
+def parse_events(text: str) -> str:
+    """Parse FDSN event 'text' format into event markers; set the active event
+    (largest magnitude) for distance/azimuth sorting."""
+    global _ACTIVE_EVENT
+    markers = []
+    lines = []
+    best = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        c = line.split("|")
+        if len(c) < 11:
+            continue
+        t = _ftime(c[1])
+        lat = float(c[2]) if c[2] else 0.0
+        lon = float(c[3]) if c[3] else 0.0
+        depth = (float(c[4]) if c[4] else 0.0) * 1000.0
+        mag = float(c[10]) if len(c) > 10 and c[10] else 0.0
+        name = c[12] if len(c) > 12 else ""
+        when = c[1].replace("T", " ")[:19]
+        markers.append({
+            "t": t,
+            "phase": ("M%.1f %s" % (mag, name)).strip()[:48],
+            "kind": 0,
+            "is_event": True,
+        })
+        lines.append("M%.1f  %s  %s" % (mag, when, name))
+        if best is None or mag > best[0]:
+            best = (mag, lat, lon, depth, t)
+    if best is not None:
+        _ACTIVE_EVENT = (best[1], best[2], best[3], best[4])
+        header = ("%d event(s) found; active event M%.1f (distance sort enabled).\n"
+                  "Jumped the view to the events — load waveforms for this time to "
+                  "see them on data." % (len(markers), best[0]))
+    else:
+        header = "No events found in this time window."
+    body = "\n".join(lines[:30])
+    return json.dumps({"text": header + ("\n\n" + body if body else ""), "markers": markers})
+
+
+def station_url(params_json: str) -> str:
+    """FDSN station query URL (text format, station level)."""
+    p = json.loads(params_json)
+    base = _fdsn_base(p.get("datacenter", "geofon"))
+    q = "&".join([
+        "net=%s" % (p.get("net") or "*"),
+        "sta=%s" % (p.get("sta") or "*"),
+        "cha=%s" % (p.get("cha") or "*"),
+        "level=station",
+        "format=text",
+    ])
+    return "%s/fdsnws/station/1/query?%s" % (base, q)
+
+
+def parse_stations(text: str) -> str:
+    """Parse FDSN station 'text' format (#Net|Sta|Lat|Lon|Elev|Site|Start|End)
+    and remember coordinates for distance/azimuth sorting."""
+    global _STATIONS
+    n = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        c = line.split("|")
+        if len(c) < 5:
+            continue
+        try:
+            _STATIONS[(c[0], c[1])] = (float(c[2]), float(c[3]), float(c[4]))
+            n += 1
+        except Exception:
+            pass
+    return json.dumps({"text": "%d station(s) with coordinates loaded" % n, "markers": []})
+
+
+def response_url(params_json: str) -> str:
+    """FDSN station query URL at response level (StationXML with instrument
+    responses, for deconvolution)."""
+    p = json.loads(params_json)
+    base = _fdsn_base(p.get("datacenter", "geofon"))
+    q = "&".join([
+        "net=%s" % (p.get("net") or "*"),
+        "sta=%s" % (p.get("sta") or "*"),
+        "cha=%s" % (p.get("cha") or "*"),
+        "level=response",
+    ])
+    return "%s/fdsnws/station/1/query?%s" % (base, q)
+
+
+def load_responses(xml_text: str) -> str:
+    """Parse fetched StationXML into instrument responses (for Deconvolution) and
+    also harvest station coordinates (for distance/azimuth sorting)."""
+    global _STATIONXML
+    if not xml_text.strip():
+        return json.dumps({"text": "no station metadata returned", "markers": []})
+    from pyrocko.io import stationxml
+
+    _STATIONXML = stationxml.load_xml(string=xml_text)
+    nchan = 0
+    for net in _STATIONXML.network_list:
+        for st in net.station_list:
+            nchan += len(st.channel_list)
+            try:
+                _STATIONS[(net.code, st.code)] = (
+                    float(st.latitude.value),
+                    float(st.longitude.value),
+                    float(st.elevation.value),
+                )
+            except Exception:
+                pass
+    return json.dumps({
+        "text": "%d channel response(s) loaded — enable Options ▸ Deconvolution" % nchan,
+        "markers": [],
+    })
