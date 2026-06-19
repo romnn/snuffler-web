@@ -1,0 +1,7 @@
+# rustup reads this automatically and installs the pinned toolchain + the
+# wasm target on first build, so `trunk build` works out of the box.
+# (mise owns python/emsdk/trunk; rustup owns rust + targets.)
+[toolchain]
+channel = "1.96.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]

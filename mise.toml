@@ -1,0 +1,55 @@
+# Self-contained, reproducible toolchain. A new contributor needs only `mise`:
+#
+#   mise install          # python, emscripten, node, bun, uv, trunk (all pinned)
+#   mise run setup        # fetch pyrocko (pinned) + create .venv-pyodide
+#   mise run build-wheel  # cross-compile pyrocko -> dist-py/pyrocko-*.whl
+#   mise run serve        # trunk serve (the web app)
+#
+# pyrocko is NOT vendored: `fetch-pyrocko` clones it (pinned to PYROCKO_REF) into
+# the gitignored sources/. setup/build-wheel/serve depend on it, so it is pulled
+# on demand.
+#
+# Version chain is dictated by the Pyodide RUNTIME we load in web/bridge.js (0.27.2):
+#   Pyodide 0.27.2  ->  pyodide-build 0.35.0  ->  xbuildenv 0.27.2
+#                   ->  emscripten 3.1.58     ->  host CPython 3.12
+# emscripten is NOT chosen freely; it is what `pyodide config get
+# emscripten_version` reports for the 0.27.2 cross-build env.
+[tools]
+python = "3.12"
+emsdk = "3.1.58"
+node = "24"
+bun = "1.3.14"            # runs the headless wheel smoke test (pybuild/smoke-test.mjs)
+uv = "0.11.21"           # creates the .venv-pyodide that holds pyodide-build
+"ubi:trunk-rs/trunk" = "0.21.14"
+
+[env]
+PYODIDE_VERSION = "0.27.2"
+PYODIDE_BUILD_VERSION = "0.35.0"
+# pyrocko source pin (not vendored — fetched on demand into gitignored sources/).
+# Known-good commit on main: v2026.06.02-24-g64ae99fb (2026-06-12).
+PYROCKO_REPO = "https://git.pyrocko.org/pyrocko/pyrocko.git"
+PYROCKO_REF = "64ae99fb2c65fbd32836d83d00de05cf405a4ff9"
+
+[tasks.fetch-pyrocko]
+description = "Clone pyrocko at the pinned commit into sources/ (gitignored)"
+run = "./pybuild/fetch-pyrocko.sh"
+
+[tasks.setup]
+description = "Fetch pyrocko + create .venv-pyodide with pyodide-build + cross-build env"
+depends = ["fetch-pyrocko"]
+run = "./pybuild/bootstrap-toolchain.sh"
+
+[tasks.build-wheel]
+description = "Cross-compile pyrocko's C extensions to a Pyodide wheel"
+depends = ["fetch-pyrocko"]
+run = "./pybuild/build-wheel.sh"
+
+[tasks.serve]
+description = "Run the web app (trunk serve)"
+depends = ["fetch-pyrocko"]
+run = "trunk serve"
+
+[tasks.smoke-test]
+description = "Headless check: install the wheel in real Pyodide, import pyrocko, load MiniSEED"
+depends = ["build-wheel"]
+run = "bun install && bun pybuild/smoke-test.mjs"
