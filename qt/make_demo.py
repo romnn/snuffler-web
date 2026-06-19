@@ -20,10 +20,18 @@ traces = []
 for si, sta in enumerate(stations):
     arrival = 180.0 + si * 18.0
     env = np.exp(-((t - arrival) ** 2) / (2.0 * 8.0 ** 2))
-    event = env * np.sin(2.0 * np.pi * 1.5 * (t - arrival))
     for cha in channels:
-        noise = np.convolve(rng.standard_normal(n), np.ones(8) / 8.0, "same")
-        y = 0.3 * noise + event
+        phase = rng.uniform(0.0, 2.0 * np.pi)
+        carrier = (
+            np.sin(2.0 * np.pi * 3.2 * (t - arrival) + phase)
+            + 0.45 * np.sin(2.0 * np.pi * 6.7 * (t - arrival) + 0.3 * phase)
+        )
+        coda = np.exp(-np.maximum(t - arrival, 0.0) / 26.0)
+        coda[t < arrival] = 0.0
+        burst_noise = rng.standard_normal(n)
+        event = env * carrier + 0.22 * coda * burst_noise
+        noise = rng.standard_normal(n)
+        y = 0.22 * noise + event
         traces.append(trace.Trace(
             network="XX", station=sta, location="", channel=cha,
             deltat=deltat, tmin=tmin, ydata=y.astype(np.float64),

@@ -67,4 +67,4 @@ run = "docker build -t snuffler-qt qt"
 
 [tasks.qt-serve]
 description = "Run snuffler-qt -> open http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote"
-run = "docker run --rm --name snuffler-qt -p 6080:8080 snuffler-qt"
+run = "docker run --rm --name snuffler-qt -p 6080:8080 -v \"$PWD/qt/make_demo.py:/opt/snuffler/make_demo.py:ro\" snuffler-qt"
