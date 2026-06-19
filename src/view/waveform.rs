@@ -708,8 +708,18 @@ fn handle_interaction(
 
 fn zoom_time(state: &mut AppState, pivot: f64, factor: f64) {
     let factor = factor.clamp(0.02, 50.0);
-    state.tmin = pivot - (pivot - state.tmin) * factor;
-    state.tmax = pivot + (state.tmax - pivot) * factor;
+    let tmin = pivot - (pivot - state.tmin) * factor;
+    let tmax = pivot + (state.tmax - pivot) * factor;
+    let window = (tmax - tmin).max(1e-9);
+    let max_window = state.visible_length.seconds().max(1e-9);
+    if window <= max_window {
+        state.tmin = tmin;
+        state.tmax = tmax;
+    } else {
+        let left_frac = ((pivot - tmin) / window).clamp(0.0, 1.0);
+        state.tmin = pivot - max_window * left_frac;
+        state.tmax = state.tmin + max_window;
+    }
 }
 
 #[allow(
