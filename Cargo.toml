@@ -1,13 +1,45 @@
 [package]
-name = "snuffler"
+name = "snuffler-web"
 version = "0.1.0"
 authors = ["Roman Dahm <contact@romnn.com>"]
-edition = "2021"
+edition = "2024"
 include = ["LICENSE", "**/*.rs", "Cargo.toml"]
 
 [package.metadata.docs.rs]
 all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
+[profile.release]
+# Optimize for size: this is a render-only wasm frontend — all heavy computation
+# runs in Pyodide — so a smaller download matters more than peak CPU throughput.
+# Complementary to wasm-opt -Oz (Trunk.toml): rustc/LLVM shrinks the codegen,
+# wasm-opt does a further wasm-level size pass. Use "z" for an even smaller binary
+# if the UI still feels smooth.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+# Warn-only: keep iteration fast during development; CI/review still adds the docs.
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+todo = "deny"
+indexing_slicing = "deny"
+# Every `#[allow(...)]` must carry a `reason = "..."` justifying the escape hatch.
+allow_attributes_without_reason = "deny"
+
+struct_excessive_bools = "allow"
 
 [dependencies]
 egui = "0.34"
@@ -36,8 +68,3 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement"] }
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
-
-[profile.release]
-opt-level = 2     # fast and reasonably small wasm
-lto = true        # whole-program optimization — smaller, faster wasm
-codegen-units = 1 # better optimization at the cost of compile time
