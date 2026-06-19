@@ -96,6 +96,15 @@ pub fn tick_label(t: f64, tinc: f64) -> String {
     }
 }
 
+/// Full UTC timestamp (millisecond precision) for marker lists / readouts.
+pub fn format_full(t: f64) -> String {
+    let c = civil(t);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:06.3}",
+        c.year, c.mon, c.day, c.hour, c.min, c.sec
+    )
+}
+
 /// A longer "context" label (full date/time of the left edge of the view).
 pub fn context_label(t: f64) -> String {
     let c = civil(t);

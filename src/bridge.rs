@@ -162,6 +162,9 @@ pub struct SpectrumData {
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct SnufMarker {
     pub t: f64,
+    /// End time for span markers; `None` ⇒ a point marker at `t`.
+    #[serde(default)]
+    pub tmax: Option<f64>,
     #[serde(default)]
     pub phase: Option<String>,
     #[serde(default)]
@@ -169,6 +172,12 @@ pub struct SnufMarker {
     /// Drawn as an event triangle on the time axis (catalog events).
     #[serde(default)]
     pub is_event: bool,
+    /// Channel scope (net, sta, loc, cha) for loaded markers.
+    #[serde(default)]
+    pub nslc: Option<(String, String, String, String)>,
+    /// First-motion polarity of a phase pick (1/-1/0/None).
+    #[serde(default)]
+    pub polarity: Option<i8>,
 }
 
 /// Result of running a built-in snuffling: a text report and/or markers to add.
@@ -178,6 +187,40 @@ pub struct SnufflingResult {
     pub text: String,
     #[serde(default)]
     pub markers: Vec<SnufMarker>,
+}
+
+/// Station / event coordinates for the Map overlay (from the FDSN fetches).
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct MapStation {
+    pub label: String,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct MapEvent {
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub mag: f64,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct MapData {
+    #[serde(default)]
+    pub stations: Vec<MapStation>,
+    #[serde(default)]
+    pub events: Vec<MapEvent>,
+}
+
+/// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
+/// turns them into a texture and caches it there).
+#[allow(dead_code)] // most variants are only constructed on the web target
+enum TileState {
+    InFlight,
+    Ready(u32, u32, Vec<u8>),
+    Consumed,
+    Failed,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -205,6 +248,8 @@ struct Inner {
     spectrum_in_flight: bool,
     snuffling: Option<SnufflingResult>,
     snuffling_gen: u64,
+    map: Option<MapData>,
+    tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
     view_in_flight: bool,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
@@ -251,6 +296,23 @@ impl Bridge {
 
     pub fn snuffling(&self) -> Option<SnufflingResult> {
         self.inner.borrow().snuffling.clone()
+    }
+
+    pub fn map_data(&self) -> Option<MapData> {
+        self.inner.borrow().map.clone()
+    }
+
+    /// Hand the view a ready tile's RGBA exactly once (it caches the texture).
+    pub fn take_tile_rgba(&self, z: u8, x: u32, y: u32) -> Option<(u32, u32, Vec<u8>)> {
+        let mut i = self.inner.borrow_mut();
+        if matches!(i.tiles.get(&(z, x, y)), Some(TileState::Ready(..))) {
+            if let Some(TileState::Ready(w, h, rgba)) =
+                i.tiles.insert((z, x, y), TileState::Consumed)
+            {
+                return Some((w, h, rgba));
+            }
+        }
+        None
     }
 
     /// Borrow the current view (decimated waveforms) for drawing.
@@ -306,6 +368,24 @@ mod web {
 
         #[wasm_bindgen(js_name = fetchResponses, catch)]
         async fn js_fetch_responses(params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = mapData, catch)]
+        async fn js_map_data() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = cakeArrivals, catch)]
+        async fn js_cake_arrivals() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = fetchTile, catch)]
+        async fn js_fetch_tile(url: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = openFiles, catch)]
+        async fn js_open_files() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = saveMarkers, catch)]
+        async fn js_save_markers(markers_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = loadMarkers, catch)]
+        async fn js_load_markers() -> Result<JsValue, JsValue>;
     }
 
     fn jsval_to_string(v: JsValue) -> String {
@@ -548,6 +628,32 @@ mod web {
             });
         }
 
+        /// Compute theoretical P/S arrivals (pyrocko.cake) for the active event
+        /// at the loaded stations and add them as phase markers.
+        pub fn cake_arrivals(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_cake_arrivals().await {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                    Err(e) => Some(SnufflingResult {
+                        text: jsval_to_string(e),
+                        markers: Vec::new(),
+                    }),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    if let Some(r) = parsed {
+                        i.snuffling = Some(r);
+                        i.snuffling_gen += 1;
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
         /// Fetch station coordinates (FDSN station service) to enable distance /
         /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
         pub fn fetch_stations(&self, ctx: &egui::Context, params_json: String) {
@@ -598,6 +704,130 @@ mod web {
                     }
                     i.applied = None; // re-dispatch so deconvolution applies
                 }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Open local waveform files via a browser picker and append them.
+        pub fn open_files(&self, ctx: &egui::Context) {
+            self.inner.borrow_mut().status = Status::Loading("Opening files…".into());
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = js_open_files().await;
+                {
+                    let mut i = inner.borrow_mut();
+                    match res {
+                        Ok(v) => match v.as_string() {
+                            Some(s) if s.is_empty() => i.status = Status::Ready, // cancelled
+                            Some(s) => match serde_json::from_str::<SceneMeta>(&s) {
+                                Ok(scene) => {
+                                    i.scene = Some(scene);
+                                    i.scene_gen += 1;
+                                    i.status = Status::Ready;
+                                    i.view = None;
+                                    i.applied = None;
+                                }
+                                Err(e) => i.status = Status::Error(e.to_string()),
+                            },
+                            None => i.status = Status::Error("open_files: bad result".into()),
+                        },
+                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Serialize markers to pyrocko marker format and download them.
+        pub fn save_markers(&self, _ctx: &egui::Context, markers_json: String) {
+            spawn_local(async move {
+                let _ = js_save_markers(markers_json).await;
+            });
+        }
+
+        /// Load a marker file via a browser picker; results land as markers.
+        pub fn load_markers(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let markers = match js_load_markers().await {
+                    Ok(v) => v
+                        .as_string()
+                        .filter(|s| !s.is_empty())
+                        .and_then(|s| serde_json::from_str::<Vec<SnufMarker>>(&s).ok()),
+                    Err(_) => None,
+                };
+                if let Some(markers) = markers {
+                    let mut i = inner.borrow_mut();
+                    let n = markers.len();
+                    i.snuffling = Some(SnufflingResult {
+                        text: format!("loaded {n} marker(s)"),
+                        markers,
+                    });
+                    i.snuffling_gen += 1;
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Fetch station + event coordinates for the Map overlay.
+        pub fn fetch_map_data(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_map_data().await {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<MapData>(&s).ok()),
+                    Err(_) => None,
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    if let Some(m) = parsed {
+                        i.map = Some(m);
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Fetch one map tile (browser fetch + decode); idempotent per (z,x,y).
+        pub fn request_tile(&self, ctx: &egui::Context, z: u8, x: u32, y: u32, url: String) {
+            {
+                let mut i = self.inner.borrow_mut();
+                if i.tiles.contains_key(&(z, x, y)) {
+                    return;
+                }
+                i.tiles.insert((z, x, y), TileState::InFlight);
+            }
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                use wasm_bindgen::JsCast;
+                let state = match js_fetch_tile(url).await {
+                    Ok(obj) => {
+                        let num = |k: &str| {
+                            js_sys::Reflect::get(&obj, &JsValue::from_str(k))
+                                .ok()
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0) as u32
+                        };
+                        let (w, h) = (num("w"), num("h"));
+                        let rgba = js_sys::Reflect::get(&obj, &JsValue::from_str("rgba"))
+                            .ok()
+                            .and_then(|v| v.dyn_into::<js_sys::Uint8Array>().ok())
+                            .map(|a| a.to_vec());
+                        match rgba {
+                            Some(b) if w > 0 && h > 0 && b.len() == (w * h * 4) as usize => {
+                                TileState::Ready(w, h, b)
+                            }
+                            _ => TileState::Failed,
+                        }
+                    }
+                    Err(_) => TileState::Failed,
+                };
+                inner.borrow_mut().tiles.insert((z, x, y), state);
                 ctx.request_repaint();
             });
         }
@@ -705,9 +935,23 @@ mod native {
 
         pub fn catalog_search(&self, _ctx: &egui::Context, _params_json: String) {}
 
+        pub fn cake_arrivals(&self, _ctx: &egui::Context) {}
+
         pub fn fetch_stations(&self, _ctx: &egui::Context, _params_json: String) {}
 
         pub fn fetch_responses(&self, _ctx: &egui::Context, _params_json: String) {}
+
+        pub fn fetch_map_data(&self, _ctx: &egui::Context) {}
+
+        pub fn request_tile(&self, _ctx: &egui::Context, _z: u8, _x: u32, _y: u32, _url: String) {}
+
+        pub fn open_files(&self, _ctx: &egui::Context) {
+            self.inner.borrow_mut().status = Status::Error(MSG.into());
+        }
+
+        pub fn save_markers(&self, _ctx: &egui::Context, _markers_json: String) {}
+
+        pub fn load_markers(&self, _ctx: &egui::Context) {}
 
         pub fn ensure_view(&self, _ctx: &egui::Context, _params: ViewParams) {}
     }

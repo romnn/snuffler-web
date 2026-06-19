@@ -178,10 +178,107 @@ export async function fetchResponses(paramsJson) {
   return bridge.load_responses(text); // -> JSON string {text, markers}
 }
 
+export async function mapData() {
+  await boot();
+  return bridge.map_data(); // -> JSON string {stations, events}
+}
+
+// The ak135 model ships as a build asset; stage it into the Pyodide FS once so
+// pyrocko.cake.load_model() can read it by path (the minimal wheel has no data
+// dir). bridge.py reads it from EARTHMODEL_PATH ("/earthmodel.nd").
+let earthModelStaged = false;
+async function ensureEarthModel() {
+  if (earthModelStaged) return;
+  const url = new URL("ak135-f-continental.m.nd", document.baseURI).href;
+  const text = await (await fetchOk(url)).text();
+  py.FS.writeFile("/earthmodel.nd", text);
+  earthModelStaged = true;
+}
+
+export async function cakeArrivals() {
+  await boot();
+  await ensureEarthModel();
+  return bridge.cake_arrivals("{}"); // -> JSON string {text, markers}
+}
+
+// Show a browser file picker; resolves [] if the dialog is cancelled.
+function pickFiles(multiple) {
+  return new Promise((resolve) => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.multiple = !!multiple;
+    inp.style.display = "none";
+    let done = false;
+    const finish = (files) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("focus", onFocus);
+      inp.remove();
+      resolve(files);
+    };
+    inp.addEventListener("change", () => finish(inp.files ? Array.from(inp.files) : []), { once: true });
+    // No reliable "cancel" event: when the window regains focus with no files, give up.
+    const onFocus = () => setTimeout(() => {
+      if (!done && (!inp.files || inp.files.length === 0)) finish([]);
+    }, 500);
+    window.addEventListener("focus", onFocus);
+    document.body.appendChild(inp);
+    inp.click();
+  });
+}
+
+export async function openFiles() {
+  await boot();
+  const files = await pickFiles(true);
+  if (files.length === 0) return ""; // cancelled
+  let scene = "";
+  for (const f of files) {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    scene = bridge.load_bytes(f.name, buf, "detect", true); // append to the pile
+  }
+  return scene;
+}
+
+export async function saveMarkers(markersJson) {
+  await boot();
+  const text = bridge.markers_to_text(markersJson);
+  const blob = new Blob([text], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "markers.txt";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  return "";
+}
+
+export async function loadMarkers() {
+  await boot();
+  const files = await pickFiles(false);
+  if (files.length === 0) return "";
+  const text = await files[0].text();
+  return bridge.markers_from_text(text); // -> JSON array
+}
+
+// Fetch a map tile and decode it to RGBA in the browser (CORS-clean providers),
+// so Rust can upload it as a texture without an image decoder.
+export async function fetchTile(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`tile ${url}: ${r.status}`);
+  const bmp = await createImageBitmap(await r.blob());
+  const cv = new OffscreenCanvas(bmp.width, bmp.height);
+  const cx = cv.getContext("2d");
+  cx.drawImage(bmp, 0, 0);
+  const img = cx.getImageData(0, 0, bmp.width, bmp.height);
+  if (bmp.close) bmp.close();
+  return { w: img.width, h: img.height, rgba: new Uint8Array(img.data.buffer) };
+}
+
 // Debug hook so the bridge can be exercised from the devtools/tests.
 if (typeof window !== "undefined") {
   window.snuffler = {
     makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling,
     downloadWaveforms, catalogSearch, fetchStations, fetchResponses,
+    mapData, fetchTile, openFiles, saveMarkers, loadMarkers, cakeArrivals,
   };
 }

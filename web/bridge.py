@@ -80,6 +80,8 @@ _STATIONS: Dict[Tuple[str, str], Tuple[float, float, float]] = {}
 _ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
 # Instrument responses (a parsed FDSNStationXML), used by Deconvolution.
 _STATIONXML: Any = None
+# Catalog events (lat, lon, depth_m, mag, time) for the Map overlay.
+_EVENTS: List[Dict[str, float]] = []
 
 # CORS-enabled FDSN web services (verified to allow cross-origin fetch).
 _FDSN = {
@@ -158,9 +160,10 @@ def make_example() -> str:
     return _scene_json()
 
 
-def load_bytes(name: str, data: Any, fmt: str) -> str:
+def load_bytes(name: str, data: Any, fmt: str, append: bool = False) -> str:
     """Write the given file bytes into Pyodide's virtual FS and load them with
-    pyrocko's `io.load`. `data` arrives as a JS Uint8Array."""
+    pyrocko's `io.load`. `data` arrives as a JS Uint8Array. With `append`, add to
+    the current pile instead of replacing it (for multi-file open)."""
     raw = bytes(data.to_py()) if hasattr(data, "to_py") else bytes(data)
     os.makedirs("/data", exist_ok=True)
     path = "/data/" + (name or "data")
@@ -169,7 +172,7 @@ def load_bytes(name: str, data: Any, fmt: str) -> str:
     fmt2 = "detect" if fmt in (None, "", "detect") else fmt
     traces = list(pio.load(path, format=fmt2))
     global _TRACES
-    _TRACES = traces
+    _TRACES = (list(_TRACES) + traces) if append else traces
     return _scene_json()
 
 
@@ -259,6 +262,19 @@ _SUBSORT = {
 }
 
 
+def _dist_deg(alat: float, alon: float, blat: float, blon: float) -> float:
+    """Great-circle distance in degrees via pyrocko's pure-Python ``cosdelta``.
+
+    ``orthodrome.distance_accurate50m`` needs ``orthodrome_ext`` (a C extension
+    absent from our minimal wheel), so use the analytic cos-delta form, which is
+    plenty accurate for sorting and cake travel times.
+    """
+    from pyrocko import orthodrome as od
+
+    cd = max(-1.0, min(1.0, float(od.cosdelta(alat, alon, blat, blon))))
+    return math.degrees(math.acos(cd))
+
+
 def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int]:
     """Index order for the traces. Distance/azimuth sorts use station coordinates
     (from a station fetch) + the active event; without them they fall back to name
@@ -280,7 +296,7 @@ def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int
             if st is None:
                 return (1e30, namekey(tr))
             slat, slon, _ele = st
-            dist = float(od.distance_accurate50m(elat, elon, slat, slon))
+            dist = _dist_deg(elat, elon, slat, slon)
             if sort == "distance":
                 return (dist, namekey(tr))
             if sort == "backazimuth":
@@ -685,9 +701,10 @@ def _ftime(s: str) -> float:
 def parse_events(text: str) -> str:
     """Parse FDSN event 'text' format into event markers; set the active event
     (largest magnitude) for distance/azimuth sorting."""
-    global _ACTIVE_EVENT
+    global _ACTIVE_EVENT, _EVENTS
     markers = []
     lines = []
+    _EVENTS = []
     best = None
     for line in text.splitlines():
         line = line.strip()
@@ -709,6 +726,7 @@ def parse_events(text: str) -> str:
             "kind": 0,
             "is_event": True,
         })
+        _EVENTS.append({"lat": lat, "lon": lon, "depth": depth, "mag": mag, "time": t})
         lines.append("M%.1f  %s  %s" % (mag, when, name))
         if best is None or mag > best[0]:
             best = (mag, lat, lon, depth, t)
@@ -796,3 +814,183 @@ def load_responses(xml_text: str) -> str:
         "text": "%d channel response(s) loaded — enable Options ▸ Deconvolution" % nchan,
         "markers": [],
     })
+
+
+def map_data() -> str:
+    """Station + event coordinates for the Map overlay (no network — reads what
+    the FDSN fetches already loaded)."""
+    stations = [
+        {"label": "%s.%s" % (net, sta), "lat": lat, "lon": lon}
+        for (net, sta), (lat, lon, _elev) in _STATIONS.items()
+    ]
+    events = [
+        {"lat": e["lat"], "lon": e["lon"], "mag": e["mag"], "time": e["time"]}
+        for e in _EVENTS
+    ]
+    return json.dumps({"stations": stations, "events": events})
+
+
+# --- Marker file I/O (pyrocko marker format) -------------------------------
+
+
+_marker_mod: Any = None
+
+
+def _marker_module() -> Any:
+    """Load pyrocko's ``marker`` module without running the snuffler package init.
+
+    ``import pyrocko.gui.snuffler.marker`` would first execute
+    ``pyrocko/gui/snuffler/__init__.py``, which eagerly imports the full Qt
+    snuffler application (``pile`` -> ``avl``, PyQt) — none of which exists in our
+    minimal Pyodide wheel. marker.py itself only needs util/plot/model/trace, so
+    install a lightweight stub for the ``snuffler`` package (carrying the real
+    directory on ``__path__``) and import the submodule through it.
+    """
+    global _marker_mod
+    if _marker_mod is None:
+        import importlib
+        import sys
+        import types
+
+        import pyrocko.gui
+
+        pkg_name = "pyrocko.gui.snuffler"
+        existing = sys.modules.get(pkg_name)
+        if existing is None or not getattr(existing, "_snuffler_stub", False):
+            stub = types.ModuleType(pkg_name)
+            stub.__path__ = [  # type: ignore[attr-defined]
+                os.path.join(os.path.dirname(pyrocko.gui.__file__), "snuffler")
+            ]
+            stub.__package__ = pkg_name
+            stub._snuffler_stub = True  # type: ignore[attr-defined]
+            sys.modules[pkg_name] = stub
+        _marker_mod = importlib.import_module(pkg_name + ".marker")
+    return _marker_mod
+
+
+def markers_to_text(markers_json: str) -> str:
+    """Serialize markers to pyrocko's snuffler marker-file format."""
+    pm = _marker_module()
+
+    ms = []
+    for m in json.loads(markers_json):
+        tmin = float(m["tmin"])
+        tmax = float(m.get("tmax", tmin))
+        kind = int(m.get("kind", 0))
+        nslc = m.get("nslc")
+        ids = [tuple(nslc)] if nslc else []
+        phase = m.get("phase")
+        polarity = m.get("polarity")
+        if polarity is not None:
+            polarity = int(polarity)
+        # A polarity is only meaningful on a PhaseMarker, so promote any marker
+        # that carries one even if it has no phase name yet.
+        if phase or polarity is not None:
+            ms.append(pm.PhaseMarker(
+                ids, tmin, tmax, kind, phasename=phase, polarity=polarity))
+        else:
+            ms.append(pm.Marker(ids, tmin, tmax, kind))
+    path = "/tmp/markers_out.txt"
+    pm.save_markers(ms, path)
+    with open(path) as f:
+        return f.read()
+
+
+def markers_from_text(text: str) -> str:
+    """Parse a pyrocko marker file into the JSON the egui side adds."""
+    pm = _marker_module()
+
+    path = "/tmp/markers_in.txt"
+    with open(path, "w") as f:
+        f.write(text)
+    try:
+        ms = pm.load_markers(path)
+    except Exception:
+        return json.dumps([])
+    out = []
+    for mk in ms:
+        ids = mk.get_nslc_ids()
+        nslc = list(ids[0]) if ids else None
+        phase = None
+        polarity = None
+        if isinstance(mk, pm.PhaseMarker):
+            try:
+                phase = mk.get_phasename()
+            except Exception:
+                phase = None
+            try:
+                polarity = mk.get_polarity()
+            except Exception:
+                polarity = None
+        out.append({
+            "t": float(mk.tmin),
+            "tmax": float(mk.tmax),
+            "kind": int(mk.kind or 0),
+            "phase": phase,
+            "polarity": polarity,
+            "nslc": nslc,
+            "is_event": isinstance(mk, pm.EventMarker),
+        })
+    return json.dumps(out)
+
+
+# Path where bridge.js stages the ak135 earth model (it is shipped as a build
+# asset and written into the Pyodide FS on first use; see cakeArrivals there).
+EARTHMODEL_PATH = "/earthmodel.nd"
+
+
+def cake_arrivals(params_json: str) -> str:
+    """Theoretical P/S arrival times for the active event at each loaded station.
+
+    All travel-time computation is pyrocko's :py:mod:`pyrocko.cake` (pure
+    numpy/scipy ray tracing through the ak135 model) and the geometry is
+    :py:mod:`pyrocko.orthodrome`; this only marshals the result into markers.
+    """
+    if _ACTIVE_EVENT is None:
+        return json.dumps({
+            "text": "No active event. Run a catalog search first "
+                    "(Data ▸ Catalog search).",
+            "markers": [],
+        })
+    if not _STATIONS:
+        return json.dumps({
+            "text": "No station coordinates. Fetch stations first "
+                    "(Data ▸ Download ▸ Fetch stations).",
+            "markers": [],
+        })
+
+    from pyrocko import cake
+
+    elat, elon, edepth, etime = _ACTIVE_EVENT
+    mod = cake.load_model(EARTHMODEL_PATH)
+
+    # Only annotate stations that actually have traces loaded, so the picks line
+    # up with visible tracks.
+    have = {(tr.nslc_id[0], tr.nslc_id[1]) for tr in _TRACES}
+    markers: List[Dict[str, Any]] = []
+    nstations = 0
+    for (net, sta), (slat, slon, _elev) in _STATIONS.items():
+        if have and (net, sta) not in have:
+            continue
+        dist_deg = _dist_deg(elat, elon, slat, slon)
+        nstations += 1
+        for phasename, kind in (("P", 1), ("S", 2)):
+            try:
+                phases = cake.PhaseDef.classic(phasename)
+            except Exception:
+                phases = [cake.PhaseDef(phasename)]
+            rays = mod.arrivals(
+                distances=[dist_deg], phases=phases, zstart=edepth, zstop=0.0)
+            if rays:
+                t = etime + float(rays[0].t)  # earliest arrival of this phase
+                markers.append({
+                    "t": t,
+                    "tmax": t,
+                    "kind": kind,
+                    "phase": phasename,
+                    "nslc": [net, sta, "", "*"],
+                })
+
+    text = "Theoretical arrivals (ak135): %i picks at %i stations." % (
+        len(markers), nstations)
+    return json.dumps({"text": text, "markers": markers})

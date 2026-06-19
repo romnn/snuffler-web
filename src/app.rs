@@ -18,6 +18,7 @@ pub struct App {
     spectrum_key: Option<ViewParams>,
     /// Snuffling-result generation we last applied (markers/text once each).
     last_snuffling_gen: u64,
+    map: crate::view::map::MapState,
 }
 
 fn configure_look(ctx: &egui::Context) {
@@ -51,6 +52,7 @@ impl App {
             wf_cache: WaterfallCache::default(),
             spectrum_key: None,
             last_snuffling_gen: 0,
+            map: crate::view::map::MapState::default(),
         }
     }
 
@@ -83,6 +85,10 @@ impl App {
 
     fn file_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("File", |ui| {
+            if ui.button("Open files…").clicked() {
+                self.bridge.open_files(ctx);
+                ui.close();
+            }
             if ui.button("Synthetic example").clicked() {
                 self.bridge.load_example(ctx);
                 ui.close();
@@ -93,11 +99,21 @@ impl App {
                 ui.close();
             }
             ui.separator();
+            if ui.button("Save markers…").clicked() {
+                self.bridge
+                    .save_markers(ctx, markers_to_json(&self.state.markers));
+                ui.close();
+            }
+            if ui.button("Load markers…").clicked() {
+                self.bridge.load_markers(ctx);
+                ui.close();
+            }
+            ui.separator();
             ui.label("Drag & drop SAC / MiniSEED files to load");
         });
     }
 
-    fn data_menu(&mut self, ui: &mut egui::Ui) {
+    fn data_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("Data", |ui| {
             if ui.button("Download waveforms (FDSN)…").clicked() {
                 self.state.show_download = true;
@@ -105,6 +121,22 @@ impl App {
             }
             if ui.button("Catalog search (events)…").clicked() {
                 self.state.show_catalog = true;
+                ui.close();
+            }
+            if ui.button("Map (stations & events)…").clicked() {
+                self.state.show_map = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .button("Add theoretical arrivals (cake)")
+                .on_hover_text(
+                    "Compute P/S travel times (ak135) for the active catalog event \
+                     at the loaded stations and add them as phase markers.",
+                )
+                .clicked()
+            {
+                self.bridge.cake_arrivals(ctx);
                 ui.close();
             }
             ui.separator();
@@ -148,6 +180,7 @@ impl App {
             ui.checkbox(&mut self.state.show_zero_lines, "Show zero lines");
             ui.separator();
             ui.checkbox(&mut self.state.show_controls, "Show main controls");
+            ui.checkbox(&mut self.state.show_marker_editor, "Marker editor");
             if ui.button("Reset view to full extent").clicked() {
                 if let Some(scene) = self.bridge.scene() {
                     self.state.tmin = scene.tmin;
@@ -322,7 +355,7 @@ impl eframe::App for App {
         egui::Panel::top("menu").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 self.file_menu(ui, &ctx);
-                self.data_menu(ui);
+                self.data_menu(ui, &ctx);
                 self.view_menu(ui);
                 self.options_menu(ui);
                 self.scaling_menu(ui);
@@ -532,6 +565,113 @@ impl eframe::App for App {
             self.state.show_catalog = open;
         }
 
+        if self.state.show_map {
+            let mut open = true;
+            egui::Window::new("Map — stations & events")
+                .open(&mut open)
+                .default_size([640.0, 480.0])
+                .show(&ctx, |ui| {
+                    crate::view::map::show(ui, &mut self.map, &self.bridge, &ctx)
+                });
+            self.state.show_map = open;
+        }
+
+        if self.state.show_marker_editor {
+            let mut open = true;
+            let mut center_t: Option<f64> = None;
+            egui::Window::new("Markers")
+                .open(&mut open)
+                .default_size([560.0, 320.0])
+                .show(&ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} markers", self.state.markers.len()));
+                        if ui.button("Delete selected").clicked() {
+                            self.state.markers.retain(|m| !m.selected);
+                        }
+                        if ui.button("Clear all").clicked() {
+                            self.state.markers.clear();
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::Grid::new("marker_table")
+                            .striped(true)
+                            .num_columns(7)
+                            .spacing([10.0, 3.0])
+                            .show(ui, |ui| {
+                                ui.strong("");
+                                ui.strong("time (UTC)");
+                                ui.strong("span");
+                                ui.strong("phase");
+                                ui.strong("pol");
+                                ui.strong("channel");
+                                ui.strong("");
+                                ui.end_row();
+                                for m in &mut self.state.markers {
+                                    let col = MARKER_COLORS[(m.kind & 7) as usize];
+                                    let dot =
+                                        egui::RichText::new(if m.is_event { "▲" } else { "●" })
+                                            .color(col);
+                                    if ui.selectable_label(m.selected, dot).clicked() {
+                                        m.selected = !m.selected;
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            m.selected,
+                                            crate::view::timeaxis::format_full(m.tmin),
+                                        )
+                                        .clicked()
+                                    {
+                                        m.selected = !m.selected;
+                                    }
+                                    let span = m.tmax - m.tmin;
+                                    ui.label(if span > 0.0 {
+                                        format!("{span:.3} s")
+                                    } else {
+                                        "—".to_string()
+                                    });
+                                    ui.label(m.phase.clone().unwrap_or_default());
+                                    let pol = match m.polarity {
+                                        Some(1) => "+",
+                                        Some(-1) => "-",
+                                        Some(0) => "0",
+                                        _ => "—",
+                                    };
+                                    if ui
+                                        .small_button(pol)
+                                        .on_hover_text("cycle polarity (+up / -down / 0 / none)")
+                                        .clicked()
+                                    {
+                                        m.polarity = match m.polarity {
+                                            None => Some(1),
+                                            Some(1) => Some(-1),
+                                            Some(-1) => Some(0),
+                                            _ => None,
+                                        };
+                                    }
+                                    ui.label(
+                                        m.nslc
+                                            .as_ref()
+                                            .map(|(n, s, l, c)| format!("{n}.{s}.{l}.{c}"))
+                                            .unwrap_or_default(),
+                                    );
+                                    if ui.small_button("⌖").on_hover_text("center view").clicked()
+                                    {
+                                        center_t = Some(0.5 * (m.tmin + m.tmax));
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                });
+            if let Some(t) = center_t {
+                let w = (self.state.tmax - self.state.tmin).max(1.0);
+                self.state.tmin = t - w / 2.0;
+                self.state.tmax = t + w / 2.0;
+            }
+            self.state.show_marker_editor = open;
+        }
+
         // Apply a snuffling result (markers + text) exactly once per run.
         let sg = self.bridge.snuffling_gen();
         if sg != self.last_snuffling_gen {
@@ -540,9 +680,11 @@ impl eframe::App for App {
                 let (mut ev_min, mut ev_max, mut any_ev) =
                     (f64::INFINITY, f64::NEG_INFINITY, false);
                 for m in &r.markers {
-                    let mut mk = Marker::new(m.t, m.t, m.kind);
+                    let mut mk = Marker::new(m.t, m.tmax.unwrap_or(m.t), m.kind);
                     mk.phase = m.phase.clone();
                     mk.is_event = m.is_event;
+                    mk.nslc = m.nslc.clone();
+                    mk.polarity = m.polarity;
                     if m.is_event {
                         any_ev = true;
                         ev_min = ev_min.min(m.t);
@@ -585,6 +727,19 @@ impl eframe::App for App {
     }
 }
 
+fn markers_to_json(markers: &[Marker]) -> String {
+    let arr: Vec<_> = markers
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "tmin": m.tmin, "tmax": m.tmax, "kind": m.kind,
+                "phase": m.phase, "nslc": m.nslc, "polarity": m.polarity,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(arr).to_string()
+}
+
 fn help_text(ui: &mut egui::Ui) {
     egui::Grid::new("help_grid")
         .num_columns(2)
@@ -599,8 +754,17 @@ fn help_text(ui: &mut egui::Ui) {
                 ("Double-click", "place a point marker"),
                 ("0 – 7", "set marker colour"),
                 ("F1 – F10", "assign a phase name"),
+                ("Up / Down", "phase polarity up / down (Shift = undecided)"),
+                ("Left / Right", "nudge selected marker (Shift = ×10)"),
                 ("Backspace", "delete selected marker"),
-                ("Space / B", "step to next / previous marker"),
+                ("Space / B", "scroll time forward / back"),
+                ("n / p", "select next / previous marker"),
+                ("N / P", "select next / previous event"),
+                ("Tab / Shift+Tab", "cycle marker selection"),
+                ("a / A", "select markers in view / all"),
+                ("d / Esc", "deselect all"),
+                ("g / G", "go to selection / zoom tight"),
+                ("m / c", "toggle marker editor / controls"),
             ] {
                 ui.strong(k);
                 ui.label(v);

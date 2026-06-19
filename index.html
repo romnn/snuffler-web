@@ -16,6 +16,10 @@
     <link data-trunk rel="copy-file" href="web/bridge.py" />
     <!-- demo data from the on-demand pyrocko checkout (see mise run fetch-pyrocko) -->
     <link data-trunk rel="copy-file" href="sources/pyrocko/doc/source/static/test.mseed" />
+    <!-- ak135 earth model for cake theoretical arrivals (loaded by path, so no
+         pyrocko data dir is needed in the minimal wheel) -->
+    <link data-trunk rel="copy-file"
+        href="sources/pyrocko/src/data/earthmodels/ak135-f-continental.m.nd" />
 
     <style>
         :root {

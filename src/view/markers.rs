@@ -34,6 +34,10 @@ pub struct Marker {
     pub nslc: Option<(String, String, String, String)>,
     /// Named seismic phase (e.g. "P", "S"); `None` for a plain marker.
     pub phase: Option<String>,
+    /// First-motion polarity of a phase pick: `Some(1)` up, `Some(-1)` down,
+    /// `Some(0)` explicitly undecided, `None` unset (mirrors pyrocko's
+    /// `PhaseMarker.set_polarity`, which only accepts 1/-1/0/None).
+    pub polarity: Option<i8>,
     /// Event markers are drawn as a triangle on the time axis.
     pub is_event: bool,
     pub selected: bool,
@@ -47,6 +51,7 @@ impl Marker {
             kind,
             nslc: None,
             phase: None,
+            polarity: None,
             is_event: false,
             selected: false,
         }
@@ -59,5 +64,17 @@ impl Marker {
     /// True if this marker spans a time range (vs. a single instant).
     pub fn is_span(&self) -> bool {
         self.tmax > self.tmin
+    }
+
+    /// First-motion glyph using pyrocko's ASCII symbol set (`+` up, `-` down,
+    /// `0` undecided): the Unicode arrows snuffler prefers aren't in egui's
+    /// default font, and `+`/`-` is standard first-motion notation anyway.
+    pub fn polarity_symbol(&self) -> &'static str {
+        match self.polarity {
+            Some(1) => "+",
+            Some(-1) => "-",
+            Some(0) => "0",
+            _ => "",
+        }
     }
 }

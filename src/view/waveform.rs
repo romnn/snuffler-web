@@ -441,7 +441,9 @@ pub fn show(
         painter.galley(label_pos, galley, pal.axis_text);
     }
 
-    draw_markers(&painter, state, track_area, view_tmin, &x_of);
+    draw_markers(
+        &painter, state, track_area, visible, row_h, view_tmin, &x_of,
+    );
     if let Some((a, b)) = state.pending_span {
         let r = Rect::from_min_max(
             egui::pos2(x_of(a - view_tmin), track_area.top()),
@@ -465,10 +467,19 @@ pub fn show(
     handle_interaction(ui, &resp, state, view_tmin, window, rect, total, &t_at_x);
 }
 
+/// Does an NSLC-scoped marker apply to this track? Empty or `*` fields are
+/// wildcards (snuffler's per-channel marker matching).
+fn marker_matches_track(nslc: &(String, String, String, String), t: &ViewTrack) -> bool {
+    let f = |pat: &str, val: &str| pat.is_empty() || pat == "*" || pat == val;
+    f(&nslc.0, &t.net) && f(&nslc.1, &t.sta) && f(&nslc.2, &t.loc) && f(&nslc.3, &t.cha)
+}
+
 fn draw_markers(
     painter: &egui::Painter,
     state: &AppState,
     area: Rect,
+    visible: &[ViewTrack],
+    row_h: f32,
     view_tmin: f64,
     x_of: &impl Fn(f64) -> f32,
 ) {
@@ -478,40 +489,62 @@ fn draw_markers(
         if (x0 < area.left() - 2.0 || x0 > area.right() + 2.0) && !m.is_span() {
             continue;
         }
-        if m.is_span() {
-            let x1 = x_of(m.tmax - view_tmin);
-            let r = Rect::from_min_max(egui::pos2(x0, area.top()), egui::pos2(x1, area.bottom()));
-            painter.rect_filled(
-                r,
-                0.0,
-                Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 30),
-            );
-        }
+        // Vertical extent: full canvas for channel-agnostic markers; otherwise
+        // one segment per matching track row, so per-station picks form a moveout.
+        let spans: Vec<(f32, f32)> = match &m.nslc {
+            None => vec![(area.top(), area.bottom())],
+            Some(nslc) => visible
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| marker_matches_track(nslc, t))
+                .map(|(k, _)| {
+                    let top = area.top() + k as f32 * row_h;
+                    (top, top + row_h)
+                })
+                .collect(),
+        };
+        let label = match (&m.phase, m.polarity_symbol()) {
+            (Some(ph), sym) if !sym.is_empty() => format!("{ph} {sym}"),
+            (Some(ph), _) => ph.clone(),
+            (None, sym) if !sym.is_empty() => sym.to_string(),
+            (None, _) => String::new(),
+        };
         let w = if m.selected { 2.5 } else { 1.0 };
-        painter.line_segment(
-            [egui::pos2(x0, area.top()), egui::pos2(x0, area.bottom())],
-            Stroke::new(w, col),
-        );
-        if m.is_event {
-            let s = 6.0;
-            painter.add(Shape::convex_polygon(
-                vec![
-                    egui::pos2(x0, area.top() + s),
-                    egui::pos2(x0 - s, area.top()),
-                    egui::pos2(x0 + s, area.top()),
-                ],
-                col,
-                Stroke::NONE,
-            ));
-        }
-        if let Some(ph) = &m.phase {
-            painter.text(
-                egui::pos2(x0 + 3.0, area.top() + 2.0),
-                Align2::LEFT_TOP,
-                ph,
-                FontId::proportional(LABEL_PT),
-                col,
+        for (ytop, ybot) in spans {
+            if m.is_span() {
+                let x1 = x_of(m.tmax - view_tmin);
+                let r = Rect::from_min_max(egui::pos2(x0, ytop), egui::pos2(x1, ybot));
+                painter.rect_filled(
+                    r,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 30),
+                );
+            }
+            painter.line_segment(
+                [egui::pos2(x0, ytop), egui::pos2(x0, ybot)],
+                Stroke::new(w, col),
             );
+            if m.is_event {
+                let s = 6.0;
+                painter.add(Shape::convex_polygon(
+                    vec![
+                        egui::pos2(x0, ytop + s),
+                        egui::pos2(x0 - s, ytop),
+                        egui::pos2(x0 + s, ytop),
+                    ],
+                    col,
+                    Stroke::NONE,
+                ));
+            }
+            if !label.is_empty() {
+                painter.text(
+                    egui::pos2(x0 + 3.0, ytop + 2.0),
+                    Align2::LEFT_TOP,
+                    &label,
+                    FontId::proportional(LABEL_PT),
+                    col,
+                );
+            }
         }
     }
 }
@@ -603,8 +636,14 @@ fn zoom_time(state: &mut AppState, pivot: f64, factor: f64) {
 }
 
 fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
+    // Don't fire single-key shortcuts while a text field (FDSN forms, command
+    // line) has the keyboard — otherwise typing "n" would jump markers.
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
     ui.input(|i| {
         let win = (state.tmax - state.tmin).max(1e-9);
+        let shift = i.modifiers.shift;
         if i.key_pressed(Key::Space) {
             state.tmin += win * 0.8;
             state.tmax += win * 0.8;
@@ -628,6 +667,67 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
         }
         if i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete) {
             state.markers.retain(|m| !m.selected);
+        }
+
+        // Selection navigation (snuffler keyPressEvent, pile_viewer.py:2258-2368).
+        if i.key_pressed(Key::Tab) {
+            cycle_selection(state, !shift);
+        }
+        if i.key_pressed(Key::N) {
+            select_relative(state, true, shift); // Shift+N: events only
+        }
+        if i.key_pressed(Key::P) {
+            select_relative(state, false, shift); // Shift+P: events only
+        }
+        if i.key_pressed(Key::A) {
+            if shift {
+                for m in &mut state.markers {
+                    m.selected = true;
+                }
+            } else {
+                for m in &mut state.markers {
+                    m.selected = m.tmin <= state.tmax && m.tmax >= state.tmin; // overlaps view
+                }
+            }
+        }
+        if i.key_pressed(Key::D) || i.key_pressed(Key::Escape) {
+            for m in &mut state.markers {
+                m.selected = false;
+            }
+        }
+        if i.key_pressed(Key::G) {
+            go_to_selection(state, shift); // Shift+G: tight
+        }
+        if i.key_pressed(Key::M) {
+            state.show_marker_editor = !state.show_marker_editor;
+        }
+        if i.key_pressed(Key::C) {
+            state.show_controls = !state.show_controls;
+        }
+
+        // First-motion polarity on selected phase picks (pile_viewer.py:2233-2251).
+        if i.key_pressed(Key::ArrowUp) {
+            set_polarity_selected(state, if shift { Some(0) } else { Some(1) });
+        }
+        if i.key_pressed(Key::ArrowDown) {
+            set_polarity_selected(state, if shift { Some(0) } else { Some(-1) });
+        }
+
+        // Nudge selected picks (pile_viewer.py:2484-2491); Shift = ×10.
+        if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowRight) {
+            let dir = if i.key_pressed(Key::ArrowLeft) {
+                -1.0
+            } else {
+                1.0
+            };
+            let amount = if shift { 10.0 } else { 1.0 };
+            let dt = dir * amount * win * 0.002;
+            for m in &mut state.markers {
+                if m.selected && !m.is_event {
+                    m.tmin += dt;
+                    m.tmax += dt;
+                }
+            }
         }
 
         let num_keys = [
@@ -673,4 +773,133 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
             }
         }
     });
+}
+
+/// Toggle/assign polarity on selected non-event markers, matching snuffler's
+/// Up/Down logic: a repeated press in the same direction clears it again.
+fn set_polarity_selected(state: &mut AppState, target: Option<i8>) {
+    for m in &mut state.markers {
+        if m.selected && !m.is_event {
+            m.polarity = match target {
+                Some(0) => Some(0),
+                t if m.polarity == t => None,
+                t => t,
+            };
+        }
+    }
+}
+
+/// Recenter the view on the selected markers (snuffler's `go_to_selection`).
+/// `tight` zooms to the selected span (±10% margin) instead of keeping the
+/// current window length.
+fn go_to_selection(state: &mut AppState, tight: bool) {
+    let sel: Vec<&Marker> = state.markers.iter().filter(|m| m.selected).collect();
+    if sel.is_empty() {
+        return;
+    }
+    let tmin = sel.iter().map(|m| m.tmin).fold(f64::INFINITY, f64::min);
+    let tmax = sel.iter().map(|m| m.tmax).fold(f64::NEG_INFINITY, f64::max);
+    let win = (state.tmax - state.tmin).max(1e-9);
+    if tight && tmax > tmin {
+        let pad = (tmax - tmin) * 0.1;
+        state.tmin = tmin - pad;
+        state.tmax = tmax + pad;
+    } else {
+        let mid = 0.5 * (tmin + tmax);
+        state.tmin = mid - win * 0.5;
+        state.tmax = mid + win * 0.5;
+    }
+}
+
+/// Select the next/previous marker by time and recenter (snuffler's `n`/`p`,
+/// or `N`/`P` to step through event markers only).
+fn select_relative(state: &mut AppState, forward: bool, events_only: bool) {
+    let win = (state.tmax - state.tmin).max(1e-9);
+    let center = 0.5 * (state.tmin + state.tmax);
+    let reference = state
+        .markers
+        .iter()
+        .filter(|m| m.selected)
+        .map(|m| m.tmin)
+        .fold(None, |acc: Option<f64>, t| {
+            Some(match acc {
+                None => t,
+                Some(a) if forward => a.max(t),
+                Some(a) => a.min(t),
+            })
+        })
+        .unwrap_or(center);
+
+    let pick = state
+        .markers
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| !events_only || m.is_event)
+        .filter(|(_, m)| {
+            if forward {
+                m.tmin > reference
+            } else {
+                m.tmin < reference
+            }
+        })
+        .min_by(|(_, a), (_, b)| {
+            let (ka, kb) = if forward {
+                (a.tmin, b.tmin)
+            } else {
+                (-a.tmin, -b.tmin)
+            };
+            ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(idx, m)| (idx, m.tmin));
+
+    if let Some((idx, t)) = pick {
+        for m in &mut state.markers {
+            m.selected = false;
+        }
+        state.markers[idx].selected = true;
+        state.tmin = t - win * 0.5;
+        state.tmax = t + win * 0.5;
+    }
+}
+
+/// Tab/Shift+Tab cycle through markers in time order, selecting one at a time
+/// and recentering when it falls outside the view (snuffler's Tab/Backtab).
+fn cycle_selection(state: &mut AppState, forward: bool) {
+    if state.markers.is_empty() {
+        return;
+    }
+    let mut order: Vec<usize> = (0..state.markers.len()).collect();
+    order.sort_by(|&a, &b| {
+        state.markers[a]
+            .tmin
+            .partial_cmp(&state.markers[b].tmin)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if !forward {
+        order.reverse();
+    }
+    let last_selected_pos = order
+        .iter()
+        .enumerate()
+        .filter(|(_, &idx)| state.markers[idx].selected)
+        .map(|(pos, _)| pos)
+        .max();
+    let next_pos = match last_selected_pos {
+        Some(p) => p + 1,
+        None => 0,
+    };
+    if next_pos >= order.len() {
+        return;
+    }
+    let idx = order[next_pos];
+    for m in &mut state.markers {
+        m.selected = false;
+    }
+    state.markers[idx].selected = true;
+    let t = state.markers[idx].tmin;
+    if !(state.tmin < t && t < state.tmax) {
+        let win = (state.tmax - state.tmin).max(1e-9);
+        state.tmin = t - win * 0.5;
+        state.tmax = t + win * 0.5;
+    }
 }

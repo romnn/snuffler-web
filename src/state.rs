@@ -331,6 +331,8 @@ pub struct AppState {
     // --- FDSN network forms (browser fetch) ---
     pub show_download: bool,
     pub show_catalog: bool,
+    pub show_map: bool,
+    pub show_marker_editor: bool,
     pub dl_datacenter: String,
     pub dl_net: String,
     pub dl_sta: String,
@@ -398,6 +400,8 @@ impl Default for AppState {
             show_about: false,
             show_download: false,
             show_catalog: false,
+            show_map: false,
+            show_marker_editor: false,
             // Pre-filled with a real example (2023-02-06 Turkey M7.8, GE.WLF).
             dl_datacenter: "geofon".into(),
             dl_net: "GE".into(),
