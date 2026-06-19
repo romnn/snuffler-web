@@ -1,1 +1,17 @@
 [build]
+
+# wasm-opt runs as a post-build hook rather than Trunk's built-in pass: the
+# edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory, sign-ext,
+# …) and wasm-opt must be told to accept them with `-all`, which Trunk's built-in
+# invocation does not pass. binaryen is pinned via mise
+# (github:WebAssembly/binaryen in mise.toml) for reproducibility, and invoked
+# through `mise exec` because the emsdk-provided wasm-opt on PATH is far too old.
+# `-Oz` optimizes the wasm for size (download size matters more than CPU here —
+# all heavy computation runs in Pyodide).
+[[hooks]]
+stage = "post_build"
+command = "bash"
+command_arguments = [
+    "-c",
+    "set -eu; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; for f in \"$d\"/*_bg.wasm; do [ -f \"$f\" ] || continue; mise exec 'github:WebAssembly/binaryen' -- wasm-opt -Oz -all -o \"$f\" \"$f\"; done; done; exit 0",
+]

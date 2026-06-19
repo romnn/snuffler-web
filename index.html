@@ -6,8 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>snuffler-web — seismic waveform inspector</title>
 
-    <!-- the egui/eframe wasm binary -->
-    <link data-trunk rel="rust" data-wasm-opt="2" />
+    <!-- the egui/eframe wasm binary. Trunk's built-in wasm-opt is off because it
+         can't pass `-all` (needed for the post-MVP wasm features rustc emits);
+         wasm-opt runs instead as a Trunk post-build hook with a mise-pinned
+         binaryen (see Trunk.toml). -->
+    <link data-trunk rel="rust" data-wasm-opt="0" />
     <base data-trunk-public-url />
     <link data-trunk rel="icon" href="assets/icon-256.png" />
 

@@ -21,6 +21,10 @@ node = "24"
 bun = "1.3.14"            # runs the headless wheel smoke test (pybuild/smoke-test.mjs)
 uv = "0.11.21"           # creates the .venv-pyodide that holds pyodide-build
 "ubi:trunk-rs/trunk" = "0.21.14"
+# binaryen/wasm-opt for the trunk post-build hook (see Trunk.toml). The
+# emsdk-bundled wasm-opt is too old for the post-MVP wasm features modern rustc
+# emits, so we pin a recent binaryen here for a reproducible build.
+"github:WebAssembly/binaryen" = "version_130"
 
 [env]
 PYODIDE_VERSION = "0.27.2"
