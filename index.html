@@ -77,6 +77,11 @@
             justify-content: center;
             background: var(--bg);
             transition: opacity 0.4s ease;
+            pointer-events: none;
+        }
+
+        #loading.done {
+            opacity: 0;
         }
 
         #loading .card {
@@ -161,7 +166,11 @@
             if (stage && label) stage.textContent = label;
             if (f >= 1) {
                 const el = document.getElementById("loading");
-                if (el) { el.style.opacity = "0"; setTimeout(() => el.remove(), 450); }
+                if (el) {
+                    el.classList.add("done");
+                    el.setAttribute("aria-hidden", "true");
+                    setTimeout(() => el.remove(), 450);
+                }
             }
         };
     </script>
