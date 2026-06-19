@@ -1,0 +1,3 @@
+# numpy's np.arange is not a misspelling of "arrange".
+[default.extend-words]
+arange = "arange"

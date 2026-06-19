@@ -1,48 +1,60 @@
-name: Github Pages
+name: GitHub Pages
 
-# By default, runs if you push to main. keeps your deployed app in sync with main branch.
+# Build the full web app (Rust/egui wasm + the pyrocko Pyodide wheel) and deploy
+# it to GitHub Pages. Set the repo's Pages source to "GitHub Actions" for this
+# to publish.
 on:
   push:
-    branches:
-      - main
-# to only run when you do a new github release, comment out above part and uncomment the below trigger.
-# on:
-#   release:
-#     types:
-#       - published
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write # for committing to gh-pages branch.
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  build-github-pages:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2 # repo checkout
-      - uses: actions-rs/toolchain@v1 # get rust toolchain for wasm
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: System deps (native egui backend, used by the wheel build env)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      # Provision the pinned toolchain (python, emscripten, node, bun, uv, trunk).
+      - uses: jdx/mise-action@v2
+
+      # Fetches pyrocko at the pinned commit, builds the cross-compiled wheel
+      # into dist-py/, which index.html copies into the served site.
+      - name: Build the pyrocko Pyodide wheel
+        run: |
+          mise run setup
+          mise run build-wheel
+
+      # Project pages live under /<repo>/, so the asset URLs must be prefixed.
+      - name: Trunk build (release)
+        run: mise exec -- trunk build --release --public-url "/${{ github.event.repository.name }}/"
+
+      - uses: actions/upload-pages-artifact@v3
         with:
-          profile: minimal
-          toolchain: stable
-          target: wasm32-unknown-unknown
-          override: true
-      - name: Rust Cache # cache the rust build artefacts
-        uses: Swatinem/rust-cache@v1
-      - name: Download and install Trunk binary
-        run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
-      - name: Build # build
-        # Environment $public_url resolves to the github project page.
-        # If using a user/organization page, remove the `${{ github.event.repository.name }}` part.
-        # using --public-url something will allow trunk to modify all the href paths like from favicon.ico to repo_name/favicon.ico .
-        # this is necessary for github pages where the site is deployed to username.github.io/repo_name and all files must be requested
-        # relatively as eframe_template/favicon.ico. if we skip public-url option, the href paths will instead request username.github.io/favicon.ico which
-        # will obviously return error 404 not found.
-        run: ./trunk build --release --public-url $public_url
-        env:
-          public_url: "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
-      - name: Deploy
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          folder: dist
-          # this option will not maintain any history of your previous pages deployment
-          # set to false if you want all page build to be committed to your gh-pages branch history
-          single-commit: true
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
