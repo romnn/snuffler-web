@@ -12,6 +12,20 @@ We give snuffler a new outfit without touching its brain.
 > pan/zoom, markers, an **amplitude-spectrum snuffling**, **light/dark/system
 > themes**, and a progress-bar loading screen.
 
+## Two frontends
+
+There are two independent ways to run snuffler in the browser; they coexist with
+separate commands and artifacts:
+
+- **egui — client-side (default).** A Rust/egui UI compiled to wasm that drives real
+  pyrocko via Pyodide, running **entirely in the browser, no server**. This is what
+  the rest of this README covers (`mise run serve`).
+- **Original Qt — server-streamed (optional).** The *real, unmodified* PyQt5
+  snuffler, rendered headless and streamed to the browser over noVNC — 100%
+  feature-complete, but runs **server-side** (Docker): `mise run qt-build` /
+  `qt-serve`, see [`qt/`](qt/). Qt-for-Python has no WebAssembly build, so this one
+  can't be client-side — see [`plan/qt-frontend-feasibility.md`](plan/qt-frontend-feasibility.md).
+
 ## Architecture
 
 ```

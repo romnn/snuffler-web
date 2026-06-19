@@ -53,3 +53,14 @@ run = "trunk serve"
 description = "Headless check: install the wheel in real Pyodide, import pyrocko, load MiniSEED"
 depends = ["build-wheel"]
 run = "bun install && bun pybuild/smoke-test.mjs"
+
+# --- Qt frontend track: the ORIGINAL PyQt5 snuffler, streamed to the browser ---
+# Fully independent of the egui frontend (own Docker image + port). Needs Docker.
+# See qt/README.md and plan/qt-frontend-feasibility.md.
+[tasks.qt-build]
+description = "Build the snuffler-qt Docker image (original PyQt5 snuffler + noVNC)"
+run = "docker build -t snuffler-qt qt"
+
+[tasks.qt-serve]
+description = "Run snuffler-qt -> open http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote"
+run = "docker run --rm --name snuffler-qt -p 6080:8080 snuffler-qt"
