@@ -74,6 +74,7 @@ impl App {
             bandpass_lphp: s.bandpass_lphp,
             distances_3d: s.distances_3d,
             scaling_base: s.scaling_base.as_str().to_string(),
+            scaling_group: s.scaling_group.as_str().to_string(),
             wf_abs: s.wf_abs,
             wf_integrate: s.wf_integrate,
             wf_color_scale: s.wf_color_scale.as_str().to_string(),

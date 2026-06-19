@@ -17,6 +17,15 @@ pub enum ScalingGroup {
 }
 
 impl ScalingGroup {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScalingGroup::Individual => "individual",
+            ScalingGroup::Common => "common",
+            ScalingGroup::PerStation => "per_station",
+            ScalingGroup::PerStationLocation => "per_station_location",
+            ScalingGroup::PerComponent => "per_component",
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             ScalingGroup::Individual => "Individual",
@@ -348,7 +357,8 @@ impl Default for AppState {
             visible_length: VisibleLength::Short,
             show_boxes: true,
             clip_traces: true,
-            color_traces: false,
+            // snuffler users expect colour-coded traces; default on.
+            color_traces: true,
             antialiasing: false,
             show_scale_ranges: false,
             show_scale_axes: false,

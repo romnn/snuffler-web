@@ -7,10 +7,8 @@ use egui::{
     TextureOptions,
 };
 
-use std::collections::HashMap;
-
 use crate::bridge::{ViewData, ViewTrack};
-use crate::state::{AppState, Colormap, ScalingGroup, Subsort, ViewMode};
+use crate::state::{AppState, Colormap, Subsort, ViewMode};
 use crate::view::markers::{Marker, PHASE_KEYS};
 use crate::view::timeaxis;
 
@@ -220,22 +218,9 @@ const INFERNO: [[f32; 3]; 9] = [
     [252., 255., 164.],
 ];
 
-fn track_half(t: &ViewTrack) -> f32 {
-    (t.ymax - t.ymean).max(t.ymean - t.ymin).max(1e-12)
-}
-
-/// Grouping key for shared amplitude scaling (snuffler's Scaling grouping).
-fn group_key(t: &ViewTrack, g: ScalingGroup) -> String {
-    match g {
-        ScalingGroup::Individual => t.label.clone(),
-        ScalingGroup::Common => String::new(),
-        ScalingGroup::PerStation => format!("{}.{}", t.net, t.sta),
-        ScalingGroup::PerStationLocation => format!("{}.{}.{}", t.net, t.sta, t.loc),
-        ScalingGroup::PerComponent => t.cha.clone(),
-    }
-}
-
-/// Colour a trace by the NSLC element the current subsort colours by.
+/// Colour a trace by the NSLC element the current subsort colours by. Falls back
+/// to the channel when that element is empty (e.g. blank location codes), so the
+/// default colouring stays varied like snuffler's.
 fn trace_color(t: &ViewTrack, ss: Subsort) -> Color32 {
     let key = match ss.color_index() {
         0 => &t.net,
@@ -243,6 +228,7 @@ fn trace_color(t: &ViewTrack, ss: Subsort) -> Color32 {
         2 => &t.loc,
         _ => &t.cha,
     };
+    let key = if key.is_empty() { &t.cha } else { key };
     const PALETTE: [(u8, u8, u8); 7] = [
         (0xCC, 0x4A, 0x4A),
         (0x3A, 0x86, 0xC8),
@@ -313,16 +299,6 @@ pub fn show(
     let off = state.track_offset;
     let visible: &[ViewTrack] = &meta.tracks[off..(off + n_shown).min(total)];
     let row_h = track_area.height() / n_shown.max(1) as f32;
-
-    // Per-track amplitude half-range, grouped per the Scaling menu selection.
-    let mut group_half: HashMap<String, f32> = HashMap::new();
-    for t in visible {
-        let h = track_half(t);
-        group_half
-            .entry(group_key(t, state.scaling_group))
-            .and_modify(|e| *e = e.max(h))
-            .or_insert(h);
-    }
 
     // time grid + axis labels
     let tinc = timeaxis::nice_tinc(window, (rect.width() / 90.0).max(2.0) as f64);
@@ -395,10 +371,8 @@ pub fn show(
                 );
             }
         } else {
-            let half = group_half
-                .get(&group_key(t, state.scaling_group))
-                .copied()
-                .unwrap_or_else(|| track_half(t));
+            // Display scale (units→pixels) comes entirely from pyrocko (yscale).
+            let half = t.yscale.max(1e-12);
             let amp = row_h * 0.45 * state.gain / half;
             // "Clip traces" keeps each trace inside its own box; off lets it spill.
             let (cl_top, cl_bot) = if state.clip_traces {

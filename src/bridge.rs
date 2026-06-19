@@ -65,6 +65,10 @@ pub struct ViewParams {
     pub distances_3d: bool,
     /// Amplitude-range statistic: "minmax" | "robust" | "mean2" | "mean4".
     pub scaling_base: String,
+    /// Amplitude grouping: "individual" | "common" | "per_station" |
+    /// "per_station_location" | "per_component" (pyrocko derives the per-track
+    /// display scale from this).
+    pub scaling_group: String,
     /// Waterfall: rectify (abs) before the spectrogram.
     pub wf_abs: bool,
     /// Waterfall: integrate (÷ω) before the spectrogram.
@@ -101,6 +105,10 @@ pub struct ViewTrack {
     pub ymin: f32,
     pub ymax: f32,
     pub ymean: f32,
+    /// Display half-range (units→pixels) computed by pyrocko per the Scaling
+    /// group+base, so the egui side does no scaling math of its own.
+    #[serde(default)]
+    pub yscale: f32,
     /// Spectrogram dims (0 ⇒ this is a plain wiggle). When `nf > 0` the `ys`
     /// slice holds `nf*nt` log-power values, row-major as [time][freq].
     #[serde(default)]
@@ -197,8 +205,6 @@ struct Inner {
     view_in_flight: bool,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native: native::NativeData,
 }
 
 #[derive(Clone)]
@@ -543,272 +549,34 @@ mod web {
     }
 }
 
-// Native target: a self-contained synthetic stub so the UI runs under `cargo run`.
+// Native target: a UI-only shell. ALL data loading and signal processing happen
+// in pyrocko (Python) on the web build. The native build (`cargo run`) exists
+// only to lay out the egui UI and deliberately does NO computation of its own,
+// so there is no second implementation of pyrocko's math to drift from.
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::*;
 
-    pub struct NativeTrace {
-        pub net: String,
-        pub sta: String,
-        pub loc: String,
-        pub cha: String,
-        pub tmin: f64,
-        pub deltat: f64,
-        pub ys: Vec<f32>,
-    }
-
-    impl NativeTrace {
-        fn label(&self) -> String {
-            format!("{}.{}.{}.{}", self.net, self.sta, self.loc, self.cha)
-        }
-        fn meta(&self) -> TraceMeta {
-            TraceMeta {
-                net: self.net.clone(),
-                sta: self.sta.clone(),
-                loc: self.loc.clone(),
-                cha: self.cha.clone(),
-                label: self.label(),
-                tmin: self.tmin,
-                tmax: self.tmin + self.deltat * (self.ys.len().max(1) - 1) as f64,
-                deltat: self.deltat,
-                nsamples: self.ys.len(),
-            }
-        }
-    }
-
-    #[derive(Default)]
-    pub struct NativeData {
-        pub traces: Vec<NativeTrace>,
-    }
-
-    struct Rng(u32);
-    impl Rng {
-        fn next(&mut self) -> f32 {
-            // xorshift32 -> [-1, 1)
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            self.0 = x;
-            (x as f32 / u32::MAX as f32) * 2.0 - 1.0
-        }
-    }
-
-    impl NativeData {
-        pub fn make_example(&mut self) -> SceneMeta {
-            let deltat = 0.02_f64; // 50 Hz
-            let n = 30_000usize; // 600 s
-            let tmin = 1_700_000_000.0_f64;
-            let stations = ["STA01", "STA02", "STA03", "STA04", "STA05", "STA06"];
-            let channels = ["HHZ", "HHN", "HHE"];
-            let mut traces = Vec::new();
-            let mut seed = 0x1234_5678u32;
-            for (si, sta) in stations.iter().enumerate() {
-                let arrival = 180.0 + si as f64 * 18.0; // s, moves out with distance
-                for cha in channels {
-                    seed = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
-                    let mut rng = Rng(seed | 1);
-                    let mut ys = vec![0.0f32; n];
-                    let mut lp = 0.0f32; // smoothed noise
-                    for (i, y) in ys.iter_mut().enumerate() {
-                        let t = i as f64 * deltat;
-                        lp = lp * 0.96 + rng.next() * 0.04;
-                        let mut v = lp * 0.3;
-                        let dt = t - arrival;
-                        if dt > 0.0 {
-                            let env = (-(dt * dt) / (2.0 * 8.0 * 8.0)).exp();
-                            v += (env * (2.0 * std::f64::consts::PI * 1.5 * dt).sin()) as f32;
-                        }
-                        *y = v;
-                    }
-                    traces.push(NativeTrace {
-                        net: "XX".into(),
-                        sta: (*sta).into(),
-                        loc: "".into(),
-                        cha: cha.into(),
-                        tmin,
-                        deltat,
-                        ys,
-                    });
-                }
-            }
-            self.traces = traces;
-            SceneMeta {
-                tmin,
-                tmax: tmin + deltat * (n - 1) as f64,
-                tracks: self.traces.iter().map(|t| t.meta()).collect(),
-            }
-        }
-
-        pub fn compute_view(&self, p: &ViewParams) -> ViewData {
-            let mut order: Vec<usize> = (0..self.traces.len()).collect();
-            order.sort_by(|&a, &b| self.traces[a].label().cmp(&self.traces[b].label()));
-            // When downsampling is off, use a huge bin target so decimate_into
-            // returns the raw samples (bounded to avoid overflow in n <= npx*2).
-            let npx = if p.allow_downsampling {
-                p.npx.max(16) as usize
-            } else {
-                10_000_000
-            };
-            let mut ys: Vec<f32> = Vec::new();
-            let mut tracks = Vec::new();
-            for idx in order {
-                let tr = &self.traces[idx];
-                let i0 = (((p.tmin - tr.tmin) / tr.deltat).floor() as i64).max(0) as usize;
-                let i1 = (((p.tmax - tr.tmin) / tr.deltat).ceil() as i64).max(0) as usize;
-                let i1 = i1.min(tr.ys.len());
-                if i0 >= i1 {
-                    continue;
-                }
-                let mut seg: Vec<f32> = tr.ys[i0..i1].to_vec();
-                if p.demean && !seg.is_empty() {
-                    let mean =
-                        (seg.iter().map(|&v| v as f64).sum::<f64>() / seg.len() as f64) as f32;
-                    seg.iter_mut().for_each(|v| *v -= mean);
-                }
-                apply_filter(&mut seg, tr.deltat, p.highpass, p.lowpass);
-                let offset = ys.len();
-                let (count, dt) = decimate_into(&seg, tr.deltat, npx, &mut ys);
-                let drawn = &ys[offset..offset + count];
-                let (mut mn, mut mx, mut sum) = (f32::INFINITY, f32::NEG_INFINITY, 0.0f64);
-                for &v in drawn {
-                    mn = mn.min(v);
-                    mx = mx.max(v);
-                    sum += v as f64;
-                }
-                tracks.push(ViewTrack {
-                    net: tr.net.clone(),
-                    sta: tr.sta.clone(),
-                    loc: tr.loc.clone(),
-                    cha: tr.cha.clone(),
-                    label: tr.label(),
-                    t0_rel: (tr.tmin + i0 as f64 * tr.deltat) - p.tmin,
-                    dt,
-                    count,
-                    offset,
-                    ymin: if mn.is_finite() { mn } else { 0.0 },
-                    ymax: if mx.is_finite() { mx } else { 0.0 },
-                    ymean: if count > 0 {
-                        (sum / count as f64) as f32
-                    } else {
-                        0.0
-                    },
-                    nf: 0,
-                    nt: 0,
-                    fmax: 0.0,
-                });
-            }
-            ViewData {
-                meta: ViewMeta {
-                    view_tmin: p.tmin,
-                    view_tmax: p.tmax,
-                    tracks,
-                },
-                ys,
-            }
-        }
-    }
-
-    /// Max-abs decimation: collapse to ~`npx` bins, keeping the visually
-    /// dominant sample of each bin. Returns (count, dt_between_drawn_samples).
-    fn decimate_into(seg: &[f32], deltat: f64, npx: usize, out: &mut Vec<f32>) -> (usize, f64) {
-        let n = seg.len();
-        if n <= npx * 2 {
-            out.extend_from_slice(seg);
-            return (n, deltat);
-        }
-        let stride = n.div_ceil(npx);
-        let mut count = 0;
-        let mut i = 0;
-        while i < n {
-            let end = (i + stride).min(n);
-            let mut best = seg[i];
-            for &v in &seg[i..end] {
-                if v.abs() > best.abs() {
-                    best = v;
-                }
-            }
-            out.push(best);
-            count += 1;
-            i = end;
-        }
-        (count, deltat * stride as f64)
-    }
-
-    /// Cheap one-pole IIR high/low pass — only for the native dev stub; the real
-    /// (Butterworth, scipy) filtering happens in pyrocko on the web.
-    fn apply_filter(seg: &mut [f32], deltat: f64, highpass: Option<f64>, lowpass: Option<f64>) {
-        if let Some(fc) = lowpass {
-            let rc = 1.0 / (2.0 * std::f64::consts::PI * fc);
-            let alpha = (deltat / (rc + deltat)) as f32;
-            let mut y = seg.first().copied().unwrap_or(0.0);
-            for x in seg.iter_mut() {
-                y += alpha * (*x - y);
-                *x = y;
-            }
-        }
-        if let Some(fc) = highpass {
-            let rc = 1.0 / (2.0 * std::f64::consts::PI * fc);
-            let a = (rc / (rc + deltat)) as f32;
-            let mut prev_x = seg.first().copied().unwrap_or(0.0);
-            let mut prev_y = 0.0f32;
-            for x in seg.iter_mut() {
-                let cur = *x;
-                prev_y = a * (prev_y + cur - prev_x);
-                prev_x = cur;
-                *x = prev_y;
-            }
-        }
-    }
+    const MSG: &str = "Native build is UI-only — data loading, filtering, and all \
+         processing run in pyrocko (Python) in the browser. Use `mise run serve`.";
 
     impl Bridge {
         pub fn load_example(&self, _ctx: &egui::Context) {
-            let mut i = self.inner.borrow_mut();
-            let scene = i.native.make_example();
-            i.scene = Some(scene);
-            i.scene_gen += 1;
-            i.status = Status::Ready;
-            i.view = None;
-            i.applied = None;
+            self.inner.borrow_mut().status = Status::Error(MSG.into());
         }
 
-        pub fn load_file(&self, _ctx: &egui::Context, name: String, _data: Vec<u8>, _fmt: String) {
-            // No file decoding in the native stub.
-            self.inner.borrow_mut().status =
-                Status::Error(format!("file loading ({name}) only works in the browser"));
+        pub fn load_file(&self, _ctx: &egui::Context, _name: String, _data: Vec<u8>, _fmt: String) {
+            self.inner.borrow_mut().status = Status::Error(MSG.into());
         }
 
-        pub fn load_url(&self, _ctx: &egui::Context, url: String, _fmt: String) {
-            self.inner.borrow_mut().status =
-                Status::Error(format!("loading {url} only works in the browser"));
+        pub fn load_url(&self, _ctx: &egui::Context, _url: String, _fmt: String) {
+            self.inner.borrow_mut().status = Status::Error(MSG.into());
         }
 
-        pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: ViewParams) {
-            // Spectrum snuffling needs numpy's FFT — web only.
-        }
+        pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: ViewParams) {}
 
-        pub fn run_snuffling(&self, _ctx: &egui::Context, name: String, _params: ViewParams) {
-            let mut i = self.inner.borrow_mut();
-            i.snuffling = Some(SnufflingResult {
-                text: format!("snuffling '{name}' runs in the browser only"),
-                markers: Vec::new(),
-            });
-            i.snuffling_gen += 1;
-        }
+        pub fn run_snuffling(&self, _ctx: &egui::Context, _name: String, _params: ViewParams) {}
 
-        pub fn ensure_view(&self, _ctx: &egui::Context, params: ViewParams) {
-            let mut i = self.inner.borrow_mut();
-            if !matches!(i.status, Status::Ready) {
-                return;
-            }
-            if i.applied.as_ref() == Some(&params) {
-                return;
-            }
-            let vd = i.native.compute_view(&params);
-            i.view = Some(vd);
-            i.view_epoch += 1;
-            i.applied = Some(params);
-        }
+        pub fn ensure_view(&self, _ctx: &egui::Context, _params: ViewParams) {}
     }
 }

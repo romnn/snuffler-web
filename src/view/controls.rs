@@ -9,9 +9,13 @@ use crate::state::{
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
 
-    ui.horizontal_wrapped(|ui| {
+    // snuffler's Main Controls: full-width sliders stacked one per row.
+    let track_w = (ui.available_width() - 180.0).max(160.0);
+
+    ui.horizontal(|ui| {
         let mut hp_on = state.highpass.is_some();
         ui.checkbox(&mut hp_on, "HP");
+        ui.spacing_mut().slider_width = track_w;
         ui.add_enabled(
             hp_on,
             egui::Slider::new(&mut state.highpass_hz, 0.001..=1000.0)
@@ -20,11 +24,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
                 .text("Highpass"),
         );
         state.highpass = hp_on.then_some(state.highpass_hz);
+    });
 
-        ui.separator();
-
+    ui.horizontal(|ui| {
         let mut lp_on = state.lowpass.is_some();
         ui.checkbox(&mut lp_on, "LP");
+        ui.spacing_mut().slider_width = track_w;
         ui.add_enabled(
             lp_on,
             egui::Slider::new(&mut state.lowpass_hz, 0.001..=1000.0)
@@ -33,32 +38,40 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
                 .text("Lowpass"),
         );
         state.lowpass = lp_on.then_some(state.lowpass_hz);
+    });
 
-        // snuffler's passband_check: warn when highpass corner >= lowpass corner.
-        if let (Some(hp), Some(lp)) = (state.highpass, state.lowpass) {
-            if hp >= lp {
-                ui.colored_label(egui::Color32::from_rgb(0xCF, 0x8E, 0x00), "⚠ HP ≥ LP");
-            }
+    // snuffler's passband_check: warn when highpass corner >= lowpass corner.
+    if let (Some(hp), Some(lp)) = (state.highpass, state.lowpass) {
+        if hp >= lp {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xCF, 0x8E, 0x00),
+                "⚠ Highpass ≥ Lowpass",
+            );
         }
+    }
 
-        ui.separator();
-
-        // Gain is meaningless for the waterfall, so snuffler hides it there.
-        if !waterfall {
+    // Gain is meaningless for the waterfall, so snuffler hides it there.
+    if !waterfall {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = track_w;
             ui.add(
                 egui::Slider::new(&mut state.gain, 0.001..=1000.0)
                     .logarithmic(true)
                     .text("Gain"),
             );
-            ui.separator();
-        }
+        });
+    }
 
+    ui.horizontal(|ui| {
+        ui.spacing_mut().slider_width = track_w;
         ui.add(
             egui::Slider::new(&mut state.rotate_deg, -180.0..=180.0)
                 .suffix("°")
                 .text("Rotate"),
         );
     });
+
+    ui.separator();
 
     ui.horizontal_wrapped(|ui| {
         egui::ComboBox::from_label("View")

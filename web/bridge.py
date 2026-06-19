@@ -56,6 +56,7 @@ class ViewTrack(TypedDict):
     ymin: float
     ymax: float
     ymean: float
+    yscale: float  # display half-range (units→px), grouped per scaling_group
     nf: int       # spectrogram freq bins (0 ⇒ plain wiggle)
     nt: int       # spectrogram time bins
     fmax: float   # spectrogram max frequency (Hz)
@@ -231,6 +232,19 @@ def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int
     return sorted(range(len(traces)), key=lambda i: key(traces[i]))
 
 
+def _group_key(t: "ViewTrack", group: str):
+    """Grouping key for shared amplitude scaling (snuffler's Scaling grouping)."""
+    if group == "common":
+        return ""
+    if group == "per_station":
+        return (t["net"], t["sta"])
+    if group == "per_station_location":
+        return (t["net"], t["sta"], t["loc"])
+    if group == "per_component":
+        return t["cha"]
+    return t["label"]  # individual
+
+
 def _scale_range(y: np.ndarray, base: str) -> Tuple[float, float]:
     """Amplitude (lo, hi) for a trace per snuffler's scaling base statistic."""
     if len(y) == 0:
@@ -346,6 +360,7 @@ def get_view(params_json: str) -> dict:
     fft = bool(p.get("fft_filtering", False))
     lphp = bool(p.get("bandpass_lphp", True))
     base = p.get("scaling_base", "minmax")
+    scaling_group = p.get("scaling_group", "individual")
     wf_abs = bool(p.get("wf_abs", False))
     wf_integrate = bool(p.get("wf_integrate", False))
     wf_cscale = p.get("wf_color_scale", "log")
@@ -388,7 +403,7 @@ def get_view(params_json: str) -> dict:
                 net=net, sta=sta, loc=loc, cha=cha, label=label,
                 t0_rel=(float(seg.tmin) - tmin) + t0_rel, dt=dt,
                 count=int(nf * nt), offset=int(offset),
-                ymin=vmin, ymax=vmax, ymean=0.0,
+                ymin=vmin, ymax=vmax, ymean=0.0, yscale=1.0,
                 nf=int(nf), nt=int(nt), fmax=fmax,
             ))
             ys_parts.append(flat)
@@ -404,10 +419,24 @@ def get_view(params_json: str) -> dict:
                 count=int(count), offset=int(offset),
                 ymin=lo, ymax=hi,
                 ymean=float(seg.ydata.mean()) if len(seg.ydata) else 0.0,
+                yscale=0.0,
                 nf=0, nt=0, fmax=0.0,
             ))
             ys_parts.append(y.astype("<f4"))
             offset += int(count)
+
+    # Grouped display scale (snuffler's Scaling grouping): per group, the largest
+    # half-range; egui multiplies by this directly (no scaling math on its side).
+    halfs: dict = {}
+    for t in tracks:
+        if t["nf"]:
+            continue
+        h = max(t["ymax"] - t["ymean"], t["ymean"] - t["ymin"], 1e-12)
+        k = _group_key(t, scaling_group)
+        halfs[k] = max(halfs.get(k, 0.0), h)
+    for t in tracks:
+        if not t["nf"]:
+            t["yscale"] = halfs.get(_group_key(t, scaling_group), 1.0)
 
     ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, dtype="<f4")
     meta: ViewMeta = ViewMeta(view_tmin=tmin, view_tmax=tmax, tracks=tracks)
