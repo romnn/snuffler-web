@@ -138,7 +138,12 @@ export async function getSpectrum(paramsJson) {
   return { meta: obj.meta, ys };
 }
 
+export async function runSnuffling(name, paramsJson) {
+  await boot();
+  return bridge.run_snuffling(name, paramsJson); // -> JSON string {text, markers}
+}
+
 // Debug hook so the bridge can be exercised from the devtools/tests.
 if (typeof window !== "undefined") {
-  window.snuffler = { makeExample, loadBytes, loadUrl, getView, getSpectrum };
+  window.snuffler = { makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling };
 }

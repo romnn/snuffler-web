@@ -35,6 +35,7 @@ pub struct TraceMeta {
 }
 
 /// What the UI asks for: a time window, a target pixel width, and processing.
+/// Mirrors snuffler's processing flags so the bridge can reproduce its display.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct ViewParams {
     pub tmin: f64,
@@ -43,12 +44,33 @@ pub struct ViewParams {
     pub highpass: Option<f64>,
     pub lowpass: Option<f64>,
     pub sort: String,
+    pub subsort: String,
     /// Rotation of horizontal components, degrees.
     pub rotate: f64,
     /// Deconvolve instrument response (inert without response metadata).
     pub remove_response: bool,
     /// "wiggle" or "waterfall" (spectrogram).
     pub mode: String,
+    /// Remove the per-trace mean before display (snuffler default on).
+    pub demean: bool,
+    /// Join traces across small gaps before processing.
+    pub degap: bool,
+    /// Allow decimation for fast drawing (off = send raw, capped).
+    pub allow_downsampling: bool,
+    /// Brick-wall FFT filtering instead of Butterworth.
+    pub fft_filtering: bool,
+    /// Apply a bandpass as separate low- + highpass passes.
+    pub bandpass_lphp: bool,
+    /// Use station depth in distance sorting (inert without coords).
+    pub distances_3d: bool,
+    /// Amplitude-range statistic: "minmax" | "robust" | "mean2" | "mean4".
+    pub scaling_base: String,
+    /// Waterfall: rectify (abs) before the spectrogram.
+    pub wf_abs: bool,
+    /// Waterfall: integrate (÷ω) before the spectrogram.
+    pub wf_integrate: bool,
+    /// Waterfall colour mapping: "log" | "sqrt" | "lin".
+    pub wf_color_scale: String,
 }
 
 /// What comes back: per-track decimated polylines + amplitude stats. The actual
@@ -128,6 +150,25 @@ pub struct SpectrumData {
     pub ys: Vec<f32>,
 }
 
+/// A marker produced by a snuffling (e.g. an STA/LTA detection).
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct SnufMarker {
+    pub t: f64,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub kind: u8,
+}
+
+/// Result of running a built-in snuffling: a text report and/or markers to add.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct SnufflingResult {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub markers: Vec<SnufMarker>,
+}
+
 #[derive(Clone, Debug, Default)]
 #[allow(dead_code)] // Loading/Booting are only constructed on the web target
 pub enum Status {
@@ -151,6 +192,8 @@ struct Inner {
     view_epoch: u64,
     spectrum: Option<SpectrumData>,
     spectrum_in_flight: bool,
+    snuffling: Option<SnufflingResult>,
+    snuffling_gen: u64,
     view_in_flight: bool,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
@@ -192,6 +235,15 @@ impl Bridge {
         self.inner.borrow().spectrum.clone()
     }
 
+    /// Generation counter for snuffling results (so the UI applies each once).
+    pub fn snuffling_gen(&self) -> u64 {
+        self.inner.borrow().snuffling_gen
+    }
+
+    pub fn snuffling(&self) -> Option<SnufflingResult> {
+        self.inner.borrow().snuffling.clone()
+    }
+
     /// Borrow the current view (decimated waveforms) for drawing.
     pub fn view(&self) -> Option<Ref<'_, ViewData>> {
         let b = self.inner.borrow();
@@ -230,6 +282,9 @@ mod web {
 
         #[wasm_bindgen(js_name = getSpectrum, catch)]
         async fn js_get_spectrum(params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = runSnuffling, catch)]
+        async fn js_run_snuffling(name: String, params_json: String) -> Result<JsValue, JsValue>;
     }
 
     fn jsval_to_string(v: JsValue) -> String {
@@ -387,6 +442,33 @@ mod web {
                         i.spectrum = Some(sd);
                     }
                     i.spectrum_in_flight = false;
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Run a built-in snuffling (MinMax, STA/LTA, …) and store its result.
+        pub fn run_snuffling(&self, ctx: &egui::Context, name: String, params: ViewParams) {
+            if !matches!(self.inner.borrow().status, Status::Ready) {
+                return;
+            }
+            let json = serde_json::to_string(&params).unwrap_or_default();
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = js_run_snuffling(name, json).await;
+                let parsed = match res {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                    Err(_) => None,
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    if let Some(r) = parsed {
+                        i.snuffling = Some(r);
+                        i.snuffling_gen += 1;
+                    }
                 }
                 ctx.request_repaint();
             });
@@ -562,10 +644,13 @@ mod native {
         pub fn compute_view(&self, p: &ViewParams) -> ViewData {
             let mut order: Vec<usize> = (0..self.traces.len()).collect();
             order.sort_by(|&a, &b| self.traces[a].label().cmp(&self.traces[b].label()));
-            if p.sort == "name_reverse" {
-                order.reverse();
-            }
-            let npx = p.npx.max(16) as usize;
+            // When downsampling is off, use a huge bin target so decimate_into
+            // returns the raw samples (bounded to avoid overflow in n <= npx*2).
+            let npx = if p.allow_downsampling {
+                p.npx.max(16) as usize
+            } else {
+                10_000_000
+            };
             let mut ys: Vec<f32> = Vec::new();
             let mut tracks = Vec::new();
             for idx in order {
@@ -577,6 +662,11 @@ mod native {
                     continue;
                 }
                 let mut seg: Vec<f32> = tr.ys[i0..i1].to_vec();
+                if p.demean && !seg.is_empty() {
+                    let mean =
+                        (seg.iter().map(|&v| v as f64).sum::<f64>() / seg.len() as f64) as f32;
+                    seg.iter_mut().for_each(|v| *v -= mean);
+                }
                 apply_filter(&mut seg, tr.deltat, p.highpass, p.lowpass);
                 let offset = ys.len();
                 let (count, dt) = decimate_into(&seg, tr.deltat, npx, &mut ys);
@@ -696,6 +786,15 @@ mod native {
 
         pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: ViewParams) {
             // Spectrum snuffling needs numpy's FFT — web only.
+        }
+
+        pub fn run_snuffling(&self, _ctx: &egui::Context, name: String, _params: ViewParams) {
+            let mut i = self.inner.borrow_mut();
+            i.snuffling = Some(SnufflingResult {
+                text: format!("snuffling '{name}' runs in the browser only"),
+                markers: Vec::new(),
+            });
+            i.snuffling_gen += 1;
         }
 
         pub fn ensure_view(&self, _ctx: &egui::Context, params: ViewParams) {

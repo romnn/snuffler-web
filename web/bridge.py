@@ -207,11 +207,91 @@ def _remove_response(traces: List[ptrace.Trace], enabled: bool) -> List[ptrace.T
     return traces
 
 
-def _spectrogram(seg: ptrace.Trace, npx: int):
+# Subsort -> order of nslc elements for the sort/grouping key (snuffler's subsort).
+_SUBSORT = {
+    "nslc": (0, 1, 2, 3),
+    "nscl": (0, 1, 3, 2),
+    "sncl": (1, 0, 3, 2),
+    "lnsc": (2, 0, 1, 3),
+    "cnsl": (3, 0, 1, 2),
+    "nsc_l": (0, 1, 3, 2),
+    "snc_l": (1, 0, 3, 2),
+}
+
+
+def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int]:
+    """Index order for the traces. Distance/azimuth sorts need station coords +
+    an active event (not available for the demo), so they fall back to name order."""
+    perm = _SUBSORT.get(subsort, (0, 1, 2, 3))
+
+    def key(tr: ptrace.Trace):
+        nslc = tr.nslc_id
+        return tuple(nslc[i] for i in perm)
+
+    return sorted(range(len(traces)), key=lambda i: key(traces[i]))
+
+
+def _scale_range(y: np.ndarray, base: str) -> Tuple[float, float]:
+    """Amplitude (lo, hi) for a trace per snuffler's scaling base statistic."""
+    if len(y) == 0:
+        return 0.0, 1e-12
+    if base == "robust":
+        lo, hi = float(np.percentile(y, 1)), float(np.percentile(y, 99))
+    elif base == "mean2":
+        m, s = float(y.mean()), float(y.std())
+        lo, hi = m - 2.0 * s, m + 2.0 * s
+    elif base == "mean4":
+        m, s = float(y.mean()), float(y.std())
+        lo, hi = m - 4.0 * s, m + 4.0 * s
+    else:  # minmax
+        lo, hi = float(y.min()), float(y.max())
+    if hi <= lo:
+        hi = lo + 1e-12
+    return lo, hi
+
+
+def _brickwall(y: np.ndarray, deltat: float, hp: Optional[float], lp: Optional[float]) -> np.ndarray:
+    """Zero-phase brick-wall band filter in the frequency domain (snuffler's
+    'FFT filtering' option)."""
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    spec = np.fft.rfft(y - y.mean())
+    f = np.fft.rfftfreq(n, d=deltat)
+    mask = np.ones_like(f)
+    if hp is not None:
+        mask[f < float(hp)] = 0.0
+    if lp is not None:
+        mask[f > float(lp)] = 0.0
+    return np.fft.irfft(spec * mask, n)
+
+
+def _filter_seg(seg: ptrace.Trace, hp, lp, fft: bool, lphp: bool) -> None:
+    """Apply the main filter to a chopped trace, honoring the FFT-filtering and
+    bandpass-as-low+highpass options."""
+    try:
+        if fft and (hp is not None or lp is not None):
+            seg.set_ydata(_brickwall(seg.ydata, float(seg.deltat), hp, lp))
+        elif hp is not None and lp is not None and hp < lp:
+            if lphp:
+                seg.lowpass(4, float(lp))
+                seg.highpass(4, float(hp))
+            else:
+                seg.bandpass(2, float(hp), float(lp))
+        elif hp is not None:
+            seg.highpass(4, float(hp))
+        elif lp is not None:
+            seg.lowpass(4, float(lp))
+    except Exception:
+        pass
+
+
+def _spectrogram(seg: ptrace.Trace, npx: int, want_abs: bool, want_integrate: bool, cscale: str):
     """Return (flat [time][freq] float32, nf, nt, fmax, vmin, vmax, t0_rel, dt)."""
     from scipy import signal as sps
 
     y = seg.ydata.astype(np.float64)
+    if want_abs:
+        y = np.abs(y)
     n = len(y)
     if n < 32:
         return None
@@ -220,7 +300,15 @@ def _spectrogram(seg: ptrace.Trace, npx: int):
     f, t, sxx = sps.spectrogram(
         y, fs=fs, nperseg=nperseg, noverlap=nperseg // 2, scaling="spectrum"
     )
-    power = 10.0 * np.log10(sxx + 1e-20)  # dB
+    if want_integrate:
+        w = np.where(f == 0.0, 1e-9, 2.0 * np.pi * f)
+        sxx = sxx / (w[:, None] ** 2)
+    if cscale == "lin":
+        power = sxx
+    elif cscale == "sqrt":
+        power = np.sqrt(sxx)
+    else:  # log (dB)
+        power = 10.0 * np.log10(sxx + 1e-20)
     # cap time columns to ~npx for transport
     nt_target = max(1, min(int(npx), 600))
     if power.shape[1] > nt_target:
@@ -248,14 +336,28 @@ def get_view(params_json: str) -> dict:
     hp: Optional[float] = p.get("highpass")
     lp: Optional[float] = p.get("lowpass")
     sort = p.get("sort", "name")
+    subsort = p.get("subsort", "nslc")
     rotate = float(p.get("rotate", 0.0) or 0.0)
     remove_response = bool(p.get("remove_response", False))
     mode = p.get("mode", "wiggle")
+    demean = bool(p.get("demean", True))
+    degap = bool(p.get("degap", True))
+    allow_ds = bool(p.get("allow_downsampling", True))
+    fft = bool(p.get("fft_filtering", False))
+    lphp = bool(p.get("bandpass_lphp", True))
+    base = p.get("scaling_base", "minmax")
+    wf_abs = bool(p.get("wf_abs", False))
+    wf_integrate = bool(p.get("wf_integrate", False))
+    wf_cscale = p.get("wf_color_scale", "log")
 
-    order = sorted(range(len(_TRACES)), key=lambda i: _TRACES[i].nslc_id)
-    work = [_TRACES[i] for i in order]
-    if sort == "name_reverse":
-        work = work[::-1]
+    traces = list(_TRACES)
+    if degap:
+        try:
+            traces = ptrace.degapper(traces)
+        except Exception:
+            pass
+    order = _sort_order(traces, sort, subsort)
+    work = [traces[i] for i in order]
     work = _apply_rotation(work, rotate)
     work = _remove_response(work, remove_response)
 
@@ -270,21 +372,15 @@ def get_view(params_json: str) -> dict:
         if seg.ydata is None or len(seg.ydata) == 0:
             continue
         seg.ydata = seg.ydata.astype(np.float64)
-        try:
-            if hp is not None and lp is not None and hp < lp:
-                seg.bandpass(2, float(hp), float(lp))
-            elif hp is not None:
-                seg.highpass(4, float(hp))
-            elif lp is not None:
-                seg.lowpass(4, float(lp))
-        except Exception:
-            pass
+        if demean:
+            seg.ydata = seg.ydata - seg.ydata.mean()
+        _filter_seg(seg, hp, lp, fft, lphp)
 
         net, sta, loc, cha = tr.nslc_id
         label = ".".join(tr.nslc_id)
 
         if mode == "waterfall":
-            spec = _spectrogram(seg, npx)
+            spec = _spectrogram(seg, npx, wf_abs, wf_integrate, wf_cscale)
             if spec is None:
                 continue
             flat, nf, nt, fmax, vmin, vmax, t0_rel, dt = spec
@@ -298,14 +394,16 @@ def get_view(params_json: str) -> dict:
             ys_parts.append(flat)
             offset += int(nf * nt)
         else:
-            y, count, dt = _decimate(seg.ydata, float(seg.deltat), npx)
+            # Amplitude range from the chosen scaling base over the raw samples.
+            lo, hi = _scale_range(seg.ydata, base)
+            target = npx if allow_ds else len(seg.ydata)
+            y, count, dt = _decimate(seg.ydata, float(seg.deltat), target)
             tracks.append(ViewTrack(
                 net=net, sta=sta, loc=loc, cha=cha, label=label,
                 t0_rel=float(seg.tmin) - tmin, dt=dt,
                 count=int(count), offset=int(offset),
-                ymin=float(y.min()) if count else 0.0,
-                ymax=float(y.max()) if count else 0.0,
-                ymean=float(y.mean()) if count else 0.0,
+                ymin=lo, ymax=hi,
+                ymean=float(seg.ydata.mean()) if len(seg.ydata) else 0.0,
                 nf=0, nt=0, fmax=0.0,
             ))
             ys_parts.append(y.astype("<f4"))
@@ -374,3 +472,60 @@ def get_spectrum(params_json: str) -> dict:
     ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, "<f4")
     meta = {"fmin": float(fmin_global), "fmax": float(fmax_global), "tracks": tracks}
     return {"meta": json.dumps(meta), "ys": ys.tobytes()}
+
+
+def run_snuffling(name: str, params_json: str) -> str:
+    """Run a built-in snuffling over the current window. Returns a JSON string
+    {text, markers:[{t, phase, kind}]} that the egui side displays / adds."""
+    p = json.loads(params_json)
+    tmin, tmax = float(p["tmin"]), float(p["tmax"])
+    hp, lp = p.get("highpass"), p.get("lowpass")
+    rotate = float(p.get("rotate", 0.0) or 0.0)
+    fft = bool(p.get("fft_filtering", False))
+    lphp = bool(p.get("bandpass_lphp", True))
+
+    order = _sort_order(_TRACES, p.get("sort", "name"), p.get("subsort", "nslc"))
+    work = _apply_rotation([_TRACES[i] for i in order], rotate)
+
+    def chopped():
+        for tr in work:
+            try:
+                seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
+            except Exception:
+                continue
+            if seg.ydata is None or len(seg.ydata) < 4:
+                continue
+            seg.ydata = seg.ydata.astype(np.float64)
+            _filter_seg(seg, hp, lp, fft, lphp)
+            yield tr, seg
+
+    if name == "minmax":
+        lines = ["%-16s %13s %13s %13s" % ("channel", "min", "max", "peak-to-peak")]
+        for tr, seg in chopped():
+            y = seg.ydata
+            lines.append("%-16s %+.4e %+.4e %.4e" % (
+                ".".join(tr.nslc_id), float(y.min()), float(y.max()), float(y.max() - y.min())))
+        text = "\n".join(lines) if len(lines) > 1 else "No data in the visible window."
+        return json.dumps({"text": text, "markers": []})
+
+    if name == "stalta":
+        tshort, ratio, level = 1.0, 3.0, 0.7
+        markers = []
+        for _tr, seg in chopped():
+            if len(seg.ydata) < 64:
+                continue
+            try:
+                c = seg.copy()
+                c.sta_lta_centered(tshort, tshort * ratio)
+                tpeaks, _apeaks = c.peaks(level, tshort)
+            except Exception:
+                continue
+            for tp in tpeaks:
+                markers.append({"t": float(tp), "phase": None, "kind": 3})
+        return json.dumps({
+            "text": "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)"
+                    % (len(markers), tshort, ratio, level),
+            "markers": markers,
+        })
+
+    return json.dumps({"text": "Unknown snuffling: %s" % name, "markers": []})
