@@ -4,7 +4,7 @@ use crate::bridge::{Bridge, SpectrumData, Status, ViewParams};
 use crate::state::{
     AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength,
 };
-use crate::view::markers::{Marker, MARKER_COLORS};
+use crate::view::markers::{MARKER_COLORS, Marker};
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
 
@@ -41,6 +41,7 @@ fn configure_look(ctx: &egui::Context) {
 }
 
 impl App {
+    #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_look(&cc.egui_ctx);
         let bridge = Bridge::new();
@@ -303,6 +304,18 @@ impl App {
                 self.bridge.run_snuffling(ctx, "polarization".into(), p);
                 ui.close();
             }
+            if ui
+                .button("RMS (blockwise)")
+                .on_hover_text(
+                    "Add derived traces of blockwise root-mean-square amplitude \
+                     over the visible window (channel suffix -RMS).",
+                )
+                .clicked()
+            {
+                let p = self.current_params(800);
+                self.bridge.rms_traces(ctx, p);
+                ui.close();
+            }
         });
     }
 
@@ -321,10 +334,16 @@ impl App {
 }
 
 fn guess_fmt(name: &str) -> String {
-    let n = name.to_lowercase();
-    if n.ends_with(".mseed") || n.ends_with(".msd") || n.ends_with(".seed") {
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if ext.eq_ignore_ascii_case("mseed")
+        || ext.eq_ignore_ascii_case("msd")
+        || ext.eq_ignore_ascii_case("seed")
+    {
         "mseed".into()
-    } else if n.ends_with(".sac") {
+    } else if ext.eq_ignore_ascii_case("sac") {
         "sac".into()
     } else {
         "detect".into()
@@ -332,21 +351,32 @@ fn guess_fmt(name: &str) -> String {
 }
 
 impl eframe::App for App {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cohesive draw/update routine; splitting would obscure the control flow"
+    )]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixel width is a small non-negative value clamped to >= 64.0; truncation to u32 is intended"
+    )]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
         // Fit the view window whenever a genuinely new scene is loaded.
-        let gen = self.bridge.scene_gen();
-        if gen != self.last_scene_gen {
-            if let Some(scene) = self.bridge.scene() {
-                if !scene.tracks.is_empty() {
-                    self.state.tmin = scene.tmin;
-                    self.state.tmax = scene.tmax;
-                    self.state.ntracks_shown = scene.tracks.len().clamp(1, 12);
-                    self.state.track_offset = 0;
-                    self.last_scene_gen = gen;
-                }
-            }
+        let scene_gen = self.bridge.scene_gen();
+        if scene_gen != self.last_scene_gen
+            && let Some(scene) = self.bridge.scene()
+            && !scene.tracks.is_empty()
+        {
+            self.state.tmin = scene.tmin;
+            self.state.tmax = scene.tmax;
+            self.state.ntracks_shown = scene
+                .tracks
+                .len()
+                .clamp(1, crate::state::DEFAULT_NTRACKS_SHOWN);
+            self.state.track_offset = 0;
+            self.last_scene_gen = scene_gen;
         }
 
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
@@ -362,7 +392,7 @@ impl eframe::App for App {
             }
         }
 
-        let total_tracks = self.bridge.scene().map(|s| s.tracks.len()).unwrap_or(0);
+        let total_tracks = self.bridge.scene().map_or(0, |s| s.tracks.len());
 
         egui::Panel::top("menu").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -394,6 +424,50 @@ impl eframe::App for App {
                 }
             });
         });
+
+        // Apply outcomes of any ':' command that resolved since last frame.
+        if let Some(t) = self.bridge.take_goto() {
+            let w = (self.state.tmax - self.state.tmin).max(1.0);
+            self.state.tmin = t - w * 0.5;
+            self.state.tmax = t + w * 0.5;
+        }
+        if let Some(msg) = self.bridge.take_command_msg() {
+            self.state.command_feedback = msg;
+        }
+
+        if self.state.show_command {
+            egui::Panel::bottom("cmdline").show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(":");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.state.command_text)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(
+                                "goto <time> · hide [n|s|l|c] <pat> · unhide · n|s|l|c <pat>",
+                            ),
+                    );
+                    resp.request_focus();
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let line = std::mem::take(&mut self.state.command_text);
+                        if !line.trim().is_empty() {
+                            self.state.command_feedback.clear();
+                            self.bridge.run_command(&ctx, line);
+                        }
+                        self.state.show_command = false;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.state.command_text.clear();
+                        self.state.show_command = false;
+                    }
+                });
+                if !self.state.command_feedback.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xC0, 0x60, 0x40),
+                        &self.state.command_feedback,
+                    );
+                }
+            });
+        }
 
         if self.state.show_controls {
             egui::Panel::bottom("controls").show_inside(ui, |ui| {
@@ -430,7 +504,7 @@ impl eframe::App for App {
             egui::Window::new("Amplitude spectrum")
                 .open(&mut open)
                 .default_size([520.0, 280.0])
-                .show(&ctx, |ui| draw_spectrum(ui, &spectrum));
+                .show(&ctx, |ui| draw_spectrum(ui, spectrum.as_ref()));
             if !open {
                 self.state.show_spectrum = false;
                 self.spectrum_key = None;
@@ -583,7 +657,7 @@ impl eframe::App for App {
                 .open(&mut open)
                 .default_size([640.0, 480.0])
                 .show(&ctx, |ui| {
-                    crate::view::map::show(ui, &mut self.map, &self.bridge, &ctx)
+                    crate::view::map::show(ui, &mut self.map, &self.bridge, &ctx);
                 });
             self.state.show_map = open;
         }
@@ -620,7 +694,10 @@ impl eframe::App for App {
                                 ui.strong("");
                                 ui.end_row();
                                 for m in &mut self.state.markers {
-                                    let col = MARKER_COLORS[(m.kind & 7) as usize];
+                                    let col = MARKER_COLORS
+                                        .get((m.kind & 7) as usize)
+                                        .copied()
+                                        .unwrap_or(Color32::from_rgb(204, 0, 0));
                                     let dot =
                                         egui::RichText::new(if m.is_event { "▲" } else { "●" })
                                             .color(col);
@@ -693,9 +770,9 @@ impl eframe::App for App {
                     (f64::INFINITY, f64::NEG_INFINITY, false);
                 for m in &r.markers {
                     let mut mk = Marker::new(m.t, m.tmax.unwrap_or(m.t), m.kind);
-                    mk.phase = m.phase.clone();
+                    mk.phase.clone_from(&m.phase);
                     mk.is_event = m.is_event;
-                    mk.nslc = m.nslc.clone();
+                    mk.nslc.clone_from(&m.nslc);
                     mk.polarity = m.polarity;
                     if m.is_event {
                         any_ev = true;
@@ -796,7 +873,12 @@ fn about_text(ui: &mut egui::Ui) {
     ui.hyperlink("https://pyrocko.org");
 }
 
-fn draw_spectrum(ui: &mut egui::Ui, spec: &Option<SpectrumData>) {
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "screen-space plotting math: f64 frequencies map to f32 pixel coordinates and sample indices to f64 fractions; precision is ample for on-screen rendering"
+)]
+fn draw_spectrum(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
     let Some(spec) = spec else {
         ui.label("Computing…");
         return;
@@ -855,9 +937,14 @@ fn draw_spectrum(ui: &mut egui::Ui, spec: &Option<SpectrumData>) {
     }
 
     for (ti, t) in spec.meta.tracks.iter().enumerate() {
-        let col = MARKER_COLORS[ti % 8];
+        let col = MARKER_COLORS
+            .get(ti % 8)
+            .copied()
+            .unwrap_or(Color32::from_rgb(204, 0, 0));
         let end = (t.offset + t.count).min(spec.ys.len());
-        let data = &spec.ys[t.offset.min(spec.ys.len())..end];
+        let Some(data) = spec.ys.get(t.offset.min(spec.ys.len())..end) else {
+            continue;
+        };
         if data.len() < 2 {
             continue;
         }

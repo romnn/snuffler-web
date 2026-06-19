@@ -201,6 +201,16 @@ export async function cakeArrivals() {
   return bridge.cake_arrivals("{}"); // -> JSON string {text, markers}
 }
 
+export async function runCommand(line) {
+  await boot();
+  return bridge.command(line); // -> JSON string {action, ...}
+}
+
+export async function rmsTraces(paramsJson) {
+  await boot();
+  return bridge.rms(paramsJson); // -> scene JSON string (RMS traces appended)
+}
+
 // Show a browser file picker; resolves [] if the dialog is cancelled.
 function pickFiles(multiple) {
   return new Promise((resolve) => {
@@ -280,5 +290,6 @@ if (typeof window !== "undefined") {
     makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling,
     downloadWaveforms, catalogSearch, fetchStations, fetchResponses,
     mapData, fetchTile, openFiles, saveMarkers, loadMarkers, cakeArrivals,
+    runCommand, rmsTraces,
   };
 }

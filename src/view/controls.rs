@@ -1,11 +1,15 @@
 //! The "Main Controls" panel: filters, gain, rotation, scaling, sorting, view
 //! mode, the waterfall colorbar, and track count — mirroring snuffler's bottom
-//! control strip (pile_viewer.py controls() + ColorbarControl).
+//! control strip (`pile_viewer.py` `controls()` + `ColorbarControl`).
 
 use crate::state::{
     AppState, ColorScale, Colormap, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode,
 };
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive draw/update routine; splitting would obscure the control flow"
+)]
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
 
@@ -41,13 +45,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
     });
 
     // snuffler's passband_check: warn when highpass corner >= lowpass corner.
-    if let (Some(hp), Some(lp)) = (state.highpass, state.lowpass) {
-        if hp >= lp {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xCF, 0x8E, 0x00),
-                "⚠ Highpass ≥ Lowpass",
-            );
-        }
+    if let (Some(hp), Some(lp)) = (state.highpass, state.lowpass)
+        && hp >= lp
+    {
+        ui.colored_label(
+            egui::Color32::from_rgb(0xCF, 0x8E, 0x00),
+            "⚠ Highpass ≥ Lowpass",
+        );
     }
 
     // Gain is meaningless for the waterfall, so snuffler hides it there.
@@ -151,7 +155,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
         ui.separator();
         ui.label("marker:");
         for k in 0u8..8 {
-            let col = crate::view::markers::MARKER_COLORS[k as usize];
+            let Some(&col) = crate::view::markers::MARKER_COLORS.get(usize::from(k)) else {
+                continue;
+            };
             let selected = state.marker_kind == k;
             let txt = egui::RichText::new(format!("{k}")).color(col).strong();
             if ui.selectable_label(selected, txt).clicked() {

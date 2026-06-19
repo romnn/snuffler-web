@@ -5,6 +5,9 @@
 
 use crate::view::markers::Marker;
 
+/// Number of tracks shown by default, and the reset target for the "=" key.
+pub const DEFAULT_NTRACKS_SHOWN: usize = 12;
+
 /// How per-track amplitude ranges are grouped across tracks (snuffler's "Scaling"
 /// grouping radio group, pile_viewer.py:933-946).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,7 +223,7 @@ impl Colormap {
     ];
 }
 
-/// Maximum visible time span (snuffler's "Visible length", pile_viewer.py:1047).
+/// Maximum visible time span (snuffler's "Visible length", `pile_viewer.py:1047`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisibleLength {
     Short,
@@ -274,7 +277,7 @@ pub struct AppState {
     pub allow_downsampling: bool,
     pub fft_filtering: bool,
     pub bandpass_lphp: bool,
-    /// Deconvolve instrument response (needs StationXML; currently inert).
+    /// Deconvolve instrument response (needs `StationXML`; currently inert).
     pub remove_response: bool,
     /// Use station depth for distances (needs coords; inert without).
     pub distances_3d: bool,
@@ -309,11 +312,11 @@ pub struct AppState {
 
     /// Amplitude-spectrum snuffling window open.
     pub show_spectrum: bool,
-    /// Snuffling text output (MinMax etc.) + its window visibility.
+    /// Snuffling text output (`MinMax` etc.) + its window visibility.
     pub snuffling_text: String,
     pub show_snuffling: bool,
 
-    /// Vertical track windowing (snuffler's ntracks_shown_max + scroll).
+    /// Vertical track windowing (snuffler's `ntracks_shown_max` + scroll).
     pub ntracks_shown: usize,
     pub track_offset: usize,
 
@@ -333,6 +336,10 @@ pub struct AppState {
     pub show_catalog: bool,
     pub show_map: bool,
     pub show_marker_editor: bool,
+    /// The ':' command line: visible flag, current input, and last feedback.
+    pub show_command: bool,
+    pub command_text: String,
+    pub command_feedback: String,
     pub dl_datacenter: String,
     pub dl_net: String,
     pub dl_sta: String,
@@ -390,7 +397,7 @@ impl Default for AppState {
             show_spectrum: false,
             snuffling_text: String::new(),
             show_snuffling: false,
-            ntracks_shown: 12,
+            ntracks_shown: DEFAULT_NTRACKS_SHOWN,
             track_offset: 0,
             markers: Vec::new(),
             marker_kind: 0,
@@ -402,6 +409,9 @@ impl Default for AppState {
             show_catalog: false,
             show_map: false,
             show_marker_editor: false,
+            show_command: false,
+            command_text: String::new(),
+            command_feedback: String::new(),
             // Pre-filled with a real example (2023-02-06 Turkey M7.8, GE.WLF).
             dl_datacenter: "geofon".into(),
             dl_net: "GE".into(),

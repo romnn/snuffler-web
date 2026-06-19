@@ -1,7 +1,7 @@
 //! The bridge between the egui frontend and pyrocko.
 //!
 //! On the web, this calls into `web/bridge.js`, which drives Pyodide
-//! (CPython + numpy + scipy + pyrocko, all compiled to WASM) and returns
+//! (`CPython` + numpy + scipy + pyrocko, all compiled to WASM) and returns
 //! waveform data. On native targets it falls back to a self-contained
 //! synthetic stub so the UI can be developed with `cargo run` (no browser).
 //!
@@ -21,7 +21,10 @@ pub struct SceneMeta {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
-#[allow(dead_code)] // full wire contract; not every field is consumed yet
+#[allow(
+    dead_code,
+    reason = "deserialization wire contract mirroring bridge.py; not every field is read by the renderer"
+)]
 pub struct TraceMeta {
     pub net: String,
     pub sta: String,
@@ -65,8 +68,8 @@ pub struct ViewParams {
     pub distances_3d: bool,
     /// Amplitude-range statistic: "minmax" | "robust" | "mean2" | "mean4".
     pub scaling_base: String,
-    /// Amplitude grouping: "individual" | "common" | "per_station" |
-    /// "per_station_location" | "per_component" (pyrocko derives the per-track
+    /// Amplitude grouping: "individual" | "common" | "`per_station`" |
+    /// "`per_station_location`" | "`per_component`" (pyrocko derives the per-track
     /// display scale from this).
     pub scaling_group: String,
     /// Waterfall: rectify (abs) before the spectrogram.
@@ -88,7 +91,10 @@ pub struct ViewMeta {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
-#[allow(dead_code)] // net/sta/loc/cha kept for selection/marker scoping
+#[allow(
+    dead_code,
+    reason = "deserialization wire contract; some NSLC/scale fields are kept for completeness"
+)]
 pub struct ViewTrack {
     pub net: String,
     pub sta: String,
@@ -130,7 +136,7 @@ impl ViewData {
     /// Samples for one track as a slice of the flat array.
     pub fn samples<'a>(&'a self, t: &ViewTrack) -> &'a [f32] {
         let end = (t.offset + t.count).min(self.ys.len());
-        &self.ys[t.offset.min(self.ys.len())..end]
+        self.ys.get(t.offset.min(self.ys.len())..end).unwrap_or(&[])
     }
 }
 
@@ -143,7 +149,10 @@ pub struct SpecMeta {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "deserialization wire contract for the amplitude-spectrum payload"
+)]
 pub struct SpecTrack {
     pub label: String,
     pub offset: usize,
@@ -189,6 +198,20 @@ pub struct SnufflingResult {
     pub markers: Vec<SnufMarker>,
 }
 
+/// Outcome of a ':' command line. `action` is "goto" | "scene" | "error" | "none".
+/// Only the wasm bridge constructs/consumes this, so it is gated to that target.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CommandResult {
+    pub action: String,
+    #[serde(default)]
+    pub t: Option<f64>,
+    #[serde(default)]
+    pub scene: Option<SceneMeta>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 /// Station / event coordinates for the Map overlay (from the FDSN fetches).
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct MapStation {
@@ -215,7 +238,10 @@ pub struct MapData {
 
 /// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
 /// turns them into a texture and caches it there).
-#[allow(dead_code)] // most variants are only constructed on the web target
+#[allow(
+    dead_code,
+    reason = "tile-cache states are only constructed on the wasm (web) target"
+)]
 enum TileState {
     InFlight,
     Ready(u32, u32, Vec<u8>),
@@ -224,7 +250,10 @@ enum TileState {
 }
 
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // Loading/Booting are only constructed on the web target
+#[allow(
+    dead_code,
+    reason = "Booting/Loading variants are only constructed on the wasm (web) target"
+)]
 pub enum Status {
     #[default]
     Booting,
@@ -234,7 +263,10 @@ pub enum Status {
 }
 
 #[derive(Default)]
-#[allow(dead_code)] // view_in_flight/desired are only used on the web target
+#[allow(
+    dead_code,
+    reason = "view-dispatch and tile-cache fields are only used on the wasm (web) target"
+)]
 struct Inner {
     status: Status,
     scene: Option<SceneMeta>,
@@ -253,6 +285,10 @@ struct Inner {
     view_in_flight: bool,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
+    /// A pending `goto <time>` target the App should jump the view to.
+    pending_goto: Option<f64>,
+    /// Feedback from the last ':' command (an error or confirmation) to show.
+    command_msg: Option<String>,
 }
 
 #[derive(Clone)]
@@ -280,6 +316,16 @@ impl Bridge {
         self.inner.borrow().scene_gen
     }
 
+    /// Take a pending `goto` time (set by a ':' command) for the App to apply.
+    pub fn take_goto(&self) -> Option<f64> {
+        self.inner.borrow_mut().pending_goto.take()
+    }
+
+    /// Take the last ':' command's feedback message (error / confirmation).
+    pub fn take_command_msg(&self) -> Option<String> {
+        self.inner.borrow_mut().command_msg.take()
+    }
+
     /// Counter that increments whenever new view data is available.
     pub fn view_epoch(&self) -> u64 {
         self.inner.borrow().view_epoch
@@ -305,12 +351,11 @@ impl Bridge {
     /// Hand the view a ready tile's RGBA exactly once (it caches the texture).
     pub fn take_tile_rgba(&self, z: u8, x: u32, y: u32) -> Option<(u32, u32, Vec<u8>)> {
         let mut i = self.inner.borrow_mut();
-        if matches!(i.tiles.get(&(z, x, y)), Some(TileState::Ready(..))) {
-            if let Some(TileState::Ready(w, h, rgba)) =
+        if matches!(i.tiles.get(&(z, x, y)), Some(TileState::Ready(..)))
+            && let Some(TileState::Ready(w, h, rgba)) =
                 i.tiles.insert((z, x, y), TileState::Consumed)
-            {
-                return Some((w, h, rgba));
-            }
+        {
+            return Some((w, h, rgba));
         }
         None
     }
@@ -318,17 +363,21 @@ impl Bridge {
     /// Borrow the current view (decimated waveforms) for drawing.
     pub fn view(&self) -> Option<Ref<'_, ViewData>> {
         let b = self.inner.borrow();
-        if b.view.is_some() {
-            Some(Ref::map(b, |i| i.view.as_ref().unwrap()))
-        } else {
-            None
-        }
+        Ref::filter_map(b, |i| i.view.as_ref()).ok()
     }
 }
 
 // Web target: drive Pyodide through web/bridge.js.
 #[cfg(target_arch = "wasm32")]
 mod web {
+    #![allow(
+        clippy::wildcard_imports,
+        clippy::needless_pass_by_value,
+        reason = "the web bridge re-uses most parent types and marshals owned values \
+                  (JsValue, JSON strings, params) across the JS/async boundary, where \
+                  by-value parameters keep the call sites clean"
+    )]
+
     use super::*;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
@@ -374,6 +423,12 @@ mod web {
 
         #[wasm_bindgen(js_name = cakeArrivals, catch)]
         async fn js_cake_arrivals() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = runCommand, catch)]
+        async fn js_run_command(line: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = rmsTraces, catch)]
+        async fn js_rms_traces(params_json: String) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = fetchTile, catch)]
         async fn js_fetch_tile(url: String) -> Result<JsValue, JsValue>;
@@ -548,7 +603,7 @@ mod web {
             });
         }
 
-        /// Run a built-in snuffling (MinMax, STA/LTA, …) and store its result.
+        /// Run a built-in snuffling (`MinMax`, `STA/LTA`, …) and store its result.
         pub fn run_snuffling(&self, ctx: &egui::Context, name: String, params: ViewParams) {
             if !matches!(self.inner.borrow().status, Status::Ready) {
                 return;
@@ -583,6 +638,34 @@ mod web {
             let ctx = ctx.clone();
             spawn_local(async move {
                 let parsed = match js_download_waveforms(params_json).await {
+                    Ok(v) => parse_scene(v),
+                    Err(e) => Err(jsval_to_string(e)),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    match parsed {
+                        Ok(scene) => {
+                            i.scene = Some(scene);
+                            i.scene_gen += 1;
+                            i.status = Status::Ready;
+                            i.view = None;
+                            i.applied = None;
+                        }
+                        Err(e) => i.status = Status::Error(e),
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Compute blockwise-RMS derived traces (pyrocko's RMS snuffling) and
+        /// append them to the pile; the result replaces the scene.
+        pub fn rms_traces(&self, ctx: &egui::Context, params: ViewParams) {
+            let json = serde_json::to_string(&params).unwrap_or_default();
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = match js_rms_traces(json).await {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
                 };
@@ -654,6 +737,41 @@ mod web {
             });
         }
 
+        /// Execute a ':' command line (goto / hide / unhide / reduce). A goto
+        /// stores a pending time the App jumps to; a visibility change swaps the
+        /// scene in place (no refit) and forces the view to re-dispatch.
+        pub fn run_command(&self, ctx: &egui::Context, line: String) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = match js_run_command(line).await {
+                    Ok(v) => v
+                        .as_string()
+                        .and_then(|s| serde_json::from_str::<CommandResult>(&s).ok()),
+                    Err(e) => Some(CommandResult {
+                        action: "error".into(),
+                        message: Some(jsval_to_string(e)),
+                        ..Default::default()
+                    }),
+                };
+                if let Some(r) = res {
+                    let mut i = inner.borrow_mut();
+                    match r.action.as_str() {
+                        "goto" => i.pending_goto = r.t,
+                        "scene" => {
+                            if let Some(scene) = r.scene {
+                                i.scene = Some(scene);
+                                i.applied = None; // re-dispatch without refitting time
+                            }
+                        }
+                        "error" => i.command_msg = r.message,
+                        _ => {}
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
         /// Fetch station coordinates (FDSN station service) to enable distance /
         /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
         pub fn fetch_stations(&self, ctx: &egui::Context, params_json: String) {
@@ -681,7 +799,7 @@ mod web {
             });
         }
 
-        /// Fetch instrument responses (StationXML) so Deconvolution can run;
+        /// Fetch instrument responses (`StationXML`) so Deconvolution can run;
         /// forces a re-dispatch so the deconvolved view recomputes.
         pub fn fetch_responses(&self, ctx: &egui::Context, params_json: String) {
             let inner = self.inner.clone();
@@ -740,6 +858,10 @@ mod web {
         }
 
         /// Serialize markers to pyrocko marker format and download them.
+        #[allow(
+            clippy::unused_self,
+            reason = "kept as a method for API symmetry with the other bridge calls; the fire-and-forget download needs no state"
+        )]
         pub fn save_markers(&self, _ctx: &egui::Context, markers_json: String) {
             spawn_local(async move {
                 let _ = js_save_markers(markers_json).await;
@@ -807,20 +929,30 @@ mod web {
                 use wasm_bindgen::JsCast;
                 let state = match js_fetch_tile(url).await {
                     Ok(obj) => {
-                        let num = |k: &str| {
-                            js_sys::Reflect::get(&obj, &JsValue::from_str(k))
+                        let num = |key: &str| {
+                            js_sys::Reflect::get(&obj, &JsValue::from_str(key))
                                 .ok()
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0) as u32
+                                .and_then(|val| val.as_f64())
+                                .unwrap_or(0.0)
                         };
-                        let (w, h) = (num("w"), num("h"));
+                        // Tile dimensions are small non-negative pixel counts.
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "tile width/height are small non-negative integers"
+                        )]
+                        let (width, height) = (num("w") as u32, num("h") as u32);
                         let rgba = js_sys::Reflect::get(&obj, &JsValue::from_str("rgba"))
                             .ok()
-                            .and_then(|v| v.dyn_into::<js_sys::Uint8Array>().ok())
-                            .map(|a| a.to_vec());
+                            .and_then(|val| val.dyn_into::<js_sys::Uint8Array>().ok())
+                            .map(|arr| arr.to_vec());
                         match rgba {
-                            Some(b) if w > 0 && h > 0 && b.len() == (w * h * 4) as usize => {
-                                TileState::Ready(w, h, b)
+                            Some(bytes)
+                                if width > 0
+                                    && height > 0
+                                    && bytes.len() == (width * height * 4) as usize =>
+                            {
+                                TileState::Ready(width, height, bytes)
                             }
                             _ => TileState::Failed,
                         }
@@ -850,9 +982,8 @@ mod web {
         }
 
         fn dispatch_view(&self, ctx: &egui::Context) {
-            let params = match self.inner.borrow().desired.clone() {
-                Some(p) => p,
-                None => return,
+            let Some(params) = self.inner.borrow().desired.clone() else {
+                return;
             };
             let json = serde_json::to_string(&params).unwrap_or_default();
             let inner = self.inner.clone();
@@ -907,7 +1038,12 @@ mod web {
 // so there is no second implementation of pyrocko's math to drift from.
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use super::*;
+    #![allow(
+        clippy::unused_self,
+        reason = "these no-op stubs mirror the wasm Bridge API so the native UI shell compiles"
+    )]
+
+    use super::{Bridge, Status, ViewParams};
 
     const MSG: &str = "Native build is UI-only — data loading, filtering, and all \
          processing run in pyrocko (Python) in the browser. Use `mise run serve`.";
@@ -936,6 +1072,10 @@ mod native {
         pub fn catalog_search(&self, _ctx: &egui::Context, _params_json: String) {}
 
         pub fn cake_arrivals(&self, _ctx: &egui::Context) {}
+
+        pub fn run_command(&self, _ctx: &egui::Context, _line: String) {}
+
+        pub fn rms_traces(&self, _ctx: &egui::Context, _params: ViewParams) {}
 
         pub fn fetch_stations(&self, _ctx: &egui::Context, _params_json: String) {}
 

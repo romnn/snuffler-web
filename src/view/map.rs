@@ -3,6 +3,14 @@
 //! providers) and pyrocko supplies the station/event coordinates; Rust only does
 //! the Web-Mercator projection and drawing — the same kind of rendering geometry
 //! as the time axis, not seismological computation.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    reason = "Web-Mercator projection casts between f64 lat/lon, f32 pixels and \
+              integer tile/pixel indices; inherent to the map rendering geometry"
+)]
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -17,7 +25,10 @@ const TILE: f64 = 256.0;
 
 /// (name, url template). `{z}/{x}/{y}` are substituted; ESRI uses `{z}/{y}/{x}`.
 const SOURCES: [(&str, &str); 4] = [
-    ("OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png"),
+    (
+        "OpenStreetMap",
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    ),
     (
         "Carto light",
         "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
@@ -76,17 +87,24 @@ fn y_to_lat(y: f64, z: u8) -> f64 {
 }
 
 fn tile_url(src: usize, z: u8, x: u32, y: u32) -> String {
-    SOURCES[src]
-        .1
+    let template = SOURCES.get(src).map_or("", |s| s.1);
+    template
         .replace("{z}", &z.to_string())
         .replace("{x}", &x.to_string())
         .replace("{y}", &y.to_string())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive draw/update routine; splitting would obscure the control flow"
+)]
 pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::Context) {
+    // Zoom: accumulate raw wheel scroll and step one zoom level per notch, so a
+    // wheel flick doesn't blow through several levels at once.
+    const ZOOM_NOTCH: f32 = 50.0;
     ui.horizontal(|ui| {
         egui::ComboBox::from_label("Basemap")
-            .selected_text(SOURCES[st.source].0)
+            .selected_text(SOURCES.get(st.source).map_or("", |s| s.0))
             .show_ui(ui, |ui| {
                 for (i, (name, _)) in SOURCES.iter().enumerate() {
                     ui.selectable_value(&mut st.source, i, *name);
@@ -128,8 +146,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
     let n = 1i64 << z;
     let cwx = lon_to_x(st.center_lon, z) * TILE;
     let cwy = lat_to_y(st.center_lat, z) * TILE;
-    let tlx = cwx - rect.width() as f64 / 2.0;
-    let tly = cwy - rect.height() as f64 / 2.0;
+    let tlx = cwx - f64::from(rect.width()) / 2.0;
+    let tly = cwy - f64::from(rect.height()) / 2.0;
     let to_screen = |wx: f64, wy: f64| {
         egui::pos2(
             (wx - tlx) as f32 + rect.left(),
@@ -140,8 +158,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
 
     let tx0 = (tlx / TILE).floor() as i64;
     let ty0 = (tly / TILE).floor() as i64;
-    let tx1 = ((tlx + rect.width() as f64) / TILE).floor() as i64;
-    let ty1 = ((tly + rect.height() as f64) / TILE).floor() as i64;
+    let tx1 = ((tlx + f64::from(rect.width())) / TILE).floor() as i64;
+    let ty1 = ((tly + f64::from(rect.height())) / TILE).floor() as i64;
     for tyi in ty0..=ty1 {
         if tyi < 0 || tyi >= n {
             continue;
@@ -212,12 +230,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
 
     if resp.dragged() {
         let d = resp.drag_delta();
-        st.center_lon = x_to_lon((cwx - d.x as f64) / TILE, z);
-        st.center_lat = y_to_lat((cwy - d.y as f64) / TILE, z);
+        st.center_lon = x_to_lon((cwx - f64::from(d.x)) / TILE, z);
+        st.center_lat = y_to_lat((cwy - f64::from(d.y)) / TILE, z);
     }
-    // Zoom: accumulate raw wheel scroll and step one zoom level per notch, so a
-    // wheel flick doesn't blow through several levels at once.
-    const ZOOM_NOTCH: f32 = 50.0;
     if resp.hovered() {
         st.scroll_acc += ui.input(|i| i.smooth_scroll_delta.y);
     } else {
@@ -232,17 +247,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
     } else {
         0
     };
-    if step != 0 {
-        if let Some(cur) = resp.hover_pos() {
-            let lon = x_to_lon((tlx + (cur.x - rect.left()) as f64) / TILE, z);
-            let lat = y_to_lat((tly + (cur.y - rect.top()) as f64) / TILE, z);
-            let nz = (z as i32 + step).clamp(1, 18) as u8;
-            if nz != z {
-                let off = cur - rect.center();
-                st.center_lon = x_to_lon((lon_to_x(lon, nz) * TILE - off.x as f64) / TILE, nz);
-                st.center_lat = y_to_lat((lat_to_y(lat, nz) * TILE - off.y as f64) / TILE, nz);
-                st.zoom = nz;
-            }
+    if step != 0
+        && let Some(cur) = resp.hover_pos()
+    {
+        let lon = x_to_lon((tlx + f64::from(cur.x - rect.left())) / TILE, z);
+        let lat = y_to_lat((tly + f64::from(cur.y - rect.top())) / TILE, z);
+        let nz = (i32::from(z) + step).clamp(1, 18) as u8;
+        if nz != z {
+            let off = cur - rect.center();
+            st.center_lon = x_to_lon((lon_to_x(lon, nz) * TILE - f64::from(off.x)) / TILE, nz);
+            st.center_lat = y_to_lat((lat_to_y(lat, nz) * TILE - f64::from(off.y)) / TILE, nz);
+            st.zoom = nz;
         }
     }
 }
@@ -265,13 +280,13 @@ fn fit_to_data(st: &mut MapState, size: egui::Vec2, d: &MapData) {
     if !latmin.is_finite() {
         return;
     }
-    st.center_lat = (latmin + latmax) / 2.0;
-    st.center_lon = (lonmin + lonmax) / 2.0;
+    st.center_lat = f64::midpoint(latmin, latmax);
+    st.center_lon = f64::midpoint(lonmin, lonmax);
     if (latmax - latmin).abs() < 1e-6 && (lonmax - lonmin).abs() < 1e-6 {
         st.zoom = 7; // single point
         return;
     }
-    let (w, h) = (size.x.max(64.0) as f64, size.y.max(64.0) as f64);
+    let (w, h) = (f64::from(size.x.max(64.0)), f64::from(size.y.max(64.0)));
     st.zoom = 2;
     for z in (2u8..=16).rev() {
         let dw = (lon_to_x(lonmax, z) - lon_to_x(lonmin, z)).abs() * TILE;

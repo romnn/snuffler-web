@@ -1,12 +1,48 @@
 //! Adaptive time-axis ticks & labels, in the spirit of snuffler's `TimeAx`
 //! (`gui/snuffler/pile_viewer.py`): pick a human-friendly tick increment for
 //! the visible span and format labels at a precision that matches it.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "tick/label math casts between f64 epoch seconds and integer calendar fields"
+)]
 
 /// Tick increments snuffler considers "acceptable" (seconds), coarse subset.
 const ACCEPTABLE: &[f64] = &[
-    1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0,
-    120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 10800.0, 21600.0, 43200.0, 86400.0,
-    172800.0, 432000.0, 864000.0, 2592000.0, 7776000.0, 31536000.0,
+    1e-3,
+    2e-3,
+    5e-3,
+    1e-2,
+    2e-2,
+    5e-2,
+    0.1,
+    0.2,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    20.0,
+    30.0,
+    60.0,
+    120.0,
+    300.0,
+    600.0,
+    900.0,
+    1800.0,
+    3600.0,
+    7200.0,
+    10_800.0,
+    21_600.0,
+    43_200.0,
+    86_400.0,
+    172_800.0,
+    432_000.0,
+    864_000.0,
+    2_592_000.0,
+    7_776_000.0,
+    31_536_000.0,
 ];
 
 /// Choose a tick increment so there are roughly `target_ticks` ticks across `span`.
@@ -17,7 +53,7 @@ pub fn nice_tinc(span: f64, target_ticks: f64) -> f64 {
             return c;
         }
     }
-    *ACCEPTABLE.last().unwrap()
+    ACCEPTABLE.last().copied().unwrap_or(ideal)
 }
 
 /// Iterate tick times (multiples of `tinc`) within `[t0, t1]`.
@@ -49,7 +85,7 @@ fn days_to_civil(z: i64) -> (i64, u32, u32) {
     let mp = (5 * doy + 2) / 153;
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (y + if m <= 2 { 1 } else { 0 }, m, d)
+    (y + i64::from(m <= 2), m, d)
 }
 
 struct Civil {
@@ -69,8 +105,8 @@ fn civil(t: f64) -> Civil {
     }
     let (year, mon, day) = days_to_civil(days);
     let hour = (rem / 3600.0).floor() as u32;
-    let min = ((rem - hour as f64 * 3600.0) / 60.0).floor() as u32;
-    let sec = rem - hour as f64 * 3600.0 - min as f64 * 60.0;
+    let min = ((rem - f64::from(hour) * 3600.0) / 60.0).floor() as u32;
+    let sec = rem - f64::from(hour) * 3600.0 - f64::from(min) * 60.0;
     Civil {
         year,
         mon,

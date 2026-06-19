@@ -1,6 +1,14 @@
 //! The waveform canvas: vertically stacked tracks, a shared adaptive time axis,
 //! NSLC labels, snuffler-style amplitude scaling, an optional waterfall
 //! (spectrogram) view, markers, and mouse/keyboard interaction.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    reason = "rendering maps between f32/f64 pixel & time coordinates and integer \
+              sample/track indices; these casts are inherent to the drawing math"
+)]
 
 use egui::{
     Align2, Color32, ColorImage, FontId, Key, Rect, Sense, Shape, Stroke, TextureHandle,
@@ -99,6 +107,11 @@ fn cmap_index(c: Colormap) -> u8 {
     }
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "index provably in bounds: data.len() >= nf*nt is checked above, and \
+              c<nt, f<nf so c*nf+f < nf*nt; rgba is sized nt*nf*4 and p+3 < that bound"
+)]
 fn build_texture(
     ctx: &egui::Context,
     view: &ViewData,
@@ -157,31 +170,39 @@ fn colormap(cmap: u8, t: f32) -> [u8; 3] {
     }
 }
 
+/// Round and clamp a colour value (already in 0..=255) to an 8-bit component.
+fn to_u8(value: f32) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
 /// 9-anchor colormap lookup with linear interpolation.
-fn lut(a: &[[f32; 3]; 9], t: f32) -> [u8; 3] {
-    let t = t.clamp(0.0, 1.0) * 8.0;
-    let i = (t.floor() as usize).min(7);
-    let f = t - i as f32;
-    let l = |x: f32, y: f32| (x + (y - x) * f) as u8;
-    [
-        l(a[i][0], a[i + 1][0]),
-        l(a[i][1], a[i + 1][1]),
-        l(a[i][2], a[i + 1][2]),
-    ]
+fn lut(anchors: &[[f32; 3]; 9], value: f32) -> [u8; 3] {
+    let scaled = (value.clamp(0.0, 1.0) * 8.0).clamp(0.0, 8.0);
+    let idx = (scaled as usize).min(7);
+    let frac = scaled - idx as f32;
+    let lo = anchors.get(idx).copied().unwrap_or([0.0; 3]);
+    let hi = anchors.get(idx + 1).copied().unwrap_or(lo);
+    let lerp = |a: f32, b: f32| to_u8(a + (b - a) * frac);
+    [lerp(lo[0], hi[0]), lerp(lo[1], hi[1]), lerp(lo[2], hi[2])]
 }
 
 /// Simple blue→red hue sweep.
-fn rainbow(t: f32) -> [u8; 3] {
-    let h = (1.0 - t.clamp(0.0, 1.0)) * 240.0;
-    let x = 1.0 - ((h / 60.0) % 2.0 - 1.0).abs();
-    let (r, g, b) = match (h / 60.0) as i32 {
-        0 => (1.0, x, 0.0),
-        1 => (x, 1.0, 0.0),
-        2 => (0.0, 1.0, x),
-        3 => (0.0, x, 1.0),
-        _ => (x, 0.0, 1.0),
+fn rainbow(value: f32) -> [u8; 3] {
+    let hue = (1.0 - value.clamp(0.0, 1.0)) * 240.0;
+    let sextant = hue / 60.0;
+    let side = 1.0 - (sextant % 2.0 - 1.0).abs();
+    let (red, green, blue) = match sextant as i32 {
+        0 => (1.0, side, 0.0),
+        1 => (side, 1.0, 0.0),
+        2 => (0.0, 1.0, side),
+        3 => (0.0, side, 1.0),
+        _ => (side, 0.0, 1.0),
     };
-    [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
+    [
+        to_u8(red * 255.0),
+        to_u8(green * 255.0),
+        to_u8(blue * 255.0),
+    ]
 }
 
 const VIRIDIS: [[f32; 3]; 9] = [
@@ -221,14 +242,7 @@ const INFERNO: [[f32; 3]; 9] = [
 /// Colour a trace by the NSLC element the current subsort colours by. Falls back
 /// to the channel when that element is empty (e.g. blank location codes), so the
 /// default colouring stays varied like snuffler's.
-fn trace_color(t: &ViewTrack, ss: Subsort) -> Color32 {
-    let key = match ss.color_index() {
-        0 => &t.net,
-        1 => &t.sta,
-        2 => &t.loc,
-        _ => &t.cha,
-    };
-    let key = if key.is_empty() { &t.cha } else { key };
+fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
     const PALETTE: [(u8, u8, u8); 7] = [
         (0xCC, 0x4A, 0x4A),
         (0x3A, 0x86, 0xC8),
@@ -238,14 +252,28 @@ fn trace_color(t: &ViewTrack, ss: Subsort) -> Color32 {
         (0x2F, 0xA8, 0xA8),
         (0xC8, 0x5F, 0x9C),
     ];
-    let h = key
-        .bytes()
-        .fold(0u32, |a, b| a.wrapping_mul(131).wrapping_add(b as u32));
-    let (r, g, b) = PALETTE[(h as usize) % PALETTE.len()];
-    Color32::from_rgb(r, g, b)
+    let key = match subsort.color_index() {
+        0 => &track.net,
+        1 => &track.sta,
+        2 => &track.loc,
+        _ => &track.cha,
+    };
+    let key = if key.is_empty() { &track.cha } else { key };
+    let hash = key.bytes().fold(0u32, |acc, byte| {
+        acc.wrapping_mul(131).wrapping_add(u32::from(byte))
+    });
+    let (red, green, blue) = PALETTE
+        .get(hash as usize % PALETTE.len())
+        .copied()
+        .unwrap_or((0x88, 0x88, 0x88));
+    Color32::from_rgb(red, green, blue)
 }
 
 /// Draw the canvas and process interaction.
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive draw/update routine; splitting would obscure the control flow"
+)]
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -289,7 +317,7 @@ pub fn show(
     let window = (meta.view_tmax - meta.view_tmin).max(1e-9);
     let x_of = |t_rel: f64| rect.left() + (t_rel / window) as f32 * rect.width();
     let t_at_x =
-        |x: f32| view_tmin + ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * window;
+        |x: f32| view_tmin + f64::from(((x - rect.left()) / rect.width()).clamp(0.0, 1.0)) * window;
 
     let total = meta.tracks.len();
     handle_keyboard(ui, state, total);
@@ -297,11 +325,14 @@ pub fn show(
     let max_off = total.saturating_sub(n_shown);
     state.track_offset = state.track_offset.min(max_off);
     let off = state.track_offset;
-    let visible: &[ViewTrack] = &meta.tracks[off..(off + n_shown).min(total)];
+    let visible: &[ViewTrack] = meta
+        .tracks
+        .get(off..(off + n_shown).min(total))
+        .unwrap_or(&[]);
     let row_h = track_area.height() / n_shown.max(1) as f32;
 
     // time grid + axis labels
-    let tinc = timeaxis::nice_tinc(window, (rect.width() / 90.0).max(2.0) as f64);
+    let tinc = timeaxis::nice_tinc(window, f64::from((rect.width() / 90.0).max(2.0)));
     let axis_font = FontId::proportional(AXIS_PT);
     for tick in timeaxis::ticks(view_tmin, meta.view_tmax, tinc) {
         let x = x_of(tick - view_tmin);
@@ -452,16 +483,16 @@ pub fn show(
         painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(52, 101, 164, 40));
     }
 
-    if let Some(p) = resp.hover_pos() {
-        if track_area.contains(p) {
-            painter.line_segment(
-                [
-                    egui::pos2(p.x, track_area.top()),
-                    egui::pos2(p.x, track_area.bottom()),
-                ],
-                Stroke::new(1.0, pal.cursor),
-            );
-        }
+    if let Some(p) = resp.hover_pos()
+        && track_area.contains(p)
+    {
+        painter.line_segment(
+            [
+                egui::pos2(p.x, track_area.top()),
+                egui::pos2(p.x, track_area.bottom()),
+            ],
+            Stroke::new(1.0, pal.cursor),
+        );
     }
 
     handle_interaction(ui, &resp, state, view_tmin, window, rect, total, &t_at_x);
@@ -549,7 +580,10 @@ fn draw_markers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "interaction needs the full view + projection context to map pointer input to time"
+)]
 fn handle_interaction(
     ui: &egui::Ui,
     resp: &egui::Response,
@@ -573,9 +607,8 @@ fn handle_interaction(
         } else {
             let pivot = resp
                 .hover_pos()
-                .map(|p| t_at_x(p.x))
-                .unwrap_or(view_tmin + window * 0.5);
-            let factor = (-scroll * 0.0015).exp() as f64;
+                .map_or(view_tmin + window * 0.5, |p| t_at_x(p.x));
+            let factor = f64::from((-scroll * 0.0015).exp());
             zoom_time(state, pivot, factor);
         }
     }
@@ -585,22 +618,21 @@ fn handle_interaction(
             let t = t_at_x(p.x);
             if resp.drag_started() {
                 state.pending_span = Some((t, t));
-            } else if resp.dragged() {
-                if let Some((a, _)) = state.pending_span {
-                    state.pending_span = Some((a, t));
-                }
+            } else if resp.dragged()
+                && let Some((a, _)) = state.pending_span
+            {
+                state.pending_span = Some((a, t));
             }
         }
-        if resp.drag_stopped() {
-            if let Some((a, b)) = state.pending_span.take() {
-                if (a - b).abs() * (rect.width() as f64 / window) > 3.0 {
-                    state.markers.push(Marker::new(a, b, state.marker_kind));
-                }
-            }
+        if resp.drag_stopped()
+            && let Some((a, b)) = state.pending_span.take()
+            && (a - b).abs() * (f64::from(rect.width()) / window) > 3.0
+        {
+            state.markers.push(Marker::new(a, b, state.marker_kind));
         }
     } else if resp.dragged() {
-        let dx = resp.drag_delta().x as f64;
-        let dt = -dx / rect.width() as f64 * window;
+        let dx = f64::from(resp.drag_delta().x);
+        let dt = -dx / f64::from(rect.width()) * window;
         state.tmin += dt;
         state.tmax += dt;
     }
@@ -610,21 +642,21 @@ fn handle_interaction(
             let t = t_at_x(p.x);
             state.markers.push(Marker::new(t, t, state.marker_kind));
         }
-    } else if resp.clicked() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let tol_t = 5.0 / rect.width() as f64 * window;
-            let mut hit = None;
-            for (i, m) in state.markers.iter().enumerate() {
-                if (m.tmin - t_at_x(p.x)).abs() < tol_t {
-                    hit = Some(i);
-                }
+    } else if resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let tol_t = 5.0 / f64::from(rect.width()) * window;
+        let mut hit = None;
+        for (i, m) in state.markers.iter().enumerate() {
+            if (m.tmin - t_at_x(p.x)).abs() < tol_t {
+                hit = Some(i);
             }
-            for m in &mut state.markers {
-                m.selected = false;
-            }
-            if let Some(i) = hit {
-                state.markers[i].selected = true;
-            }
+        }
+        for m in &mut state.markers {
+            m.selected = false;
+        }
+        if let Some(m) = hit.and_then(|i| state.markers.get_mut(i)) {
+            m.selected = true;
         }
     }
 }
@@ -635,6 +667,10 @@ fn zoom_time(state: &mut AppState, pivot: f64, factor: f64) {
     state.tmax = pivot + (state.tmax - pivot) * factor;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive draw/update routine; splitting would obscure the control flow"
+)]
 fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
     // Don't fire single-key shortcuts while a text field (FDSN forms, command
     // line) has the keyboard — otherwise typing "n" would jump markers.
@@ -652,11 +688,17 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
             state.tmin -= win * 0.8;
             state.tmax -= win * 0.8;
         }
-        if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
-            state.ntracks_shown = state.ntracks_shown.saturating_sub(2).max(1);
+        // Track-zoom keys (snuffler: + shows one track MORE, - one LESS, = resets
+        // to the initial count). Plus is Shift+Equals on most layouts, so accept
+        // either for "more"; bare Equals (no shift) is the reset.
+        if i.key_pressed(Key::Plus) || (i.key_pressed(Key::Equals) && shift) {
+            state.ntracks_shown = (state.ntracks_shown + 1).min(total.max(1));
         }
         if i.key_pressed(Key::Minus) {
-            state.ntracks_shown = (state.ntracks_shown + 2).min(total.max(1));
+            state.ntracks_shown = state.ntracks_shown.saturating_sub(1).max(1);
+        }
+        if i.key_pressed(Key::Equals) && !shift {
+            state.ntracks_shown = crate::state::DEFAULT_NTRACKS_SHOWN.min(total.max(1));
         }
         if i.key_pressed(Key::PageDown) {
             state.track_offset =
@@ -703,6 +745,26 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
         }
         if i.key_pressed(Key::C) {
             state.show_controls = !state.show_controls;
+        }
+        if i.key_pressed(Key::Questionmark) || (i.key_pressed(Key::Slash) && shift) {
+            state.show_help = true;
+        }
+        if i.key_pressed(Key::Colon) || (i.key_pressed(Key::Semicolon) && shift) {
+            state.show_command = true;
+        }
+
+        // e: convert selected markers to event markers; E (shift): back to plain
+        // markers (snuffler's "convert to event" / "deactivate event").
+        if i.key_pressed(Key::E) {
+            let to_event = !shift;
+            for m in &mut state.markers {
+                if m.selected {
+                    m.is_event = to_event;
+                    if to_event {
+                        m.phase = None; // an event marker is not a phase pick
+                    }
+                }
+            }
         }
 
         // First-motion polarity on selected phase picks (pile_viewer.py:2233-2251).
@@ -764,10 +826,12 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
             Key::F10,
         ];
         for (n, key) in f_keys.iter().enumerate() {
-            if i.key_pressed(*key) {
+            if i.key_pressed(*key)
+                && let Some(phase) = PHASE_KEYS.get(n)
+            {
                 for m in &mut state.markers {
                     if m.selected {
-                        m.phase = Some(PHASE_KEYS[n].to_string());
+                        m.phase = Some((*phase).to_string());
                     }
                 }
             }
@@ -852,11 +916,10 @@ fn select_relative(state: &mut AppState, forward: bool, events_only: bool) {
         })
         .map(|(idx, m)| (idx, m.tmin));
 
-    if let Some((idx, t)) = pick {
-        for m in &mut state.markers {
-            m.selected = false;
+    if let Some((target, t)) = pick {
+        for (i, m) in state.markers.iter_mut().enumerate() {
+            m.selected = i == target;
         }
-        state.markers[idx].selected = true;
         state.tmin = t - win * 0.5;
         state.tmax = t + win * 0.5;
     }
@@ -868,36 +931,40 @@ fn cycle_selection(state: &mut AppState, forward: bool) {
     if state.markers.is_empty() {
         return;
     }
-    let mut order: Vec<usize> = (0..state.markers.len()).collect();
-    order.sort_by(|&a, &b| {
-        state.markers[a]
-            .tmin
-            .partial_cmp(&state.markers[b].tmin)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // (index, tmin) pairs sorted in time order — avoids indexing back into markers.
+    let mut order: Vec<(usize, f64)> = state
+        .markers
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (i, m.tmin))
+        .collect();
+    order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     if !forward {
         order.reverse();
     }
     let last_selected_pos = order
         .iter()
         .enumerate()
-        .filter(|(_, &idx)| state.markers[idx].selected)
-        .map(|(pos, _)| pos)
+        .filter_map(|(pos, entry)| {
+            let selected = state.markers.get(entry.0).is_some_and(|m| m.selected);
+            selected.then_some(pos)
+        })
         .max();
-    let next_pos = match last_selected_pos {
-        Some(p) => p + 1,
-        None => 0,
-    };
-    if next_pos >= order.len() {
+    let next_pos = last_selected_pos.map_or(0, |pos| pos + 1);
+    let Some(target) = order.get(next_pos).map(|entry| entry.0) else {
         return;
+    };
+
+    let mut tgo = None;
+    for (i, m) in state.markers.iter_mut().enumerate() {
+        m.selected = i == target;
+        if m.selected {
+            tgo = Some(m.tmin);
+        }
     }
-    let idx = order[next_pos];
-    for m in &mut state.markers {
-        m.selected = false;
-    }
-    state.markers[idx].selected = true;
-    let t = state.markers[idx].tmin;
-    if !(state.tmin < t && t < state.tmax) {
+    if let Some(t) = tgo
+        && !(state.tmin < t && t < state.tmax)
+    {
         let win = (state.tmax - state.tmin).max(1e-9);
         state.tmin = t - win * 0.5;
         state.tmax = t + win * 0.5;

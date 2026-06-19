@@ -72,6 +72,26 @@ class ViewMeta(TypedDict):
 # The current set of loaded traces (snuffler's "pile").
 _TRACES: List[ptrace.Trace] = []
 
+# Trace visibility driven by the ':' command line. `_HIDDEN` is a list of NSLC
+# globs to hide; `_REDUCE`, when set, keeps only traces matching it. Matching is
+# fnmatch over the "net.sta.loc.cha" string. Data is never dropped, only hidden.
+_HIDDEN: List[str] = []
+_REDUCE: Optional[str] = None
+
+
+def _visible_traces() -> List[ptrace.Trace]:
+    import fnmatch
+
+    out = []
+    for tr in _TRACES:
+        s = ".".join(tr.nslc_id)
+        if _REDUCE is not None and not fnmatch.fnmatch(s, _REDUCE):
+            continue
+        if any(fnmatch.fnmatch(s, pat) for pat in _HIDDEN):
+            continue
+        out.append(tr)
+    return out
+
 # Station coordinates (net, sta) -> (lat, lon, elevation) and the active event
 # (lat, lon, depth_m, time), populated by the FDSN fetch helpers below. Used for
 # distance/azimuth sorting. The browser does the actual fetch (CORS); all URL
@@ -112,7 +132,7 @@ def _meta(tr: ptrace.Trace) -> TraceMeta:
 
 
 def _scene_json() -> str:
-    metas = [_meta(tr) for tr in _TRACES]
+    metas = [_meta(tr) for tr in _visible_traces()]
     tmin = min((m["tmin"] for m in metas), default=0.0)
     tmax = max((m["tmax"] for m in metas), default=1.0)
     scene: SceneMeta = SceneMeta(tmin=tmin, tmax=tmax, tracks=metas)
@@ -444,7 +464,7 @@ def get_view(params_json: str) -> dict:
     wf_integrate = bool(p.get("wf_integrate", False))
     wf_cscale = p.get("wf_color_scale", "log")
 
-    traces = list(_TRACES)
+    traces = list(_visible_traces())
     if degap:
         try:
             traces = ptrace.degapper(traces)
@@ -533,8 +553,9 @@ def get_spectrum(params_json: str) -> dict:
     rotate = float(p.get("rotate", 0.0) or 0.0)
     nbins = 400
 
-    order = sorted(range(len(_TRACES)), key=lambda i: _TRACES[i].nslc_id)
-    work = _apply_rotation([_TRACES[i] for i in order], rotate)
+    vis = _visible_traces()
+    order = sorted(range(len(vis)), key=lambda i: vis[i].nslc_id)
+    work = _apply_rotation([vis[i] for i in order], rotate)
 
     fmin_global, fmax_global = 1e30, 0.0
     specs = []
@@ -592,8 +613,9 @@ def run_snuffling(name: str, params_json: str) -> str:
     fft = bool(p.get("fft_filtering", False))
     lphp = bool(p.get("bandpass_lphp", True))
 
-    order = _sort_order(_TRACES, p.get("sort", "name"), p.get("subsort", "nslc"))
-    work = _apply_rotation([_TRACES[i] for i in order], rotate)
+    vis = _visible_traces()
+    order = _sort_order(vis, p.get("sort", "name"), p.get("subsort", "nslc"))
+    work = _apply_rotation([vis[i] for i in order], rotate)
 
     def chopped():
         for tr in work:
@@ -1030,3 +1052,128 @@ def cake_arrivals(params_json: str) -> str:
     text = "Theoretical arrivals (ak135): %i picks at %i stations." % (
         len(markers), nstations)
     return json.dumps({"text": text, "markers": markers})
+
+
+def _command_glob(scope: Optional[str], pattern: str) -> str:
+    """Build an "n.s.l.c" fnmatch glob from an optional scope + pattern."""
+    idx = {"n": 0, "s": 1, "l": 2, "c": 3}
+    if scope in idx:
+        fields = ["*", "*", "*", "*"]
+        fields[idx[scope]] = pattern
+        return ".".join(fields)
+    # No scope: a bare token without dots matches anywhere in the id.
+    return pattern if "." in pattern else "*%s*" % pattern
+
+
+def command(line: str) -> str:
+    """Execute a snuffler ':' command line. Returns JSON describing the action:
+    {"action": "goto", "t": <epoch>} | {"action": "scene", "scene": <SceneMeta>}
+    | {"action": "error", "message": ...} | {"action": "none"}.
+
+    Supported: ``goto <time>``; ``hide [n|s|l|c] <pattern>``;
+    ``unhide [[n|s|l|c] <pattern>]``; ``n|s|l|c <pattern>`` (reduce to matching).
+    """
+    global _HIDDEN, _REDUCE
+    parts = line.split()
+    if not parts:
+        return json.dumps({"action": "none"})
+    cmd, args = parts[0], parts[1:]
+
+    if cmd == "goto":
+        if not args:
+            return json.dumps(
+                {"action": "error", "message": "usage: goto <time>"})
+        from pyrocko import util
+        try:
+            t = float(util.str_to_time_fillup(" ".join(args)))
+        except Exception as e:
+            return json.dumps({"action": "error", "message": "bad time: %s" % e})
+        return json.dumps({"action": "goto", "t": t})
+
+    if cmd in ("hide", "unhide"):
+        scope, rest = None, args
+        if args and args[0] in ("n", "s", "l", "c"):
+            scope, rest = args[0], args[1:]
+        pattern = rest[0] if rest else None
+        if cmd == "hide":
+            if pattern is None:
+                return json.dumps(
+                    {"action": "error",
+                     "message": "usage: hide [n|s|l|c] <pattern>"})
+            glob = _command_glob(scope, pattern)
+            if glob not in _HIDDEN:
+                _HIDDEN.append(glob)
+        else:  # unhide (no args clears everything)
+            if pattern is None:
+                _HIDDEN = []
+                _REDUCE = None
+            else:
+                glob = _command_glob(scope, pattern)
+                _HIDDEN = [h for h in _HIDDEN if h != glob]
+        return json.dumps({"action": "scene", "scene": json.loads(_scene_json())})
+
+    if cmd in ("n", "s", "l", "c"):
+        _REDUCE = _command_glob(cmd, args[0] if args else "*")
+        return json.dumps({"action": "scene", "scene": json.loads(_scene_json())})
+
+    return json.dumps(
+        {"action": "error", "message": "unknown command: %s" % cmd})
+
+
+def rms(params_json: str) -> str:
+    """Blockwise root-mean-square derived traces (pyrocko's RMS snuffling).
+
+    For each visible trace, RMS is computed over fixed-length blocks across the
+    visible window and emitted as a new low-rate trace (channel suffix '-RMS').
+    With grouping on, a station's components are combined into one RMS trace.
+    Appends the derived traces and returns the updated scene JSON. All numpy.
+    """
+    import collections
+
+    global _TRACES
+    p = json.loads(params_json)
+    tmin, tmax = float(p["tmin"]), float(p["tmax"])
+    hp, lp = p.get("highpass"), p.get("lowpass")
+    fft = bool(p.get("fft_filtering", False))
+    lphp = bool(p.get("bandpass_lphp", True))
+    block = p.get("rms_block")
+    block = float(block) if block else max(1.0, (tmax - tmin) / 100.0)
+    group = bool(p.get("rms_group", True))
+    logrms = bool(p.get("rms_log", False))
+
+    # Drop any RMS traces from a previous run, then work over what's visible.
+    _TRACES = [tr for tr in _TRACES if not tr.nslc_id[3].endswith("-RMS")]
+    src = [tr for tr in _visible_traces() if not tr.nslc_id[3].endswith("-RMS")]
+
+    nblocks = max(1, int(math.ceil((tmax - tmin) / block)))
+    acc: Dict[Tuple[str, str, str, str], List[Any]] = collections.defaultdict(
+        lambda: [np.zeros(nblocks), np.zeros(nblocks)])  # [sum of squares, count]
+    for tr in src:
+        try:
+            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
+        except Exception:
+            continue
+        if seg.ydata is None or len(seg.ydata) == 0:
+            continue
+        seg.ydata = seg.ydata.astype(np.float64)
+        _filter_seg(seg, hp, lp, fft, lphp)
+        y = seg.ydata
+        idx = np.floor((seg.tmin + np.arange(len(y)) * seg.deltat - tmin) / block)
+        idx = np.clip(idx.astype(int), 0, nblocks - 1)
+        net, sta, loc, cha = tr.nslc_id
+        key_cha = cha[:-1] if group else cha
+        s, c = acc[(net, sta, loc, key_cha)]
+        np.add.at(s, idx, y * y)
+        np.add.at(c, idx, 1.0)
+
+    for (net, sta, loc, key_cha), (s, c) in acc.items():
+        with np.errstate(invalid="ignore", divide="ignore"):
+            vals = np.sqrt(np.where(c > 0, s / c, 0.0))
+            if logrms:
+                vals = np.where(vals > 0, np.log(vals), 0.0)
+        _TRACES.append(ptrace.Trace(
+            network=net, station=sta, location=loc, channel=key_cha + "-RMS",
+            deltat=block, tmin=tmin + 0.5 * block,
+            ydata=vals.astype(np.float64)))
+
+    return _scene_json()

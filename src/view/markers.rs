@@ -22,7 +22,6 @@ pub const MARKER_COLORS: [Color32; 8] = [
 pub const PHASE_KEYS: [&str; 10] = ["P", "S", "PP", "SS", "PcP", "ScS", "PKP", "SKS", "Pg", "Sg"];
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // nslc/is_event support channel-scoped & event markers
 pub struct Marker {
     /// Start time (epoch seconds).
     pub tmin: f64,
@@ -58,7 +57,12 @@ impl Marker {
     }
 
     pub fn color(&self) -> Color32 {
-        MARKER_COLORS[(self.kind & 7) as usize]
+        // `kind & 7` is always in 0..=7, matching `MARKER_COLORS`'s length;
+        // the fallback (color for kind 0) is therefore unreachable.
+        MARKER_COLORS
+            .get((self.kind & 7) as usize)
+            .copied()
+            .unwrap_or(Color32::from_rgb(204, 0, 0))
     }
 
     /// True if this marker spans a time range (vs. a single instant).
