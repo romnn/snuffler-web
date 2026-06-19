@@ -411,11 +411,16 @@ pub fn show(
             } else {
                 (track_area.top(), track_area.bottom())
             };
-            let y_of = |v: f32| (mid - (v - t.ymean) * amp).clamp(cl_top, cl_bot);
+            let trace_clip = Rect::from_min_max(
+                egui::pos2(track_area.left(), cl_top),
+                egui::pos2(track_area.right(), cl_bot),
+            );
+            let trace_painter = painter.with_clip_rect(trace_clip);
+            let y_of = |v: f32| mid - (v - t.ymean) * amp;
 
             if state.show_zero_lines {
                 let yz = y_of(0.0);
-                painter.line_segment(
+                trace_painter.line_segment(
                     [
                         egui::pos2(track_area.left(), yz),
                         egui::pos2(track_area.right(), yz),
@@ -429,14 +434,54 @@ pub fn show(
             } else {
                 pal.trace
             };
-            let samples = view.samples(t);
-            if samples.len() >= 2 {
-                let mut pts = Vec::with_capacity(samples.len());
-                for (i, &v) in samples.iter().enumerate() {
-                    let t_rel = t.t0_rel + i as f64 * t.dt;
-                    pts.push(egui::pos2(x_of(t_rel), y_of(v)));
+            if t.dt > 0.0 {
+                let samples = view.samples(t);
+                if samples.len() >= 2 {
+                    let points: Vec<_> = samples
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &v)| {
+                            let t_rel = t.t0_rel + i as f64 * t.dt;
+                            egui::pos2(x_of(t_rel), y_of(v))
+                        })
+                        .collect();
+                    trace_painter.add(Shape::line(points, Stroke::new(1.0, trace_col)));
                 }
-                painter.add(Shape::line(pts, Stroke::new(1.0, trace_col)));
+            } else if t.dt == 0.0 {
+                let start = t.offset.min(view.ys.len());
+                let end = (t.offset + t.count.saturating_mul(2)).min(view.ys.len());
+                if let Some(points_data) = view.ys.get(start..end)
+                    && points_data.len() >= 4
+                {
+                    let points: Vec<_> = points_data
+                        .chunks_exact(2)
+                        .filter_map(|pair| match pair {
+                            [px, py] => {
+                                Some(egui::pos2(x_of(t.t0_rel + f64::from(*px)), y_of(*py)))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    trace_painter.add(Shape::line(points, Stroke::new(1.0, trace_col)));
+                }
+            } else if t.dt < 0.0 {
+                let start = t.offset.min(view.ys.len());
+                let end = (t.offset + t.count.saturating_mul(3)).min(view.ys.len());
+                if let Some(envelope) = view.ys.get(start..end)
+                    && envelope.len() >= 3
+                {
+                    let stroke = Stroke::new(1.0, trace_col);
+                    for triple in envelope.chunks_exact(3) {
+                        let [t0, ylo, yhi] = triple else {
+                            continue;
+                        };
+                        let x = x_of(t.t0_rel + f64::from(*t0));
+                        trace_painter.line_segment(
+                            [egui::pos2(x, y_of(*ylo)), egui::pos2(x, y_of(*yhi))],
+                            stroke,
+                        );
+                    }
+                }
             }
 
             if state.show_scale_axes {

@@ -11,6 +11,7 @@ const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/
 let pyodideReadyPromise = null;
 let py = null; // the Pyodide instance
 let bridge = null; // the imported Python `bridge` module (PyProxy)
+let stagedFileCounter = 0;
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -29,6 +30,70 @@ async function fetchOk(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`fetch ${url}: ${r.status} ${r.statusText}`);
   return r;
+}
+
+function stagedDataPath(name) {
+  const safe = String(name || "data").replace(/[^A-Za-z0-9._-]+/g, "_").slice(-96) || "data";
+  stagedFileCounter += 1;
+  return `/data/${stagedFileCounter}-${safe}`;
+}
+
+function writeStagedFile(name, data) {
+  try { py.FS.mkdir("/data"); } catch (_e) { /* already exists */ }
+  const path = stagedDataPath(name);
+  py.FS.writeFile(path, data);
+  return path;
+}
+
+function destroyMaybe(value) {
+  if (value && typeof value.destroy === "function") value.destroy();
+}
+
+function pyValueToString(value) {
+  if (typeof value === "string") return value;
+  try {
+    if (value && typeof value.toJs === "function") return value.toJs();
+    return String(value);
+  } finally {
+    destroyMaybe(value);
+  }
+}
+
+function pyBufferResult(res, label) {
+  let ysProxy = null;
+  let buffer = null;
+  try {
+    const meta = pyValueToString(res.get("meta"));
+    ysProxy = res.get("ys");
+    buffer = ysProxy.getBuffer();
+    const data = buffer.data;
+    const ys = data instanceof Float32Array
+      ? data
+      : new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4);
+    let released = false;
+    return {
+      meta,
+      ys,
+      release() {
+        if (released) return;
+        released = true;
+        try {
+          buffer.release();
+        } finally {
+          destroyMaybe(ysProxy);
+          destroyMaybe(res);
+        }
+      },
+    };
+  } catch (e) {
+    try {
+      if (buffer) buffer.release();
+    } finally {
+      destroyMaybe(ysProxy);
+      destroyMaybe(res);
+    }
+    throw new Error(`${label}: ${e && e.message ? e.message : e}`);
+  }
 }
 
 // Report boot progress to the HTML loading overlay (index.html).
@@ -108,34 +173,28 @@ export async function makeExample() {
 
 export async function loadBytes(name, data, fmt) {
   await boot();
-  return bridge.load_bytes(name, data, fmt); // data: Uint8Array -> bytes
+  const path = writeStagedFile(name, data);
+  return bridge.load_path(name, path, fmt, false);
 }
 
 export async function loadUrl(url, fmt) {
   await boot();
   const buf = new Uint8Array(await (await fetchOk(url)).arrayBuffer());
   const name = url.split("/").pop() || "data";
-  return bridge.load_bytes(name, buf, fmt);
+  const path = writeStagedFile(name, buf);
+  return bridge.load_path(name, path, fmt, false);
 }
 
 export async function getView(paramsJson) {
   await boot();
-  const res = bridge.get_view(paramsJson); // PyProxy dict {meta: str, ys: bytes}
-  const obj = res.toJs({ dict_converter: Object.fromEntries });
-  res.destroy();
-  const u8 = obj.ys; // Uint8Array (a copy of the Python bytes)
-  const ys = new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength / 4);
-  return { meta: obj.meta, ys };
+  const res = bridge.get_view(paramsJson); // PyProxy dict {meta: str, ys: ndarray}
+  return pyBufferResult(res, "getView");
 }
 
 export async function getSpectrum(paramsJson) {
   await boot();
   const res = bridge.get_spectrum(paramsJson);
-  const obj = res.toJs({ dict_converter: Object.fromEntries });
-  res.destroy();
-  const u8 = obj.ys;
-  const ys = new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength / 4);
-  return { meta: obj.meta, ys };
+  return pyBufferResult(res, "getSpectrum");
 }
 
 export async function runSnuffling(name, paramsJson) {
@@ -151,7 +210,9 @@ export async function downloadWaveforms(paramsJson) {
   const r = await fetch(url);
   if (!r.ok && r.status !== 204) throw new Error(`dataselect HTTP ${r.status} ${r.statusText}`);
   const buf = new Uint8Array(await r.arrayBuffer());
-  return bridge.load_waveform_bytes(buf); // -> scene JSON string
+  if (buf.byteLength === 0) return JSON.stringify({ tmin: 0.0, tmax: 1.0, tracks: [] });
+  const path = writeStagedFile("fdsn.mseed", buf);
+  return bridge.load_waveform_path(path); // -> scene JSON string
 }
 
 export async function catalogSearch(paramsJson) {
@@ -244,7 +305,8 @@ export async function openFiles() {
   let scene = "";
   for (const f of files) {
     const buf = new Uint8Array(await f.arrayBuffer());
-    scene = bridge.load_bytes(f.name, buf, "detect", true); // append to the pile
+    const path = writeStagedFile(f.name, buf);
+    scene = bridge.load_path(f.name, path, "detect", true); // append to the pile
   }
   return scene;
 }

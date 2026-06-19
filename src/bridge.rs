@@ -78,11 +78,16 @@ pub struct ViewParams {
     pub wf_integrate: bool,
     /// Waterfall colour mapping: "log" | "sqrt" | "lin".
     pub wf_color_scale: String,
+    /// First track for which sample payloads are requested.
+    pub track_offset: usize,
+    /// Number of tracks for which sample payloads are requested.
+    pub track_count: usize,
 }
 
-/// What comes back: per-track decimated polylines + amplitude stats. The actual
-/// sample values live in a single flat `ys` array; each track points into it
-/// via `offset`/`count`, with `t0_rel`/`dt` giving sample times.
+/// What comes back: per-track polylines + amplitude stats. The actual values
+/// live in a single flat `ys` array; each track points into it via
+/// `offset`/`count`. For wiggles, `dt > 0` means raw uniform samples and
+/// `dt == 0` means interleaved explicit `(t_rel, y)` points.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct ViewMeta {
     pub view_tmin: f64,
@@ -103,7 +108,7 @@ pub struct ViewTrack {
     pub label: String,
     /// Time of the first drawn sample, relative to `view_tmin` (seconds).
     pub t0_rel: f64,
-    /// Time between drawn samples (seconds).
+    /// Time between raw samples (seconds), or zero for explicit points.
     pub dt: f64,
     pub count: usize,
     /// Index of this track's first value in the flat `ys` array.
@@ -133,7 +138,7 @@ pub struct ViewData {
 }
 
 impl ViewData {
-    /// Samples for one track as a slice of the flat array.
+    /// Raw uniform samples or waterfall cells for one track as a flat slice.
     pub fn samples<'a>(&'a self, t: &ViewTrack) -> &'a [f32] {
         let end = (t.offset + t.count).min(self.ys.len());
         self.ys.get(t.offset.min(self.ys.len())..end).unwrap_or(&[])
@@ -447,6 +452,16 @@ mod web {
         v.as_string().unwrap_or_else(|| format!("{v:?}"))
     }
 
+    fn release_js_buffer_result(obj: &JsValue) {
+        use wasm_bindgen::JsCast;
+
+        if let Ok(release) = js_sys::Reflect::get(obj, &JsValue::from_str("release"))
+            && let Some(f) = release.dyn_ref::<js_sys::Function>()
+        {
+            let _ = f.call0(obj);
+        }
+    }
+
     fn parse_scene(v: JsValue) -> Result<SceneMeta, String> {
         let s = v
             .as_string()
@@ -455,41 +470,51 @@ mod web {
     }
 
     fn parse_view(obj: JsValue) -> Result<ViewData, String> {
-        use wasm_bindgen::JsCast;
-        let meta_val =
-            js_sys::Reflect::get(&obj, &JsValue::from_str("meta")).map_err(jsval_to_string)?;
-        let meta_str = meta_val
-            .as_string()
-            .ok_or_else(|| "view.meta not a string".to_string())?;
-        let meta: ViewMeta = serde_json::from_str(&meta_str).map_err(|e| e.to_string())?;
-        let ys_val =
-            js_sys::Reflect::get(&obj, &JsValue::from_str("ys")).map_err(jsval_to_string)?;
-        let ys_arr: js_sys::Float32Array = ys_val
-            .dyn_into()
-            .map_err(|_| "view.ys is not a Float32Array".to_string())?;
-        Ok(ViewData {
-            meta,
-            ys: ys_arr.to_vec(),
-        })
+        let parsed = (|| {
+            use wasm_bindgen::JsCast;
+
+            let meta_val =
+                js_sys::Reflect::get(&obj, &JsValue::from_str("meta")).map_err(jsval_to_string)?;
+            let meta_str = meta_val
+                .as_string()
+                .ok_or_else(|| "view.meta not a string".to_string())?;
+            let meta: ViewMeta = serde_json::from_str(&meta_str).map_err(|e| e.to_string())?;
+            let ys_val =
+                js_sys::Reflect::get(&obj, &JsValue::from_str("ys")).map_err(jsval_to_string)?;
+            let ys_arr: js_sys::Float32Array = ys_val
+                .dyn_into()
+                .map_err(|_| "view.ys is not a Float32Array".to_string())?;
+            Ok(ViewData {
+                meta,
+                ys: ys_arr.to_vec(),
+            })
+        })();
+        release_js_buffer_result(&obj);
+        parsed
     }
 
     fn parse_spectrum(obj: JsValue) -> Result<SpectrumData, String> {
-        use wasm_bindgen::JsCast;
-        let meta_val =
-            js_sys::Reflect::get(&obj, &JsValue::from_str("meta")).map_err(jsval_to_string)?;
-        let meta_str = meta_val
-            .as_string()
-            .ok_or_else(|| "spectrum.meta not a string".to_string())?;
-        let meta: SpecMeta = serde_json::from_str(&meta_str).map_err(|e| e.to_string())?;
-        let ys_val =
-            js_sys::Reflect::get(&obj, &JsValue::from_str("ys")).map_err(jsval_to_string)?;
-        let ys_arr: js_sys::Float32Array = ys_val
-            .dyn_into()
-            .map_err(|_| "spectrum.ys is not a Float32Array".to_string())?;
-        Ok(SpectrumData {
-            meta,
-            ys: ys_arr.to_vec(),
-        })
+        let parsed = (|| {
+            use wasm_bindgen::JsCast;
+
+            let meta_val =
+                js_sys::Reflect::get(&obj, &JsValue::from_str("meta")).map_err(jsval_to_string)?;
+            let meta_str = meta_val
+                .as_string()
+                .ok_or_else(|| "spectrum.meta not a string".to_string())?;
+            let meta: SpecMeta = serde_json::from_str(&meta_str).map_err(|e| e.to_string())?;
+            let ys_val =
+                js_sys::Reflect::get(&obj, &JsValue::from_str("ys")).map_err(jsval_to_string)?;
+            let ys_arr: js_sys::Float32Array = ys_val
+                .dyn_into()
+                .map_err(|_| "spectrum.ys is not a Float32Array".to_string())?;
+            Ok(SpectrumData {
+                meta,
+                ys: ys_arr.to_vec(),
+            })
+        })();
+        release_js_buffer_result(&obj);
+        parsed
     }
 
     impl Bridge {

@@ -81,6 +81,8 @@ impl App {
             wf_abs: s.wf_abs,
             wf_integrate: s.wf_integrate,
             wf_color_scale: s.wf_color_scale.as_str().to_string(),
+            track_offset: s.track_offset,
+            track_count: s.ntracks_shown,
         }
     }
 

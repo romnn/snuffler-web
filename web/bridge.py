@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
@@ -51,7 +52,7 @@ class ViewTrack(TypedDict):
     cha: str
     label: str
     t0_rel: float
-    dt: float
+    dt: float       # >0 raw sample spacing, 0 explicit (t_rel, y) points
     count: int
     offset: int
     ymin: float
@@ -77,6 +78,26 @@ _TRACES: List[ptrace.Trace] = []
 # fnmatch over the "net.sta.loc.cha" string. Data is never dropped, only hidden.
 _HIDDEN: List[str] = []
 _REDUCE: Optional[str] = None
+_DATA_GEN = 0
+_RESPONSE_GEN = 0
+_VIEW_CACHE_LIMIT = 256
+_VIEW_CACHE: "OrderedDict[Tuple[Any, ...], Tuple[float, float, np.ndarray]]" = OrderedDict()
+
+
+def _clear_view_cache() -> None:
+    _VIEW_CACHE.clear()
+
+
+def _mark_traces_changed() -> None:
+    global _DATA_GEN
+    _DATA_GEN += 1
+    _clear_view_cache()
+
+
+def _set_traces(traces: List[ptrace.Trace], append: bool = False) -> None:
+    global _TRACES
+    _TRACES = (list(_TRACES) + traces) if append else traces
+    _mark_traces_changed()
 
 
 def _visible_traces() -> List[ptrace.Trace]:
@@ -149,20 +170,23 @@ def make_example() -> str:
     channels = ["HHZ", "HHN", "HHE"]
     t = np.arange(n) * deltat
     rng = np.random.default_rng(42)
-    # Band-limited (microseism-like) smoothing kernel so the synthetic background
-    # looks like a real broadband seismogram rather than white noise.
-    kn = np.hanning(64)
-    kn /= kn.sum()
 
     traces: List[ptrace.Trace] = []
     for si, sta in enumerate(stations):
         arrival = 180.0 + si * 18.0
         env = np.exp(-((t - arrival) ** 2) / (2.0 * 8.0 ** 2))
-        event = env * np.sin(2.0 * np.pi * 1.5 * (t - arrival))
         for cha in channels:
-            noise = np.convolve(rng.standard_normal(n + 128), kn, "same")[64:64 + n]
-            noise /= noise.std() or 1.0
-            y = 0.3 * noise + event
+            phase = rng.uniform(0.0, 2.0 * np.pi)
+            carrier = (
+                np.sin(2.0 * np.pi * 3.2 * (t - arrival) + phase)
+                + 0.45 * np.sin(2.0 * np.pi * 6.7 * (t - arrival) + 0.3 * phase)
+            )
+            coda = np.exp(-np.maximum(t - arrival, 0.0) / 26.0)
+            coda[t < arrival] = 0.0
+            burst_noise = rng.standard_normal(n)
+            event = env * carrier + 0.22 * coda * burst_noise
+            noise = rng.standard_normal(n)
+            y = 0.22 * noise + event
             traces.append(
                 ptrace.Trace(
                     network="XX",
@@ -175,8 +199,16 @@ def make_example() -> str:
                 )
             )
 
-    global _TRACES
-    _TRACES = traces
+    _set_traces(traces)
+    return _scene_json()
+
+
+def load_path(name: str, path: str, fmt: str, append: bool = False) -> str:
+    """Load a file already staged in Pyodide's FS with pyrocko's ``io.load``."""
+    del name
+    fmt2 = "detect" if fmt in (None, "", "detect") else fmt
+    traces = list(pio.load(path, format=fmt2))
+    _set_traces(traces, append=append)
     return _scene_json()
 
 
@@ -190,30 +222,49 @@ def load_bytes(name: str, data: Any, fmt: str, append: bool = False) -> str:
     with open(path, "wb") as f:
         f.write(raw)
     fmt2 = "detect" if fmt in (None, "", "detect") else fmt
-    traces = list(pio.load(path, format=fmt2))
-    global _TRACES
-    _TRACES = (list(_TRACES) + traces) if append else traces
-    return _scene_json()
+    return load_path(name, path, fmt2, append=append)
 
 
 def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, float]:
-    """Min/max envelope decimation (what snuffler/obspy draw): per pixel bin emit
-    the min then the max, so the rendered polyline traces the full amplitude
-    envelope instead of a single spiky sample. Returns (f32 array, count, dt).
-    Below ~2 samples/pixel the raw samples are returned unchanged."""
+    """Return raw samples or a signal-preserving min/max envelope.
+
+    ``dt > 0`` means the payload is raw uniformly-spaced samples. ``dt == 0``
+    means the payload is interleaved ``(t_rel, y)`` points. The reduced
+    representation keeps the first sample, extrema, and last sample of every
+    pixel-scale bin in chronological order so the renderer draws a connected
+    trace without smoothing over peaks.
+    """
     n = len(y)
     npx = max(npx, 16)
-    if n <= npx * 2:
-        return y.astype(np.float32), n, deltat
-    stride = (n + npx - 1) // npx
-    nb = n // stride
-    if nb < 1:
-        return y.astype(np.float32), n, deltat
-    head = y[: nb * stride].reshape(nb, stride)
-    out = np.empty(nb * 2, dtype=np.float32)
-    out[0::2] = head.min(axis=1)  # bin minima (drawn at the bin start)
-    out[1::2] = head.max(axis=1)  # bin maxima (drawn at the bin middle)
-    return out, nb * 2, deltat * stride / 2.0
+    if n <= npx * 4:
+        return np.ascontiguousarray(y, dtype="<f4"), n, deltat
+
+    stride = max(1, int(math.ceil(n / npx)))
+    bins = int(math.ceil(n / stride))
+    out = np.empty(bins * 8, dtype="<f4")
+    pos = 0
+    for start in range(0, n, stride):
+        stop = min(n, start + stride)
+        block = y[start:stop]
+        if block.size == 0:
+            continue
+        candidates = [
+            start,
+            start + int(np.argmin(block)),
+            start + int(np.argmax(block)),
+            stop - 1,
+        ]
+        last_idx = -1
+        for idx in sorted(candidates):
+            if idx == last_idx:
+                continue
+            out[pos] = idx * deltat
+            out[pos + 1] = float(y[idx])
+            pos += 2
+            last_idx = idx
+
+    out = out[:pos]
+    return out, pos // 2, 0.0
 
 
 def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace]:
@@ -398,6 +449,79 @@ def _filter_seg(seg: ptrace.Trace, hp, lp, fft: bool, lphp: bool) -> None:
         pass
 
 
+def _cache_get(key: Tuple[Any, ...]) -> Optional[Tuple[float, float, np.ndarray]]:
+    entry = _VIEW_CACHE.get(key)
+    if entry is not None:
+        _VIEW_CACHE.move_to_end(key)
+    return entry
+
+
+def _cache_put(key: Tuple[Any, ...], entry: Tuple[float, float, np.ndarray]) -> None:
+    _VIEW_CACHE[key] = entry
+    _VIEW_CACHE.move_to_end(key)
+    while len(_VIEW_CACHE) > _VIEW_CACHE_LIMIT:
+        _VIEW_CACHE.popitem(last=False)
+
+
+def _float_key(value: Optional[float]) -> Optional[float]:
+    return None if value is None else round(float(value), 9)
+
+
+def _processed_trace(
+    tr: ptrace.Trace,
+    track_key: Tuple[Any, ...],
+    tmin: float,
+    tmax: float,
+    hp: Optional[float],
+    lp: Optional[float],
+    demean: bool,
+    fft: bool,
+    lphp: bool,
+) -> Optional[Tuple[float, float, np.ndarray]]:
+    del tmin, tmax
+    proc_min, proc_max = float(tr.tmin), float(tr.tmax)
+    key = (
+        _DATA_GEN, _RESPONSE_GEN, track_key, _float_key(proc_min),
+        _float_key(proc_max), _float_key(hp), _float_key(lp),
+        bool(demean), bool(fft), bool(lphp),
+    )
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        seg = tr.chop(proc_min, proc_max, inplace=False, include_last=True)
+    except Exception:
+        return None
+    if seg.ydata is None or len(seg.ydata) == 0:
+        return None
+
+    seg.ydata = seg.ydata.astype(np.float64)
+    if demean:
+        seg.ydata = seg.ydata - seg.ydata.mean()
+    _filter_seg(seg, hp, lp, fft, lphp)
+    entry = (
+        float(seg.tmin),
+        float(seg.deltat),
+        np.ascontiguousarray(seg.ydata, dtype=np.float64),
+    )
+    _cache_put(key, entry)
+    return entry
+
+
+def _slice_segment(
+    entry: Tuple[float, float, np.ndarray],
+    tmin: float,
+    tmax: float,
+) -> Optional[Tuple[np.ndarray, float, float]]:
+    seg_tmin, deltat, y = entry
+    start = max(0, int(math.floor((tmin - seg_tmin) / deltat)))
+    stop = min(len(y), int(math.ceil((tmax - seg_tmin) / deltat)) + 1)
+    if stop <= start:
+        return None
+    return y[start:stop], seg_tmin + start * deltat, deltat
+
+
 def _spectrogram(seg: ptrace.Trace, npx: int, want_abs: bool, want_integrate: bool, cscale: str):
     """Return (flat [time][freq] float32, nf, nt, fmax, vmin, vmax, t0_rel, dt)."""
     from scipy import signal as sps
@@ -439,13 +563,18 @@ def _spectrogram(seg: ptrace.Trace, npx: int, want_abs: bool, want_integrate: bo
 def get_view(params_json: str) -> dict:
     """Compute the requested view (wiggle waveforms or a waterfall spectrogram).
 
-    Returns {meta: <ViewMeta JSON>, ys: <float32 bytes>}. For wiggles `ys` holds
-    decimated samples; for the waterfall it holds per-track [time][freq] log-power
-    (nf*nt values). Rust copies the Float32Array and renders accordingly."""
+    Returns {meta: <ViewMeta JSON>, ys: <float32 ndarray>}. For wiggles `ys`
+    holds raw uniform samples at close zooms, or explicit `(t_rel, y)` extrema
+    points for reduced long-window views. For the waterfall it holds per-track
+    [time][freq] log-power for the requested track page.
+    """
     p = json.loads(params_json)
     tmin = float(p["tmin"])
     tmax = float(p["tmax"])
     npx = int(p["npx"])
+    track_offset = max(0, int(p.get("track_offset", 0) or 0))
+    track_count = max(0, int(p.get("track_count", 0) or 0))
+    track_end = track_offset + track_count
     hp: Optional[float] = p.get("highpass")
     lp: Optional[float] = p.get("lowpass")
     sort = p.get("sort", "name")
@@ -478,68 +607,105 @@ def get_view(params_json: str) -> dict:
     ys_parts: List[np.ndarray] = []
     tracks: List[ViewTrack] = []
     offset = 0
-    for tr in work:
-        try:
-            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
-        except Exception:
+    view_idx = 0
+    for tr_idx, tr in enumerate(work):
+        if float(tr.tmax) < tmin or float(tr.tmin) > tmax:
             continue
-        if seg.ydata is None or len(seg.ydata) == 0:
-            continue
-        seg.ydata = seg.ydata.astype(np.float64)
-        if demean:
-            seg.ydata = seg.ydata - seg.ydata.mean()
-        _filter_seg(seg, hp, lp, fft, lphp)
 
         net, sta, loc, cha = tr.nslc_id
         label = ".".join(tr.nslc_id)
+        want_samples = track_offset <= view_idx < track_end
+        view_idx += 1
 
         if mode == "waterfall":
-            spec = _spectrogram(seg, npx, wf_abs, wf_integrate, wf_cscale)
-            if spec is None:
-                continue
-            flat, nf, nt, fmax, vmin, vmax, t0_rel, dt = spec
+            flat = np.zeros(0, dtype="<f4")
+            nf = nt = 0
+            fmax = vmin = vmax = 0.0
+            t0_rel = max(float(tr.tmin), tmin) - tmin
+            dt = float(tr.deltat)
+            if want_samples:
+                try:
+                    seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
+                except Exception:
+                    seg = None
+                if seg is not None and seg.ydata is not None and len(seg.ydata) > 0:
+                    seg.ydata = seg.ydata.astype(np.float64)
+                    if demean:
+                        seg.ydata = seg.ydata - seg.ydata.mean()
+                    _filter_seg(seg, hp, lp, fft, lphp)
+                    spec = _spectrogram(seg, npx, wf_abs, wf_integrate, wf_cscale)
+                    if spec is not None:
+                        flat, nf, nt, fmax, vmin, vmax, spec_t0_rel, dt = spec
+                        t0_rel = (float(seg.tmin) - tmin) + spec_t0_rel
             tracks.append(ViewTrack(
                 net=net, sta=sta, loc=loc, cha=cha, label=label,
-                t0_rel=(float(seg.tmin) - tmin) + t0_rel, dt=dt,
+                t0_rel=t0_rel, dt=dt,
                 count=int(nf * nt), offset=int(offset),
                 ymin=vmin, ymax=vmax, ymean=0.0, yscale=1.0,
                 nf=int(nf), nt=int(nt), fmax=fmax,
             ))
-            ys_parts.append(flat)
-            offset += int(nf * nt)
+            if want_samples and flat.size:
+                ys_parts.append(np.ascontiguousarray(flat, dtype="<f4"))
+                offset += int(nf * nt)
         else:
-            # Amplitude range from the chosen scaling base over the raw samples.
-            lo, hi = _scale_range(seg.ydata, base)
-            target = npx if allow_ds else len(seg.ydata)
-            y, count, dt = _decimate(seg.ydata, float(seg.deltat), target)
+            track_key = (
+                tr_idx, tuple(tr.nslc_id), _float_key(float(tr.tmin)),
+                _float_key(float(tr.tmax)), _float_key(float(tr.deltat)),
+                int(tr.data_len()), _float_key(rotate), bool(remove_response),
+                bool(degap),
+            )
+            entry = _processed_trace(
+                tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
+            if entry is None:
+                continue
+            sliced = _slice_segment(entry, tmin, tmax)
+            if sliced is None:
+                continue
+            yview, ytmin, deltat = sliced
+            yscale_source = entry[2]
+            lo, hi = _scale_range(yscale_source, base)
+            ymean = float(yscale_source.mean()) if len(yscale_source) else 0.0
+            count = 0
+            dt = deltat
+            t0_rel = ytmin - tmin
+            payload_len = 0
+            if want_samples:
+                target = npx if allow_ds else len(yview)
+                y, count, dt = _decimate(yview, deltat, target)
+                ys_parts.append(np.ascontiguousarray(y, dtype="<f4"))
+                payload_len = int(y.size)
             tracks.append(ViewTrack(
                 net=net, sta=sta, loc=loc, cha=cha, label=label,
-                t0_rel=float(seg.tmin) - tmin, dt=dt,
+                t0_rel=t0_rel, dt=dt,
                 count=int(count), offset=int(offset),
                 ymin=lo, ymax=hi,
-                ymean=float(seg.ydata.mean()) if len(seg.ydata) else 0.0,
+                ymean=ymean,
                 yscale=0.0,
                 nf=0, nt=0, fmax=0.0,
             ))
-            ys_parts.append(y.astype("<f4"))
-            offset += int(count)
+            if want_samples:
+                offset += payload_len
 
     # Grouped display scale (snuffler's Scaling grouping): per group, the largest
     # half-range; egui multiplies by this directly (no scaling math on its side).
-    halfs: dict = {}
-    for t in tracks:
-        if t["nf"]:
-            continue
-        h = max(t["ymax"] - t["ymean"], t["ymean"] - t["ymin"], 1e-12)
-        k = _group_key(t, scaling_group)
-        halfs[k] = max(halfs.get(k, 0.0), h)
-    for t in tracks:
-        if not t["nf"]:
-            t["yscale"] = halfs.get(_group_key(t, scaling_group), 1.0)
+    if mode != "waterfall":
+        halfs: dict = {}
+        for t in tracks:
+            if t["nf"]:
+                continue
+            h = max(t["ymax"] - t["ymean"], t["ymean"] - t["ymin"], 1e-12)
+            k = _group_key(t, scaling_group)
+            halfs[k] = max(halfs.get(k, 0.0), h)
+        for t in tracks:
+            if not t["nf"]:
+                t["yscale"] = halfs.get(_group_key(t, scaling_group), 1.0)
 
-    ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, dtype="<f4")
+    ys = (
+        np.ascontiguousarray(np.concatenate(ys_parts), dtype="<f4")
+        if ys_parts else np.zeros(0, dtype="<f4")
+    )
     meta: ViewMeta = ViewMeta(view_tmin=tmin, view_tmax=tmax, tracks=tracks)
-    return {"meta": json.dumps(meta), "ys": ys.tobytes()}
+    return {"meta": json.dumps(meta), "ys": ys}
 
 
 def get_spectrum(params_json: str) -> dict:
@@ -556,6 +722,9 @@ def get_spectrum(params_json: str) -> dict:
     vis = _visible_traces()
     order = sorted(range(len(vis)), key=lambda i: vis[i].nslc_id)
     work = _apply_rotation([vis[i] for i in order], rotate)
+    track_offset = max(0, int(p.get("track_offset", 0) or 0))
+    track_count = max(0, int(p.get("track_count", len(work)) or len(work)))
+    work = work[track_offset:track_offset + track_count]
 
     fmin_global, fmax_global = 1e30, 0.0
     specs = []
@@ -586,7 +755,7 @@ def get_spectrum(params_json: str) -> dict:
 
     if not specs or fmax_global <= 0:
         return {"meta": json.dumps({"fmin": 0.1, "fmax": 1.0, "tracks": []}),
-                "ys": np.zeros(0, "<f4").tobytes()}
+                "ys": np.zeros(0, "<f4")}
 
     fmin_global = max(fmin_global, fmax_global * 1e-4)
     grid = np.logspace(np.log10(fmin_global), np.log10(fmax_global), nbins)
@@ -600,7 +769,7 @@ def get_spectrum(params_json: str) -> dict:
         offset += nbins
     ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, "<f4")
     meta = {"fmin": float(fmin_global), "fmax": float(fmax_global), "tracks": tracks}
-    return {"meta": json.dumps(meta), "ys": ys.tobytes()}
+    return {"meta": json.dumps(meta), "ys": np.ascontiguousarray(ys, dtype="<f4")}
 
 
 def run_snuffling(name: str, params_json: str) -> str:
@@ -727,9 +896,15 @@ def load_waveform_bytes(data: Any) -> str:
     path = "/data/fdsn.mseed"
     with open(path, "wb") as f:
         f.write(raw)
+    return load_waveform_path(path)
+
+
+def load_waveform_path(path: str) -> str:
+    """Load staged FDSN MiniSEED bytes into the pile and return the scene JSON."""
+    if not path:
+        return json.dumps(SceneMeta(tmin=0.0, tmax=1.0, tracks=[]))
     traces = list(pio.load(path, format="mseed"))
-    global _TRACES
-    _TRACES = traces
+    _set_traces(traces)
     return _scene_json()
 
 
@@ -850,12 +1025,14 @@ def response_url(params_json: str) -> str:
 def load_responses(xml_text: str) -> str:
     """Parse fetched StationXML into instrument responses (for Deconvolution) and
     also harvest station coordinates (for distance/azimuth sorting)."""
-    global _STATIONXML
+    global _STATIONXML, _RESPONSE_GEN
     if not xml_text.strip():
         return json.dumps({"text": "no station metadata returned", "markers": []})
     from pyrocko.io import stationxml
 
     _STATIONXML = stationxml.load_xml(string=xml_text)
+    _RESPONSE_GEN += 1
+    _clear_view_cache()
     nchan = 0
     for net in _STATIONXML.network_list:
         for st in net.station_list:
@@ -1176,4 +1353,5 @@ def rms(params_json: str) -> str:
             deltat=block, tmin=tmin + 0.5 * block,
             ydata=vals.astype(np.float64)))
 
+    _mark_traces_changed()
     return _scene_json()
