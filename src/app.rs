@@ -24,8 +24,7 @@ pub struct App {
 fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::TextStyle;
-    // Follow the OS light/dark preference by default.
-    ctx.set_theme(egui::ThemePreference::System);
+    ctx.set_theme(egui::ThemePreference::Light);
     let mut style = (*ctx.global_style()).clone();
     style.text_styles = [
         (TextStyle::Heading, FontId::new(19.0, Proportional)),

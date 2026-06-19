@@ -49,8 +49,8 @@ fn palette(dark: bool) -> Palette {
         }
     } else {
         Palette {
-            bg: Color32::from_rgb(250, 250, 250),
-            trace: Color32::from_rgb(45, 48, 52),
+            bg: Color32::from_rgb(255, 255, 255),
+            trace: Color32::from_rgb(72, 78, 84),
             grid: Color32::from_rgb(224, 224, 224),
             zero: Color32::from_rgb(236, 236, 236),
             axis_text: Color32::from_rgb(64, 64, 64),
@@ -240,8 +240,8 @@ const INFERNO: [[f32; 3]; 9] = [
 ];
 
 /// Colour a trace by the NSLC element the current subsort colours by. Falls back
-/// to the channel when that element is empty (e.g. blank location codes), so the
-/// default colouring stays varied like snuffler's.
+/// to the full label when that element is empty (e.g. blank location codes), so
+/// the default colouring stays varied like snuffler's.
 fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
     const PALETTE: [(u8, u8, u8); 7] = [
         (0xCC, 0x4A, 0x4A),
@@ -258,7 +258,7 @@ fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
         2 => &track.loc,
         _ => &track.cha,
     };
-    let key = if key.is_empty() { &track.cha } else { key };
+    let key = if key.is_empty() { &track.label } else { key };
     let hash = key.bytes().fold(0u32, |acc, byte| {
         acc.wrapping_mul(131).wrapping_add(u32::from(byte))
     });
@@ -267,6 +267,16 @@ fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
         .copied()
         .unwrap_or((0x88, 0x88, 0x88));
     Color32::from_rgb(red, green, blue)
+}
+
+fn row_tint(color: Color32, dark: bool) -> Color32 {
+    let target = if dark { 24.0 } else { 255.0 };
+    let keep = if dark { 0.22 } else { 0.30 };
+    let mix = |channel: u8| {
+        let value = f32::from(channel) * keep + target * (1.0 - keep);
+        value.round().clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(mix(color.r()), mix(color.g()), mix(color.b()))
 }
 
 /// Draw the canvas and process interaction.
@@ -330,6 +340,22 @@ pub fn show(
         .get(off..(off + n_shown).min(total))
         .unwrap_or(&[]);
     let row_h = track_area.height() / n_shown.max(1) as f32;
+
+    if state.color_traces && !waterfall {
+        for (k, t) in visible.iter().enumerate() {
+            let top = track_area.top() + k as f32 * row_h;
+            let bot = top + row_h;
+            let fill = row_tint(trace_color(t, state.subsort), ui.visuals().dark_mode);
+            painter.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(track_area.left(), top),
+                    egui::pos2(track_area.right(), bot),
+                ),
+                0.0,
+                fill,
+            );
+        }
+    }
 
     // time grid + axis labels
     let tinc = timeaxis::nice_tinc(window, f64::from((rect.width() / 90.0).max(2.0)));
@@ -429,11 +455,7 @@ pub fn show(
                 );
             }
 
-            let trace_col = if state.color_traces {
-                trace_color(t, state.subsort)
-            } else {
-                pal.trace
-            };
+            let trace_col = pal.trace;
             if t.dt > 0.0 {
                 let samples = view.samples(t);
                 if samples.len() >= 2 {
@@ -513,7 +535,9 @@ pub fn show(
         let label_pos = egui::pos2(track_area.left() + 5.0, top + 3.0);
         let galley = painter.layout_no_wrap(t.label.clone(), label_font.clone(), pal.axis_text);
         let bg = Rect::from_min_size(label_pos, galley.size()).expand(3.0);
-        painter.rect_filled(bg, 3.0, pal.label_bg);
+        if !state.color_traces {
+            painter.rect_filled(bg, 3.0, pal.label_bg);
+        }
         painter.galley(label_pos, galley, pal.axis_text);
     }
 

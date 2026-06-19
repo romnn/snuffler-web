@@ -517,6 +517,154 @@ mod web {
         parsed
     }
 
+    fn view_track_values<'a>(view: &'a ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
+        if track.nf > 0 {
+            return ("waterfall", Vec::new());
+        }
+        if track.dt > 0.0 {
+            return ("raw", view.samples(track).to_vec());
+        }
+
+        let stride = if track.dt == 0.0 { 2 } else { 3 };
+        let start = track.offset.min(view.ys.len());
+        let end = (track.offset + track.count.saturating_mul(stride)).min(view.ys.len());
+        let Some(payload) = view.ys.get(start..end) else {
+            return ("missing", Vec::new());
+        };
+        if track.dt == 0.0 {
+            return (
+                "points",
+                payload.chunks_exact(2).map(|pair| pair[1]).collect(),
+            );
+        }
+        let mut values = Vec::with_capacity(track.count.saturating_mul(2));
+        for triple in payload.chunks_exact(3) {
+            values.push(triple[1]);
+            values.push(triple[2]);
+        }
+        ("legacy-envelope", values)
+    }
+
+    fn finite_stats(values: &[f32]) -> Option<(f32, f32, f64, f64)> {
+        let mut n = 0usize;
+        let mut min_v = f32::INFINITY;
+        let mut max_v = f32::NEG_INFINITY;
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        for &v in values.iter().filter(|v| v.is_finite()) {
+            n += 1;
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+            let fv = f64::from(v);
+            sum += fv;
+            sum_sq += fv * fv;
+        }
+        if n == 0 {
+            return None;
+        }
+        Some((min_v, max_v, sum / n as f64, (sum_sq / n as f64).sqrt()))
+    }
+
+    fn sample_head(values: &[f32]) -> String {
+        values
+            .iter()
+            .take(8)
+            .map(|v| format!("{v:.5}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn log_view_debug(params: &ViewParams, view: &ViewData) {
+        if params.mode != "wiggle" {
+            return;
+        }
+
+        let rendered_tracks: Vec<_> = view
+            .meta
+            .tracks
+            .iter()
+            .skip(params.track_offset)
+            .take(params.track_count)
+            .collect();
+        let raw_tracks = rendered_tracks
+            .iter()
+            .filter(|track| track.nf == 0 && track.count > 0 && track.dt > 0.0)
+            .count();
+        let point_tracks = rendered_tracks
+            .iter()
+            .filter(|track| track.nf == 0 && track.count > 0 && track.dt == 0.0)
+            .count();
+        let legacy_tracks = rendered_tracks
+            .iter()
+            .filter(|track| track.nf == 0 && track.count > 0 && track.dt < 0.0)
+            .count();
+        let window = params.tmax - params.tmin;
+        log::info!(
+            "[view] t=[{:.6},{:.6}] dt_window={:.3}s npx={} track_page={}..{} returned_tracks={} ys={} rendered_modes raw={} points={} legacy={}",
+            params.tmin,
+            params.tmax,
+            window,
+            params.npx,
+            params.track_offset,
+            params.track_offset + params.track_count,
+            view.meta.tracks.len(),
+            view.ys.len(),
+            raw_tracks,
+            point_tracks,
+            legacy_tracks,
+        );
+
+        for (idx, track) in view
+            .meta
+            .tracks
+            .iter()
+            .enumerate()
+            .skip(params.track_offset)
+            .take(params.track_count)
+        {
+            let (mode, values) = view_track_values(view, track);
+            let points_per_px = if params.npx == 0 {
+                0.0
+            } else {
+                values.len() as f64 / f64::from(params.npx)
+            };
+            if let Some((min_v, max_v, mean, rms)) = finite_stats(&values) {
+                log::debug!(
+                    "[view.track] idx={} label={} mode={} count={} points_per_px={:.3} data_min={:.6} data_max={:.6} data_mean={:.6} data_rms={:.6} scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9} head=[{}]",
+                    idx,
+                    track.label,
+                    mode,
+                    values.len(),
+                    points_per_px,
+                    min_v,
+                    max_v,
+                    mean,
+                    rms,
+                    track.ymin,
+                    track.ymax,
+                    track.ymean,
+                    track.yscale,
+                    track.t0_rel,
+                    track.dt,
+                    sample_head(&values),
+                );
+            } else {
+                log::debug!(
+                    "[view.track] idx={} label={} mode={} count=0 scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9}",
+                    idx,
+                    track.label,
+                    mode,
+                    track.ymin,
+                    track.ymax,
+                    track.ymean,
+                    track.yscale,
+                    track.t0_rel,
+                    track.dt,
+                );
+            }
+        }
+    }
+
     impl Bridge {
         pub fn load_example(&self, ctx: &egui::Context) {
             self.inner.borrow_mut().status = Status::Loading("Loading example…".into());
@@ -1024,6 +1172,7 @@ mod web {
                     let mut i = inner.borrow_mut();
                     match parsed {
                         Ok(vd) => {
+                            log_view_debug(&params, &vd);
                             i.view = Some(vd);
                             i.view_epoch += 1;
                             i.applied = Some(params);
