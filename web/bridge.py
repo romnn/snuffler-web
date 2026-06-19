@@ -636,6 +636,42 @@ def run_snuffling(name: str, params_json: str) -> str:
             "markers": markers,
         })
 
+    if name == "polarization":
+        # Covariance-eigenvalue polarization analysis (Jurkevics, 1988) per
+        # 3-component station over the visible window. Pure numpy.
+        groups: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        comp_of = {"Z": "Z", "N": "N", "1": "N", "E": "E", "2": "E"}
+        for tr, seg in chopped():
+            net, sta, loc, cha = tr.nslc_id
+            comp = comp_of.get(cha[-1].upper()) if cha else None
+            if comp is not None:
+                groups.setdefault((net, sta, loc), {})[comp] = seg.ydata
+
+        lines = ["%-16s %8s %8s %6s %6s" % (
+            "station", "az[°]", "inc[°]", "rect", "plan")]
+        for (net, sta, loc), comps in groups.items():
+            if not all(k in comps for k in ("Z", "N", "E")):
+                continue
+            m = min(len(comps[k]) for k in ("Z", "N", "E"))
+            if m < 8:
+                continue
+            data = np.vstack([comps["Z"][:m], comps["N"][:m], comps["E"][:m]])
+            data = data - data.mean(axis=1, keepdims=True)
+            evals, evecs = np.linalg.eigh(np.cov(data))  # ascending
+            order_ev = np.argsort(evals)[::-1]
+            l1, l2, l3 = (float(evals[i]) for i in order_ev)
+            vz, vn, ve = evecs[:, order_ev[0]]
+            rect = 1.0 - (l2 + l3) / (2.0 * l1) if l1 > 0.0 else 0.0
+            plan = 1.0 - 2.0 * l3 / (l1 + l2) if (l1 + l2) > 0.0 else 0.0
+            az = float(np.degrees(np.arctan2(ve, vn))) % 360.0
+            inc = float(np.degrees(np.arccos(min(1.0, abs(float(vz))))))
+            lines.append("%-16s %8.1f %8.1f %6.2f %6.2f" % (
+                "%s.%s.%s" % (net, sta, loc), az, inc, rect, plan))
+
+        text = "\n".join(lines) if len(lines) > 1 else \
+            "Need 3-component (Z/N/E) data in the visible window."
+        return json.dumps({"text": text, "markers": []})
+
     return json.dumps({"text": "Unknown snuffling: %s" % name, "markers": []})
 
 

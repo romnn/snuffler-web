@@ -291,6 +291,18 @@ impl App {
                 self.bridge.run_snuffling(ctx, "stalta".into(), p);
                 ui.close();
             }
+            if ui
+                .button("Polarization (3-component)")
+                .on_hover_text(
+                    "Covariance-eigen polarization (azimuth, incidence, \
+                     rectilinearity, planarity) per Z/N/E station in the window.",
+                )
+                .clicked()
+            {
+                let p = self.current_params(800);
+                self.bridge.run_snuffling(ctx, "polarization".into(), p);
+                ui.close();
+            }
         });
     }
 
