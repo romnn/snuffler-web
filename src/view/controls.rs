@@ -8,44 +8,81 @@ use crate::state::{
 };
 
 const FILTER_MIN_HZ: f64 = 0.001;
-const FILTER_MAX_HZ: f64 = 1000.0;
-const LABEL_W: f32 = 76.0;
-const VALUE_W: f32 = 86.0;
+const FILTER_MAX_HZ: f64 = 25.0;
+const LABEL_W: f32 = 104.0;
+const VALUE_W: f32 = 96.0;
+
+fn format_compact(value: f64, digits: usize) -> String {
+    let mut text = format!("{value:.digits$}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').into();
+    }
+    text
+}
 
 fn format_hz(value: Option<f64>) -> String {
     match value {
-        None => "0 Hz".into(),
-        Some(v) if v < 1.0 => format!("{v:.3} Hz"),
-        Some(v) if v < 100.0 => format!("{v:.2} Hz"),
-        Some(v) => format!("{v:.1} Hz"),
+        None => "off".into(),
+        Some(v) if v < 1.0 => format_compact(v, 3),
+        Some(v) if v < 100.0 => format_compact(v, 2),
+        Some(v) => format_compact(v, 1),
     }
 }
 
-fn filter_to_pos(value: Option<f64>) -> f64 {
-    let Some(hz) = value else {
-        return 0.0;
-    };
+fn filter_to_unit(hz: f64) -> f64 {
     let hz = hz.clamp(FILTER_MIN_HZ, FILTER_MAX_HZ);
     (hz / FILTER_MIN_HZ).ln() / (FILTER_MAX_HZ / FILTER_MIN_HZ).ln()
 }
 
-fn pos_to_filter(pos: f64) -> Option<f64> {
+fn unit_to_filter(unit: f64) -> f64 {
+    FILTER_MIN_HZ * (FILTER_MAX_HZ / FILTER_MIN_HZ).powf(unit.clamp(0.0, 1.0))
+}
+
+fn highpass_to_pos(value: Option<f64>) -> f64 {
+    let Some(hz) = value else {
+        return 0.0;
+    };
+    filter_to_unit(hz)
+}
+
+fn pos_to_highpass(pos: f64) -> Option<f64> {
     if pos <= 0.0 {
         return None;
     }
-    Some(FILTER_MIN_HZ * (FILTER_MAX_HZ / FILTER_MIN_HZ).powf(pos.clamp(0.0, 1.0)))
+    Some(unit_to_filter(pos))
 }
 
-fn control_row(ui: &mut egui::Ui, label: &str, value: String, add: impl FnOnce(&mut egui::Ui)) {
+fn lowpass_to_pos(value: Option<f64>) -> f64 {
+    let Some(hz) = value else {
+        return 1.0;
+    };
+    filter_to_unit(hz)
+}
+
+fn pos_to_lowpass(pos: f64) -> Option<f64> {
+    if pos >= 1.0 {
+        return None;
+    }
+    Some(unit_to_filter(pos))
+}
+
+fn control_row(ui: &mut egui::Ui, label: &str, mut value: String, add: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         let row_h = ui.spacing().interact_size.y;
-        ui.add_sized([LABEL_W, row_h], egui::Label::new(label));
-        ui.allocate_ui_with_layout(
-            egui::vec2(VALUE_W, row_h),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
-                ui.label(egui::RichText::new(value).monospace());
-            },
+        let (label_rect, _) =
+            ui.allocate_exact_size(egui::vec2(LABEL_W, row_h), egui::Sense::hover());
+        ui.painter().text(
+            label_rect.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            label,
+            egui::TextStyle::Body.resolve(ui.style()),
+            ui.visuals().text_color(),
+        );
+        ui.add_sized(
+            [VALUE_W, row_h],
+            egui::TextEdit::singleline(&mut value)
+                .font(egui::TextStyle::Monospace)
+                .interactive(false),
         );
         ui.spacing_mut().slider_width = ui.available_width().max(160.0);
         add(ui);
@@ -59,20 +96,20 @@ fn control_row(ui: &mut egui::Ui, label: &str, value: String, add: impl FnOnce(&
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
 
-    let mut highpass_pos = filter_to_pos(state.highpass);
-    control_row(ui, "Highpass", format_hz(state.highpass), |ui| {
+    let mut highpass_pos = highpass_to_pos(state.highpass);
+    control_row(ui, "Highpass [Hz]:", format_hz(state.highpass), |ui| {
         ui.add(egui::Slider::new(&mut highpass_pos, 0.0..=1.0).show_value(false));
     });
-    state.highpass = pos_to_filter(highpass_pos);
+    state.highpass = pos_to_highpass(highpass_pos);
     if let Some(hz) = state.highpass {
         state.highpass_hz = hz;
     }
 
-    let mut lowpass_pos = filter_to_pos(state.lowpass);
-    control_row(ui, "Lowpass", format_hz(state.lowpass), |ui| {
+    let mut lowpass_pos = lowpass_to_pos(state.lowpass);
+    control_row(ui, "Lowpass [Hz]:", format_hz(state.lowpass), |ui| {
         ui.add(egui::Slider::new(&mut lowpass_pos, 0.0..=1.0).show_value(false));
     });
-    state.lowpass = pos_to_filter(lowpass_pos);
+    state.lowpass = pos_to_lowpass(lowpass_pos);
     if let Some(hz) = state.lowpass {
         state.lowpass_hz = hz;
     }
@@ -89,18 +126,28 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
 
     // Gain is meaningless for the waterfall, so snuffler hides it there.
     if !waterfall {
-        control_row(ui, "Gain", format!("{:.2}", state.gain), |ui| {
-            ui.add(
-                egui::Slider::new(&mut state.gain, 0.001..=1000.0)
-                    .logarithmic(true)
-                    .show_value(false),
-            );
-        });
+        control_row(
+            ui,
+            "Gain:",
+            format_compact(f64::from(state.gain), 3),
+            |ui| {
+                ui.add(
+                    egui::Slider::new(&mut state.gain, 0.001..=1000.0)
+                        .logarithmic(true)
+                        .show_value(false),
+                );
+            },
+        );
     }
 
-    control_row(ui, "Rotate", format!("{:.1}°", state.rotate_deg), |ui| {
-        ui.add(egui::Slider::new(&mut state.rotate_deg, -180.0..=180.0).show_value(false));
-    });
+    control_row(
+        ui,
+        "Rotate [deg]:",
+        format_compact(state.rotate_deg, 1),
+        |ui| {
+            ui.add(egui::Slider::new(&mut state.rotate_deg, -180.0..=180.0).show_value(false));
+        },
+    );
 
     ui.separator();
 
