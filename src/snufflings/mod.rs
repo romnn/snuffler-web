@@ -1,4 +1,5 @@
 mod amplitude_spectrum;
+mod cake;
 mod minmax;
 mod polarization;
 mod rms;
@@ -15,6 +16,7 @@ enum Panel {
     Stalta,
     Polarization,
     Rms,
+    Cake,
 }
 
 impl Panel {
@@ -25,6 +27,7 @@ impl Panel {
             Panel::Stalta => "STA LTA Detector",
             Panel::Polarization => "Polarization",
             Panel::Rms => "RMS",
+            Panel::Cake => "Cake Phase",
         }
     }
 }
@@ -34,6 +37,12 @@ pub enum Action {
     Spectrum,
     Run(&'static str),
     Rms,
+    /// Open/refresh the Cake Phase "Plot Model" window.
+    CakePlotModel,
+    /// Open/refresh the Cake Phase "Plot Rays" window.
+    CakePlotRays,
+    /// Let the user upload a custom `.nd` earth model.
+    AddCakeModel,
 }
 
 #[derive(Default)]
@@ -43,6 +52,7 @@ pub struct SnufflingState {
     stalta: stalta::Config,
     polarization: polarization::Config,
     rms: rms::Config,
+    cake: cake::Config,
 }
 
 impl SnufflingState {
@@ -52,6 +62,7 @@ impl SnufflingState {
             stalta: self.stalta.params(),
             polarization: self.polarization.params(),
             rms: self.rms.params(),
+            cake: self.cake.params(),
         }
     }
 
@@ -65,6 +76,40 @@ impl SnufflingState {
 
     pub fn close_spectrum_plot(&mut self) {
         self.spectrum.close_plot();
+    }
+
+    pub fn show_cake_model_plot(&self) -> bool {
+        self.cake.show_model_plot()
+    }
+
+    pub fn open_cake_model_plot(&mut self) {
+        self.cake.open_model_plot();
+    }
+
+    pub fn close_cake_model_plot(&mut self) {
+        self.cake.close_model_plot();
+    }
+
+    pub fn show_cake_rays_plot(&self) -> bool {
+        self.cake.show_rays_plot()
+    }
+
+    pub fn open_cake_rays_plot(&mut self) {
+        self.cake.open_rays_plot();
+    }
+
+    pub fn close_cake_rays_plot(&mut self) {
+        self.cake.close_rays_plot();
+    }
+
+    /// Open the Cake Phase config panel (used by the Data-menu shortcut).
+    pub fn open_cake_panel(&mut self) {
+        self.active_panel = Some(Panel::Cake);
+    }
+
+    /// Register a custom earth model uploaded via "Add Model" and select it.
+    pub fn add_cake_model(&mut self, name: String) {
+        self.cake.add_model(name);
     }
 }
 
@@ -109,6 +154,18 @@ pub fn menu(ui: &mut egui::Ui, state: &mut SnufflingState, view_mode: &mut ViewM
             state.active_panel = Some(Panel::Rms);
             ui.close();
         }
+        ui.separator();
+        if ui
+            .button("Cake Phase (theoretical arrivals)")
+            .on_hover_text(
+                "Theoretical phase arrivals through a 1D earth model \
+                 (pyrocko.cake): markers, model-velocity plot and ray paths.",
+            )
+            .clicked()
+        {
+            state.active_panel = Some(Panel::Cake);
+            ui.close();
+        }
     });
 }
 
@@ -133,6 +190,7 @@ pub fn show_panel(
                     polarization::panel(ui, &mut state.polarization, main_highpass, main_lowpass)
                 }
                 Panel::Rms => rms::panel(ui, &mut state.rms, main_highpass, main_lowpass),
+                Panel::Cake => cake::panel(ui, &mut state.cake),
             };
         });
     if !open {

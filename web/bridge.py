@@ -841,6 +841,9 @@ def run_snuffling(name: str, params_json: str) -> str:
     fft = bool(p.get("fft_filtering", False))
     lphp = bool(p.get("bandpass_lphp", True))
 
+    if name == "cake":
+        return _cake_run(p)
+
     vis = _visible_traces()
     order = _sort_order(vis, p.get("sort", "name"), p.get("subsort", "nslc"))
     work = _apply_rotation([vis[i] for i in order], rotate)
@@ -1305,18 +1308,114 @@ def markers_from_text(text: str) -> str:
     return json.dumps(out)
 
 
-# Path where bridge.js stages the ak135 earth model (it is shipped as a build
-# asset and written into the Pyodide FS on first use; see cakeArrivals there).
-EARTHMODEL_PATH = "/earthmodel.nd"
+# Directory where bridge.js stages the cake earth models (tiny .nd text files
+# shipped as build assets and written into the Pyodide FS on first use; the
+# minimal wheel has no data dir, so cake.builtin_models() is empty and models
+# must be loaded by path). See ensureEarthModels in bridge.js.
+MODEL_DIR = "/earthmodels"
 
 
-def cake_arrivals(params_json: str) -> str:
-    """Theoretical P/S arrival times for the active event at each loaded station.
+def _cake_model_path(name: str) -> str:
+    """Filesystem path of a staged cake model from its dropdown name."""
+    return "%s/%s.nd" % (MODEL_DIR, name)
+
+
+def _cake_load_model(cake, name: str):
+    """Load the staged builtin cake earth model selected in the dropdown."""
+    return cake.load_model(_cake_model_path(name))
+
+
+def _phase_color_id(name: str) -> int:
+    """Stable per-phase index into the egui marker palette (8 Tango colors).
+
+    In the spirit of :py:func:`pyrocko.plot.cake_plot.path2colorint`, but kept
+    deterministic and without the collision-avoidance pass, so the Rust side can
+    reuse the same color for a phase's markers, ray paths and the ray legend
+    with no extra bookkeeping crossing the boundary.
+    """
+    return sum(ord(ch) for ch in name) % 8
+
+
+def _cake_section(p: Dict[str, Any]):
+    """Extract the Cake Phase knobs from the snuffling params."""
+    c = _snuffling_section(p, "cake")
+    model = str(c.get("cake_model", "ak135-f-continental.m"))
+    phases = [str(x) for x in (c.get("cake_phases") or ["~P"])]
+    tshift = float(c.get("cake_tshift", 0.0) or 0.0)
+    use_station_depth = bool(c.get("cake_use_station_depth", False))
+    mode = str(c.get("cake_mode", "run") or "run")
+    return model, phases, tshift, use_station_depth, mode
+
+
+def _cake_wanted_phases(cake, names: List[str]):
+    """Turn the enabled phase names into cake ``PhaseDef`` objects.
+
+    A leading ``~`` selects a raw definition (``cake.PhaseDef``); any other name
+    is expanded via the classic-phase table (``cake.PhaseDef.classic``), exactly
+    as the Qt Cake Phase snuffling does. The friendly name is stashed on each
+    PhaseDef so ``ray.given_phase().name`` reports it back. Parse failures are
+    collected (not raised) so one bad custom phase does not sink the whole run.
+    """
+    wanted = []
+    errors: List[str] = []
+    for name in names:
+        try:
+            if name.startswith("~"):
+                phases = [cake.PhaseDef(name[1:])]
+            else:
+                phases = cake.PhaseDef.classic(name)
+        except (cake.UnknownClassicPhase, cake.PhaseDefParseError) as exc:
+            errors.append("%s (%s)" % (name, exc))
+            continue
+        for pha in phases:
+            pha.name = name
+        wanted.extend(phases)
+    return wanted, errors
+
+
+def _cake_stations():
+    """``(net, sta, dist_deg, elevation_m)`` for stations that have loaded traces.
+
+    Distances are great-circle degrees from the active event (which is what
+    ``cake.arrivals`` wants). Requires ``_ACTIVE_EVENT`` + ``_STATIONS``.
+    """
+    elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
+    have = {(tr.nslc_id[0], tr.nslc_id[1]) for tr in _TRACES}
+    out = []
+    for (net, sta), (slat, slon, elev) in _STATIONS.items():
+        if have and (net, sta) not in have:
+            continue
+        out.append((net, sta, _dist_deg(elat, elon, slat, slon), elev))
+    return out
+
+
+def _cake_model_geometry(cake, mod):
+    """(discontinuities, layers) of a cake model in km, for the egui plots.
+
+    Mirrors :py:func:`pyrocko.plot.cake_plot.sketch_model`: water layers have
+    ``vs == 0`` top and bottom; gradient layers are ``cake.GradientLayer``.
+    """
+    discs = [
+        {"z_km": float(d.z) / 1000.0, "name": d.name}
+        for d in mod.discontinuities()]
+    layers = [
+        {"ztop_km": float(lay.ztop) / 1000.0,
+         "zbot_km": float(lay.zbot) / 1000.0,
+         "water": bool(lay.mtop.vs == 0.0 and lay.mbot.vs == 0.0),
+         "gradient": isinstance(lay, cake.GradientLayer),
+         "name": lay.name}
+        for lay in mod.layers()]
+    return discs, layers
+
+
+def _cake_run(p: Dict[str, Any]) -> str:
+    """Theoretical arrivals → phase markers (the Cake Phase 'Run' action).
 
     All travel-time computation is pyrocko's :py:mod:`pyrocko.cake` (pure
-    numpy/scipy ray tracing through the ak135 model) and the geometry is
-    :py:mod:`pyrocko.orthodrome`; this only marshals the result into markers.
+    numpy/scipy ray tracing) and the geometry is :py:func:`_dist_deg`; this only
+    marshals the rays into markers and a per-pick angle table.
     """
+    model, phase_names, tshift, use_station_depth, _mode = _cake_section(p)
     if _ACTIVE_EVENT is None:
         return json.dumps({
             "text": "No active event. Run a catalog search first "
@@ -1332,39 +1431,154 @@ def cake_arrivals(params_json: str) -> str:
 
     from pyrocko import cake
 
-    elat, elon, edepth, etime = _ACTIVE_EVENT
-    mod = cake.load_model(EARTHMODEL_PATH)
+    _elat, _elon, edepth, etime = _ACTIVE_EVENT
+    mod = _cake_load_model(cake, model)
+    wanted, errors = _cake_wanted_phases(cake, phase_names)
 
-    # Only annotate stations that actually have traces loaded, so the picks line
-    # up with visible tracks.
-    have = {(tr.nslc_id[0], tr.nslc_id[1]) for tr in _TRACES}
     markers: List[Dict[str, Any]] = []
+    lines = ["%-14s %-8s %12s %8s %8s" % (
+        "station", "phase", "t-rel[s]", "inc[deg]", "tko[deg]")]
     nstations = 0
-    for (net, sta), (slat, slon, _elev) in _STATIONS.items():
-        if have and (net, sta) not in have:
-            continue
-        dist_deg = _dist_deg(elat, elon, slat, slon)
+    for net, sta, dist_deg, elev in _cake_stations():
         nstations += 1
-        for phasename, kind in (("P", 1), ("S", 2)):
-            try:
-                phases = cake.PhaseDef.classic(phasename)
-            except Exception:
-                phases = [cake.PhaseDef(phasename)]
-            rays = mod.arrivals(
-                distances=[dist_deg], phases=phases, zstart=edepth, zstop=0.0)
-            if rays:
-                t = etime + float(rays[0].t)  # earliest arrival of this phase
-                markers.append({
-                    "t": t,
-                    "tmax": t,
-                    "kind": kind,
-                    "phase": phasename,
-                    "nslc": [net, sta, "", "*"],
-                })
+        # _STATIONS stores elevation, not instrument depth; approximate a
+        # borehole depth from a negative elevation when the user opts in (Qt
+        # uses station.depth, which the web app does not track).
+        rdepth = max(0.0, -float(elev)) if use_station_depth else 0.0
+        rays = mod.arrivals(
+            phases=wanted, distances=[dist_deg], zstart=edepth, zstop=rdepth)
+        for ray in rays:
+            name = ray.given_phase().name
+            tt = float(ray.t) + tshift
+            inc = float(ray.incidence_angle())
+            tko = float(ray.takeoff_angle())
+            markers.append({
+                "t": etime + tt,
+                "tmax": etime + tt,
+                "kind": _phase_color_id(name),
+                "phase": name,
+                "nslc": [net, sta, "", "*"],
+            })
+            lines.append("%-14s %-8s %12.3f %8.1f %8.1f" % (
+                "%s.%s" % (net, sta), name, tt, inc, tko))
 
-    text = "Theoretical arrivals (ak135): %i picks at %i stations." % (
-        len(markers), nstations)
+    header = "Cake arrivals (%s): %d pick(s) at %d station(s)." % (
+        model, len(markers), nstations)
+    if errors:
+        header += "\nSkipped phases: " + ", ".join(errors)
+    text = header + "\n\n" + "\n".join(lines) if len(markers) else header
     return json.dumps({"text": text, "markers": markers})
+
+
+def cake_plot(params_json: str) -> str:
+    """Numeric data for the Cake Phase 'Plot Model' / 'Plot Rays' windows.
+
+    All geometry is pyrocko's cake ray tracer; this only converts to the km
+    units the egui plot expects and serialises polylines — the Rust side renders
+    (no matplotlib, unlike the Qt snuffling). Returns a tagged JSON object whose
+    ``kind`` is ``"model"`` or ``"rays"``.
+    """
+    p = json.loads(params_json)
+    model, phase_names, _tshift, use_station_depth, mode = _cake_section(p)
+
+    from pyrocko import cake
+
+    mod = _cake_load_model(cake, model)
+    if mode == "plot_model":
+        return _cake_plot_model(cake, mod, model)
+    return _cake_plot_rays(cake, mod, model, phase_names, use_station_depth)
+
+
+def _cake_plot_model(cake, mod, title: str) -> str:
+    z = np.asarray(mod.profile('z'), dtype=np.float64) / 1000.0
+    vp = np.asarray(mod.profile('vp'), dtype=np.float64) / 1000.0
+    vs = np.asarray(mod.profile('vs'), dtype=np.float64) / 1000.0
+
+    def interleave(vals: np.ndarray) -> List[float]:
+        out: List[float] = []
+        for vi, zi in zip(vals, z):
+            out.append(float(vi))
+            out.append(float(zi))
+        return out
+
+    discs, layers = _cake_model_geometry(cake, mod)
+    return json.dumps({
+        "kind": "model",
+        "title": title,
+        "vp": interleave(vp),
+        "vs": interleave(vs),
+        "discontinuities": discs,
+        "layers": layers,
+        "vmax_km": float(np.nanmax(vp)) if vp.size else 0.0,
+        "zmax_km": float(np.nanmax(z)) if z.size else 0.0,
+    })
+
+
+def _cake_plot_rays(cake, mod, title: str, phase_names, use_station_depth) -> str:
+    if _ACTIVE_EVENT is None or not _STATIONS:
+        return json.dumps({
+            "kind": "rays", "title": "Ray Paths", "rays": [],
+            "discontinuities": [], "layers": [], "legend": [],
+            "source": {"x_km": 0.0, "z_km": 0.0}, "receivers": [],
+            "xmin_km": 0.0, "xmax_km": 1.0, "zmax_km": 1.0,
+            "text": "No active event / stations for ray paths.",
+        })
+
+    _elat, _elon, edepth, _etime = _ACTIVE_EVENT
+    wanted, _errors = _cake_wanted_phases(cake, phase_names)
+    kmf = cake.d2r * cake.earthradius / cake.km  # epicentral degrees -> km
+
+    allrays = []
+    receivers: List[Dict[str, float]] = []
+    xmax = 0.0
+    zmax = 0.0
+    for _net, _sta, dist_deg, elev in _cake_stations():
+        rdepth = max(0.0, -float(elev)) if use_station_depth else 0.0
+        rays = mod.arrivals(
+            phases=wanted, distances=[dist_deg], zstart=edepth, zstop=rdepth)
+        allrays.extend(rays)
+        xkm = float(dist_deg) * kmf
+        receivers.append({"x_km": xkm, "z_km": float(rdepth) / cake.km})
+        xmax = max(xmax, xkm)
+
+    out_rays = []
+    legend_names: List[str] = []
+    for ray in allrays:
+        name = ray.given_phase().name
+        if name not in legend_names:
+            legend_names.append(name)
+        fanz, fanx, _fant = ray.zxt_path_subdivided()
+        segs = []
+        for zs, xs in zip(fanz, fanx):
+            seg: List[float] = []
+            for xi, zi in zip(np.asarray(xs), np.asarray(zs)):
+                xkm = float(xi) * kmf
+                zkm = float(zi) / cake.km
+                seg.append(xkm)
+                seg.append(zkm)
+                xmax = max(xmax, xkm)
+                zmax = max(zmax, zkm)
+            if seg:
+                segs.append(seg)
+        if segs:
+            out_rays.append({
+                "color": _phase_color_id(name), "phase": name, "segs": segs})
+
+    discs, layers = _cake_model_geometry(cake, mod)
+    return json.dumps({
+        "kind": "rays",
+        "title": "Ray Paths (%s)" % title,
+        "rays": out_rays,
+        "discontinuities": discs,
+        "layers": layers,
+        "source": {"x_km": 0.0, "z_km": float(edepth) / cake.km},
+        "receivers": receivers,
+        "legend": [
+            {"phase": n, "color": _phase_color_id(n)} for n in legend_names],
+        "xmin_km": 0.0,
+        "xmax_km": xmax if xmax > 0.0 else 1.0,
+        "zmax_km": zmax if zmax > 0.0 else 1.0,
+    })
 
 
 def _command_glob(scope: Optional[str], pattern: str) -> str:

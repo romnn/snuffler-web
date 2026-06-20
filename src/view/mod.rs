@@ -1,5 +1,6 @@
 //! The snuffler waveform inspector UI (egui).
 
+pub mod cakeplot;
 pub mod controls;
 pub mod draw;
 pub mod map;

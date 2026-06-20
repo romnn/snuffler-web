@@ -23,6 +23,9 @@ pub struct App {
     wf_cache: WaterfallCache,
     /// Params the spectrum snuffling was last requested for (refetch gate).
     spectrum_key: Option<SnufflingRequestParams>,
+    /// Params the Cake "Plot Model" / "Plot Rays" windows were last fetched for.
+    cake_model_key: Option<SnufflingRequestParams>,
+    cake_rays_key: Option<SnufflingRequestParams>,
     /// Snuffling-result generation we last applied (markers/text once each).
     last_snuffling_gen: u64,
     /// Scene time bounds last used for auto-fit; derived traces keep the same bounds.
@@ -89,6 +92,8 @@ impl App {
             last_scene_gen: 0,
             wf_cache: WaterfallCache::default(),
             spectrum_key: None,
+            cake_model_key: None,
+            cake_rays_key: None,
             last_snuffling_gen: 0,
             last_scene_bounds: None,
             map: crate::view::map::MapState::default(),
@@ -175,7 +180,7 @@ impl App {
         });
     }
 
-    fn data_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn data_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Data", |ui| {
             if ui.button("Download waveforms (FDSN)…").clicked() {
                 self.state.show_download = true;
@@ -191,14 +196,14 @@ impl App {
             }
             ui.separator();
             if ui
-                .button("Add theoretical arrivals (cake)")
+                .button("Cake Phase (theoretical arrivals)…")
                 .on_hover_text(
-                    "Compute P/S travel times (ak135) for the active catalog event \
-                     at the loaded stations and add them as phase markers.",
+                    "Open the Cake Phase snuffling: theoretical phase arrivals, a \
+                     model-velocity plot and ray paths (pyrocko.cake).",
                 )
                 .clicked()
             {
-                self.bridge.cake_arrivals(ctx);
+                self.state.snufflings.open_cake_panel();
                 ui.close();
             }
             ui.separator();
@@ -431,7 +436,7 @@ impl eframe::App for App {
         egui::Panel::top("menu").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 self.file_menu(ui, &ctx);
-                self.data_menu(ui, &ctx);
+                self.data_menu(ui);
                 self.view_menu(ui);
                 self.options_menu(ui);
                 self.scaling_menu(ui);
@@ -592,20 +597,39 @@ impl eframe::App for App {
             }
         }
 
+        // A custom earth model just picked via Cake Phase "Add Model".
+        if let Some(name) = self.bridge.take_pending_cake_model() {
+            self.state.snufflings.add_cake_model(name);
+        }
+
         if let Some(action) = crate::snufflings::show_panel(
             &ctx,
             &mut self.state.snufflings,
             self.state.highpass,
             self.state.lowpass,
         ) {
-            let params = self.current_snuffling_params(800);
+            let mut params = self.current_snuffling_params(800);
             match action {
                 SnufflingAction::Spectrum => {
                     self.state.snufflings.open_spectrum_plot();
                     self.spectrum_key = None;
                 }
-                SnufflingAction::Run(name) => self.bridge.run_snuffling(&ctx, name.into(), params),
+                SnufflingAction::Run(name) => {
+                    if name == "cake" {
+                        "run".clone_into(&mut params.snufflings.cake.cake_mode);
+                    }
+                    self.bridge.run_snuffling(&ctx, name.into(), params);
+                }
                 SnufflingAction::Rms => self.bridge.rms_traces(&ctx, params),
+                SnufflingAction::CakePlotModel => {
+                    self.state.snufflings.open_cake_model_plot();
+                    self.cake_model_key = None;
+                }
+                SnufflingAction::CakePlotRays => {
+                    self.state.snufflings.open_cake_rays_plot();
+                    self.cake_rays_key = None;
+                }
+                SnufflingAction::AddCakeModel => self.bridge.add_cake_model(&ctx),
             }
         }
 
@@ -630,11 +654,55 @@ impl eframe::App for App {
             }
         }
 
+        // Cake Phase "Plot Model" window (P/S velocity vs depth).
+        if self.state.snufflings.show_cake_model_plot() {
+            let mut params = self.current_snuffling_params(800);
+            "plot_model".clone_into(&mut params.snufflings.cake.cake_mode);
+            if self.cake_model_key.as_ref() != Some(&params) {
+                self.bridge.cake_plot(&ctx, params.clone());
+                self.cake_model_key = Some(params);
+            }
+            let plot = self.bridge.cake_model_plot();
+            let mut open = true;
+            egui::Window::new("Cake model")
+                .open(&mut open)
+                .default_size([560.0, 460.0])
+                .show(&ctx, |ui| {
+                    crate::view::cakeplot::draw_model_plot(ui, plot.as_ref());
+                });
+            if !open {
+                self.state.snufflings.close_cake_model_plot();
+                self.cake_model_key = None;
+            }
+        }
+
+        // Cake Phase "Plot Rays" window (ray paths through the model).
+        if self.state.snufflings.show_cake_rays_plot() {
+            let mut params = self.current_snuffling_params(800);
+            "plot_rays".clone_into(&mut params.snufflings.cake.cake_mode);
+            if self.cake_rays_key.as_ref() != Some(&params) {
+                self.bridge.cake_plot(&ctx, params.clone());
+                self.cake_rays_key = Some(params);
+            }
+            let plot = self.bridge.cake_rays_plot();
+            let mut open = true;
+            egui::Window::new("Cake ray paths")
+                .open(&mut open)
+                .default_size([620.0, 460.0])
+                .show(&ctx, |ui| {
+                    crate::view::cakeplot::draw_rays_plot(ui, plot.as_ref());
+                });
+            if !open {
+                self.state.snufflings.close_cake_rays_plot();
+                self.cake_rays_key = None;
+            }
+        }
+
         if self.state.show_help {
             let mut open = true;
             egui::Window::new("Snuffler controls")
                 .open(&mut open)
-                .default_size([880.0, 520.0])
+                .default_size([560.0, 640.0])
                 .show(&ctx, help_text);
             self.state.show_help = open;
         }
@@ -1030,36 +1098,35 @@ fn help_text(ui: &mut egui::Ui) {
         ("scaling ...", "Set scaling rules (native only)."),
     ];
 
-    egui::ScrollArea::both().show(ui, |ui| {
-        ui.columns(3, |cols| {
-            if let [key_col, mouse_col, command_col] = cols {
-                help_column(key_col, "Key", KEY_ROWS, false);
-                help_column(mouse_col, "Mouse", MOUSE_ROWS, false);
-                help_column(command_col, "Command", COMMAND_ROWS, true);
-            }
-        });
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        help_section(ui, "Key", KEY_ROWS, false);
+        ui.add_space(14.0);
+        help_section(ui, "Mouse", MOUSE_ROWS, false);
+        ui.add_space(14.0);
+        help_section(ui, "Command", COMMAND_ROWS, true);
     });
 }
 
-fn help_column(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)], monospace_key: bool) {
+fn help_section(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)], monospace_key: bool) {
     ui.heading(title);
-    ui.add_space(4.0);
-    egui::Grid::new(("help_column", title))
+    ui.add_space(6.0);
+    egui::Grid::new(("help_section", title))
         .num_columns(2)
-        .spacing([12.0, 6.0])
+        .spacing([18.0, 6.0])
         .striped(true)
         .show(ui, |ui| {
             for (key, description) in rows {
                 let key_text = egui::RichText::new(*key);
                 if monospace_key {
-                    ui.label(key_text.monospace());
+                    ui.label(key_text.monospace().strong());
                 } else {
-                    ui.label(key_text.italics());
+                    ui.label(key_text.italics().strong());
                 }
                 ui.label(*description);
                 ui.end_row();
             }
         });
+    ui.add_space(4.0);
 }
 
 fn about_text(ui: &mut egui::Ui) {

@@ -97,6 +97,7 @@ pub struct SnufflingParams {
     pub stalta: StaltaSnufflingParams,
     pub polarization: PolarizationSnufflingParams,
     pub rms: RmsSnufflingParams,
+    pub cake: CakeSnufflingParams,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -151,6 +152,22 @@ pub struct RmsSnufflingParams {
     pub rms_block: f64,
     pub rms_group: bool,
     pub rms_log: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the cake_* names are the literal JSON keys bridge.py reads; renaming desyncs the wire contract"
+)]
+pub struct CakeSnufflingParams {
+    /// Dropdown model name; bridge.py maps it to `/earthmodels/<name>.nd`.
+    pub cake_model: String,
+    /// Enabled phase names; a leading `~` is kept (it selects a raw `PhaseDef`).
+    pub cake_phases: Vec<String>,
+    pub cake_tshift: f64,
+    pub cake_use_station_depth: bool,
+    /// `"run"` | `"plot_model"` | `"plot_rays"`; set per-action by the app.
+    pub cake_mode: String,
 }
 
 /// What comes back: per-track polylines + amplitude stats. The actual values
@@ -284,6 +301,98 @@ fn default_show_window() -> bool {
     true
 }
 
+/// A discontinuity in a cake model (e.g. moho, cmb, icb); depth in km.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakeDiscontinuity {
+    pub z_km: f32,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// One layer of a cake model (a depth band in km) for background shading.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakeLayer {
+    pub ztop_km: f32,
+    pub zbot_km: f32,
+    pub water: bool,
+    pub gradient: bool,
+}
+
+/// Velocity-depth model for the Cake Phase "Plot Model" window. `vp`/`vs` are
+/// flat interleaved `(velocity_km_s, depth_km)` pairs.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakeModelPlot {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub vp: Vec<f32>,
+    #[serde(default)]
+    pub vs: Vec<f32>,
+    #[serde(default)]
+    pub discontinuities: Vec<CakeDiscontinuity>,
+    #[serde(default)]
+    pub layers: Vec<CakeLayer>,
+    pub vmax_km: f32,
+    pub zmax_km: f32,
+}
+
+/// One traced ray for the "Plot Rays" window. Each entry of `segs` is a polyline
+/// stored as a flat interleaved `(distance_km, depth_km)` array; `color` indexes
+/// the marker palette (assigned per phase in Python so it matches the legend).
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakeRay {
+    pub color: u8,
+    #[serde(default)]
+    pub segs: Vec<Vec<f32>>,
+}
+
+/// A point in the ray-paths cross-section (distance/depth in km).
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakePoint {
+    #[serde(default)]
+    pub x_km: f32,
+    pub z_km: f32,
+}
+
+/// A phase entry in the ray-paths legend (`color` matches its rays).
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakeLegendEntry {
+    pub phase: String,
+    pub color: u8,
+}
+
+/// Ray-path cross-section for the Cake Phase "Plot Rays" window (all km).
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct CakeRaysPlot {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub rays: Vec<CakeRay>,
+    #[serde(default)]
+    pub discontinuities: Vec<CakeDiscontinuity>,
+    #[serde(default)]
+    pub layers: Vec<CakeLayer>,
+    #[serde(default)]
+    pub source: CakePoint,
+    #[serde(default)]
+    pub receivers: Vec<CakePoint>,
+    #[serde(default)]
+    pub legend: Vec<CakeLegendEntry>,
+    pub xmin_km: f32,
+    pub xmax_km: f32,
+    pub zmax_km: f32,
+}
+
+/// Tagged result of a `cake_plot` call (the JSON carries a `kind` discriminator).
+/// Only the wasm bridge parses it, so it is gated to that target.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CakePlotResult {
+    Model(CakeModelPlot),
+    Rays(CakeRaysPlot),
+}
+
 /// Outcome of a ':' command line. `action` is "goto" | "scene" | "error" | "none".
 /// Only the wasm bridge constructs/consumes this, so it is gated to that target.
 #[cfg(target_arch = "wasm32")]
@@ -366,6 +475,13 @@ struct Inner {
     spectrum_in_flight: bool,
     snuffling: Option<SnufflingResult>,
     snuffling_gen: u64,
+    cake_model_plot: Option<CakeModelPlot>,
+    cake_rays_plot: Option<CakeRaysPlot>,
+    cake_model_in_flight: bool,
+    cake_rays_in_flight: bool,
+    /// A custom model name the user just uploaded ("Add Model"), for the App to
+    /// add to the Cake Phase dropdown and select.
+    pending_cake_model: Option<String>,
     map: Option<MapData>,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
     view_in_flight: bool,
@@ -428,6 +544,21 @@ impl Bridge {
 
     pub fn snuffling(&self) -> Option<SnufflingResult> {
         self.inner.borrow().snuffling.clone()
+    }
+
+    /// Latest Cake Phase "Plot Model" data (for the model-velocity window).
+    pub fn cake_model_plot(&self) -> Option<CakeModelPlot> {
+        self.inner.borrow().cake_model_plot.clone()
+    }
+
+    /// Latest Cake Phase "Plot Rays" data (for the ray-paths window).
+    pub fn cake_rays_plot(&self) -> Option<CakeRaysPlot> {
+        self.inner.borrow().cake_rays_plot.clone()
+    }
+
+    /// Take a custom model name added via "Add Model" (for the App to register).
+    pub fn take_pending_cake_model(&self) -> Option<String> {
+        self.inner.borrow_mut().pending_cake_model.take()
     }
 
     pub fn map_data(&self) -> Option<MapData> {
@@ -507,8 +638,11 @@ mod web {
         #[wasm_bindgen(js_name = mapData, catch)]
         async fn js_map_data() -> Result<JsValue, JsValue>;
 
-        #[wasm_bindgen(js_name = cakeArrivals, catch)]
-        async fn js_cake_arrivals() -> Result<JsValue, JsValue>;
+        #[wasm_bindgen(js_name = cakePlot, catch)]
+        async fn js_cake_plot(params_json: String) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = addCakeModel, catch)]
+        async fn js_add_cake_model() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = runCommand, catch)]
         async fn js_run_command(line: String) -> Result<JsValue, JsValue>;
@@ -1002,29 +1136,65 @@ mod web {
             });
         }
 
-        /// Compute theoretical P/S arrivals (pyrocko.cake) for the active event
-        /// at the loaded stations and add them as phase markers.
-        pub fn cake_arrivals(&self, ctx: &egui::Context) {
+        /// Fetch Cake Phase plot data (pyrocko.cake) for the current params. The
+        /// `cake_mode` (`plot_model` | `plot_rays`) selects which window's data
+        /// is computed and stored; the App draws it (no matplotlib).
+        pub fn cake_plot(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
+            let rays = params.snufflings.cake.cake_mode == "plot_rays";
+            {
+                let mut i = self.inner.borrow_mut();
+                let busy = if rays {
+                    i.cake_rays_in_flight
+                } else {
+                    i.cake_model_in_flight
+                };
+                if busy || !matches!(i.status, Status::Ready) {
+                    return;
+                }
+                if rays {
+                    i.cake_rays_in_flight = true;
+                } else {
+                    i.cake_model_in_flight = true;
+                }
+            }
+            let json = serde_json::to_string(&params).unwrap_or_default();
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_cake_arrivals().await {
+                let parsed = match js_cake_plot(json).await {
                     Ok(v) => v
                         .as_string()
-                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: jsval_to_string(e),
-                        markers: Vec::new(),
-                        scene: None,
-                    }),
+                        .and_then(|s| serde_json::from_str::<CakePlotResult>(&s).ok()),
+                    Err(_) => None,
                 };
                 {
                     let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        i.snuffling = Some(r);
-                        i.snuffling_gen += 1;
+                    match parsed {
+                        Some(CakePlotResult::Model(m)) => i.cake_model_plot = Some(m),
+                        Some(CakePlotResult::Rays(r)) => i.cake_rays_plot = Some(r),
+                        None => {}
                     }
+                    if rays {
+                        i.cake_rays_in_flight = false;
+                    } else {
+                        i.cake_model_in_flight = false;
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Let the user pick a custom `.nd` model file ("Add Model"); the picked
+        /// name is stored for the App to add to the Cake Phase dropdown.
+        pub fn add_cake_model(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                if let Ok(v) = js_add_cake_model().await
+                    && let Some(name) = v.as_string()
+                    && !name.is_empty()
+                {
+                    inner.borrow_mut().pending_cake_model = Some(name);
                 }
                 ctx.request_repaint();
             });
@@ -1395,7 +1565,9 @@ mod native {
 
         pub fn catalog_search(&self, _ctx: &egui::Context, _params_json: String) {}
 
-        pub fn cake_arrivals(&self, _ctx: &egui::Context) {}
+        pub fn cake_plot(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
+
+        pub fn add_cake_model(&self, _ctx: &egui::Context) {}
 
         pub fn run_command(&self, _ctx: &egui::Context, _line: String) {}
 

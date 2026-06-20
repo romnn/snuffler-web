@@ -199,6 +199,7 @@ export async function getSpectrum(paramsJson) {
 
 export async function runSnuffling(name, paramsJson) {
   await boot();
+  if (name === "cake") await ensureEarthModels();
   return bridge.run_snuffling(name, paramsJson); // -> JSON string {text, markers}
 }
 
@@ -244,22 +245,47 @@ export async function mapData() {
   return bridge.map_data(); // -> JSON string {stations, events}
 }
 
-// The ak135 model ships as a build asset; stage it into the Pyodide FS once so
-// pyrocko.cake.load_model() can read it by path (the minimal wheel has no data
-// dir). bridge.py reads it from EARTHMODEL_PATH ("/earthmodel.nd").
-let earthModelStaged = false;
-async function ensureEarthModel() {
-  if (earthModelStaged) return;
-  const url = new URL("ak135-f-continental.m.nd", document.baseURI).href;
-  const text = await (await fetchOk(url)).text();
-  py.FS.writeFile("/earthmodel.nd", text);
-  earthModelStaged = true;
+// The cake earth models ship as build assets (a copy-dir of pyrocko's tiny .nd
+// files); stage them into the Pyodide FS once so cake.load_model() can read them
+// by path (the minimal wheel has no data dir). bridge.py reads /earthmodels/<name>.nd.
+const CAKE_MODELS = [
+  "ak135-f-average-no-ocean.f", "ak135-f-average-no-ocean.l", "ak135-f-average-no-ocean.m",
+  "ak135-f-average.f", "ak135-f-average.l", "ak135-f-average.m", "ak135-f-average.vf",
+  "ak135-f-continental.f", "ak135-f-continental.l", "ak135-f-continental.m",
+  "prem-no-ocean.f", "prem-no-ocean.l", "prem-no-ocean.m",
+  "prem.f", "prem.l", "prem.m",
+];
+let earthModelsStaged = false;
+async function ensureEarthModels() {
+  if (earthModelsStaged) return;
+  try { py.FS.mkdir("/earthmodels"); } catch (_e) { /* already exists */ }
+  await Promise.all(CAKE_MODELS.map(async (stem) => {
+    const url = new URL(`earthmodels/${stem}.nd`, document.baseURI).href;
+    const text = await (await fetchOk(url)).text();
+    py.FS.writeFile(`/earthmodels/${stem}.nd`, text);
+  }));
+  earthModelsStaged = true;
 }
 
-export async function cakeArrivals() {
+// Cake Phase 'Plot Model' / 'Plot Rays': returns numeric plot data as JSON.
+export async function cakePlot(paramsJson) {
   await boot();
-  await ensureEarthModel();
-  return bridge.cake_arrivals("{}"); // -> JSON string {text, markers}
+  await ensureEarthModels();
+  return bridge.cake_plot(paramsJson);
+}
+
+// Cake Phase 'Add Model': let the user pick a custom .nd model file, stage it
+// into the model dir, and return its name for the dropdown ("" if cancelled).
+export async function addCakeModel() {
+  await boot();
+  const files = await pickFiles(false);
+  if (files.length === 0) return "";
+  const f = files[0];
+  const bytes = new Uint8Array(await f.arrayBuffer());
+  const name = f.name.replace(/\.nd$/i, "");
+  try { py.FS.mkdir("/earthmodels"); } catch (_e) { /* already exists */ }
+  py.FS.writeFile(`/earthmodels/${name}.nd`, bytes);
+  return name;
 }
 
 export async function runCommand(line) {
@@ -374,7 +400,7 @@ if (typeof window !== "undefined") {
   window.snuffler = {
     makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling,
     downloadWaveforms, catalogSearch, fetchStations, fetchResponses,
-    mapData, fetchTile, openFiles, saveMarkers, loadMarkers, cakeArrivals,
+    mapData, fetchTile, openFiles, saveMarkers, loadMarkers, cakePlot, addCakeModel,
     runCommand, rmsTraces, savePng, saveSvg,
   };
 }
