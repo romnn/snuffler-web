@@ -8,6 +8,7 @@ use crate::view::markers::{MARKER_COLORS, Marker};
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
 
+/// The egui application: UI state plus the bridge to pyrocko (via Pyodide).
 pub struct App {
     state: AppState,
     bridge: Bridge,
@@ -40,6 +41,7 @@ fn configure_look(ctx: &egui::Context) {
 }
 
 impl App {
+    /// Build the app, configure egui styling, and kick off loading the example.
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_look(&cc.egui_ctx);

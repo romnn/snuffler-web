@@ -1,3 +1,5 @@
+//! snuffler-web binary entry point: launches the egui app natively (dev shell)
+//! or mounts it on the page canvas under wasm (the real target).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 // When compiling natively:
