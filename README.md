@@ -30,19 +30,21 @@ separate commands and artifacts:
 
 ```
  Browser
- ├─ Pyodide (CPython + numpy + scipy + pyrocko, all WASM)        ← the compute
- │    └─ web/bridge.py   — type-annotated pyrocko shim (the stable API)
- ├─ web/bridge.js        — boots Pyodide, installs the wheel, marshals arrays
+ ├─ Web Worker
+ │  └─ Pyodide (CPython + numpy + scipy + pyrocko, all WASM)     ← the compute
+ │     └─ web/bridge.py  — strict-typed pyrocko shim
+ ├─ web/bridge.js        — main-thread client, DOM I/O, worker RPC
+ ├─ proto/               — protobuf bridge schema, generated for Rust/Python
  └─ egui app (Rust → wasm32, via Trunk/wasm-bindgen)             ← the UI
-      └─ src/bridge.rs   — async wasm-bindgen calls into bridge.js; serde structs
+      └─ src/bridge.rs   — async wasm-bindgen calls into bridge.js; protobuf bytes
       └─ src/view/*      — stacked waveform canvas, time axis, controls, markers
 ```
 
 The egui frontend asks the bridge for a *view* (a time window + filters + a
 target pixel width); pyrocko filters and decimates the traces and returns compact
-`float32` arrays + JSON metadata. The data contract is defined once in
-`web/bridge.py` (`TypedDict`s) and mirrored by the serde structs in
-`src/bridge.rs`, so the glue is type-checked on both sides.
+`float32` arrays + protobuf metadata. The data contract is defined once in
+`proto/snuffler/bridge/v1/*.proto`; `prost` type-checks the Rust
+side and `buf generate` emits Python code plus mypy stubs for the Pyodide side.
 
 **pyrocko is used unmodified.** We replace only its *build system* for the web:
 `pybuild/` cross-compiles just the two C extensions the inspector needs
@@ -72,7 +74,7 @@ Pyodide runtime, run `mise run smoke-test` (headless: imports pyrocko, filters a
 trace, loads MiniSEED).
 
 The whole version chain is dictated by the Pyodide **runtime** loaded in
-`web/bridge.js` (0.27.2): runtime → `pyodide-build` 0.35.0 → cross-build env
+`web/bridge_worker.js` (0.27.2): runtime → `pyodide-build` 0.35.0 → cross-build env
 0.27.2 → emscripten 3.1.58 → host CPython 3.12.
 
 ## Layout
@@ -80,8 +82,11 @@ The whole version chain is dictated by the Pyodide **runtime** loaded in
 | Path | What |
 |---|---|
 | `src/` | egui frontend (`app.rs`, `bridge.rs`, `view/*`, `state.rs`) |
-| `web/bridge.js` | JS glue: Pyodide boot, wheel install, array marshaling |
+| `web/bridge.js` | main-thread JS client for the Pyodide worker |
+| `web/bridge_worker.js` | Pyodide boot, wheel install, protobuf RPC, buffer transfer |
 | `web/bridge.py` | type-checked pyrocko shim (`make_example`, `load_bytes`, `get_view`) |
+| `proto/` | protobuf schema for the Rust/Python bridge |
+| `crates/snuffler-proto/` | generated Rust protobuf crate |
 | `pybuild/` | wheel cross-compile + `fetch-pyrocko.sh` + toolchain bootstrap |
 | `dist-py/` | output wheel + `wheels.json` (served at `/py/`); gitignored, rebuilt by `build-wheel` |
 | `sources/pyrocko/` | upstream pyrocko — **fetched on demand at a pinned commit, gitignored (not vendored)** |
