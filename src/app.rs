@@ -2,7 +2,7 @@ use egui::{Align2, Color32, FontId, Sense, Shape, Stroke};
 
 use crate::bridge::{Bridge, SpectrumData, Status, ViewParams};
 use crate::state::{
-    AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength,
+    AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
 };
 use crate::view::markers::{MARKER_COLORS, Marker};
 use crate::view::waveform::WaterfallCache;
@@ -24,7 +24,7 @@ pub struct App {
 fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::TextStyle;
-    ctx.set_theme(egui::ThemePreference::Light);
+    ctx.set_theme(egui::ThemePreference::System);
     let mut style = (*ctx.global_style()).clone();
     style.text_styles = [
         (TextStyle::Heading, FontId::new(19.0, Proportional)),
@@ -170,6 +170,12 @@ impl App {
 
             ui.selectable_value(&mut self.state.view_mode, ViewMode::Wiggle, "Wiggle plot");
             ui.selectable_value(&mut self.state.view_mode, ViewMode::Waterfall, "Waterfall");
+            ui.separator();
+
+            ui.label("Wiggle theme");
+            for theme in WiggleTheme::ALL {
+                ui.selectable_value(&mut self.state.wiggle_theme, theme, theme.label());
+            }
             ui.separator();
 
             ui.checkbox(&mut self.state.clip_traces, "Clip traces");

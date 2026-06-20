@@ -16,7 +16,7 @@ use egui::{
 };
 
 use crate::bridge::{ViewData, ViewTrack};
-use crate::state::{AppState, Colormap, Subsort, ViewMode};
+use crate::state::{AppState, Colormap, Subsort, ViewMode, WiggleTheme};
 use crate::view::markers::{Marker, PHASE_KEYS};
 use crate::view::timeaxis;
 
@@ -35,20 +35,19 @@ struct Palette {
     cursor: Color32,
 }
 
-fn palette(dark: bool) -> Palette {
-    if dark {
-        Palette {
-            bg: Color32::from_rgb(22, 24, 27),
-            trace: Color32::from_rgb(222, 224, 228),
-            grid: Color32::from_rgb(48, 51, 56),
-            zero: Color32::from_rgb(40, 43, 48),
-            axis_text: Color32::from_rgb(196, 200, 206),
-            sep: Color32::from_rgb(54, 57, 62),
-            label_bg: Color32::from_rgba_unmultiplied(16, 18, 20, 205),
-            cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 50),
-        }
-    } else {
-        Palette {
+fn palette(dark: bool, theme: WiggleTheme) -> Palette {
+    match (dark, theme) {
+        (true, WiggleTheme::SnufflerQt) => Palette {
+            bg: Color32::from_rgb(12, 15, 18),
+            trace: Color32::from_rgb(206, 212, 218),
+            grid: Color32::from_rgb(42, 49, 56),
+            zero: Color32::from_rgb(32, 37, 43),
+            axis_text: Color32::from_rgb(188, 196, 204),
+            sep: Color32::from_rgb(48, 55, 62),
+            label_bg: Color32::from_rgba_unmultiplied(12, 15, 18, 218),
+            cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 55),
+        },
+        (false, WiggleTheme::SnufflerQt) => Palette {
             bg: Color32::from_rgb(255, 255, 255),
             trace: Color32::from_rgb(72, 78, 84),
             grid: Color32::from_rgb(224, 224, 224),
@@ -57,7 +56,47 @@ fn palette(dark: bool) -> Palette {
             sep: Color32::from_rgb(214, 214, 214),
             label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 216),
             cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
-        }
+        },
+        (true, WiggleTheme::ColorLines) => Palette {
+            bg: Color32::from_rgb(22, 24, 27),
+            trace: Color32::from_rgb(222, 224, 228),
+            grid: Color32::from_rgb(48, 51, 56),
+            zero: Color32::from_rgb(40, 43, 48),
+            axis_text: Color32::from_rgb(196, 200, 206),
+            sep: Color32::from_rgb(54, 57, 62),
+            label_bg: Color32::from_rgba_unmultiplied(16, 18, 20, 205),
+            cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 50),
+        },
+        (false, WiggleTheme::ColorLines) => Palette {
+            bg: Color32::from_rgb(250, 250, 250),
+            trace: Color32::from_rgb(45, 48, 52),
+            grid: Color32::from_rgb(224, 224, 224),
+            zero: Color32::from_rgb(236, 236, 236),
+            axis_text: Color32::from_rgb(64, 64, 64),
+            sep: Color32::from_rgb(214, 214, 214),
+            label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 216),
+            cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
+        },
+        (true, WiggleTheme::NightBands) => Palette {
+            bg: Color32::from_rgb(6, 12, 16),
+            trace: Color32::from_rgb(213, 230, 226),
+            grid: Color32::from_rgb(28, 45, 52),
+            zero: Color32::from_rgb(21, 34, 40),
+            axis_text: Color32::from_rgb(176, 206, 207),
+            sep: Color32::from_rgb(35, 56, 64),
+            label_bg: Color32::from_rgba_unmultiplied(6, 12, 16, 225),
+            cursor: Color32::from_rgba_unmultiplied(137, 230, 211, 72),
+        },
+        (false, WiggleTheme::NightBands) => Palette {
+            bg: Color32::from_rgb(248, 250, 247),
+            trace: Color32::from_rgb(39, 58, 62),
+            grid: Color32::from_rgb(216, 225, 219),
+            zero: Color32::from_rgb(230, 236, 231),
+            axis_text: Color32::from_rgb(52, 76, 78),
+            sep: Color32::from_rgb(202, 215, 207),
+            label_bg: Color32::from_rgba_unmultiplied(248, 250, 247, 220),
+            cursor: Color32::from_rgba_unmultiplied(0, 76, 72, 44),
+        },
     }
 }
 
@@ -269,14 +308,28 @@ fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
     Color32::from_rgb(red, green, blue)
 }
 
-fn row_tint(color: Color32, dark: bool) -> Color32 {
-    let target = if dark { 24.0 } else { 255.0 };
-    let keep = if dark { 0.22 } else { 0.30 };
+fn row_tint(color: Color32, dark: bool, theme: WiggleTheme) -> Color32 {
+    let (target, keep) = match (dark, theme) {
+        (false, WiggleTheme::SnufflerQt) => (255.0, 0.30),
+        (true, WiggleTheme::SnufflerQt) => (17.0, 0.36),
+        (false, WiggleTheme::NightBands) => (248.0, 0.26),
+        (true, WiggleTheme::NightBands) => (11.0, 0.48),
+        (false, WiggleTheme::ColorLines) => (250.0, 0.0),
+        (true, WiggleTheme::ColorLines) => (24.0, 0.0),
+    };
     let mix = |channel: u8| {
         let value = f32::from(channel) * keep + target * (1.0 - keep);
         value.round().clamp(0.0, 255.0) as u8
     };
     Color32::from_rgb(mix(color.r()), mix(color.g()), mix(color.b()))
+}
+
+fn theme_uses_row_tints(theme: WiggleTheme) -> bool {
+    matches!(theme, WiggleTheme::SnufflerQt | WiggleTheme::NightBands)
+}
+
+fn theme_uses_colored_strokes(theme: WiggleTheme) -> bool {
+    matches!(theme, WiggleTheme::ColorLines)
 }
 
 /// Draw the canvas and process interaction.
@@ -291,7 +344,8 @@ pub fn show(
     wf: &mut WaterfallCache,
     view_epoch: u64,
 ) {
-    let pal = palette(ui.visuals().dark_mode);
+    let dark = ui.visuals().dark_mode;
+    let pal = palette(dark, state.wiggle_theme);
     ui.ctx()
         .options_mut(|o| o.tessellation_options.feathering = state.antialiasing);
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -341,11 +395,11 @@ pub fn show(
         .unwrap_or(&[]);
     let row_h = track_area.height() / n_shown.max(1) as f32;
 
-    if state.color_traces && !waterfall {
+    if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
         for (k, t) in visible.iter().enumerate() {
             let top = track_area.top() + k as f32 * row_h;
             let bot = top + row_h;
-            let fill = row_tint(trace_color(t, state.subsort), ui.visuals().dark_mode);
+            let fill = row_tint(trace_color(t, state.subsort), dark, state.wiggle_theme);
             painter.rect_filled(
                 Rect::from_min_max(
                     egui::pos2(track_area.left(), top),
@@ -455,7 +509,12 @@ pub fn show(
                 );
             }
 
-            let trace_col = pal.trace;
+            let trace_col = if state.color_traces && theme_uses_colored_strokes(state.wiggle_theme)
+            {
+                trace_color(t, state.subsort)
+            } else {
+                pal.trace
+            };
             if t.dt > 0.0 {
                 let samples = view.samples(t);
                 if samples.len() >= 2 {
@@ -535,7 +594,7 @@ pub fn show(
         let label_pos = egui::pos2(track_area.left() + 5.0, top + 3.0);
         let galley = painter.layout_no_wrap(t.label.clone(), label_font.clone(), pal.axis_text);
         let bg = Rect::from_min_size(label_pos, galley.size()).expand(3.0);
-        if !state.color_traces {
+        if !state.color_traces || !theme_uses_row_tints(state.wiggle_theme) {
             painter.rect_filled(bg, 3.0, pal.label_bg);
         }
         painter.galley(label_pos, galley, pal.axis_text);

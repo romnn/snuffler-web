@@ -85,6 +85,29 @@ impl ViewMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WiggleTheme {
+    SnufflerQt,
+    ColorLines,
+    NightBands,
+}
+
+impl WiggleTheme {
+    pub fn label(self) -> &'static str {
+        match self {
+            WiggleTheme::SnufflerQt => "Snuffler Qt",
+            WiggleTheme::ColorLines => "Color lines",
+            WiggleTheme::NightBands => "Night bands",
+        }
+    }
+
+    pub const ALL: [WiggleTheme; 3] = [
+        WiggleTheme::SnufflerQt,
+        WiggleTheme::ColorLines,
+        WiggleTheme::NightBands,
+    ];
+}
+
 /// Station sort order (snuffler's "Sorting" station radio group,
 /// pile_viewer.py:986-1013). Distance/azimuth variants need station coordinates
 /// and an active event; without them the bridge falls back to name order.
@@ -291,6 +314,7 @@ pub struct AppState {
 
     // --- view / render toggles (View menu, render-side only) ---
     pub view_mode: ViewMode,
+    pub wiggle_theme: WiggleTheme,
     pub visible_length: VisibleLength,
     pub show_boxes: bool,
     pub clip_traces: bool,
@@ -378,6 +402,7 @@ impl Default for AppState {
             sort: SortMode::Name,
             subsort: Subsort::Nslc,
             view_mode: ViewMode::Wiggle,
+            wiggle_theme: WiggleTheme::SnufflerQt,
             visible_length: VisibleLength::Short,
             show_boxes: true,
             clip_traces: true,

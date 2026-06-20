@@ -4,7 +4,53 @@
 
 use crate::state::{
     AppState, ColorScale, Colormap, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode,
+    WiggleTheme,
 };
+
+const FILTER_MIN_HZ: f64 = 0.001;
+const FILTER_MAX_HZ: f64 = 1000.0;
+const LABEL_W: f32 = 76.0;
+const VALUE_W: f32 = 86.0;
+
+fn format_hz(value: Option<f64>) -> String {
+    match value {
+        None => "0 Hz".into(),
+        Some(v) if v < 1.0 => format!("{v:.3} Hz"),
+        Some(v) if v < 100.0 => format!("{v:.2} Hz"),
+        Some(v) => format!("{v:.1} Hz"),
+    }
+}
+
+fn filter_to_pos(value: Option<f64>) -> f64 {
+    let Some(hz) = value else {
+        return 0.0;
+    };
+    let hz = hz.clamp(FILTER_MIN_HZ, FILTER_MAX_HZ);
+    (hz / FILTER_MIN_HZ).ln() / (FILTER_MAX_HZ / FILTER_MIN_HZ).ln()
+}
+
+fn pos_to_filter(pos: f64) -> Option<f64> {
+    if pos <= 0.0 {
+        return None;
+    }
+    Some(FILTER_MIN_HZ * (FILTER_MAX_HZ / FILTER_MIN_HZ).powf(pos.clamp(0.0, 1.0)))
+}
+
+fn control_row(ui: &mut egui::Ui, label: &str, value: String, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        let row_h = ui.spacing().interact_size.y;
+        ui.add_sized([LABEL_W, row_h], egui::Label::new(label));
+        ui.allocate_ui_with_layout(
+            egui::vec2(VALUE_W, row_h),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(egui::RichText::new(value).monospace());
+            },
+        );
+        ui.spacing_mut().slider_width = ui.available_width().max(160.0);
+        add(ui);
+    });
+}
 
 #[allow(
     clippy::too_many_lines,
@@ -13,36 +59,23 @@ use crate::state::{
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
 
-    // snuffler's Main Controls: full-width sliders stacked one per row.
-    let track_w = (ui.available_width() - 180.0).max(160.0);
-
-    ui.horizontal(|ui| {
-        let mut hp_on = state.highpass.is_some();
-        ui.checkbox(&mut hp_on, "HP");
-        ui.spacing_mut().slider_width = track_w;
-        ui.add_enabled(
-            hp_on,
-            egui::Slider::new(&mut state.highpass_hz, 0.001..=1000.0)
-                .logarithmic(true)
-                .suffix(" Hz")
-                .text("Highpass"),
-        );
-        state.highpass = hp_on.then_some(state.highpass_hz);
+    let mut highpass_pos = filter_to_pos(state.highpass);
+    control_row(ui, "Highpass", format_hz(state.highpass), |ui| {
+        ui.add(egui::Slider::new(&mut highpass_pos, 0.0..=1.0).show_value(false));
     });
+    state.highpass = pos_to_filter(highpass_pos);
+    if let Some(hz) = state.highpass {
+        state.highpass_hz = hz;
+    }
 
-    ui.horizontal(|ui| {
-        let mut lp_on = state.lowpass.is_some();
-        ui.checkbox(&mut lp_on, "LP");
-        ui.spacing_mut().slider_width = track_w;
-        ui.add_enabled(
-            lp_on,
-            egui::Slider::new(&mut state.lowpass_hz, 0.001..=1000.0)
-                .logarithmic(true)
-                .suffix(" Hz")
-                .text("Lowpass"),
-        );
-        state.lowpass = lp_on.then_some(state.lowpass_hz);
+    let mut lowpass_pos = filter_to_pos(state.lowpass);
+    control_row(ui, "Lowpass", format_hz(state.lowpass), |ui| {
+        ui.add(egui::Slider::new(&mut lowpass_pos, 0.0..=1.0).show_value(false));
     });
+    state.lowpass = pos_to_filter(lowpass_pos);
+    if let Some(hz) = state.lowpass {
+        state.lowpass_hz = hz;
+    }
 
     // snuffler's passband_check: warn when highpass corner >= lowpass corner.
     if let (Some(hp), Some(lp)) = (state.highpass, state.lowpass)
@@ -56,23 +89,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
 
     // Gain is meaningless for the waterfall, so snuffler hides it there.
     if !waterfall {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = track_w;
+        control_row(ui, "Gain", format!("{:.2}", state.gain), |ui| {
             ui.add(
                 egui::Slider::new(&mut state.gain, 0.001..=1000.0)
                     .logarithmic(true)
-                    .text("Gain"),
+                    .show_value(false),
             );
         });
     }
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().slider_width = track_w;
-        ui.add(
-            egui::Slider::new(&mut state.rotate_deg, -180.0..=180.0)
-                .suffix("°")
-                .text("Rotate"),
-        );
+    control_row(ui, "Rotate", format!("{:.1}°", state.rotate_deg), |ui| {
+        ui.add(egui::Slider::new(&mut state.rotate_deg, -180.0..=180.0).show_value(false));
     });
 
     ui.separator();
@@ -87,6 +114,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
                 ui.selectable_value(&mut state.view_mode, ViewMode::Wiggle, "Wiggle");
                 ui.selectable_value(&mut state.view_mode, ViewMode::Waterfall, "Waterfall");
             });
+        if !waterfall {
+            egui::ComboBox::from_label("Theme")
+                .selected_text(state.wiggle_theme.label())
+                .show_ui(ui, |ui| {
+                    for theme in WiggleTheme::ALL {
+                        ui.selectable_value(&mut state.wiggle_theme, theme, theme.label());
+                    }
+                });
+        }
 
         ui.separator();
 
