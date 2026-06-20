@@ -402,7 +402,7 @@ impl Default for AppState {
             sort: SortMode::Name,
             subsort: Subsort::Nslc,
             view_mode: ViewMode::Wiggle,
-            wiggle_theme: WiggleTheme::SnufflerQt,
+            wiggle_theme: WiggleTheme::ColorLines,
             visible_length: VisibleLength::Short,
             show_boxes: true,
             clip_traces: true,
