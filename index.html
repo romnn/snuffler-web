@@ -32,10 +32,8 @@
             --bg: #fafafa;
             --fg: #1c1e22;
             --muted: #6b7280;
-            --card: #ffffff;
             --track: #e6e8eb;
             --accent: #3465a4;
-            --shadow: rgba(0, 0, 0, 0.12);
         }
 
         @media (prefers-color-scheme: dark) {
@@ -43,10 +41,8 @@
                 --bg: #16181b;
                 --fg: #e6e8ec;
                 --muted: #9aa0a8;
-                --card: #1e2125;
                 --track: #2c3036;
                 --accent: #6aa3ff;
-                --shadow: rgba(0, 0, 0, 0.5);
             }
         }
 
@@ -87,33 +83,40 @@
             opacity: 0;
         }
 
-        #loading .card {
-            width: min(420px, 80vw);
-            padding: 32px 36px;
-            background: var(--card);
-            border-radius: 14px;
-            box-shadow: 0 10px 40px var(--shadow);
-            text-align: left;
+        #loading .panel {
+            width: min(340px, 82vw);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        #loading .logo {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 22px;
+            user-select: none;
+            -webkit-user-drag: none;
         }
 
         #loading .title {
-            font-size: 30px;
-            font-weight: 650;
-            letter-spacing: -0.5px;
+            font-size: 27px;
+            font-weight: 600;
+            letter-spacing: -0.4px;
             color: var(--fg);
         }
 
         #loading .title span { color: var(--accent); }
 
         #loading .sub {
-            font-size: 13.5px;
+            font-size: 13px;
             color: var(--muted);
-            margin-top: 2px;
-            margin-bottom: 22px;
+            margin-top: 4px;
+            margin-bottom: 26px;
         }
 
         #loading .bar {
-            height: 8px;
+            height: 6px;
             width: 100%;
             background: var(--track);
             border-radius: 999px;
@@ -131,6 +134,7 @@
         #loading .row {
             display: flex;
             justify-content: space-between;
+            width: 100%;
             margin-top: 12px;
             font-size: 12.5px;
             color: var(--muted);
@@ -149,9 +153,10 @@
     <canvas id="the_canvas_id"></canvas>
 
     <div id="loading">
-        <div class="card">
+        <div class="panel">
+            <img class="logo" src="favicon.png" width="80" height="80" alt="pyrocko" />
             <div class="title">snuffler<span>-web</span></div>
-            <div class="sub">seismic waveform inspector — loading Python + pyrocko</div>
+            <div class="sub">seismic waveform inspector</div>
             <div class="bar"><div id="bar-fill"></div></div>
             <div class="row"><span id="pct">0%</span><span id="stage">starting…</span></div>
         </div>
