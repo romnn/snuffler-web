@@ -1139,11 +1139,16 @@ fn help_section(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)], monospace
         .show(ui, |ui| {
             for (key, description) in rows {
                 let key_text = egui::RichText::new(*key);
-                if monospace_key {
-                    ui.label(key_text.monospace().strong());
+                let key_text = if monospace_key {
+                    key_text.monospace().strong()
                 } else {
-                    ui.label(key_text.italics().strong());
-                }
+                    key_text.italics().strong()
+                };
+                // Right-align the shortcut within its column so it sits right
+                // next to the description rather than far across a wide column.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(key_text);
+                });
                 ui.label(*description);
                 ui.end_row();
             }
