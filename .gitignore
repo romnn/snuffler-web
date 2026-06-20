@@ -14,6 +14,7 @@
 # pyodide wheel build: keep the scripts (build-wheel.sh, setup.py, bootstrap),
 # drop the cross-compiled wheel + all generated toolchain caches.
 /dist-py
+/web/proto
 /pybuild/build
 /pybuild/*.log
 /pybuild/.emscripten-version

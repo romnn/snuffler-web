@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+message Nslc {
+  string net = 1;
+  string sta = 2;
+  string loc = 3;
+  string cha = 4;
+}

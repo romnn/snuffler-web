@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec uvx --from mypy-protobuf==5.1.0 protoc-gen-mypy "$@"

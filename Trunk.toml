@@ -1,5 +1,10 @@
 [build]
 
+[[hooks]]
+stage = "pre_build"
+command = "buf"
+command_arguments = ["generate"]
+
 # wasm-opt runs as a post-build hook rather than Trunk's built-in pass: the
 # edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory, sign-ext,
 # …) and wasm-opt must be told to accept them with `-all`, which Trunk's built-in

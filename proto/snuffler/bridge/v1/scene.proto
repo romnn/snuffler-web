@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+message TraceMeta {
+  string net = 1;
+  string sta = 2;
+  string loc = 3;
+  string cha = 4;
+  string label = 5;
+  double tmin = 6;
+  double tmax = 7;
+  double deltat = 8;
+  uint64 nsamples = 9;
+}
+
+message SceneMeta {
+  double tmin = 1;
+  double tmax = 2;
+  repeated TraceMeta tracks = 3;
+}

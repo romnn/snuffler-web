@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://json.schemastore.org/buf.gen.json
+version: v2
+managed:
+  enabled: true
+clean: true
+inputs:
+  - directory: proto
+plugins:
+  - protoc_builtin: python
+    protoc_path: protoc
+    include_imports: &include-imports false
+    include_wkt: &include-wkt false
+    out: &out web/proto
+  - local: ./pybuild/protoc-gen-mypy
+    include_imports: *include-imports
+    include_wkt: *include-wkt
+    out: *out

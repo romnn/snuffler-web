@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+import "snuffler/bridge/v1/common.proto";
+import "snuffler/bridge/v1/scene.proto";
+import "snuffler/bridge/v1/view.proto";
+
+message SpectrumSnufflingParams {
+  bool spec_smoothing = 1;
+  double spec_smoothing_bandwidth = 2;
+}
+
+message StaltaSnufflingParams {
+  optional double stalta_highpass = 1;
+  optional double stalta_lowpass = 2;
+  double stalta_swin = 3;
+  double stalta_ratio = 4;
+  double stalta_level = 5;
+  bool stalta_show_level_traces = 6;
+  string stalta_variant = 7;
+  string stalta_scalingmethod = 8;
+  bool stalta_apply_to_sum = 9;
+}
+
+message PolarizationSnufflingParams {
+  double polarization_t_length = 1;
+  double polarization_ft_offset = 2;
+  double polarization_azimuth = 3;
+  optional double polarization_highpass = 4;
+  optional double polarization_lowpass = 5;
+  double polarization_dot_position = 6;
+  bool polarization_rotate_to_rt = 7;
+  bool polarization_show_eigensystem_2d = 8;
+  bool polarization_show_eigensystem_3d = 9;
+  bool polarization_fix_scale = 10;
+}
+
+message RmsSnufflingParams {
+  optional double rms_highpass = 1;
+  optional double rms_lowpass = 2;
+  double rms_block = 3;
+  bool rms_group = 4;
+  bool rms_log = 5;
+}
+
+message CakeSnufflingParams {
+  string cake_model = 1;
+  repeated string cake_phases = 2;
+  double cake_tshift = 3;
+  bool cake_use_station_depth = 4;
+  string cake_mode = 5;
+}
+
+message SnufflingParams {
+  SpectrumSnufflingParams spectrum = 1;
+  StaltaSnufflingParams stalta = 2;
+  PolarizationSnufflingParams polarization = 3;
+  RmsSnufflingParams rms = 4;
+  CakeSnufflingParams cake = 5;
+}
+
+message SnufflingRequestParams {
+  ViewParams view = 1;
+  SnufflingParams snufflings = 2;
+}
+
+message SnufMarker {
+  double t = 1;
+  optional double tmax = 2;
+  optional string phase = 3;
+  uint32 kind = 4;
+  bool is_event = 5;
+  Nslc nslc = 6;
+  optional int32 polarity = 7;
+}
+
+message SnufflingResult {
+  bool show_window = 1;
+  string text = 2;
+  repeated SnufMarker markers = 3;
+  SceneMeta scene = 4;
+}
+
+message CakeDiscontinuity {
+  float z_km = 1;
+  optional string name = 2;
+}
+
+message CakeLayer {
+  float ztop_km = 1;
+  float zbot_km = 2;
+  bool water = 3;
+  bool gradient = 4;
+}
+
+message FloatSeries {
+  repeated float values = 1;
+}
+
+message CakeModelPlot {
+  string title = 1;
+  repeated float vp = 2;
+  repeated float vs = 3;
+  repeated CakeDiscontinuity discontinuities = 4;
+  repeated CakeLayer layers = 5;
+  float vmax_km = 6;
+  float zmax_km = 7;
+}
+
+message CakeRay {
+  uint32 color = 1;
+  repeated FloatSeries segs = 2;
+}
+
+message CakePoint {
+  float x_km = 1;
+  float z_km = 2;
+}
+
+message CakeLegendEntry {
+  string phase = 1;
+  uint32 color = 2;
+}
+
+message CakeRaysPlot {
+  string title = 1;
+  repeated CakeRay rays = 2;
+  repeated CakeDiscontinuity discontinuities = 3;
+  repeated CakeLayer layers = 4;
+  CakePoint source = 5;
+  repeated CakePoint receivers = 6;
+  repeated CakeLegendEntry legend = 7;
+  float xmin_km = 8;
+  float xmax_km = 9;
+  float zmax_km = 10;
+}
+
+message CakePlotResult {
+  oneof result {
+    CakeModelPlot model = 1;
+    CakeRaysPlot rays = 2;
+  }
+}
+
+message NamedSnufflingRequest {
+  string name = 1;
+  SnufflingRequestParams params = 2;
+}

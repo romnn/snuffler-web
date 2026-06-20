@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+message ViewParams {
+  double tmin = 1;
+  double tmax = 2;
+  uint32 npx = 3;
+  optional double highpass = 4;
+  optional double lowpass = 5;
+  string sort = 6;
+  string subsort = 7;
+  double rotate = 8;
+  bool remove_response = 9;
+  string mode = 10;
+  bool demean = 11;
+  bool degap = 12;
+  bool allow_downsampling = 13;
+  bool fft_filtering = 14;
+  bool bandpass_lphp = 15;
+  bool distances_3d = 16;
+  string scaling_base = 17;
+  string scaling_group = 18;
+  bool wf_abs = 19;
+  bool wf_integrate = 20;
+  string wf_color_scale = 21;
+  uint64 track_offset = 22;
+  uint64 track_count = 23;
+}
+
+message ViewTrack {
+  string net = 1;
+  string sta = 2;
+  string loc = 3;
+  string cha = 4;
+  string label = 5;
+  double t0_rel = 6;
+  double dt = 7;
+  uint64 count = 8;
+  uint64 offset = 9;
+  float ymin = 10;
+  float ymax = 11;
+  float ymean = 12;
+  float yscale = 13;
+  uint64 nf = 14;
+  uint64 nt = 15;
+  double fmax = 16;
+}
+
+message ViewMeta {
+  double view_tmin = 1;
+  double view_tmax = 2;
+  repeated ViewTrack tracks = 3;
+}
+
+message SpecTrack {
+  string label = 1;
+  uint64 offset = 2;
+  uint64 count = 3;
+  float ymin = 4;
+  float ymax = 5;
+}
+
+message SpecMeta {
+  double fmin = 1;
+  double fmax = 2;
+  repeated SpecTrack tracks = 3;
+}

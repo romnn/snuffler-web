@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+import "snuffler/bridge/v1/common.proto";
+import "snuffler/bridge/v1/scene.proto";
+import "snuffler/bridge/v1/snuffling.proto";
+
+message MapStation {
+  string label = 1;
+  double lat = 2;
+  double lon = 3;
+}
+
+message MapEvent {
+  double lat = 1;
+  double lon = 2;
+  double mag = 3;
+}
+
+message MapData {
+  repeated MapStation stations = 1;
+  repeated MapEvent events = 2;
+}
+
+message CommandResult {
+  string action = 1;
+  optional double t = 2;
+  SceneMeta scene = 3;
+  optional string message = 4;
+}
+
+message LoadBytesRequest {
+  string name = 1;
+  string fmt = 2;
+  bool append = 3;
+}
+
+message LoadUrlRequest {
+  string url = 1;
+  string fmt = 2;
+}
+
+message StringRequest {
+  string value = 1;
+}
+
+message WaveformDownloadRequest {
+  string datacenter = 1;
+  string net = 2;
+  string sta = 3;
+  string loc = 4;
+  string cha = 5;
+  string start = 6;
+  string end = 7;
+}
+
+message StationRequest {
+  string datacenter = 1;
+  string net = 2;
+  string sta = 3;
+  string cha = 4;
+}
+
+message CatalogRequest {
+  string datacenter = 1;
+  string start = 2;
+  string end = 3;
+  double minmag = 4;
+}
+
+message MarkerFileEntry {
+  double tmin = 1;
+  double tmax = 2;
+  uint32 kind = 3;
+  optional string phase = 4;
+  Nslc nslc = 5;
+  optional int32 polarity = 6;
+}
+
+message MarkerFile {
+  repeated MarkerFileEntry markers = 1;
+}
+
+message SnufMarkerList {
+  repeated SnufMarker markers = 1;
+}
