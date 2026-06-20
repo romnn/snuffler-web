@@ -1,16 +1,22 @@
 //! The bridge between the egui frontend and pyrocko.
 //!
-//! On the web, this calls into `web/bridge.js`, which drives Pyodide
-//! (`CPython` + numpy + scipy + pyrocko, all compiled to WASM) and returns
-//! waveform data. On native targets it falls back to a self-contained
-//! synthetic stub so the UI can be developed with `cargo run` (no browser).
+//! On the web, this calls into `web/bridge.js`, which forwards protobuf request
+//! bytes to a Pyodide Web Worker (`CPython` + numpy + scipy + pyrocko, all
+//! compiled to WASM) and returns protobuf metadata plus raw sample buffers. On
+//! native targets it falls back to a UI-only stub so layouts can be developed
+//! with `cargo run` (no browser/Pyodide).
 //!
-//! The data contract below (serde structs) is mirrored exactly by the Python
-//! shim in `web/bridge.py` — that mirroring is what makes the glue
-//! "type-checked" on both sides of the boundary.
+//! `proto/snuffler/bridge/v1/*.proto` is the boundary contract.
+//! The Rust structs below are the app-facing decoded representation.
 
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
+
+mod proto;
+
+pub use proto::pb::{
+    CatalogRequest, MarkerFile, MarkerFileEntry, Nslc, StationRequest, WaveformDownloadRequest,
+};
 
 /// Metadata for the whole loaded set of traces (snuffler's "pile").
 #[derive(Clone, Debug, Default, serde::Deserialize)]
@@ -157,7 +163,7 @@ pub struct RmsSnufflingParams {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[allow(
     clippy::struct_field_names,
-    reason = "the cake_* names are the literal JSON keys bridge.py reads; renaming desyncs the wire contract"
+    reason = "the cake_* names mirror the protobuf/pyrocko bridge fields and Qt snuffling parameter names"
 )]
 pub struct CakeSnufflingParams {
     /// Dropdown model name; bridge.py maps it to `/earthmodels/<name>.nd`.
@@ -383,16 +389,6 @@ pub struct CakeRaysPlot {
     pub zmax_km: f32,
 }
 
-/// Tagged result of a `cake_plot` call (the JSON carries a `kind` discriminator).
-/// Only the wasm bridge parses it, so it is gated to that target.
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum CakePlotResult {
-    Model(CakeModelPlot),
-    Rays(CakeRaysPlot),
-}
-
 /// Outcome of a ':' command line. `action` is "goto" | "scene" | "error" | "none".
 /// Only the wasm bridge constructs/consumes this, so it is gated to that target.
 #[cfg(target_arch = "wasm32")]
@@ -591,10 +587,11 @@ mod web {
         clippy::wildcard_imports,
         clippy::needless_pass_by_value,
         reason = "the web bridge re-uses most parent types and marshals owned values \
-                  (JsValue, JSON strings, params) across the JS/async boundary, where \
+                  (JsValue, protobuf bytes, params) across the JS/async boundary, where \
                   by-value parameters keep the call sites clean"
     )]
 
+    use super::proto::{self, pb};
     use super::*;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
@@ -605,41 +602,37 @@ mod web {
         async fn js_make_example() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = loadBytes, catch)]
-        async fn js_load_bytes(
-            name: String,
-            data: Vec<u8>,
-            fmt: String,
-        ) -> Result<JsValue, JsValue>;
+        async fn js_load_bytes(request: Vec<u8>, data: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = loadUrl, catch)]
-        async fn js_load_url(url: String, fmt: String) -> Result<JsValue, JsValue>;
+        async fn js_load_url(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = getView, catch)]
-        async fn js_get_view(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_get_view(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = getSpectrum, catch)]
-        async fn js_get_spectrum(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_get_spectrum(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = runSnuffling, catch)]
-        async fn js_run_snuffling(name: String, params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_run_snuffling(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = downloadWaveforms, catch)]
-        async fn js_download_waveforms(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_download_waveforms(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = catalogSearch, catch)]
-        async fn js_catalog_search(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_catalog_search(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = fetchStations, catch)]
-        async fn js_fetch_stations(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_fetch_stations(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = fetchResponses, catch)]
-        async fn js_fetch_responses(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_fetch_responses(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = mapData, catch)]
         async fn js_map_data() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = cakePlot, catch)]
-        async fn js_cake_plot(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_cake_plot(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = addCakeModel, catch)]
         async fn js_add_cake_model() -> Result<JsValue, JsValue>;
@@ -649,10 +642,10 @@ mod web {
         async fn js_add_gf_store() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = runCommand, catch)]
-        async fn js_run_command(line: String) -> Result<JsValue, JsValue>;
+        async fn js_run_command(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = rmsTraces, catch)]
-        async fn js_rms_traces(params_json: String) -> Result<JsValue, JsValue>;
+        async fn js_rms_traces(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = fetchTile, catch)]
         async fn js_fetch_tile(url: String) -> Result<JsValue, JsValue>;
@@ -661,7 +654,7 @@ mod web {
         async fn js_open_files() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = saveMarkers, catch)]
-        async fn js_save_markers(markers_json: String) -> Result<JsValue, JsValue>;
+        async fn js_save_markers(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = loadMarkers, catch)]
         async fn js_load_markers() -> Result<JsValue, JsValue>;
@@ -677,69 +670,34 @@ mod web {
         v.as_string().unwrap_or_else(|| format!("{v:?}"))
     }
 
-    fn release_js_buffer_result(obj: &JsValue) {
+    fn js_bytes(v: JsValue, what: &str) -> Result<Vec<u8>, String> {
         use wasm_bindgen::JsCast;
 
-        if let Ok(release) = js_sys::Reflect::get(obj, &JsValue::from_str("release"))
-            && let Some(f) = release.dyn_ref::<js_sys::Function>()
-        {
-            let _ = f.call0(obj);
-        }
+        v.dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| format!("{what} is not a Uint8Array"))
+            .map(|arr| arr.to_vec())
     }
 
     fn parse_scene(v: JsValue) -> Result<SceneMeta, String> {
-        let s = v
-            .as_string()
-            .ok_or_else(|| "scene not a string".to_string())?;
-        serde_json::from_str(&s).map_err(|e| e.to_string())
+        let bytes = js_bytes(v, "scene")?;
+        proto::scene_from_bytes(&bytes, "scene")
     }
 
     fn parse_view(obj: JsValue) -> Result<ViewData, String> {
-        let parsed = (|| {
-            use wasm_bindgen::JsCast;
-
-            let meta_val =
-                js_sys::Reflect::get(&obj, &JsValue::from_str("meta")).map_err(jsval_to_string)?;
-            let meta_str = meta_val
-                .as_string()
-                .ok_or_else(|| "view.meta not a string".to_string())?;
-            let meta: ViewMeta = serde_json::from_str(&meta_str).map_err(|e| e.to_string())?;
-            let ys_val =
-                js_sys::Reflect::get(&obj, &JsValue::from_str("ys")).map_err(jsval_to_string)?;
-            let ys_arr: js_sys::Float32Array = ys_val
-                .dyn_into()
-                .map_err(|_| "view.ys is not a Float32Array".to_string())?;
-            Ok(ViewData {
-                meta,
-                ys: ys_arr.to_vec(),
-            })
-        })();
-        release_js_buffer_result(&obj);
-        parsed
+        let meta_bytes = object_uint8(&obj, "meta")?;
+        let ys_bytes = object_uint8(&obj, "ys")?;
+        proto::view_data_from_parts(&meta_bytes, &ys_bytes)
     }
 
     fn parse_spectrum(obj: JsValue) -> Result<SpectrumData, String> {
-        let parsed = (|| {
-            use wasm_bindgen::JsCast;
+        let meta_bytes = object_uint8(&obj, "meta")?;
+        let ys_bytes = object_uint8(&obj, "ys")?;
+        proto::spectrum_data_from_parts(&meta_bytes, &ys_bytes)
+    }
 
-            let meta_val =
-                js_sys::Reflect::get(&obj, &JsValue::from_str("meta")).map_err(jsval_to_string)?;
-            let meta_str = meta_val
-                .as_string()
-                .ok_or_else(|| "spectrum.meta not a string".to_string())?;
-            let meta: SpecMeta = serde_json::from_str(&meta_str).map_err(|e| e.to_string())?;
-            let ys_val =
-                js_sys::Reflect::get(&obj, &JsValue::from_str("ys")).map_err(jsval_to_string)?;
-            let ys_arr: js_sys::Float32Array = ys_val
-                .dyn_into()
-                .map_err(|_| "spectrum.ys is not a Float32Array".to_string())?;
-            Ok(SpectrumData {
-                meta,
-                ys: ys_arr.to_vec(),
-            })
-        })();
-        release_js_buffer_result(&obj);
-        parsed
+    fn object_uint8(obj: &JsValue, key: &str) -> Result<Vec<u8>, String> {
+        let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(jsval_to_string)?;
+        js_bytes(val, key)
     }
 
     fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
@@ -940,7 +898,12 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_load_bytes(name, data, fmt).await;
+                let request = proto::encode_message(&pb::LoadBytesRequest {
+                    name,
+                    fmt,
+                    append: false,
+                });
+                let res = js_load_bytes(request, data).await;
                 let parsed = match res {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
@@ -967,7 +930,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_load_url(url, fmt).await;
+                let request = proto::encode_message(&pb::LoadUrlRequest { url, fmt });
+                let res = js_load_url(request).await;
                 let parsed = match res {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
@@ -998,11 +962,11 @@ mod web {
                 }
                 i.spectrum_in_flight = true;
             }
-            let json = serde_json::to_string(&params).unwrap_or_default();
+            let request = proto::encode_message(&proto::snuffling_request_to_proto(&params));
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_get_spectrum(json).await;
+                let res = js_get_spectrum(request).await;
                 let parsed = match res {
                     Ok(o) => parse_spectrum(o),
                     Err(e) => Err(jsval_to_string(e)),
@@ -1028,15 +992,21 @@ mod web {
             if !matches!(self.inner.borrow().status, Status::Ready) {
                 return;
             }
-            let json = serde_json::to_string(&params).unwrap_or_default();
+            let request = proto::encode_message(&pb::NamedSnufflingRequest {
+                name,
+                params: Some(proto::snuffling_request_to_proto(&params)),
+            });
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_run_snuffling(name, json).await;
+                let res = js_run_snuffling(request).await;
                 let parsed = match res {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                    Ok(v) => js_bytes(v, "snuffling")
+                        .and_then(|b| {
+                            proto::decode_message::<pb::SnufflingResult>(&b, "snuffling")
+                                .map(proto::snuffling_result_from_proto)
+                        })
+                        .ok(),
                     Err(_) => None,
                 };
                 {
@@ -1059,12 +1029,13 @@ mod web {
 
         /// Download waveforms from a CORS-enabled FDSN dataselect service and
         /// replace the pile with the result (browser fetch; pyrocko parses).
-        pub fn download_waveforms(&self, ctx: &egui::Context, params_json: String) {
+        pub fn download_waveforms(&self, ctx: &egui::Context, params: WaveformDownloadRequest) {
             self.inner.borrow_mut().status = Status::Loading("Downloading waveforms…".into());
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_download_waveforms(params_json).await {
+                let parsed = match js_download_waveforms(request).await {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
                 };
@@ -1088,11 +1059,11 @@ mod web {
         /// Compute blockwise-RMS derived traces (pyrocko's RMS snuffling) and
         /// append them to the pile; the result replaces the scene.
         pub fn rms_traces(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
-            let json = serde_json::to_string(&params).unwrap_or_default();
+            let request = proto::encode_message(&proto::snuffling_request_to_proto(&params));
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_rms_traces(json).await {
+                let parsed = match js_rms_traces(request).await {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
                 };
@@ -1114,14 +1085,18 @@ mod web {
         }
 
         /// Search a CORS-enabled FDSN event service; results become event markers.
-        pub fn catalog_search(&self, ctx: &egui::Context, params_json: String) {
+        pub fn catalog_search(&self, ctx: &egui::Context, params: CatalogRequest) {
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_catalog_search(params_json).await {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                let parsed = match js_catalog_search(request).await {
+                    Ok(v) => js_bytes(v, "catalog")
+                        .and_then(|b| {
+                            proto::decode_message::<pb::SnufflingResult>(&b, "catalog")
+                                .map(proto::snuffling_result_from_proto)
+                        })
+                        .ok(),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
                         text: jsval_to_string(e),
@@ -1161,21 +1136,25 @@ mod web {
                     i.cake_model_in_flight = true;
                 }
             }
-            let json = serde_json::to_string(&params).unwrap_or_default();
+            let request = proto::encode_message(&proto::snuffling_request_to_proto(&params));
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_cake_plot(json).await {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<CakePlotResult>(&s).ok()),
+                let parsed = match js_cake_plot(request).await {
+                    Ok(v) => js_bytes(v, "cake plot")
+                        .and_then(|b| proto::decode_message::<pb::CakePlotResult>(&b, "cake plot"))
+                        .ok(),
                     Err(_) => None,
                 };
                 {
                     let mut i = inner.borrow_mut();
-                    match parsed {
-                        Some(CakePlotResult::Model(m)) => i.cake_model_plot = Some(m),
-                        Some(CakePlotResult::Rays(r)) => i.cake_rays_plot = Some(r),
+                    match parsed.and_then(|p| p.result) {
+                        Some(pb::cake_plot_result::Result::Model(m)) => {
+                            i.cake_model_plot = Some(proto::cake_model_from_proto(m));
+                        }
+                        Some(pb::cake_plot_result::Result::Rays(r)) => {
+                            i.cake_rays_plot = Some(proto::cake_rays_from_proto(r));
+                        }
                         None => {}
                     }
                     if rays {
@@ -1240,13 +1219,17 @@ mod web {
         /// stores a pending time the App jumps to; a visibility change swaps the
         /// scene in place (no refit) and forces the view to re-dispatch.
         pub fn run_command(&self, ctx: &egui::Context, line: String) {
+            let request = proto::encode_string_request(line);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = match js_run_command(line).await {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<CommandResult>(&s).ok()),
+                let res = match js_run_command(request).await {
+                    Ok(v) => js_bytes(v, "command")
+                        .and_then(|b| {
+                            proto::decode_message::<pb::CommandResult>(&b, "command")
+                                .map(proto::command_from_proto)
+                        })
+                        .ok(),
                     Err(e) => Some(CommandResult {
                         action: "error".into(),
                         message: Some(jsval_to_string(e)),
@@ -1273,14 +1256,18 @@ mod web {
 
         /// Fetch station coordinates (FDSN station service) to enable distance /
         /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
-        pub fn fetch_stations(&self, ctx: &egui::Context, params_json: String) {
+        pub fn fetch_stations(&self, ctx: &egui::Context, params: StationRequest) {
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_fetch_stations(params_json).await {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                let parsed = match js_fetch_stations(request).await {
+                    Ok(v) => js_bytes(v, "stations")
+                        .and_then(|b| {
+                            proto::decode_message::<pb::SnufflingResult>(&b, "stations")
+                                .map(proto::snuffling_result_from_proto)
+                        })
+                        .ok(),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
                         text: jsval_to_string(e),
@@ -1302,14 +1289,18 @@ mod web {
 
         /// Fetch instrument responses (`StationXML`) so Deconvolution can run;
         /// forces a re-dispatch so the deconvolved view recomputes.
-        pub fn fetch_responses(&self, ctx: &egui::Context, params_json: String) {
+        pub fn fetch_responses(&self, ctx: &egui::Context, params: StationRequest) {
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_fetch_responses(params_json).await {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
+                let parsed = match js_fetch_responses(request).await {
+                    Ok(v) => js_bytes(v, "responses")
+                        .and_then(|b| {
+                            proto::decode_message::<pb::SnufflingResult>(&b, "responses")
+                                .map(proto::snuffling_result_from_proto)
+                        })
+                        .ok(),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
                         text: jsval_to_string(e),
@@ -1339,19 +1330,23 @@ mod web {
                 {
                     let mut i = inner.borrow_mut();
                     match res {
-                        Ok(v) => match v.as_string() {
-                            Some(s) if s.is_empty() => i.status = Status::Ready, // cancelled
-                            Some(s) => match serde_json::from_str::<SceneMeta>(&s) {
-                                Ok(scene) => {
-                                    i.scene = Some(scene);
-                                    i.scene_gen += 1;
-                                    i.status = Status::Ready;
-                                    i.view = None;
-                                    i.applied = None;
+                        Ok(v) => match js_bytes(v, "open_files") {
+                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
+                            Ok(bytes) => {
+                                match proto::decode_message::<pb::SceneMeta>(&bytes, "open_files")
+                                    .map(proto::scene_from_proto)
+                                {
+                                    Ok(scene) => {
+                                        i.scene = Some(scene);
+                                        i.scene_gen += 1;
+                                        i.status = Status::Ready;
+                                        i.view = None;
+                                        i.applied = None;
+                                    }
+                                    Err(e) => i.status = Status::Error(e),
                                 }
-                                Err(e) => i.status = Status::Error(e.to_string()),
-                            },
-                            None => i.status = Status::Error("open_files: bad result".into()),
+                            }
+                            Err(e) => i.status = Status::Error(e),
                         },
                         Err(e) => i.status = Status::Error(jsval_to_string(e)),
                     }
@@ -1365,9 +1360,9 @@ mod web {
             clippy::unused_self,
             reason = "kept as a method for API symmetry with the other bridge calls; the fire-and-forget download needs no state"
         )]
-        pub fn save_markers(&self, _ctx: &egui::Context, markers_json: String) {
+        pub fn save_markers(&self, _ctx: &egui::Context, markers: MarkerFile) {
             spawn_local(async move {
-                let _ = js_save_markers(markers_json).await;
+                let _ = js_save_markers(proto::encode_message(&markers)).await;
             });
         }
 
@@ -1395,10 +1390,18 @@ mod web {
             let ctx = ctx.clone();
             spawn_local(async move {
                 let markers = match js_load_markers().await {
-                    Ok(v) => v
-                        .as_string()
-                        .filter(|s| !s.is_empty())
-                        .and_then(|s| serde_json::from_str::<Vec<SnufMarker>>(&s).ok()),
+                    Ok(v) => js_bytes(v, "markers")
+                        .ok()
+                        .filter(|bytes| !bytes.is_empty())
+                        .and_then(|bytes| {
+                            proto::decode_message::<pb::SnufMarkerList>(&bytes, "markers").ok()
+                        })
+                        .map(|msg| {
+                            msg.markers
+                                .into_iter()
+                                .map(proto::marker_from_proto)
+                                .collect::<Vec<_>>()
+                        }),
                     Err(_) => None,
                 };
                 if let Some(markers) = markers {
@@ -1422,9 +1425,12 @@ mod web {
             let ctx = ctx.clone();
             spawn_local(async move {
                 let parsed = match js_map_data().await {
-                    Ok(v) => v
-                        .as_string()
-                        .and_then(|s| serde_json::from_str::<MapData>(&s).ok()),
+                    Ok(v) => js_bytes(v, "map")
+                        .and_then(|b| {
+                            proto::decode_message::<pb::MapData>(&b, "map")
+                                .map(proto::map_data_from_proto)
+                        })
+                        .ok(),
                     Err(_) => None,
                 };
                 {
@@ -1508,12 +1514,12 @@ mod web {
             let Some(params) = self.inner.borrow().desired.clone() else {
                 return;
             };
-            let json = serde_json::to_string(&params).unwrap_or_default();
+            let request = proto::encode_message(&proto::view_params_to_proto(&params));
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             let me = self.clone();
             spawn_local(async move {
-                let res = js_get_view(json).await;
+                let res = js_get_view(request).await;
                 let parsed = match res {
                     Ok(obj) => parse_view(obj),
                     Err(e) => Err(jsval_to_string(e)),
@@ -1567,7 +1573,10 @@ mod native {
         reason = "these no-op stubs mirror the wasm Bridge API so the native UI shell compiles"
     )]
 
-    use super::{Bridge, SnufflingRequestParams, Status, ViewParams};
+    use super::{
+        Bridge, CatalogRequest, MarkerFile, SnufflingRequestParams, StationRequest, Status,
+        ViewParams, WaveformDownloadRequest,
+    };
 
     const MSG: &str = "Native build is UI-only — data loading, filtering, and all \
          processing run in pyrocko (Python) in the browser. Use `mise run serve`.";
@@ -1595,11 +1604,11 @@ mod native {
         ) {
         }
 
-        pub fn download_waveforms(&self, _ctx: &egui::Context, _params_json: String) {
+        pub fn download_waveforms(&self, _ctx: &egui::Context, _params: WaveformDownloadRequest) {
             self.inner.borrow_mut().status = Status::Error(MSG.into());
         }
 
-        pub fn catalog_search(&self, _ctx: &egui::Context, _params_json: String) {}
+        pub fn catalog_search(&self, _ctx: &egui::Context, _params: CatalogRequest) {}
 
         pub fn cake_plot(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
 
@@ -1612,9 +1621,9 @@ mod native {
 
         pub fn rms_traces(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
 
-        pub fn fetch_stations(&self, _ctx: &egui::Context, _params_json: String) {}
+        pub fn fetch_stations(&self, _ctx: &egui::Context, _params: StationRequest) {}
 
-        pub fn fetch_responses(&self, _ctx: &egui::Context, _params_json: String) {}
+        pub fn fetch_responses(&self, _ctx: &egui::Context, _params: StationRequest) {}
 
         pub fn fetch_map_data(&self, _ctx: &egui::Context) {}
 
@@ -1624,7 +1633,7 @@ mod native {
             self.inner.borrow_mut().status = Status::Error(MSG.into());
         }
 
-        pub fn save_markers(&self, _ctx: &egui::Context, _markers_json: String) {}
+        pub fn save_markers(&self, _ctx: &egui::Context, _markers: MarkerFile) {}
 
         pub fn save_image_png(&self, _bytes: Vec<u8>, _filename: String) {}
 

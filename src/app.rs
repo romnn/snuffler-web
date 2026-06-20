@@ -1,6 +1,9 @@
 use egui::{Color32, FontId};
 
-use crate::bridge::{Bridge, SnufflingRequestParams, Status, ViewParams};
+use crate::bridge::{
+    Bridge, CatalogRequest, MarkerFile, MarkerFileEntry, Nslc, SnufflingRequestParams,
+    StationRequest, Status, ViewParams, WaveformDownloadRequest,
+};
 use crate::snufflings::Action as SnufflingAction;
 use crate::state::{
     AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
@@ -159,7 +162,7 @@ impl App {
             ui.separator();
             if ui.button("Save markers…").clicked() {
                 self.bridge
-                    .save_markers(ctx, markers_to_json(&self.state.markers));
+                    .save_markers(ctx, markers_to_file(&self.state.markers));
                 ui.close();
             }
             if ui.button("Load markers…").clicked() {
@@ -770,20 +773,26 @@ impl eframe::App for App {
                     );
                 });
             if submit {
-                let p = serde_json::json!({
-                    "datacenter": self.state.dl_datacenter, "net": self.state.dl_net,
-                    "sta": self.state.dl_sta, "loc": self.state.dl_loc, "cha": self.state.dl_cha,
-                    "start": self.state.dl_start, "end": self.state.dl_end,
-                })
-                .to_string();
-                self.bridge.download_waveforms(&ctx, p);
+                self.bridge.download_waveforms(
+                    &ctx,
+                    WaveformDownloadRequest {
+                        datacenter: self.state.dl_datacenter.clone(),
+                        net: self.state.dl_net.clone(),
+                        sta: self.state.dl_sta.clone(),
+                        loc: self.state.dl_loc.clone(),
+                        cha: self.state.dl_cha.clone(),
+                        start: self.state.dl_start.clone(),
+                        end: self.state.dl_end.clone(),
+                    },
+                );
             }
             if submit_st || submit_resp {
-                let p = serde_json::json!({
-                    "datacenter": self.state.dl_datacenter, "net": self.state.dl_net,
-                    "sta": self.state.dl_sta, "cha": self.state.dl_cha,
-                })
-                .to_string();
+                let p = StationRequest {
+                    datacenter: self.state.dl_datacenter.clone(),
+                    net: self.state.dl_net.clone(),
+                    sta: self.state.dl_sta.clone(),
+                    cha: self.state.dl_cha.clone(),
+                };
                 if submit_st {
                     self.bridge.fetch_stations(&ctx, p.clone());
                 }
@@ -830,12 +839,15 @@ impl eframe::App for App {
                     ui.small("Events become markers on the time axis at their origin times.");
                 });
             if submit {
-                let p = serde_json::json!({
-                    "datacenter": self.state.cat_datacenter, "minmag": self.state.cat_minmag,
-                    "start": self.state.cat_start, "end": self.state.cat_end,
-                })
-                .to_string();
-                self.bridge.catalog_search(&ctx, p);
+                self.bridge.catalog_search(
+                    &ctx,
+                    CatalogRequest {
+                        datacenter: self.state.cat_datacenter.clone(),
+                        start: self.state.cat_start.clone(),
+                        end: self.state.cat_end.clone(),
+                        minmag: self.state.cat_minmag,
+                    },
+                );
             }
             self.state.show_catalog = open;
         }
@@ -1005,17 +1017,25 @@ impl eframe::App for App {
     }
 }
 
-fn markers_to_json(markers: &[Marker]) -> String {
-    let arr: Vec<_> = markers
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "tmin": m.tmin, "tmax": m.tmax, "kind": m.kind,
-                "phase": m.phase, "nslc": m.nslc, "polarity": m.polarity,
+fn markers_to_file(markers: &[Marker]) -> MarkerFile {
+    MarkerFile {
+        markers: markers
+            .iter()
+            .map(|m| MarkerFileEntry {
+                tmin: m.tmin,
+                tmax: m.tmax,
+                kind: u32::from(m.kind),
+                phase: m.phase.clone(),
+                nslc: m.nslc.as_ref().map(|(net, sta, loc, cha)| Nslc {
+                    net: net.clone(),
+                    sta: sta.clone(),
+                    loc: loc.clone(),
+                    cha: cha.clone(),
+                }),
+                polarity: m.polarity.map(i32::from),
             })
-        })
-        .collect();
-    serde_json::Value::Array(arr).to_string()
+            .collect(),
+    }
 }
 
 fn help_text(ui: &mut egui::Ui) {
