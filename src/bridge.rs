@@ -517,7 +517,7 @@ mod web {
         parsed
     }
 
-    fn view_track_values<'a>(view: &'a ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
+    fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
         if track.nf > 0 {
             return ("waterfall", Vec::new());
         }
@@ -534,17 +534,30 @@ mod web {
         if track.dt == 0.0 {
             return (
                 "points",
-                payload.chunks_exact(2).map(|pair| pair[1]).collect(),
+                payload
+                    .chunks_exact(2)
+                    .filter_map(|pair| match pair {
+                        [_, y] => Some(*y),
+                        _ => None,
+                    })
+                    .collect(),
             );
         }
         let mut values = Vec::with_capacity(track.count.saturating_mul(2));
         for triple in payload.chunks_exact(3) {
-            values.push(triple[1]);
-            values.push(triple[2]);
+            let [_, ylo, yhi] = triple else {
+                continue;
+            };
+            values.push(*ylo);
+            values.push(*yhi);
         }
         ("legacy-envelope", values)
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "sample count to f64 for diagnostic mean/rms; precision loss is irrelevant"
+    )]
     fn finite_stats(values: &[f32]) -> Option<(f32, f32, f64, f64)> {
         let mut n = 0usize;
         let mut min_v = f32::INFINITY;
@@ -574,6 +587,10 @@ mod web {
             .join(",")
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "sample/pixel counts to f64 for a diagnostic ratio; precision loss is irrelevant"
+    )]
     fn log_view_debug(params: &ViewParams, view: &ViewData) {
         if params.mode != "wiggle" {
             return;
