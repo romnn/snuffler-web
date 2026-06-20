@@ -26,6 +26,24 @@ fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::TextStyle;
     ctx.set_theme(egui::ThemePreference::System);
+
+    // egui's bundled proportional face is Ubuntu-Light, which renders very thin.
+    // Register Ubuntu Regular as the primary proportional font (same typeface, one
+    // weight up) and keep the built-in fonts as fallbacks for glyph coverage.
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "ubuntu_regular".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Ubuntu-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(Proportional)
+        .or_default()
+        .insert(0, "ubuntu_regular".to_owned());
+    ctx.set_fonts(fonts);
+
     let mut style = (*ctx.global_style()).clone();
     style.text_styles = [
         (TextStyle::Heading, FontId::new(19.0, Proportional)),
