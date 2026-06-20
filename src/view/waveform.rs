@@ -23,6 +23,8 @@ use crate::view::timeaxis;
 const AXIS_H: f32 = 52.0;
 const LABEL_PT: f32 = 12.5;
 const AXIS_PT: f32 = 12.5;
+/// Width of the vertical track scrollbar carved off the right edge.
+const SCROLLBAR_W: f32 = 12.0;
 
 struct Palette {
     bg: Color32,
@@ -349,6 +351,79 @@ struct Layout<'a> {
     off: usize,
     n_shown: usize,
     row_h: f32,
+    /// Y of the top edge of the first visible row. Equals `track_area.top()` when
+    /// rows are snapped; sits above it when continuous scrolling exposes a partial
+    /// first row.
+    top0: f32,
+}
+
+/// Vertical track layout derived from the user controls. `top_shift` is how far
+/// the first visible row's top edge sits above the track area (always `0` when
+/// snapped); `height`/`scroll` are the resolved (sentinel- and clamp-corrected)
+/// values that [`show`] writes back into [`AppState`].
+struct TrackGeom {
+    row_h: f32,
+    off: usize,
+    n_draw: usize,
+    top_shift: f32,
+    scroll: f32,
+    height: f32,
+}
+
+/// Resolve the track-height / snap / scroll controls into concrete row geometry.
+/// Pure: callers (the live view and the SVG export) get identical results, and
+/// [`show`] additionally writes the resolved values back as the next view
+/// request's track window.
+fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom {
+    let area = area_h.max(1.0);
+    let total_f = total.max(1) as f32;
+    let mut height = if state.track_height > 0.0 {
+        state.track_height
+    } else {
+        area / crate::state::DEFAULT_NTRACKS_SHOWN as f32
+    };
+    height = height.clamp(
+        crate::state::MIN_TRACK_H,
+        area.max(crate::state::MIN_TRACK_H),
+    );
+
+    if state.snap_tracks {
+        // Whole tracks that exactly tile the area (snuffler's classic layout). The
+        // rendered offset snaps to a whole track, but `scroll` is kept fractional
+        // so a slow scrollbar drag accumulates instead of being rounded away each
+        // frame (which would otherwise leave it stuck below the ±0.5 step).
+        let n = (area / height).round().clamp(1.0, total_f) as usize;
+        let row_h = area / n as f32;
+        let max_off = total.saturating_sub(n);
+        let scroll = state.track_scroll.clamp(0.0, max_off as f32);
+        let off = (scroll.round().clamp(0.0, max_off as f32)) as usize;
+        let n_draw = n.min(total.saturating_sub(off));
+        TrackGeom {
+            row_h,
+            off,
+            n_draw,
+            top_shift: 0.0,
+            scroll,
+            height: row_h,
+        }
+    } else {
+        let row_h = height;
+        let visible_f = area / row_h;
+        let max_scroll = (total_f - visible_f).max(0.0);
+        let scroll = state.track_scroll.clamp(0.0, max_scroll);
+        let off = scroll.floor() as usize;
+        let top_shift = (scroll - off as f32) * row_h;
+        let n_draw = ((top_shift + area) / row_h).ceil() as usize;
+        let n_draw = n_draw.min(total.saturating_sub(off));
+        TrackGeom {
+            row_h,
+            off,
+            n_draw,
+            top_shift,
+            scroll,
+            height,
+        }
+    }
 }
 
 fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layout<'a> {
@@ -356,11 +431,10 @@ fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layou
     let track_area = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - AXIS_H));
     let window = (meta.view_tmax - meta.view_tmin).max(1e-9);
     let total = meta.tracks.len();
-    let n_shown = state.ntracks_shown.clamp(1, total.max(1));
-    let off = state.track_offset.min(total.saturating_sub(n_shown));
+    let g = track_geometry(state, total, track_area.height());
     let visible = meta
         .tracks
-        .get(off..(off + n_shown).min(total))
+        .get(g.off..(g.off + g.n_draw).min(total))
         .unwrap_or(&[]);
     Layout {
         rect,
@@ -368,9 +442,10 @@ fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layou
         view_tmin: meta.view_tmin,
         window,
         visible,
-        off,
-        n_shown,
-        row_h: track_area.height() / n_shown.max(1) as f32,
+        off: g.off,
+        n_shown: g.n_draw,
+        row_h: g.row_h,
+        top0: track_area.top() - g.top_shift,
     }
 }
 
@@ -396,14 +471,16 @@ fn paint(
     let window = lay.window;
     let visible = lay.visible;
     let row_h = lay.row_h;
+    let top0 = lay.top0;
     let meta = &view.meta;
     let x_of = |t_rel: f64| rect.left() + (t_rel / window) as f32 * rect.width();
 
     target.fill_rect(rect, 0.0, pal.bg);
 
     if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
+        target.push_clip(track_area);
         for (k, t) in visible.iter().enumerate() {
-            let top = track_area.top() + k as f32 * row_h;
+            let top = top0 + k as f32 * row_h;
             let fill = row_tint(trace_color(t, state.subsort), dark, state.wiggle_theme);
             target.fill_rect(
                 Rect::from_min_max(
@@ -414,6 +491,7 @@ fn paint(
                 fill,
             );
         }
+        target.pop_clip();
     }
 
     // time grid + axis labels
@@ -450,9 +528,11 @@ fn paint(
         pal.axis_text,
     );
 
-    // tracks
+    // tracks (clipped to the track area so a partially-scrolled first/last row
+    // never bleeds over the time axis or the top edge)
+    target.push_clip(track_area);
     for (k, t) in visible.iter().enumerate() {
-        let top = track_area.top() + k as f32 * row_h;
+        let top = top0 + k as f32 * row_h;
         let bot = top + row_h;
         let mid = top + row_h * 0.5;
 
@@ -616,8 +696,12 @@ fn paint(
             pal.axis_text,
         );
     }
+    target.pop_clip();
 
-    draw_markers(target, state, track_area, visible, row_h, view_tmin, &x_of);
+    target.push_clip(track_area);
+    draw_markers(
+        target, state, track_area, top0, visible, row_h, view_tmin, &x_of,
+    );
     if let Some((a, b)) = state.pending_span {
         let r = Rect::from_min_max(
             egui::pos2(x_of(a - view_tmin), track_area.top()),
@@ -625,6 +709,7 @@ fn paint(
         );
         target.fill_rect(r, 0.0, Color32::from_rgba_unmultiplied(52, 101, 164, 40));
     }
+    target.pop_clip();
 }
 
 /// Render the current wiggle/waterfall view to a standalone SVG string at the
@@ -683,19 +768,22 @@ pub fn show(
     let pal = palette(dark, state.wiggle_theme);
     ui.ctx()
         .options_mut(|o| o.tessellation_options.feathering = state.antialiasing);
-    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
-    let rect = resp.rect;
+    // Reserve the whole canvas for the painter; the waveform and the scrollbar
+    // each take their own interaction sub-rect so they never fight over drags.
+    let (bg, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
+    let full_rect = bg.rect;
+    let track_area_h = (full_rect.height() - AXIS_H).max(1.0);
 
     let Some(view) = view else {
-        painter.rect_filled(rect, 0.0, pal.bg);
+        painter.rect_filled(full_rect, 0.0, pal.bg);
         painter.text(
-            rect.center(),
+            full_rect.center(),
             Align2::CENTER_CENTER,
             "Loading…",
             FontId::proportional(16.0),
             pal.axis_text,
         );
-        handle_keyboard(ui, state, 0, scene_range);
+        handle_keyboard(ui, state, 0, track_area_h, scene_range);
         return;
     };
 
@@ -711,23 +799,46 @@ pub fn show(
     }
 
     let total = view.meta.tracks.len();
-    handle_keyboard(ui, state, total, scene_range);
-    // Persist the clamp the layout applies, so scroll state stays in range.
-    let n_shown = state.ntracks_shown.clamp(1, total.max(1));
-    state.track_offset = state.track_offset.min(total.saturating_sub(n_shown));
+    handle_keyboard(ui, state, total, track_area_h, scene_range);
 
-    let lay = compute_layout(state, view, rect);
+    // Resolve the controls into row geometry and cache the on-screen window so the
+    // next view request fetches exactly the visible (possibly partial) tracks.
+    let g = track_geometry(state, total, track_area_h);
+    state.track_height = g.height;
+    state.track_scroll = g.scroll;
+    state.track_offset = g.off;
+    state.ntracks_shown = g.n_draw.max(1);
+
+    let overflow = (total as f32) > track_area_h / g.row_h.max(1.0) + 1e-3;
+    let sb_w = if overflow { SCROLLBAR_W } else { 0.0 };
+    let wave_rect = Rect::from_min_max(
+        full_rect.min,
+        egui::pos2(full_rect.max.x - sb_w, full_rect.max.y),
+    );
+    let rect = wave_rect;
+    let wave_resp = ui.interact(wave_rect, bg.id.with("wave"), Sense::click_and_drag());
+
+    let lay = compute_layout(state, view, wave_rect);
     let mut target = EguiTarget::new(painter.clone(), &wf.textures);
     paint(&mut target, state, view, &pal, &lay, dark, waterfall);
 
+    if overflow {
+        let strip = Rect::from_min_max(
+            egui::pos2(wave_rect.max.x, lay.track_area.top()),
+            egui::pos2(full_rect.max.x, lay.track_area.bottom()),
+        );
+        draw_scrollbar(ui, bg.id.with("scrollbar"), strip, state, total, lay.row_h);
+    }
+
     // Transient hover crosshair — drawn only on screen, never in an export.
-    if let Some(p) = resp.hover_pos()
+    if let Some(p) = wave_resp.hover_pos()
         && lay.track_area.contains(p)
     {
         if marker_hit_at(
             state,
             lay.visible,
             lay.track_area,
+            lay.top0,
             lay.row_h,
             lay.view_tmin,
             lay.window,
@@ -752,17 +863,86 @@ pub fn show(
     };
     handle_interaction(
         ui,
-        &resp,
+        &wave_resp,
         state,
         lay.visible,
+        lay.top0,
         lay.row_h,
         lay.view_tmin,
         lay.window,
         rect,
         lay.track_area,
-        total,
         &t_at_x,
     );
+}
+
+/// A vertical scrollbar for the track stack, drawn in the reserved right-hand
+/// strip. Dragging the thumb or clicking the trough moves `track_scroll`; in
+/// snapped mode the next frame's layout rounds the result to whole tracks.
+fn draw_scrollbar(
+    ui: &egui::Ui,
+    id: egui::Id,
+    strip: Rect,
+    state: &mut AppState,
+    total: usize,
+    row_h: f32,
+) {
+    let painter = ui.painter();
+    let dark = ui.visuals().dark_mode;
+    let total_f = total.max(1) as f32;
+    let area = strip.height().max(1.0);
+    let fits = (area / row_h.max(1.0)).max(1.0);
+    let max_scroll = (total_f - fits).max(0.0);
+    if max_scroll <= 0.0 {
+        return;
+    }
+
+    let resp = ui.interact(strip, id, Sense::click_and_drag());
+    let frac_vis = (fits / total_f).clamp(0.05, 1.0);
+    let thumb_h = (frac_vis * area).clamp(24.0_f32.min(area), area);
+
+    if resp.dragged() {
+        let per_px = max_scroll / (area - thumb_h).max(1.0);
+        state.track_scroll =
+            (state.track_scroll + resp.drag_delta().y * per_px).clamp(0.0, max_scroll);
+    } else if resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let scroll_frac = (state.track_scroll / max_scroll).clamp(0.0, 1.0);
+        let thumb_top = strip.top() + scroll_frac * (area - thumb_h);
+        if p.y < thumb_top {
+            state.track_scroll = (state.track_scroll - fits).max(0.0);
+        } else if p.y > thumb_top + thumb_h {
+            state.track_scroll = (state.track_scroll + fits).min(max_scroll);
+        }
+    }
+
+    let scroll_frac = (state.track_scroll / max_scroll).clamp(0.0, 1.0);
+    let thumb_top = strip.top() + scroll_frac * (area - thumb_h);
+    let thumb = Rect::from_min_max(
+        egui::pos2(strip.left() + 2.0, thumb_top),
+        egui::pos2(strip.right() - 2.0, thumb_top + thumb_h),
+    );
+    let (trough, thumb_col, thumb_hot) = if dark {
+        (
+            Color32::from_gray(38),
+            Color32::from_gray(96),
+            Color32::from_gray(140),
+        )
+    } else {
+        (
+            Color32::from_gray(222),
+            Color32::from_gray(168),
+            Color32::from_gray(128),
+        )
+    };
+    painter.rect_filled(strip, 0.0, trough);
+    let col = if resp.hovered() || resp.dragged() {
+        thumb_hot
+    } else {
+        thumb_col
+    };
+    painter.rect_filled(thumb, 3.0, col);
 }
 
 /// Does an NSLC-scoped marker apply to this track? Empty or `*` fields are
@@ -775,6 +955,7 @@ fn marker_matches_track(nslc: &(String, String, String, String), t: &ViewTrack) 
 fn marker_row_spans(
     marker: &Marker,
     area: Rect,
+    top0: f32,
     visible: &[ViewTrack],
     row_h: f32,
 ) -> Vec<(f32, f32)> {
@@ -785,7 +966,7 @@ fn marker_row_spans(
             .enumerate()
             .filter(|(_, t)| marker_matches_track(nslc, t))
             .map(|(k, _)| {
-                let top = area.top() + k as f32 * row_h;
+                let top = top0 + k as f32 * row_h;
                 (top, top + row_h)
             })
             .collect(),
@@ -800,6 +981,7 @@ fn marker_hit_at(
     state: &AppState,
     visible: &[ViewTrack],
     area: Rect,
+    top0: f32,
     row_h: f32,
     view_tmin: f64,
     window: f64,
@@ -812,7 +994,7 @@ fn marker_hit_at(
     let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
     let tol = 7.0;
     for (idx, marker) in state.markers.iter().enumerate().rev() {
-        let row_hit = marker_row_spans(marker, area, visible, row_h)
+        let row_hit = marker_row_spans(marker, area, top0, visible, row_h)
             .iter()
             .any(|(top, bot)| pos.y >= *top && pos.y <= *bot);
         if !row_hit {
@@ -833,10 +1015,15 @@ fn marker_hit_at(
     None
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "marker drawing needs the view + projection context to place each marker"
+)]
 fn draw_markers(
     target: &mut dyn DrawTarget,
     state: &AppState,
     area: Rect,
+    top0: f32,
     visible: &[ViewTrack],
     row_h: f32,
     view_tmin: f64,
@@ -848,7 +1035,7 @@ fn draw_markers(
         if (x0 < area.left() - 2.0 || x0 > area.right() + 2.0) && !m.is_span() {
             continue;
         }
-        let spans = marker_row_spans(m, area, visible, row_h);
+        let spans = marker_row_spans(m, area, top0, visible, row_h);
         let label = match (&m.phase, m.polarity_symbol()) {
             (Some(ph), sym) if !sym.is_empty() => format!("{ph} {sym}"),
             (Some(ph), _) => ph.clone(),
@@ -900,27 +1087,44 @@ fn handle_interaction(
     resp: &egui::Response,
     state: &mut AppState,
     visible: &[ViewTrack],
+    top0: f32,
     row_h: f32,
     view_tmin: f64,
     window: f64,
     rect: Rect,
     track_area: Rect,
-    total: usize,
     t_at_x: &impl Fn(f32) -> f64,
 ) {
     let modifiers = ui.input(|i| i.modifiers);
+    // Plain wheel scrolling arrives via `smooth_scroll_delta`, but egui re-routes
+    // ctrl/⌘+wheel into a zoom gesture (zeroing the scroll delta), so qt
+    // snuffler's ctrl+wheel track-zoom never fired here. Recover it from the raw
+    // wheel events, which keep their real modifiers.
     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+    let ctrl_wheel = ui.input(raw_ctrl_wheel);
+    let area_h = track_area.height();
 
-    if scroll != 0.0 && resp.hovered() {
-        if modifiers.ctrl || modifiers.command {
-            let anchor = resp.hover_pos().map_or(0.0, |p| {
-                ((p.y - track_area.top()) / track_area.height().max(1.0)).clamp(0.0, 1.0)
+    if resp.hovered() {
+        if ctrl_wheel != 0.0 {
+            let anchor = resp.hover_pos().map_or(0.5, |p| {
+                ((p.y - track_area.top()) / area_h.max(1.0)).clamp(0.0, 1.0)
             });
-            if let Some(delta) = wheel_delta(state, scroll) {
-                zoom_tracks(state, total, anchor, delta);
+            let notches = wheel_notches(state, ctrl_wheel);
+            if notches != 0.0 {
+                zoom_tracks(state, area_h, anchor, notches);
             }
-        } else if let Some(delta) = wheel_delta(state, scroll) {
-            scroll_tracks(state, total, -delta);
+        } else if scroll != 0.0 {
+            if state.snap_tracks {
+                let notches = wheel_notches(state, scroll);
+                if notches != 0.0 {
+                    let visible_n = (area_h / row_h.max(1.0)).max(1.0);
+                    let amount = (visible_n / 5.0).max(1.0);
+                    state.track_scroll = (state.track_scroll - amount * notches).max(0.0);
+                }
+            } else {
+                // Continuous: scroll by the exact pixel delta, in track units.
+                state.track_scroll = (state.track_scroll - scroll / row_h.max(1.0)).max(0.0);
+            }
         }
     }
 
@@ -971,7 +1175,7 @@ fn handle_interaction(
     } else if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
         && let Some(hit) = marker_hit_at(
-            state, visible, track_area, row_h, view_tmin, window, rect, p,
+            state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
         )
     {
         if !modifiers.shift {
@@ -985,46 +1189,66 @@ fn handle_interaction(
     }
 }
 
-fn wheel_delta(state: &mut AppState, scroll: f32) -> Option<f32> {
+/// Sum the vertical delta (in points) of any ctrl/⌘-held raw wheel events this
+/// frame, converting line/page units the way egui itself would on the web (its
+/// `InputOptions` are private, but the web `line_scroll_speed` is a fixed 8.0).
+fn raw_ctrl_wheel(i: &egui::InputState) -> f32 {
+    const LINE_PX: f32 = 8.0;
+    let page = i.content_rect().height();
+    i.events
+        .iter()
+        .filter_map(|e| match e {
+            egui::Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+                ..
+            } if modifiers.ctrl || modifiers.command => Some(match unit {
+                egui::MouseWheelUnit::Point => delta.y,
+                egui::MouseWheelUnit::Line => LINE_PX * delta.y,
+                egui::MouseWheelUnit::Page => page * delta.y,
+            }),
+            _ => None,
+        })
+        .sum()
+}
+
+/// Accumulate raw wheel motion into Qt-style 120-point notches.
+fn wheel_notches(state: &mut AppState, scroll: f32) -> f32 {
     const WHEEL_NOTCH: f32 = 120.0;
     state.wheel_pos += scroll;
     let notches = (state.wheel_pos / WHEEL_NOTCH).floor();
     state.wheel_pos -= notches * WHEEL_NOTCH;
-    if notches == 0.0 {
-        return None;
-    }
-    let amount = (state.ntracks_shown as f32 / 5.0).max(1.0);
-    Some(amount * notches.clamp(-5.0, 5.0))
+    notches.clamp(-5.0, 5.0)
 }
 
-fn scroll_tracks(state: &mut AppState, total: usize, shift: f32) {
-    if total == 0 {
-        return;
-    }
-    let n_shown = state.ntracks_shown.clamp(1, total);
-    let max_offset = total.saturating_sub(n_shown) as isize;
-    let offset = state.track_offset as isize + shift.round() as isize;
-    state.track_offset = offset.clamp(0, max_offset) as usize;
+/// The current resolved track height in pixels (sentinel `0.0` auto-fits
+/// [`DEFAULT_NTRACKS_SHOWN`]), clamped to the slider bounds.
+fn resolved_height(state: &AppState, area_h: f32) -> f32 {
+    let area = area_h.max(1.0);
+    let h = if state.track_height > 0.0 {
+        state.track_height
+    } else {
+        area / crate::state::DEFAULT_NTRACKS_SHOWN as f32
+    };
+    h.clamp(
+        crate::state::MIN_TRACK_H,
+        area.max(crate::state::MIN_TRACK_H),
+    )
 }
 
-fn zoom_tracks(state: &mut AppState, total: usize, anchor: f32, delta: f32) {
-    if total == 0 {
-        return;
-    }
-    let current = state.ntracks_shown.clamp(1, total);
-    if (current == 1 && delta <= 0.0) || (current == total && delta >= 0.0) {
-        return;
-    }
-
-    let next = (current as f32 + delta.round()).clamp(1.0, total as f32) as usize;
-    let mut start = state.track_offset as f32 - anchor.clamp(0.0, 1.0) * delta;
-    let end = start + next as f32;
-    if end > total as f32 {
-        start -= end - total as f32;
-    }
-
-    state.ntracks_shown = next;
-    state.track_offset = start.round().clamp(0.0, total.saturating_sub(next) as f32) as usize;
+/// ctrl+wheel track zoom: change the track height (and hence how many tracks are
+/// shown) while keeping the track under the cursor (`anchor`) fixed. Positive
+/// `notches` (wheel down) shrink rows to reveal more tracks.
+fn zoom_tracks(state: &mut AppState, area_h: f32, anchor: f32, notches: f32) {
+    let area = area_h.max(1.0);
+    let cur_h = resolved_height(state, area);
+    let cur_n = (area / cur_h).max(1.0);
+    let new_n = (cur_n + notches).max(1.0);
+    let new_h = (area / new_n).clamp(crate::state::MIN_TRACK_H, crate::state::MAX_TRACK_H);
+    let idx_at_cursor = state.track_scroll + anchor.clamp(0.0, 1.0) * cur_n;
+    state.track_scroll = (idx_at_cursor - anchor.clamp(0.0, 1.0) * (area / new_h)).max(0.0);
+    state.track_height = new_h;
 }
 
 #[allow(
@@ -1035,6 +1259,7 @@ fn handle_keyboard(
     ui: &egui::Ui,
     state: &mut AppState,
     total: usize,
+    track_area_h: f32,
     scene_range: Option<(f64, f64)>,
 ) {
     // Don't fire single-key shortcuts while a text field (FDSN forms, command
@@ -1062,23 +1287,28 @@ fn handle_keyboard(
             state.tmax -= win;
         }
         // Track-zoom keys (snuffler: + shows one track MORE, - one LESS, = resets
-        // to the initial count). Plus is Shift+Equals on most layouts, so accept
-        // either for "more"; bare Equals (no shift) is the reset.
+        // to the initial count). These now drive the track height: more tracks =
+        // shorter rows. Plus is Shift+Equals on most layouts, so accept either for
+        // "more"; bare Equals (no shift) is the reset (auto-fit sentinel).
+        let cur_h = resolved_height(state, track_area_h);
+        let cur_n = (track_area_h.max(1.0) / cur_h).round().max(1.0);
         if i.key_pressed(Key::Plus) || (i.key_pressed(Key::Equals) && shift) {
-            state.ntracks_shown = (state.ntracks_shown + 1).min(total.max(1));
+            state.track_height = (track_area_h.max(1.0) / (cur_n + 1.0))
+                .clamp(crate::state::MIN_TRACK_H, crate::state::MAX_TRACK_H);
         }
         if i.key_pressed(Key::Minus) {
-            state.ntracks_shown = state.ntracks_shown.saturating_sub(1).max(1);
+            state.track_height = (track_area_h.max(1.0) / (cur_n - 1.0).max(1.0))
+                .clamp(crate::state::MIN_TRACK_H, crate::state::MAX_TRACK_H);
         }
         if i.key_pressed(Key::Equals) && !shift {
-            state.ntracks_shown = crate::state::DEFAULT_NTRACKS_SHOWN.min(total.max(1));
+            state.track_height = 0.0;
         }
         if i.key_pressed(Key::PageDown) {
-            state.track_offset =
-                (state.track_offset + state.ntracks_shown).min(total.saturating_sub(1));
+            let max_scroll = (total as f32 - cur_n).max(0.0);
+            state.track_scroll = (state.track_scroll + cur_n).min(max_scroll);
         }
         if i.key_pressed(Key::PageUp) {
-            state.track_offset = state.track_offset.saturating_sub(state.ntracks_shown);
+            state.track_scroll = (state.track_scroll - cur_n).max(0.0);
         }
         if i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete) {
             state.markers.retain(|m| !m.selected);

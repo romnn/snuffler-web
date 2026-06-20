@@ -6,8 +6,13 @@
 use crate::snufflings::SnufflingState;
 use crate::view::markers::Marker;
 
-/// Number of tracks shown by default, and the reset target for the "=" key.
+/// Number of tracks the auto-fit track height targets on first load, and the
+/// reset target for the "=" key.
 pub const DEFAULT_NTRACKS_SHOWN: usize = 12;
+
+/// Bounds for the track-height slider (pixels per track row).
+pub const MIN_TRACK_H: f32 = 8.0;
+pub const MAX_TRACK_H: f32 = 400.0;
 
 /// How per-track amplitude ranges are grouped across tracks (snuffler's "Scaling"
 /// grouping radio group, pile_viewer.py:933-946).
@@ -350,7 +355,15 @@ pub struct AppState {
     pub snuffling_text: String,
     pub show_snuffling: bool,
 
-    /// Vertical track windowing (snuffler's `ntracks_shown_max` + scroll).
+    /// Vertical track layout. `track_height` (pixels per row, `0.0` until the
+    /// first layout auto-fits [`DEFAULT_NTRACKS_SHOWN`]) and `snap_tracks` (align
+    /// rows to perfect trace boundaries) are the user-facing controls;
+    /// `track_scroll` is the fractional index of the topmost visible row.
+    /// `ntracks_shown`/`track_offset` are caches the waveform layout recomputes
+    /// each frame; the view request reads them to fetch only on-screen tracks.
+    pub track_height: f32,
+    pub snap_tracks: bool,
+    pub track_scroll: f32,
     pub ntracks_shown: usize,
     pub track_offset: usize,
 
@@ -437,6 +450,10 @@ impl Default for AppState {
             snufflings: SnufflingState::default(),
             snuffling_text: String::new(),
             show_snuffling: false,
+            // 0.0 = auto-fit DEFAULT_NTRACKS_SHOWN on the first layout.
+            track_height: 0.0,
+            snap_tracks: true,
+            track_scroll: 0.0,
             ntracks_shown: DEFAULT_NTRACKS_SHOWN,
             track_offset: 0,
             markers: Vec::new(),

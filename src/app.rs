@@ -404,16 +404,11 @@ impl eframe::App for App {
             if range_changed {
                 self.state.tmin = scene.tmin;
                 self.state.tmax = scene.tmax;
-                self.state.ntracks_shown = scene
-                    .tracks
-                    .len()
-                    .clamp(1, crate::state::DEFAULT_NTRACKS_SHOWN);
+                // New time range: scroll back to the top. The track height (and the
+                // derived `track_offset`/`ntracks_shown` caches) are owned by the
+                // waveform layout, so leave them for it to refit.
+                self.state.track_scroll = 0.0;
                 self.state.track_offset = 0;
-            } else {
-                self.state.track_offset = self
-                    .state
-                    .track_offset
-                    .min(scene.tracks.len().saturating_sub(1));
             }
             self.last_scene_bounds = Some(bounds);
             self.last_scene_gen = scene_gen;
@@ -1051,9 +1046,9 @@ fn help_text(ui: &mut egui::Ui) {
         ("b", "Backward one page in time"),
         ("<pagedown>", "Scroll tracks one page down"),
         ("<pageup>", "Scroll tracks one page up"),
-        ("+", "Show one track more"),
-        ("-", "Show one track less"),
-        ("=", "Show initial number of tracks"),
+        ("+", "Shorter tracks (show one more)"),
+        ("-", "Taller tracks (show one less)"),
+        ("=", "Reset track height (auto-fit)"),
         ("g", "Go to selection / show all"),
         ("G", "Zoom to selection / zoom to trace visibility"),
         ("n", "Go to next marker"),
@@ -1091,7 +1086,7 @@ fn help_text(ui: &mut egui::Ui) {
         ("Click on marker", "Select marker"),
         ("<shift> + click on marker", "Select additional marker"),
         ("Wheel", "Scroll tracks vertically"),
-        ("<ctrl> + wheel", "Change number of tracks shown"),
+        ("<ctrl> + wheel", "Zoom track height (more / fewer tracks)"),
         ("Right-click", "Menu (native only)"),
         ("Double-click", "Enter picking mode / place pick"),
         (

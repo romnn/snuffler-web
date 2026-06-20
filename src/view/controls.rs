@@ -1,10 +1,10 @@
 //! The "Main Controls" panel: filters, gain, rotation, scaling, sorting, view
-//! mode, the waterfall colorbar, and track count — mirroring snuffler's bottom
+//! mode, the waterfall colorbar, and track height — mirroring snuffler's bottom
 //! control strip (`pile_viewer.py` `controls()` + `ColorbarControl`).
 
 use crate::state::{
-    AppState, ColorScale, Colormap, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode,
-    WiggleTheme,
+    AppState, ColorScale, Colormap, MAX_TRACK_H, MIN_TRACK_H, ScalingBase, ScalingGroup, SortMode,
+    Subsort, ViewMode, WiggleTheme,
 };
 
 const FILTER_MIN_HZ: f64 = 0.001;
@@ -232,8 +232,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
 
         ui.separator();
 
-        let max_tracks = ntracks_total.max(1);
-        ui.add(egui::Slider::new(&mut state.ntracks_shown, 1..=max_tracks).text("Tracks"));
+        // Track height (pixels per row). With "Align" on, the layout snaps this to
+        // a height that tiles the canvas with whole tracks; off lets rows take the
+        // exact height and scroll continuously.
+        let mut height = if state.track_height > 0.0 {
+            state.track_height
+        } else {
+            40.0
+        };
+        let resp = ui.add(
+            egui::Slider::new(&mut height, MIN_TRACK_H..=MAX_TRACK_H)
+                .text("Track height")
+                .suffix(" px"),
+        );
+        if resp.changed() {
+            state.track_height = height;
+        }
+        resp.on_hover_text(format!("{} tracks total", ntracks_total.max(1)));
+        ui.checkbox(&mut state.snap_tracks, "Align")
+            .on_hover_text("Snap track height and scrolling to whole traces");
 
         ui.separator();
         ui.label("marker:");
