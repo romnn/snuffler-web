@@ -1,0 +1,22 @@
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["web/bridge.py"]
+mypy_path = ["web/proto", "typings"]
+exclude = ["^web/proto/", "^pybuild/build/", "^sources/", "^target/"]
+
+disallow_any_unimported = true
+implicit_reexport = false
+disallow_any_generics = true
+disallow_subclassing_any = true
+warn_unused_configs = true
+warn_no_return = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
