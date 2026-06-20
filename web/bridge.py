@@ -513,13 +513,27 @@ def _slice_segment(
     entry: Tuple[float, float, np.ndarray],
     tmin: float,
     tmax: float,
+    include_sample_support: bool = False,
 ) -> Optional[Tuple[np.ndarray, float, float]]:
     seg_tmin, deltat, y = entry
-    start = max(0, int(math.floor((tmin - seg_tmin) / deltat)))
-    stop = min(len(y), int(math.ceil((tmax - seg_tmin) / deltat)) + 1)
+    if include_sample_support:
+        half = 0.5 * deltat
+        start = max(0, int(math.ceil((tmin - half - seg_tmin) / deltat)))
+        stop = min(len(y), int(math.floor((tmax + half - seg_tmin) / deltat)) + 1)
+    else:
+        start = max(0, int(math.floor((tmin - seg_tmin) / deltat)))
+        stop = min(len(y), int(math.ceil((tmax - seg_tmin) / deltat)) + 1)
     if stop <= start:
         return None
     return y[start:stop], seg_tmin + start * deltat, deltat
+
+
+def _display_time_span(tr: ptrace.Trace) -> Tuple[float, float]:
+    t0, t1 = float(tr.tmin), float(tr.tmax)
+    if tr.nslc_id[3].endswith("-RMS") and int(tr.data_len()) > 0:
+        half = 0.5 * float(tr.deltat)
+        return t0 - half, t1 + half
+    return t0, t1
 
 
 def _spectrogram(seg: ptrace.Trace, npx: int, want_abs: bool, want_integrate: bool, cscale: str):
@@ -609,7 +623,8 @@ def get_view(params_json: str) -> dict:
     offset = 0
     view_idx = 0
     for tr_idx, tr in enumerate(work):
-        if float(tr.tmax) < tmin or float(tr.tmin) > tmax:
+        display_tmin, display_tmax = _display_time_span(tr)
+        if display_tmax < tmin or display_tmin > tmax:
             continue
 
         net, sta, loc, cha = tr.nslc_id
@@ -658,7 +673,7 @@ def get_view(params_json: str) -> dict:
                 tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
             if entry is None:
                 continue
-            sliced = _slice_segment(entry, tmin, tmax)
+            sliced = _slice_segment(entry, tmin, tmax, cha.endswith("-RMS"))
             if sliced is None:
                 continue
             yview, ytmin, deltat = sliced
@@ -708,6 +723,44 @@ def get_view(params_json: str) -> dict:
     return {"meta": json.dumps(meta), "ys": ys}
 
 
+def _snuffling_section(params: Dict[str, Any], name: str) -> Dict[str, Any]:
+    snufflings = params.get("snufflings") or {}
+    section = snufflings.get(name) if isinstance(snufflings, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
+def _cfg(section: Dict[str, Any], params: Dict[str, Any], key: str, default: Any) -> Any:
+    return section.get(key, params.get(key, default))
+
+
+def _is_stalta_trace(tr: ptrace.Trace) -> bool:
+    return bool(tr.nslc_id[3].endswith("-STALTA"))
+
+
+def _is_tabu_trace(tr: ptrace.Trace) -> bool:
+    meta = getattr(tr, "meta", None)
+    return bool(isinstance(meta, dict) and meta.get("tabu"))
+
+
+def _konno_ohmachi_smooth(values: np.ndarray, freqs: np.ndarray, bandwidth: float) -> np.ndarray:
+    bandwidth = max(float(bandwidth or 40.0), 1.0)
+    values64 = np.asarray(values, dtype=np.float64)
+    freqs64 = np.asarray(freqs, dtype=np.float64)
+    out = np.empty_like(values64)
+    for i, fc in enumerate(freqs64):
+        if fc <= 0.0:
+            out[i] = values64[i]
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x = bandwidth * np.log10(freqs64 / fc)
+            w = (np.sin(x) / x) ** 4
+        w[~np.isfinite(w)] = 0.0
+        w[i] = 1.0
+        denom = float(w.sum())
+        out[i] = float(np.sum(w * values64) / denom) if denom > 0.0 else values64[i]
+    return out
+
+
 def get_spectrum(params_json: str) -> dict:
     """Amplitude spectrum (|rFFT|) of each visible trace — a built-in snuffling.
 
@@ -715,6 +768,10 @@ def get_spectrum(params_json: str) -> dict:
     sampled on a shared log-frequency axis [fmin, fmax]."""
     p = json.loads(params_json)
     tmin, tmax = float(p["tmin"]), float(p["tmax"])
+    spectrum_params = _snuffling_section(p, "spectrum")
+    smoothing = bool(_cfg(spectrum_params, p, "spec_smoothing", False))
+    smoothing_bandwidth = float(
+        _cfg(spectrum_params, p, "spec_smoothing_bandwidth", 40.0) or 40.0)
     hp, lp = p.get("highpass"), p.get("lowpass")
     rotate = float(p.get("rotate", 0.0) or 0.0)
     nbins = 400
@@ -762,6 +819,8 @@ def get_spectrum(params_json: str) -> dict:
     ys_parts, tracks, offset = [], [], 0
     for label, freq, amp in specs:
         resamp = np.interp(grid, freq, amp, left=0.0, right=0.0)
+        if smoothing:
+            resamp = _konno_ohmachi_smooth(resamp, grid, smoothing_bandwidth)
         logamp = np.log10(resamp + 1e-20).astype("<f4")
         tracks.append({"label": label, "offset": int(offset), "count": int(nbins),
                        "ymin": float(logamp.min()), "ymax": float(logamp.max())})
@@ -786,16 +845,18 @@ def run_snuffling(name: str, params_json: str) -> str:
     order = _sort_order(vis, p.get("sort", "name"), p.get("subsort", "nslc"))
     work = _apply_rotation([vis[i] for i in order], rotate)
 
-    def chopped():
-        for tr in work:
+    def chopped(pass_hp: Optional[float] = hp, pass_lp: Optional[float] = lp,
+                ctmin: float = tmin, ctmax: float = tmax,
+                traces: Optional[List[ptrace.Trace]] = None):
+        for tr in (work if traces is None else traces):
             try:
-                seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
+                seg = tr.chop(ctmin, ctmax, inplace=False, include_last=True)
             except Exception:
                 continue
             if seg.ydata is None or len(seg.ydata) < 4:
                 continue
             seg.ydata = seg.ydata.astype(np.float64)
-            _filter_seg(seg, hp, lp, fft, lphp)
+            _filter_seg(seg, pass_hp, pass_lp, fft, lphp)
             yield tr, seg
 
     if name == "minmax":
@@ -808,31 +869,100 @@ def run_snuffling(name: str, params_json: str) -> str:
         return json.dumps({"text": text, "markers": []})
 
     if name == "stalta":
-        tshort, ratio, level = 1.0, 3.0, 0.7
+        params = _snuffling_section(p, "stalta")
+        shp = _cfg(params, p, "stalta_highpass", None)
+        slp = _cfg(params, p, "stalta_lowpass", None)
+        tshort = float(_cfg(params, p, "stalta_swin", 30.0) or 30.0)
+        ratio = float(_cfg(params, p, "stalta_ratio", 3.0) or 3.0)
+        level = float(_cfg(params, p, "stalta_level", 0.5) or 0.5)
+        variant = str(_cfg(params, p, "stalta_variant", "centered") or "centered")
+        scaling_name = str(_cfg(params, p, "stalta_scalingmethod", "[0-1]") or "[0-1]")
+        apply_to_sum = bool(_cfg(params, p, "stalta_apply_to_sum", False))
+        show_level_traces = bool(_cfg(params, p, "stalta_show_level_traces", False))
+        scaling_method = {
+            "[0-1]": 1,
+            "[-1/ratio,1]": 2,
+            "[-1/ratio,1] clipped to [0,1]": 3,
+        }.get(scaling_name, 1)
         markers = []
-        for _tr, seg in chopped():
+        processed = []
+        derived = []
+        source_work = [tr for tr in work if not _is_stalta_trace(tr)]
+        had_level_traces = any(_is_stalta_trace(tr) for tr in _TRACES)
+        if had_level_traces:
+            _TRACES[:] = [tr for tr in _TRACES if not _is_stalta_trace(tr)]
+        for tr, seg in chopped(shp, slp, traces=source_work):
             if len(seg.ydata) < 64:
                 continue
             try:
                 c = seg.copy()
-                c.sta_lta_centered(tshort, tshort * ratio)
+                method = c.sta_lta_right if variant == "right" else c.sta_lta_centered
+                try:
+                    method(tshort, tshort * ratio, scalingmethod=scaling_method)
+                except TypeError:
+                    method(tshort, tshort * ratio)
+                if show_level_traces:
+                    net, sta, loc, cha = tr.nslc_id
+                    derived.append(ptrace.Trace(
+                        network=net, station=sta, location=loc,
+                        channel=cha + "-STALTA",
+                        deltat=float(c.deltat), tmin=float(c.tmin),
+                        ydata=np.asarray(c.ydata, dtype=np.float64),
+                        meta={"tabu": True}))
+                if apply_to_sum:
+                    processed.append(c)
+                    continue
                 tpeaks, _apeaks = c.peaks(level, tshort)
             except Exception:
                 continue
             for tp in tpeaks:
-                markers.append({"t": float(tp), "phase": None, "kind": 3})
+                markers.append({
+                    "t": float(tp), "phase": None, "kind": 0,
+                    "nslc": list(tr.nslc_id),
+                })
+        if apply_to_sum and processed:
+            min_len = min(len(c.ydata) for c in processed)
+            if min_len >= 64:
+                try:
+                    csum = processed[0].copy()
+                    csum.ydata = np.mean([c.ydata[:min_len] for c in processed], axis=0)
+                    tpeaks, _apeaks = csum.peaks(level, tshort)
+                    for tp in tpeaks:
+                        markers.append({"t": float(tp), "phase": None, "kind": 0})
+                except Exception:
+                    pass
+        scene = None
+        if show_level_traces:
+            _TRACES.extend(derived)
+        if had_level_traces or show_level_traces:
+            _mark_traces_changed()
+            scene = json.loads(_scene_json())
         return json.dumps({
+            "show_window": False,
             "text": "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)"
                     % (len(markers), tshort, ratio, level),
             "markers": markers,
+            "scene": scene,
         })
 
     if name == "polarization":
         # Covariance-eigenvalue polarization analysis (Jurkevics, 1988) per
         # 3-component station over the visible window. Pure numpy.
+        params = _snuffling_section(p, "polarization")
+        php = _cfg(params, p, "polarization_highpass", None)
+        plp = _cfg(params, p, "polarization_lowpass", None)
+        length = float(_cfg(params, p, "polarization_t_length", tmax - tmin) or (tmax - tmin))
+        offset = float(_cfg(params, p, "polarization_ft_offset", 0.0) or 0.0)
+        azimuth = float(_cfg(params, p, "polarization_azimuth", 0.0) or 0.0)
+        if 0.0 < length < (tmax - tmin):
+            center = 0.5 * (tmin + tmax) + offset * length
+            ptmin, ptmax = center - 0.5 * length, center + 0.5 * length
+        else:
+            ptmin, ptmax = tmin, tmax
+
         groups: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         comp_of = {"Z": "Z", "N": "N", "1": "N", "E": "E", "2": "E"}
-        for tr, seg in chopped():
+        for tr, seg in chopped(php, plp, ptmin, ptmax):
             net, sta, loc, cha = tr.nslc_id
             comp = comp_of.get(cha[-1].upper()) if cha else None
             if comp is not None:
@@ -846,6 +976,12 @@ def run_snuffling(name: str, params_json: str) -> str:
             m = min(len(comps[k]) for k in ("Z", "N", "E"))
             if m < 8:
                 continue
+            if azimuth != 0.0:
+                theta = np.radians(azimuth)
+                n = comps["N"][:m].copy()
+                e = comps["E"][:m].copy()
+                comps["N"] = np.cos(theta) * n - np.sin(theta) * e
+                comps["E"] = np.sin(theta) * n + np.cos(theta) * e
             data = np.vstack([comps["Z"][:m], comps["N"][:m], comps["E"][:m]])
             data = data - data.mean(axis=1, keepdims=True)
             evals, evecs = np.linalg.eigh(np.cov(data))  # ascending
@@ -1305,53 +1441,122 @@ def rms(params_json: str) -> str:
     With grouping on, a station's components are combined into one RMS trace.
     Appends the derived traces and returns the updated scene JSON. All numpy.
     """
-    import collections
-
     global _TRACES
     p = json.loads(params_json)
     tmin, tmax = float(p["tmin"]), float(p["tmax"])
-    hp, lp = p.get("highpass"), p.get("lowpass")
-    fft = bool(p.get("fft_filtering", False))
-    lphp = bool(p.get("bandpass_lphp", True))
-    block = p.get("rms_block")
+    params = _snuffling_section(p, "rms")
+    hp = _cfg(params, p, "rms_highpass", None)
+    lp = _cfg(params, p, "rms_lowpass", None)
+    block = _cfg(params, p, "rms_block", None)
     block = float(block) if block else max(1.0, (tmax - tmin) / 100.0)
-    group = bool(p.get("rms_group", True))
-    logrms = bool(p.get("rms_log", False))
+    group = bool(_cfg(params, p, "rms_group", True))
+    logrms = bool(_cfg(params, p, "rms_log", False))
 
-    # Drop any RMS traces from a previous run, then work over what's visible.
+    # Drop previous RMS output, then work only on original traces. Qt marks
+    # snuffling-produced traces as tabu and RMS skips them.
     _TRACES = [tr for tr in _TRACES if not tr.nslc_id[3].endswith("-RMS")]
-    src = [tr for tr in _visible_traces() if not tr.nslc_id[3].endswith("-RMS")]
+    src = [
+        tr for tr in _visible_traces()
+        if not _is_tabu_trace(tr) and not tr.nslc_id[3].endswith("-RMS")
+    ]
+    if not src or block <= 0.0:
+        _mark_traces_changed()
+        return _scene_json()
 
-    nblocks = max(1, int(math.ceil((tmax - tmin) / block)))
-    acc: Dict[Tuple[str, str, str, str], List[Any]] = collections.defaultdict(
-        lambda: [np.zeros(nblocks), np.zeros(nblocks)])  # [sum of squares, count]
-    for tr in src:
+    tpad = 0.0
+    for freq in (hp, lp):
+        if freq is not None and float(freq) > 0.0:
+            tpad = max(tpad, 1.0 / float(freq))
+
+    def grouping(nslc: Tuple[str, str, str, str]) -> Tuple[str, str, str, str]:
+        return nslc[:3] + (nslc[3][:-1],) if group else nslc
+
+    ptmin = min(float(tr.tmin) for tr in src)
+    if ptmin > tmin:
+        tmin = ptmin + tpad
+    ptmax = max(float(tr.tmax) for tr in src)
+    if ptmax < tmax:
+        tmax = ptmax - tpad
+
+    targets: Dict[Tuple[str, str, str, str], ptrace.Trace] = {}
+    completed: List[ptrace.Trace] = []
+    eps = block * 1e-6
+    nwin = int(((tmax - eps) - tmin) / block) + 1
+    if nwin <= 0:
+        _mark_traces_changed()
+        return _scene_json()
+
+    def complete_chop(tr: ptrace.Trace, wmin: float, wmax: float) -> Optional[ptrace.Trace]:
         try:
-            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
-        except Exception:
-            continue
-        if seg.ydata is None or len(seg.ydata) == 0:
-            continue
-        seg.ydata = seg.ydata.astype(np.float64)
-        _filter_seg(seg, hp, lp, fft, lphp)
-        y = seg.ydata
-        idx = np.floor((seg.tmin + np.arange(len(y)) * seg.deltat - tmin) / block)
-        idx = np.clip(idx.astype(int), 0, nblocks - 1)
-        net, sta, loc, cha = tr.nslc_id
-        key_cha = cha[:-1] if group else cha
-        s, c = acc[(net, sta, loc, key_cha)]
-        np.add.at(s, idx, y * y)
-        np.add.at(c, idx, 1.0)
+            seg = tr.chop(
+                wmin - tpad,
+                wmax + tpad,
+                inplace=False,
+                include_last=False)
+        except ptrace.NoData:
+            return None
 
-    for (net, sta, loc, key_cha), (s, c) in acc.items():
-        with np.errstate(invalid="ignore", divide="ignore"):
-            vals = np.sqrt(np.where(c > 0, s / c, 0.0))
-            if logrms:
-                vals = np.where(vals > 0, np.log(vals), 0.0)
-        _TRACES.append(ptrace.Trace(
-            network=net, station=sta, location=loc, channel=key_cha + "-RMS",
-            deltat=block, tmin=tmin + 0.5 * block,
-            ydata=vals.astype(np.float64)))
+        emin = float(seg.tmin) - (wmin - tpad)
+        emax = float(seg.tmax) + float(seg.deltat) - (wmax + tpad)
+        if abs(emin) <= 0.5 * float(seg.deltat) and abs(emax) <= 0.5 * float(seg.deltat):
+            return seg
+
+        if (
+                0.0 < emin <= 5.0 * float(seg.deltat)
+                and -5.0 * float(seg.deltat) <= emax < 0.0):
+            seg.extend(wmin - tpad, wmax + tpad - float(seg.deltat), fillmethod="repeat")
+            return seg
+
+        return None
+
+    for iwin in range(nwin):
+        wmin = tmin + iwin * block
+        wmax = min(tmin + (iwin + 1) * block, tmax)
+        tcur = wmin + 0.5 * block
+        rms_by_key: Dict[Tuple[str, str, str, str], List[float]] = {}
+        for source in src:
+            tr = complete_chop(source, wmin, wmax)
+            if tr is None or _is_tabu_trace(tr):
+                continue
+            if lp is not None:
+                tr.lowpass(4, float(lp), nyquist_exception=True)
+            if hp is not None:
+                tr.highpass(4, float(hp), nyquist_exception=True)
+            try:
+                tr.chop(wmin, wmax)
+            except ptrace.NoData:
+                continue
+            value = 0.0
+            if tr.ydata is not None and tr.ydata.size != 0:
+                y = tr.ydata.astype(float)
+                value = float(np.sqrt(np.sum(y ** 2) / tr.ydata.size))
+            rms_by_key.setdefault(grouping(tr.nslc_id), []).append(value)
+
+        for key, values in rms_by_key.items():
+            net, sta, loc, key_cha = key
+            target = targets.get(key)
+            if target is None or abs((target.tmax + block) - tcur) > 0.01 * block:
+                if target is not None:
+                    completed.append(target)
+                target = ptrace.Trace(
+                    network=net,
+                    station=sta,
+                    location=loc,
+                    channel=key_cha + "-RMS",
+                    tmin=tcur,
+                    deltat=block,
+                    ydata=np.zeros(0, dtype=float),
+                    meta={"tabu": True})
+                targets[key] = target
+
+            value = np.atleast_1d(
+                np.sqrt(np.sum(np.array(values, dtype=float) ** 2)))
+            if logrms and value != 0.0:
+                value = np.log(value)
+            targets[key].append(value)
+
+    completed.extend(targets.values())
+    _TRACES.extend(completed)
 
     _mark_traces_changed()
     return _scene_json()

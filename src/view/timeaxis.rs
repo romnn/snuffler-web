@@ -141,11 +141,15 @@ pub fn format_full(t: f64) -> String {
     )
 }
 
-/// A longer "context" label (full date/time of the left edge of the view).
+/// Date context for the visible time axis, matching snuffler's `%b %d, %Y`.
 pub fn context_label(t: f64) -> String {
     let c = civil(t);
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
-        c.year, c.mon, c.day, c.hour, c.min, c.sec as u32
-    )
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS
+        .get(c.mon.saturating_sub(1) as usize)
+        .copied()
+        .unwrap_or("???");
+    format!("{month} {:02}, {:04}", c.day, c.year)
 }

@@ -41,6 +41,13 @@ allow_attributes_without_reason = "deny"
 
 struct_excessive_bools = "allow"
 
+[features]
+default = ["svg-raster"]
+# Rasterize the export SVG to a crisp high-DPI PNG via resvg (pure Rust, compiles
+# to wasm). Adds ~1 MB to the bundle; disable it for a smaller download — the PNG
+# export then falls back to capturing the egui framebuffer at screen resolution.
+svg-raster = ["dep:resvg"]
+
 [dependencies]
 egui = "0.34"
 eframe = { version = "0.34", default-features = false, features = [
@@ -55,6 +62,13 @@ eframe = { version = "0.34", default-features = false, features = [
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# PNG encoder for the "Save image (PNG)" export (already in the lock transitively).
+png = "0.18"
+# Vector→raster for high-DPI PNG export (see the `svg-raster` feature). Text-only
+# features: no system-fonts/memmap (we embed the font), keeping it wasm-friendly.
+resvg = { version = "0.47", optional = true, default-features = false, features = [
+    "text",
+] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

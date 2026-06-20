@@ -324,6 +324,29 @@ export async function saveMarkers(markersJson) {
   return "";
 }
 
+// Trigger a browser download of PNG bytes captured from the egui canvas.
+// No pyrocko boot needed — this is a pure browser file save.
+export function savePng(bytes, filename) {
+  const blob = new Blob([bytes], { type: "image/png" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || "snuffler.png";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// Trigger a browser download of an SVG document (vector image export).
+export function saveSvg(svg, filename) {
+  const blob = new Blob([svg], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || "snuffler.svg";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
 export async function loadMarkers() {
   await boot();
   const files = await pickFiles(false);
@@ -352,6 +375,6 @@ if (typeof window !== "undefined") {
     makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling,
     downloadWaveforms, catalogSearch, fetchStations, fetchResponses,
     mapData, fetchTile, openFiles, saveMarkers, loadMarkers, cakeArrivals,
-    runCommand, rmsTraces,
+    runCommand, rmsTraces, savePng, saveSvg,
   };
 }

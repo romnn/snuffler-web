@@ -5,6 +5,7 @@
 
 mod app;
 mod bridge;
+mod snufflings;
 mod state;
 mod view;
 

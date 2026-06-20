@@ -11,16 +11,16 @@
 )]
 
 use egui::{
-    Align2, Color32, ColorImage, FontId, Key, Rect, Sense, Shape, Stroke, TextureHandle,
-    TextureOptions,
+    Align2, Color32, ColorImage, FontId, Key, Rect, Sense, Stroke, TextureHandle, TextureOptions,
 };
 
 use crate::bridge::{ViewData, ViewTrack};
-use crate::state::{AppState, Colormap, Subsort, ViewMode, WiggleTheme};
+use crate::state::{AppState, Colormap, Subsort, ViewDrag, ViewMode, WiggleTheme};
+use crate::view::draw::{DrawTarget, EguiTarget, SvgTarget};
 use crate::view::markers::{Marker, PHASE_KEYS};
 use crate::view::timeaxis;
 
-const AXIS_H: f32 = 32.0;
+const AXIS_H: f32 = 52.0;
 const LABEL_PT: f32 = 12.5;
 const AXIS_PT: f32 = 12.5;
 
@@ -146,11 +146,6 @@ fn cmap_index(c: Colormap) -> u8 {
     }
 }
 
-#[allow(
-    clippy::indexing_slicing,
-    reason = "index provably in bounds: data.len() >= nf*nt is checked above, and \
-              c<nt, f<nf so c*nf+f < nf*nt; rgba is sized nt*nf*4 and p+3 < that bound"
-)]
 fn build_texture(
     ctx: &egui::Context,
     view: &ViewData,
@@ -158,6 +153,18 @@ fn build_texture(
     idx: usize,
     style: WfStyle,
 ) -> Option<TextureHandle> {
+    let img = build_image(view, t, style)?;
+    Some(ctx.load_texture(format!("wf{idx}"), img, TextureOptions::LINEAR))
+}
+
+/// Rasterize one track's spectrogram into an RGBA image (the texture source for
+/// the egui view, and the embedded PNG for SVG export).
+#[allow(
+    clippy::indexing_slicing,
+    reason = "index provably in bounds: data.len() >= nf*nt is checked above, and \
+              c<nt, f<nf so c*nf+f < nf*nt; rgba is sized nt*nf*4 and p+3 < that bound"
+)]
+fn build_image(view: &ViewData, t: &ViewTrack, style: WfStyle) -> Option<ColorImage> {
     if t.nf == 0 || t.nt == 0 {
         return None;
     }
@@ -192,8 +199,7 @@ fn build_texture(
             rgba[p + 3] = 255;
         }
     }
-    let img = ColorImage::from_rgba_unmultiplied([nt, nf], &rgba);
-    Some(ctx.load_texture(format!("wf{idx}"), img, TextureOptions::LINEAR))
+    Some(ColorImage::from_rgba_unmultiplied([nt, nf], &rgba))
 }
 
 fn colormap(cmap: u8, t: f32) -> [u8; 3] {
@@ -332,78 +338,77 @@ fn theme_uses_colored_strokes(theme: WiggleTheme) -> bool {
     matches!(theme, WiggleTheme::ColorLines)
 }
 
-/// Draw the canvas and process interaction.
-#[allow(
-    clippy::too_many_lines,
-    reason = "cohesive draw/update routine; splitting would obscure the control flow"
-)]
-pub fn show(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    view: Option<&ViewData>,
-    wf: &mut WaterfallCache,
-    view_epoch: u64,
-) {
-    let dark = ui.visuals().dark_mode;
-    let pal = palette(dark, state.wiggle_theme);
-    ui.ctx()
-        .options_mut(|o| o.tessellation_options.feathering = state.antialiasing);
-    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
-    let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, pal.bg);
+/// Geometry of one waveform frame, derived from the view + canvas rect. Shared by
+/// the on-screen path and the SVG export so both lay tracks out identically.
+struct Layout<'a> {
+    rect: Rect,
+    track_area: Rect,
+    view_tmin: f64,
+    window: f64,
+    visible: &'a [ViewTrack],
+    off: usize,
+    n_shown: usize,
+    row_h: f32,
+}
 
-    let track_area = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - AXIS_H));
-
-    let Some(view) = view else {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "Loading…",
-            FontId::proportional(16.0),
-            pal.axis_text,
-        );
-        handle_keyboard(ui, state, 0);
-        return;
-    };
+fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layout<'a> {
     let meta = &view.meta;
-    let waterfall = state.view_mode == ViewMode::Waterfall;
-    if waterfall {
-        let style = WfStyle {
-            cmap: cmap_index(state.wf_cmap),
-            reverse: state.wf_reverse,
-            symmetry: state.wf_symmetry,
-            clip: state.wf_clip,
-        };
-        wf.ensure(ui.ctx(), view, view_epoch, style);
-    }
-
-    let view_tmin = meta.view_tmin;
+    let track_area = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - AXIS_H));
     let window = (meta.view_tmax - meta.view_tmin).max(1e-9);
-    let x_of = |t_rel: f64| rect.left() + (t_rel / window) as f32 * rect.width();
-    let t_at_x =
-        |x: f32| view_tmin + f64::from(((x - rect.left()) / rect.width()).clamp(0.0, 1.0)) * window;
-
     let total = meta.tracks.len();
-    handle_keyboard(ui, state, total);
     let n_shown = state.ntracks_shown.clamp(1, total.max(1));
-    let max_off = total.saturating_sub(n_shown);
-    state.track_offset = state.track_offset.min(max_off);
-    let off = state.track_offset;
-    let visible: &[ViewTrack] = meta
+    let off = state.track_offset.min(total.saturating_sub(n_shown));
+    let visible = meta
         .tracks
         .get(off..(off + n_shown).min(total))
         .unwrap_or(&[]);
-    let row_h = track_area.height() / n_shown.max(1) as f32;
+    Layout {
+        rect,
+        track_area,
+        view_tmin: meta.view_tmin,
+        window,
+        visible,
+        off,
+        n_shown,
+        row_h: track_area.height() / n_shown.max(1) as f32,
+    }
+}
+
+/// Render the persistent waveform content (everything except the transient hover
+/// crosshair) to any [`DrawTarget`]. This is the snuffler `drawit` analogue: the
+/// egui screen and the SVG export drive the identical geometry through it.
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive draw routine; splitting would obscure the layered draw order"
+)]
+fn paint(
+    target: &mut dyn DrawTarget,
+    state: &AppState,
+    view: &ViewData,
+    pal: &Palette,
+    lay: &Layout,
+    dark: bool,
+    waterfall: bool,
+) {
+    let rect = lay.rect;
+    let track_area = lay.track_area;
+    let view_tmin = lay.view_tmin;
+    let window = lay.window;
+    let visible = lay.visible;
+    let row_h = lay.row_h;
+    let meta = &view.meta;
+    let x_of = |t_rel: f64| rect.left() + (t_rel / window) as f32 * rect.width();
+
+    target.fill_rect(rect, 0.0, pal.bg);
 
     if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
         for (k, t) in visible.iter().enumerate() {
             let top = track_area.top() + k as f32 * row_h;
-            let bot = top + row_h;
             let fill = row_tint(trace_color(t, state.subsort), dark, state.wiggle_theme);
-            painter.rect_filled(
+            target.fill_rect(
                 Rect::from_min_max(
                     egui::pos2(track_area.left(), top),
-                    egui::pos2(track_area.right(), bot),
+                    egui::pos2(track_area.right(), top + row_h),
                 ),
                 0.0,
                 fill,
@@ -413,74 +418,68 @@ pub fn show(
 
     // time grid + axis labels
     let tinc = timeaxis::nice_tinc(window, f64::from((rect.width() / 90.0).max(2.0)));
-    let axis_font = FontId::proportional(AXIS_PT);
+    let axis_top = track_area.bottom();
+    let tick_label_y = axis_top + 4.0;
+    let context_label_y = axis_top + 23.0;
+    let axis_pad = 10.0;
     for tick in timeaxis::ticks(view_tmin, meta.view_tmax, tinc) {
         let x = x_of(tick - view_tmin);
-        painter.line_segment(
-            [
-                egui::pos2(x, track_area.top()),
-                egui::pos2(x, track_area.bottom()),
-            ],
-            Stroke::new(1.0, pal.grid),
+        target.line(
+            egui::pos2(x, track_area.top()),
+            egui::pos2(x, track_area.bottom()),
+            1.0,
+            pal.grid,
         );
-        if x > rect.left() + 76.0 {
-            painter.text(
-                egui::pos2(x, track_area.bottom() + 4.0),
+        let label = timeaxis::tick_label(tick, tinc);
+        let w = target.measure(&label, AXIS_PT).x;
+        if rect.left() + axis_pad < x - w * 0.5 && x + w * 0.5 < rect.right() - axis_pad {
+            target.text(
+                egui::pos2(x, tick_label_y),
                 Align2::CENTER_TOP,
-                timeaxis::tick_label(tick, tinc),
-                axis_font.clone(),
+                &label,
+                AXIS_PT,
                 pal.axis_text,
             );
         }
     }
-    painter.text(
-        egui::pos2(rect.left() + 5.0, track_area.bottom() + 4.0),
+    target.text(
+        egui::pos2(rect.left() + axis_pad, context_label_y),
         Align2::LEFT_TOP,
-        timeaxis::context_label(view_tmin),
-        axis_font.clone(),
+        &timeaxis::context_label(view_tmin),
+        AXIS_PT,
         pal.axis_text,
     );
 
     // tracks
-    let label_font = FontId::proportional(LABEL_PT);
-    let scale_font = FontId::proportional(10.0);
     for (k, t) in visible.iter().enumerate() {
         let top = track_area.top() + k as f32 * row_h;
         let bot = top + row_h;
         let mid = top + row_h * 0.5;
 
         if state.show_boxes {
-            let s = Stroke::new(1.0, pal.sep);
             let r = Rect::from_min_max(
                 egui::pos2(rect.left() + 0.5, top + 1.0),
                 egui::pos2(rect.right() - 0.5, bot - 1.0),
             );
-            painter.line_segment([r.left_top(), r.right_top()], s);
-            painter.line_segment([r.right_top(), r.right_bottom()], s);
-            painter.line_segment([r.right_bottom(), r.left_bottom()], s);
-            painter.line_segment([r.left_bottom(), r.left_top()], s);
+            target.line(r.left_top(), r.right_top(), 1.0, pal.sep);
+            target.line(r.right_top(), r.right_bottom(), 1.0, pal.sep);
+            target.line(r.right_bottom(), r.left_bottom(), 1.0, pal.sep);
+            target.line(r.left_bottom(), r.left_top(), 1.0, pal.sep);
         } else if k > 0 {
-            painter.line_segment(
-                [egui::pos2(rect.left(), top), egui::pos2(rect.right(), top)],
-                Stroke::new(1.0, pal.sep),
+            target.line(
+                egui::pos2(rect.left(), top),
+                egui::pos2(rect.right(), top),
+                1.0,
+                pal.sep,
             );
         }
 
         if waterfall && t.nf > 0 {
-            if let Some(Some(tex)) = wf.textures.get(off + k) {
-                let x0 = x_of(t.t0_rel);
-                let x1 = x_of(t.t0_rel + t.nt as f64 * t.dt);
-                let r = Rect::from_min_max(
-                    egui::pos2(x0, top + 1.0),
-                    egui::pos2(x1, top + row_h - 1.0),
-                );
-                painter.image(
-                    tex.id(),
-                    r,
-                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-            }
+            let x0 = x_of(t.t0_rel);
+            let x1 = x_of(t.t0_rel + t.nt as f64 * t.dt);
+            let r =
+                Rect::from_min_max(egui::pos2(x0, top + 1.0), egui::pos2(x1, top + row_h - 1.0));
+            target.waterfall(r, lay.off + k);
         } else {
             // Display scale (units→pixels) comes entirely from pyrocko (yscale).
             let half = t.yscale.max(1e-12);
@@ -491,21 +490,19 @@ pub fn show(
             } else {
                 (track_area.top(), track_area.bottom())
             };
-            let trace_clip = Rect::from_min_max(
+            target.push_clip(Rect::from_min_max(
                 egui::pos2(track_area.left(), cl_top),
                 egui::pos2(track_area.right(), cl_bot),
-            );
-            let trace_painter = painter.with_clip_rect(trace_clip);
+            ));
             let y_of = |v: f32| mid - (v - t.ymean) * amp;
 
             if state.show_zero_lines {
                 let yz = y_of(0.0);
-                trace_painter.line_segment(
-                    [
-                        egui::pos2(track_area.left(), yz),
-                        egui::pos2(track_area.right(), yz),
-                    ],
-                    Stroke::new(1.0, pal.zero),
+                target.line(
+                    egui::pos2(track_area.left(), yz),
+                    egui::pos2(track_area.right(), yz),
+                    1.0,
+                    pal.zero,
                 );
             }
 
@@ -526,7 +523,18 @@ pub fn show(
                             egui::pos2(x_of(t_rel), y_of(v))
                         })
                         .collect();
-                    trace_painter.add(Shape::line(points, Stroke::new(1.0, trace_col)));
+                    target.polyline(points, 1.0, trace_col);
+                } else if let Some(&v) = samples.first() {
+                    let t_rel = t.t0_rel;
+                    let half = 0.5 * t.dt;
+                    let x0 = x_of(t_rel - half);
+                    let x1 = x_of(t_rel + half);
+                    target.line(
+                        egui::pos2(x0, y_of(v)),
+                        egui::pos2(x1, y_of(v)),
+                        1.0,
+                        trace_col,
+                    );
                 }
             } else if t.dt == 0.0 {
                 let start = t.offset.min(view.ys.len());
@@ -543,7 +551,7 @@ pub fn show(
                             _ => None,
                         })
                         .collect();
-                    trace_painter.add(Shape::line(points, Stroke::new(1.0, trace_col)));
+                    target.polyline(points, 1.0, trace_col);
                 }
             } else if t.dt < 0.0 {
                 let start = t.offset.min(view.ys.len());
@@ -551,40 +559,44 @@ pub fn show(
                 if let Some(envelope) = view.ys.get(start..end)
                     && envelope.len() >= 3
                 {
-                    let stroke = Stroke::new(1.0, trace_col);
                     for triple in envelope.chunks_exact(3) {
                         let [t0, ylo, yhi] = triple else {
                             continue;
                         };
                         let x = x_of(t.t0_rel + f64::from(*t0));
-                        trace_painter.line_segment(
-                            [egui::pos2(x, y_of(*ylo)), egui::pos2(x, y_of(*yhi))],
-                            stroke,
+                        target.line(
+                            egui::pos2(x, y_of(*ylo)),
+                            egui::pos2(x, y_of(*yhi)),
+                            1.0,
+                            trace_col,
                         );
                     }
                 }
             }
+            target.pop_clip();
 
             if state.show_scale_axes {
                 let xa = rect.right() - 2.0;
-                painter.line_segment(
-                    [egui::pos2(xa, top + 3.0), egui::pos2(xa, bot - 3.0)],
-                    Stroke::new(1.0, pal.sep),
+                target.line(
+                    egui::pos2(xa, top + 3.0),
+                    egui::pos2(xa, bot - 3.0),
+                    1.0,
+                    pal.sep,
                 );
             }
             if state.show_scale_ranges {
-                painter.text(
+                target.text(
                     egui::pos2(rect.right() - 6.0, top + 3.0),
                     Align2::RIGHT_TOP,
-                    format!("{:+.2e}", t.ymax),
-                    scale_font.clone(),
+                    &format!("{:+.2e}", t.ymax),
+                    10.0,
                     pal.axis_text,
                 );
-                painter.text(
+                target.text(
                     egui::pos2(rect.right() - 6.0, bot - 3.0),
                     Align2::RIGHT_BOTTOM,
-                    format!("{:+.2e}", t.ymin),
-                    scale_font.clone(),
+                    &format!("{:+.2e}", t.ymin),
+                    10.0,
                     pal.axis_text,
                 );
             }
@@ -592,38 +604,165 @@ pub fn show(
 
         // NSLC label with a translucent background
         let label_pos = egui::pos2(track_area.left() + 5.0, top + 3.0);
-        let galley = painter.layout_no_wrap(t.label.clone(), label_font.clone(), pal.axis_text);
-        let bg = Rect::from_min_size(label_pos, galley.size()).expand(3.0);
+        let bg = Rect::from_min_size(label_pos, target.measure(&t.label, LABEL_PT)).expand(3.0);
         if !state.color_traces || !theme_uses_row_tints(state.wiggle_theme) {
-            painter.rect_filled(bg, 3.0, pal.label_bg);
+            target.fill_rect(bg, 3.0, pal.label_bg);
         }
-        painter.galley(label_pos, galley, pal.axis_text);
+        target.text(
+            label_pos,
+            Align2::LEFT_TOP,
+            &t.label,
+            LABEL_PT,
+            pal.axis_text,
+        );
     }
 
-    draw_markers(
-        &painter, state, track_area, visible, row_h, view_tmin, &x_of,
-    );
+    draw_markers(target, state, track_area, visible, row_h, view_tmin, &x_of);
     if let Some((a, b)) = state.pending_span {
         let r = Rect::from_min_max(
             egui::pos2(x_of(a - view_tmin), track_area.top()),
             egui::pos2(x_of(b - view_tmin), track_area.bottom()),
         );
-        painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(52, 101, 164, 40));
+        target.fill_rect(r, 0.0, Color32::from_rgba_unmultiplied(52, 101, 164, 40));
+    }
+}
+
+/// Render the current wiggle/waterfall view to a standalone SVG string at the
+/// given pixel size, reusing the exact [`paint`] geometry (vector traces/axes,
+/// the waterfall heatmap embedded as a PNG).
+pub fn render_svg(
+    ctx: &egui::Context,
+    state: &AppState,
+    view: &ViewData,
+    size: egui::Vec2,
+    dark: bool,
+) -> String {
+    let pal = palette(dark, state.wiggle_theme);
+    let rect = Rect::from_min_size(egui::Pos2::ZERO, size);
+    let lay = compute_layout(state, view, rect);
+    let waterfall = state.view_mode == ViewMode::Waterfall;
+    let images: Vec<Option<ColorImage>> = if waterfall {
+        let style = WfStyle {
+            cmap: cmap_index(state.wf_cmap),
+            reverse: state.wf_reverse,
+            symmetry: state.wf_symmetry,
+            clip: state.wf_clip,
+        };
+        view.meta
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (i >= lay.off && i < lay.off + lay.n_shown)
+                    .then(|| build_image(view, t, style))
+                    .flatten()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut target = SvgTarget::new(ctx.clone(), size.x, size.y, images);
+    paint(&mut target, state, view, &pal, &lay, dark, waterfall);
+    target.finish()
+}
+
+/// Draw the canvas and process interaction.
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive draw/update routine; splitting would obscure the control flow"
+)]
+pub fn show(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    view: Option<&ViewData>,
+    wf: &mut WaterfallCache,
+    view_epoch: u64,
+    scene_range: Option<(f64, f64)>,
+) {
+    let dark = ui.visuals().dark_mode;
+    let pal = palette(dark, state.wiggle_theme);
+    ui.ctx()
+        .options_mut(|o| o.tessellation_options.feathering = state.antialiasing);
+    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+    let rect = resp.rect;
+
+    let Some(view) = view else {
+        painter.rect_filled(rect, 0.0, pal.bg);
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "Loading…",
+            FontId::proportional(16.0),
+            pal.axis_text,
+        );
+        handle_keyboard(ui, state, 0, scene_range);
+        return;
+    };
+
+    let waterfall = state.view_mode == ViewMode::Waterfall;
+    if waterfall {
+        let style = WfStyle {
+            cmap: cmap_index(state.wf_cmap),
+            reverse: state.wf_reverse,
+            symmetry: state.wf_symmetry,
+            clip: state.wf_clip,
+        };
+        wf.ensure(ui.ctx(), view, view_epoch, style);
     }
 
+    let total = view.meta.tracks.len();
+    handle_keyboard(ui, state, total, scene_range);
+    // Persist the clamp the layout applies, so scroll state stays in range.
+    let n_shown = state.ntracks_shown.clamp(1, total.max(1));
+    state.track_offset = state.track_offset.min(total.saturating_sub(n_shown));
+
+    let lay = compute_layout(state, view, rect);
+    let mut target = EguiTarget::new(painter.clone(), &wf.textures);
+    paint(&mut target, state, view, &pal, &lay, dark, waterfall);
+
+    // Transient hover crosshair — drawn only on screen, never in an export.
     if let Some(p) = resp.hover_pos()
-        && track_area.contains(p)
+        && lay.track_area.contains(p)
     {
+        if marker_hit_at(
+            state,
+            lay.visible,
+            lay.track_area,
+            lay.row_h,
+            lay.view_tmin,
+            lay.window,
+            lay.rect,
+            p,
+        )
+        .is_some()
+        {
+            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+        }
         painter.line_segment(
             [
-                egui::pos2(p.x, track_area.top()),
-                egui::pos2(p.x, track_area.bottom()),
+                egui::pos2(p.x, lay.track_area.top()),
+                egui::pos2(p.x, lay.track_area.bottom()),
             ],
             Stroke::new(1.0, pal.cursor),
         );
     }
 
-    handle_interaction(ui, &resp, state, view_tmin, window, rect, total, &t_at_x);
+    let t_at_x = |x: f32| {
+        lay.view_tmin + f64::from(((x - rect.left()) / rect.width()).clamp(0.0, 1.0)) * lay.window
+    };
+    handle_interaction(
+        ui,
+        &resp,
+        state,
+        lay.visible,
+        lay.row_h,
+        lay.view_tmin,
+        lay.window,
+        rect,
+        lay.track_area,
+        total,
+        &t_at_x,
+    );
 }
 
 /// Does an NSLC-scoped marker apply to this track? Empty or `*` fields are
@@ -633,8 +772,65 @@ fn marker_matches_track(nslc: &(String, String, String, String), t: &ViewTrack) 
     f(&nslc.0, &t.net) && f(&nslc.1, &t.sta) && f(&nslc.2, &t.loc) && f(&nslc.3, &t.cha)
 }
 
+fn marker_row_spans(
+    marker: &Marker,
+    area: Rect,
+    visible: &[ViewTrack],
+    row_h: f32,
+) -> Vec<(f32, f32)> {
+    match &marker.nslc {
+        None => vec![(area.top(), area.bottom())],
+        Some(nslc) => visible
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| marker_matches_track(nslc, t))
+            .map(|(k, _)| {
+                let top = area.top() + k as f32 * row_h;
+                (top, top + row_h)
+            })
+            .collect(),
+    }
+}
+
+fn marker_hit_at(
+    state: &AppState,
+    visible: &[ViewTrack],
+    area: Rect,
+    row_h: f32,
+    view_tmin: f64,
+    window: f64,
+    rect: Rect,
+    pos: egui::Pos2,
+) -> Option<usize> {
+    if !area.contains(pos) {
+        return None;
+    }
+    let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
+    let tol = 7.0;
+    for (idx, marker) in state.markers.iter().enumerate().rev() {
+        let row_hit = marker_row_spans(marker, area, visible, row_h)
+            .iter()
+            .any(|(top, bot)| pos.y >= *top && pos.y <= *bot);
+        if !row_hit {
+            continue;
+        }
+        let x0 = x_of(marker.tmin);
+        if marker.is_span() {
+            let x1 = x_of(marker.tmax);
+            let left = x0.min(x1) - tol;
+            let right = x0.max(x1) + tol;
+            if pos.x >= left && pos.x <= right {
+                return Some(idx);
+            }
+        } else if (pos.x - x0).abs() <= tol {
+            return Some(idx);
+        }
+    }
+    None
+}
+
 fn draw_markers(
-    painter: &egui::Painter,
+    target: &mut dyn DrawTarget,
     state: &AppState,
     area: Rect,
     visible: &[ViewTrack],
@@ -648,59 +844,42 @@ fn draw_markers(
         if (x0 < area.left() - 2.0 || x0 > area.right() + 2.0) && !m.is_span() {
             continue;
         }
-        // Vertical extent: full canvas for channel-agnostic markers; otherwise
-        // one segment per matching track row, so per-station picks form a moveout.
-        let spans: Vec<(f32, f32)> = match &m.nslc {
-            None => vec![(area.top(), area.bottom())],
-            Some(nslc) => visible
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| marker_matches_track(nslc, t))
-                .map(|(k, _)| {
-                    let top = area.top() + k as f32 * row_h;
-                    (top, top + row_h)
-                })
-                .collect(),
-        };
+        let spans = marker_row_spans(m, area, visible, row_h);
         let label = match (&m.phase, m.polarity_symbol()) {
             (Some(ph), sym) if !sym.is_empty() => format!("{ph} {sym}"),
             (Some(ph), _) => ph.clone(),
             (None, sym) if !sym.is_empty() => sym.to_string(),
             (None, _) => String::new(),
         };
-        let w = if m.selected { 2.5 } else { 1.0 };
+        let w = if m.selected { 4.0 } else { 2.0 };
         for (ytop, ybot) in spans {
             if m.is_span() {
                 let x1 = x_of(m.tmax - view_tmin);
                 let r = Rect::from_min_max(egui::pos2(x0, ytop), egui::pos2(x1, ybot));
-                painter.rect_filled(
+                target.fill_rect(
                     r,
                     0.0,
                     Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 30),
                 );
             }
-            painter.line_segment(
-                [egui::pos2(x0, ytop), egui::pos2(x0, ybot)],
-                Stroke::new(w, col),
-            );
+            target.line(egui::pos2(x0, ytop), egui::pos2(x0, ybot), w, col);
             if m.is_event {
                 let s = 6.0;
-                painter.add(Shape::convex_polygon(
+                target.polygon(
                     vec![
                         egui::pos2(x0, ytop + s),
                         egui::pos2(x0 - s, ytop),
                         egui::pos2(x0 + s, ytop),
                     ],
                     col,
-                    Stroke::NONE,
-                ));
+                );
             }
             if !label.is_empty() {
-                painter.text(
+                target.text(
                     egui::pos2(x0 + 3.0, ytop + 2.0),
                     Align2::LEFT_TOP,
                     &label,
-                    FontId::proportional(LABEL_PT),
+                    LABEL_PT,
                     col,
                 );
             }
@@ -716,9 +895,12 @@ fn handle_interaction(
     ui: &egui::Ui,
     resp: &egui::Response,
     state: &mut AppState,
+    visible: &[ViewTrack],
+    row_h: f32,
     view_tmin: f64,
     window: f64,
     rect: Rect,
+    track_area: Rect,
     total: usize,
     t_at_x: &impl Fn(f32) -> f64,
 ) {
@@ -727,42 +909,54 @@ fn handle_interaction(
 
     if scroll != 0.0 && resp.hovered() {
         if modifiers.ctrl || modifiers.command {
-            state.gain *= (scroll * 0.0015).exp();
-        } else if modifiers.shift {
-            let step = if scroll < 0.0 { 1isize } else { -1isize };
-            let no = state.track_offset as isize + step;
-            state.track_offset = no.clamp(0, total.saturating_sub(1) as isize) as usize;
-        } else {
-            let pivot = resp
-                .hover_pos()
-                .map_or(view_tmin + window * 0.5, |p| t_at_x(p.x));
-            let factor = f64::from((-scroll * 0.0015).exp());
-            zoom_time(state, pivot, factor);
+            let anchor = resp.hover_pos().map_or(0.0, |p| {
+                ((p.y - track_area.top()) / track_area.height().max(1.0)).clamp(0.0, 1.0)
+            });
+            if let Some(delta) = wheel_delta(state, scroll) {
+                zoom_tracks(state, total, anchor, delta);
+            }
+        } else if let Some(delta) = wheel_delta(state, scroll) {
+            scroll_tracks(state, total, -delta);
         }
     }
 
-    if modifiers.shift {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let t = t_at_x(p.x);
-            if resp.drag_started() {
-                state.pending_span = Some((t, t));
-            } else if resp.dragged()
-                && let Some((a, _)) = state.pending_span
-            {
-                state.pending_span = Some((a, t));
-            }
-        }
-        if resp.drag_stopped()
-            && let Some((a, b)) = state.pending_span.take()
-            && (a - b).abs() * (f64::from(rect.width()) / window) > 3.0
-        {
-            state.markers.push(Marker::new(a, b, state.marker_kind));
-        }
-    } else if resp.dragged() {
-        let dx = f64::from(resp.drag_delta().x);
-        let dt = -dx / f64::from(rect.width()) * window;
-        state.tmin += dt;
-        state.tmax += dt;
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && !modifiers.shift
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        state.view_drag = Some(ViewDrag {
+            x: p.x,
+            y: p.y,
+            tmin: state.tmin,
+            tmax: state.tmax,
+            pan_only: p.y >= track_area.bottom(),
+        });
+    }
+
+    if resp.dragged_by(egui::PointerButton::Primary)
+        && !modifiers.shift
+        && let (Some(drag), Some(p)) = (state.view_drag, resp.interact_pointer_pos())
+    {
+        let width = rect.width().max(1.0);
+        let height = rect.height().max(1.0);
+        let win0 = (drag.tmax - drag.tmin).max(1e-9);
+        let dx = f64::from((p.x - drag.x) / width);
+        let dy = if drag.pan_only {
+            0.0
+        } else {
+            f64::from((p.y - drag.y) / height)
+        };
+        let scale = (-dy * 5.0).exp();
+        let dtr = scale * win0 - win0;
+        let frac = f64::from(((drag.x - rect.left()) / width).clamp(0.0, 1.0));
+        let dt = dx * win0 * scale;
+
+        state.tmin = drag.tmin - dt - dtr * frac;
+        state.tmax = drag.tmax - dt + dtr * (1.0 - frac);
+    }
+
+    if resp.drag_stopped_by(egui::PointerButton::Primary) {
+        state.view_drag = None;
     }
 
     if resp.double_clicked() {
@@ -773,43 +967,73 @@ fn handle_interaction(
     } else if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let tol_t = 5.0 / f64::from(rect.width()) * window;
-        let mut hit = None;
-        for (i, m) in state.markers.iter().enumerate() {
-            if (m.tmin - t_at_x(p.x)).abs() < tol_t {
-                hit = Some(i);
+        if let Some(hit) = marker_hit_at(
+            state, visible, track_area, row_h, view_tmin, window, rect, p,
+        ) {
+            if !modifiers.shift {
+                for m in &mut state.markers {
+                    m.selected = false;
+                }
             }
-        }
-        for m in &mut state.markers {
-            m.selected = false;
-        }
-        if let Some(m) = hit.and_then(|i| state.markers.get_mut(i)) {
-            m.selected = true;
+            if let Some(m) = state.markers.get_mut(hit) {
+                m.selected = true;
+            }
         }
     }
 }
 
-fn zoom_time(state: &mut AppState, pivot: f64, factor: f64) {
-    let factor = factor.clamp(0.02, 50.0);
-    let tmin = pivot - (pivot - state.tmin) * factor;
-    let tmax = pivot + (state.tmax - pivot) * factor;
-    let window = (tmax - tmin).max(1e-9);
-    let max_window = state.visible_length.seconds().max(1e-9);
-    if window <= max_window {
-        state.tmin = tmin;
-        state.tmax = tmax;
-    } else {
-        let left_frac = ((pivot - tmin) / window).clamp(0.0, 1.0);
-        state.tmin = pivot - max_window * left_frac;
-        state.tmax = state.tmin + max_window;
+fn wheel_delta(state: &mut AppState, scroll: f32) -> Option<f32> {
+    const WHEEL_NOTCH: f32 = 120.0;
+    state.wheel_pos += scroll;
+    let notches = (state.wheel_pos / WHEEL_NOTCH).floor();
+    state.wheel_pos -= notches * WHEEL_NOTCH;
+    if notches == 0.0 {
+        return None;
     }
+    let amount = (state.ntracks_shown as f32 / 5.0).max(1.0);
+    Some(amount * notches.clamp(-5.0, 5.0))
+}
+
+fn scroll_tracks(state: &mut AppState, total: usize, shift: f32) {
+    if total == 0 {
+        return;
+    }
+    let n_shown = state.ntracks_shown.clamp(1, total);
+    let max_offset = total.saturating_sub(n_shown) as isize;
+    let offset = state.track_offset as isize + shift.round() as isize;
+    state.track_offset = offset.clamp(0, max_offset) as usize;
+}
+
+fn zoom_tracks(state: &mut AppState, total: usize, anchor: f32, delta: f32) {
+    if total == 0 {
+        return;
+    }
+    let current = state.ntracks_shown.clamp(1, total);
+    if (current == 1 && delta <= 0.0) || (current == total && delta >= 0.0) {
+        return;
+    }
+
+    let next = (current as f32 + delta.round()).clamp(1.0, total as f32) as usize;
+    let mut start = state.track_offset as f32 - anchor.clamp(0.0, 1.0) * delta;
+    let end = start + next as f32;
+    if end > total as f32 {
+        start -= end - total as f32;
+    }
+
+    state.ntracks_shown = next;
+    state.track_offset = start.round().clamp(0.0, total.saturating_sub(next) as f32) as usize;
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "cohesive draw/update routine; splitting would obscure the control flow"
 )]
-fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
+fn handle_keyboard(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    total: usize,
+    scene_range: Option<(f64, f64)>,
+) {
     // Don't fire single-key shortcuts while a text field (FDSN forms, command
     // line) has the keyboard — otherwise typing "n" would jump markers.
     if ui.ctx().egui_wants_keyboard_input() {
@@ -818,13 +1042,21 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
     ui.input(|i| {
         let win = (state.tmax - state.tmin).max(1e-9);
         let shift = i.modifiers.shift;
+        if i.key_pressed(Key::Q) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if i.key_pressed(Key::F) {
+            state.fullscreen = !state.fullscreen;
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(state.fullscreen));
+        }
         if i.key_pressed(Key::Space) {
-            state.tmin += win * 0.8;
-            state.tmax += win * 0.8;
+            state.tmin += win;
+            state.tmax += win;
         }
         if i.key_pressed(Key::B) {
-            state.tmin -= win * 0.8;
-            state.tmax -= win * 0.8;
+            state.tmin -= win;
+            state.tmax -= win;
         }
         // Track-zoom keys (snuffler: + shows one track MORE, - one LESS, = resets
         // to the initial count). Plus is Shift+Equals on most layouts, so accept
@@ -870,13 +1102,13 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
                 }
             }
         }
-        if i.key_pressed(Key::D) || i.key_pressed(Key::Escape) {
+        if i.key_pressed(Key::D) {
             for m in &mut state.markers {
                 m.selected = false;
             }
         }
         if i.key_pressed(Key::G) {
-            go_to_selection(state, shift); // Shift+G: tight
+            go_to_selection(state, shift, scene_range); // Shift+G: tight
         }
         if i.key_pressed(Key::M) {
             state.show_marker_editor = !state.show_marker_editor;
@@ -964,7 +1196,14 @@ fn handle_keyboard(ui: &egui::Ui, state: &mut AppState, total: usize) {
             Key::F10,
         ];
         for (n, key) in f_keys.iter().enumerate() {
-            if i.key_pressed(*key)
+            if i.key_pressed(*key) && n == 9 {
+                for m in &mut state.markers {
+                    if m.selected {
+                        m.phase = None;
+                        m.polarity = None;
+                    }
+                }
+            } else if i.key_pressed(*key)
                 && let Some(phase) = PHASE_KEYS.get(n)
             {
                 for m in &mut state.markers {
@@ -991,16 +1230,21 @@ fn set_polarity_selected(state: &mut AppState, target: Option<i8>) {
     }
 }
 
-/// Recenter the view on the selected markers (snuffler's `go_to_selection`).
-/// `tight` zooms to the selected span (±10% margin) instead of keeping the
-/// current window length.
-fn go_to_selection(state: &mut AppState, tight: bool) {
+/// Recenter the view on selected markers, or on the full scene if nothing is
+/// selected (snuffler's `go_to_selection` fallback).
+fn go_to_selection(state: &mut AppState, tight: bool, scene_range: Option<(f64, f64)>) {
     let sel: Vec<&Marker> = state.markers.iter().filter(|m| m.selected).collect();
-    if sel.is_empty() {
-        return;
-    }
-    let tmin = sel.iter().map(|m| m.tmin).fold(f64::INFINITY, f64::min);
-    let tmax = sel.iter().map(|m| m.tmax).fold(f64::NEG_INFINITY, f64::max);
+    let (tmin, tmax) = if sel.is_empty() {
+        let Some(range) = scene_range else {
+            return;
+        };
+        range
+    } else {
+        (
+            sel.iter().map(|m| m.tmin).fold(f64::INFINITY, f64::min),
+            sel.iter().map(|m| m.tmax).fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
     let win = (state.tmax - state.tmin).max(1e-9);
     if tight && tmax > tmin {
         let pad = (tmax - tmin) * 0.1;

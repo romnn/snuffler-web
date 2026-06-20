@@ -84,6 +84,63 @@ pub struct ViewParams {
     pub track_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct SnufflingRequestParams {
+    #[serde(flatten)]
+    pub view: ViewParams,
+    pub snufflings: SnufflingParams,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct SnufflingParams {
+    pub spectrum: SpectrumSnufflingParams,
+    pub stalta: StaltaSnufflingParams,
+    pub polarization: PolarizationSnufflingParams,
+    pub rms: RmsSnufflingParams,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct SpectrumSnufflingParams {
+    pub spec_smoothing: bool,
+    pub spec_smoothing_bandwidth: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct StaltaSnufflingParams {
+    pub stalta_highpass: Option<f64>,
+    pub stalta_lowpass: Option<f64>,
+    pub stalta_swin: f64,
+    pub stalta_ratio: f64,
+    pub stalta_level: f64,
+    pub stalta_show_level_traces: bool,
+    pub stalta_variant: String,
+    pub stalta_scalingmethod: String,
+    pub stalta_apply_to_sum: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct PolarizationSnufflingParams {
+    pub polarization_t_length: f64,
+    pub polarization_ft_offset: f64,
+    pub polarization_azimuth: f64,
+    pub polarization_highpass: Option<f64>,
+    pub polarization_lowpass: Option<f64>,
+    pub polarization_dot_position: f64,
+    pub polarization_rotate_to_rt: bool,
+    pub polarization_show_eigensystem_2d: bool,
+    pub polarization_show_eigensystem_3d: bool,
+    pub polarization_fix_scale: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct RmsSnufflingParams {
+    pub rms_highpass: Option<f64>,
+    pub rms_lowpass: Option<f64>,
+    pub rms_block: f64,
+    pub rms_group: bool,
+    pub rms_log: bool,
+}
+
 /// What comes back: per-track polylines + amplitude stats. The actual values
 /// live in a single flat `ys` array; each track points into it via
 /// `offset`/`count`. For wiggles, `dt > 0` means raw uniform samples and
@@ -197,10 +254,18 @@ pub struct SnufMarker {
 /// Result of running a built-in snuffling: a text report and/or markers to add.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct SnufflingResult {
+    #[serde(default = "default_show_window")]
+    pub show_window: bool,
     #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub markers: Vec<SnufMarker>,
+    #[serde(default)]
+    pub scene: Option<SceneMeta>,
+}
+
+fn default_show_window() -> bool {
+    true
 }
 
 /// Outcome of a ':' command line. `action` is "goto" | "scene" | "error" | "none".
@@ -446,6 +511,12 @@ mod web {
 
         #[wasm_bindgen(js_name = loadMarkers, catch)]
         async fn js_load_markers() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = savePng)]
+        fn js_save_png(bytes: &[u8], filename: &str);
+
+        #[wasm_bindgen(js_name = saveSvg)]
+        fn js_save_svg(svg: &str, filename: &str);
     }
 
     fn jsval_to_string(v: JsValue) -> String {
@@ -765,7 +836,7 @@ mod web {
         }
 
         /// Fetch an amplitude spectrum for the current params (snuffling).
-        pub fn fetch_spectrum(&self, ctx: &egui::Context, params: ViewParams) {
+        pub fn fetch_spectrum(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
             {
                 let mut i = self.inner.borrow_mut();
                 if i.spectrum_in_flight || !matches!(i.status, Status::Ready) {
@@ -794,7 +865,12 @@ mod web {
         }
 
         /// Run a built-in snuffling (`MinMax`, `STA/LTA`, …) and store its result.
-        pub fn run_snuffling(&self, ctx: &egui::Context, name: String, params: ViewParams) {
+        pub fn run_snuffling(
+            &self,
+            ctx: &egui::Context,
+            name: String,
+            params: SnufflingRequestParams,
+        ) {
             if !matches!(self.inner.borrow().status, Status::Ready) {
                 return;
             }
@@ -811,7 +887,14 @@ mod web {
                 };
                 {
                     let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
+                    if let Some(mut r) = parsed {
+                        if let Some(scene) = r.scene.take() {
+                            i.scene = Some(scene);
+                            i.scene_gen += 1;
+                            i.view = None;
+                            i.applied = None;
+                            i.status = Status::Ready;
+                        }
                         i.snuffling = Some(r);
                         i.snuffling_gen += 1;
                     }
@@ -850,7 +933,7 @@ mod web {
 
         /// Compute blockwise-RMS derived traces (pyrocko's RMS snuffling) and
         /// append them to the pile; the result replaces the scene.
-        pub fn rms_traces(&self, ctx: &egui::Context, params: ViewParams) {
+        pub fn rms_traces(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
             let json = serde_json::to_string(&params).unwrap_or_default();
             let inner = self.inner.clone();
             let ctx = ctx.clone();
@@ -886,8 +969,10 @@ mod web {
                         .as_string()
                         .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
                     Err(e) => Some(SnufflingResult {
+                        show_window: true,
                         text: jsval_to_string(e),
                         markers: Vec::new(),
+                        scene: None,
                     }),
                 };
                 {
@@ -912,8 +997,10 @@ mod web {
                         .as_string()
                         .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
                     Err(e) => Some(SnufflingResult {
+                        show_window: true,
                         text: jsval_to_string(e),
                         markers: Vec::new(),
+                        scene: None,
                     }),
                 };
                 {
@@ -973,8 +1060,10 @@ mod web {
                         .as_string()
                         .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
                     Err(e) => Some(SnufflingResult {
+                        show_window: true,
                         text: jsval_to_string(e),
                         markers: Vec::new(),
+                        scene: None,
                     }),
                 };
                 {
@@ -1000,8 +1089,10 @@ mod web {
                         .as_string()
                         .and_then(|s| serde_json::from_str::<SnufflingResult>(&s).ok()),
                     Err(e) => Some(SnufflingResult {
+                        show_window: true,
                         text: jsval_to_string(e),
                         markers: Vec::new(),
+                        scene: None,
                     }),
                 };
                 {
@@ -1058,6 +1149,24 @@ mod web {
             });
         }
 
+        /// Trigger a browser download of encoded image bytes (PNG export).
+        #[allow(
+            clippy::unused_self,
+            reason = "method form mirrors the other bridge calls; the download needs no state"
+        )]
+        pub fn save_image_png(&self, bytes: Vec<u8>, filename: String) {
+            js_save_png(&bytes, &filename);
+        }
+
+        /// Trigger a browser download of an SVG document (vector image export).
+        #[allow(
+            clippy::unused_self,
+            reason = "method form mirrors the other bridge calls; the download needs no state"
+        )]
+        pub fn save_image_svg(&self, svg: String, filename: String) {
+            js_save_svg(&svg, &filename);
+        }
+
         /// Load a marker file via a browser picker; results land as markers.
         pub fn load_markers(&self, ctx: &egui::Context) {
             let inner = self.inner.clone();
@@ -1074,8 +1183,10 @@ mod web {
                     let mut i = inner.borrow_mut();
                     let n = markers.len();
                     i.snuffling = Some(SnufflingResult {
+                        show_window: true,
                         text: format!("loaded {n} marker(s)"),
                         markers,
+                        scene: None,
                     });
                     i.snuffling_gen += 1;
                 }
@@ -1234,7 +1345,7 @@ mod native {
         reason = "these no-op stubs mirror the wasm Bridge API so the native UI shell compiles"
     )]
 
-    use super::{Bridge, Status, ViewParams};
+    use super::{Bridge, SnufflingRequestParams, Status, ViewParams};
 
     const MSG: &str = "Native build is UI-only — data loading, filtering, and all \
          processing run in pyrocko (Python) in the browser. Use `mise run serve`.";
@@ -1252,9 +1363,15 @@ mod native {
             self.inner.borrow_mut().status = Status::Error(MSG.into());
         }
 
-        pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: ViewParams) {}
+        pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
 
-        pub fn run_snuffling(&self, _ctx: &egui::Context, _name: String, _params: ViewParams) {}
+        pub fn run_snuffling(
+            &self,
+            _ctx: &egui::Context,
+            _name: String,
+            _params: SnufflingRequestParams,
+        ) {
+        }
 
         pub fn download_waveforms(&self, _ctx: &egui::Context, _params_json: String) {
             self.inner.borrow_mut().status = Status::Error(MSG.into());
@@ -1266,7 +1383,7 @@ mod native {
 
         pub fn run_command(&self, _ctx: &egui::Context, _line: String) {}
 
-        pub fn rms_traces(&self, _ctx: &egui::Context, _params: ViewParams) {}
+        pub fn rms_traces(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
 
         pub fn fetch_stations(&self, _ctx: &egui::Context, _params_json: String) {}
 
@@ -1281,6 +1398,10 @@ mod native {
         }
 
         pub fn save_markers(&self, _ctx: &egui::Context, _markers_json: String) {}
+
+        pub fn save_image_png(&self, _bytes: Vec<u8>, _filename: String) {}
+
+        pub fn save_image_svg(&self, _svg: String, _filename: String) {}
 
         pub fn load_markers(&self, _ctx: &egui::Context) {}
 

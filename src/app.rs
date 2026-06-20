@@ -1,12 +1,18 @@
-use egui::{Align2, Color32, FontId, Sense, Shape, Stroke};
+use egui::{Color32, FontId};
 
-use crate::bridge::{Bridge, SpectrumData, Status, ViewParams};
+use crate::bridge::{Bridge, SnufflingRequestParams, Status, ViewParams};
+use crate::snufflings::Action as SnufflingAction;
 use crate::state::{
     AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
 };
 use crate::view::markers::{MARKER_COLORS, Marker};
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
+
+/// Supersampling factor for the resvg-backed PNG export: the output is this many
+/// times the on-screen point size per axis, giving a crisp print/retina image.
+#[cfg(feature = "svg-raster")]
+const PNG_EXPORT_SCALE: f32 = 2.0;
 
 /// The egui application: UI state plus the bridge to pyrocko (via Pyodide).
 pub struct App {
@@ -16,10 +22,22 @@ pub struct App {
     last_scene_gen: u64,
     wf_cache: WaterfallCache,
     /// Params the spectrum snuffling was last requested for (refetch gate).
-    spectrum_key: Option<ViewParams>,
+    spectrum_key: Option<SnufflingRequestParams>,
     /// Snuffling-result generation we last applied (markers/text once each).
     last_snuffling_gen: u64,
+    /// Scene time bounds last used for auto-fit; derived traces keep the same bounds.
+    last_scene_bounds: Option<(f64, f64)>,
     map: crate::view::map::MapState,
+    /// Waveform central-panel rect from the current frame; the crop for PNG export.
+    last_waveform_rect: egui::Rect,
+    /// A "Save image (PNG)" menu click, handled after layout once the rect is known.
+    screenshot_request: bool,
+    /// True between requesting a screenshot and eframe delivering the frame.
+    screenshot_awaiting: bool,
+    /// The waveform rect captured at request time, used to crop the screenshot.
+    screenshot_crop: egui::Rect,
+    /// A "Save image (SVG)" menu click, handled after layout once the view is known.
+    svg_request: bool,
 }
 
 fn configure_look(ctx: &egui::Context) {
@@ -72,7 +90,13 @@ impl App {
             wf_cache: WaterfallCache::default(),
             spectrum_key: None,
             last_snuffling_gen: 0,
+            last_scene_bounds: None,
             map: crate::view::map::MapState::default(),
+            last_waveform_rect: egui::Rect::ZERO,
+            screenshot_request: false,
+            screenshot_awaiting: false,
+            screenshot_crop: egui::Rect::ZERO,
+            svg_request: false,
         }
     }
 
@@ -105,6 +129,13 @@ impl App {
         }
     }
 
+    fn current_snuffling_params(&self, npx: u32) -> SnufflingRequestParams {
+        SnufflingRequestParams {
+            view: self.current_params(npx),
+            snufflings: self.state.snufflings.params(),
+        }
+    }
+
     fn file_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("File", |ui| {
             if ui.button("Open files…").clicked() {
@@ -128,6 +159,15 @@ impl App {
             }
             if ui.button("Load markers…").clicked() {
                 self.bridge.load_markers(ctx);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Save image (PNG)…").clicked() {
+                self.screenshot_request = true;
+                ui.close();
+            }
+            if ui.button("Save image (SVG)…").clicked() {
+                self.svg_request = true;
                 ui.close();
             }
             ui.separator();
@@ -298,54 +338,6 @@ impl App {
         });
     }
 
-    fn snufflings_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.menu_button("Snufflings", |ui| {
-            if ui.button("Spectrogram (waterfall)").clicked() {
-                self.state.view_mode = ViewMode::Waterfall;
-                ui.close();
-            }
-            if ui.button("Amplitude spectrum").clicked() {
-                self.state.show_spectrum = true;
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("Minimum / Maximum (peak-to-peak)").clicked() {
-                let p = self.current_params(800);
-                self.bridge.run_snuffling(ctx, "minmax".into(), p);
-                ui.close();
-            }
-            if ui.button("STA/LTA detector").clicked() {
-                let p = self.current_params(800);
-                self.bridge.run_snuffling(ctx, "stalta".into(), p);
-                ui.close();
-            }
-            if ui
-                .button("Polarization (3-component)")
-                .on_hover_text(
-                    "Covariance-eigen polarization (azimuth, incidence, \
-                     rectilinearity, planarity) per Z/N/E station in the window.",
-                )
-                .clicked()
-            {
-                let p = self.current_params(800);
-                self.bridge.run_snuffling(ctx, "polarization".into(), p);
-                ui.close();
-            }
-            if ui
-                .button("RMS (blockwise)")
-                .on_hover_text(
-                    "Add derived traces of blockwise root-mean-square amplitude \
-                     over the visible window (channel suffix -RMS).",
-                )
-                .clicked()
-            {
-                let p = self.current_params(800);
-                self.bridge.rms_traces(ctx, p);
-                ui.close();
-            }
-        });
-    }
-
     fn help_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Help", |ui| {
             if ui.button("Snuffler controls").clicked() {
@@ -385,7 +377,8 @@ impl eframe::App for App {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "pixel width is a small non-negative value clamped to >= 64.0; truncation to u32 is intended"
+        clippy::cast_precision_loss,
+        reason = "pixel sizes are small non-negative values; truncation/precision loss is intended"
     )]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -396,13 +389,25 @@ impl eframe::App for App {
             && let Some(scene) = self.bridge.scene()
             && !scene.tracks.is_empty()
         {
-            self.state.tmin = scene.tmin;
-            self.state.tmax = scene.tmax;
-            self.state.ntracks_shown = scene
-                .tracks
-                .len()
-                .clamp(1, crate::state::DEFAULT_NTRACKS_SHOWN);
-            self.state.track_offset = 0;
+            let bounds = (scene.tmin, scene.tmax);
+            let range_changed = self.last_scene_bounds.is_none_or(|old| {
+                (old.0 - bounds.0).abs() > 1e-6 || (old.1 - bounds.1).abs() > 1e-6
+            });
+            if range_changed {
+                self.state.tmin = scene.tmin;
+                self.state.tmax = scene.tmax;
+                self.state.ntracks_shown = scene
+                    .tracks
+                    .len()
+                    .clamp(1, crate::state::DEFAULT_NTRACKS_SHOWN);
+                self.state.track_offset = 0;
+            } else {
+                self.state.track_offset = self
+                    .state
+                    .track_offset
+                    .min(scene.tracks.len().saturating_sub(1));
+            }
+            self.last_scene_bounds = Some(bounds);
             self.last_scene_gen = scene_gen;
         }
 
@@ -419,7 +424,9 @@ impl eframe::App for App {
             }
         }
 
-        let total_tracks = self.bridge.scene().map_or(0, |s| s.tracks.len());
+        let scene = self.bridge.scene();
+        let total_tracks = scene.as_ref().map_or(0, |s| s.tracks.len());
+        let scene_range = scene.as_ref().map(|s| (s.tmin, s.tmax));
 
         egui::Panel::top("menu").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -429,7 +436,7 @@ impl eframe::App for App {
                 self.options_menu(ui);
                 self.scaling_menu(ui);
                 self.sorting_menu(ui);
-                self.snufflings_menu(ui, &ctx);
+                crate::snufflings::menu(ui, &mut self.state.snufflings, &mut self.state.view_mode);
                 self.help_menu(ui);
 
                 ui.separator();
@@ -502,7 +509,7 @@ impl eframe::App for App {
             });
         }
 
-        egui::CentralPanel::default()
+        let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
                 let npx = ui.available_width().max(64.0) as u32;
@@ -516,12 +523,95 @@ impl eframe::App for App {
                     view.as_deref(),
                     &mut self.wf_cache,
                     epoch,
+                    scene_range,
                 );
             });
+        self.last_waveform_rect = central.response.rect;
+
+        // SVG export: re-render the current view through the shared DrawTarget to a
+        // vector file at the on-screen size (no framebuffer round-trip needed).
+        if std::mem::take(&mut self.svg_request) {
+            let dark = ctx.global_style().visuals.dark_mode;
+            let size = self.last_waveform_rect.size();
+            let svg = self
+                .bridge
+                .view()
+                .map(|view| waveform::render_svg(&ctx, &self.state, &view, size, dark));
+            if let Some(svg) = svg {
+                self.bridge.save_image_svg(svg, "snuffler.svg".to_owned());
+            }
+        }
+
+        // PNG export. With `svg-raster` (default) we rasterize the same vector SVG
+        // at high DPI via resvg. Otherwise we capture the egui framebuffer at screen
+        // resolution (delivered a couple frames later as Event::Screenshot).
+        if std::mem::take(&mut self.screenshot_request) {
+            #[cfg(feature = "svg-raster")]
+            {
+                let dark = ctx.global_style().visuals.dark_mode;
+                let size = self.last_waveform_rect.size();
+                let png = self.bridge.view().and_then(|view| {
+                    let svg = waveform::render_svg(&ctx, &self.state, &view, size, dark);
+                    crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE)
+                });
+                if let Some(png) = png {
+                    self.bridge.save_image_png(png, "snuffler.png".to_owned());
+                }
+            }
+            #[cfg(not(feature = "svg-raster"))]
+            {
+                self.screenshot_crop = self.last_waveform_rect;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                self.screenshot_awaiting = true;
+            }
+        }
+        if self.screenshot_awaiting {
+            let shot = ctx.input(|i| {
+                i.events.iter().rev().find_map(|e| match e {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(image) = shot {
+                self.screenshot_awaiting = false;
+                let ppp = ctx.pixels_per_point();
+                let bounds = egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(image.size[0] as f32 / ppp, image.size[1] as f32 / ppp),
+                );
+                let crop = self.screenshot_crop.intersect(bounds);
+                if crop.is_positive()
+                    && let Some(png) =
+                        crate::view::draw::encode_png(&image.region(&crop, Some(ppp)))
+                {
+                    self.bridge.save_image_png(png, "snuffler.png".to_owned());
+                }
+            } else {
+                // Keep frames coming until the screenshot reply lands.
+                ctx.request_repaint();
+            }
+        }
+
+        if let Some(action) = crate::snufflings::show_panel(
+            &ctx,
+            &mut self.state.snufflings,
+            self.state.highpass,
+            self.state.lowpass,
+        ) {
+            let params = self.current_snuffling_params(800);
+            match action {
+                SnufflingAction::Spectrum => {
+                    self.state.snufflings.open_spectrum_plot();
+                    self.spectrum_key = None;
+                }
+                SnufflingAction::Run(name) => self.bridge.run_snuffling(&ctx, name.into(), params),
+                SnufflingAction::Rms => self.bridge.rms_traces(&ctx, params),
+            }
+        }
 
         // Amplitude-spectrum snuffling window.
-        if self.state.show_spectrum {
-            let params = self.current_params(800);
+        if self.state.snufflings.show_spectrum_plot() {
+            let params = self.current_snuffling_params(800);
             if self.spectrum_key.as_ref() != Some(&params) {
                 self.bridge.fetch_spectrum(&ctx, params.clone());
                 self.spectrum_key = Some(params);
@@ -531,9 +621,11 @@ impl eframe::App for App {
             egui::Window::new("Amplitude spectrum")
                 .open(&mut open)
                 .default_size([520.0, 280.0])
-                .show(&ctx, |ui| draw_spectrum(ui, spectrum.as_ref()));
+                .show(&ctx, |ui| {
+                    crate::snufflings::draw_spectrum_plot(ui, spectrum.as_ref());
+                });
             if !open {
-                self.state.show_spectrum = false;
+                self.state.snufflings.close_spectrum_plot();
                 self.spectrum_key = None;
             }
         }
@@ -542,7 +634,7 @@ impl eframe::App for App {
             let mut open = true;
             egui::Window::new("Snuffler controls")
                 .open(&mut open)
-                .default_size([460.0, 380.0])
+                .default_size([880.0, 520.0])
                 .show(&ctx, help_text);
             self.state.show_help = open;
         }
@@ -809,7 +901,7 @@ impl eframe::App for App {
                     self.state.markers.push(mk);
                 }
                 self.state.snuffling_text = r.text;
-                self.state.show_snuffling = true;
+                self.state.show_snuffling = r.show_window && !self.state.snuffling_text.is_empty();
                 // Catalog events are at absolute times; if they fell outside the
                 // current window, jump the view so the markers are visible.
                 if any_ev
@@ -857,33 +949,114 @@ fn markers_to_json(markers: &[Marker]) -> String {
 }
 
 fn help_text(ui: &mut egui::Ui) {
-    egui::Grid::new("help_grid")
+    const KEY_ROWS: &[(&str, &str)] = &[
+        ("q", "Quit / close viewer"),
+        ("r", "Reload modified files (native only)"),
+        ("R", "Reload snufflings (native only)"),
+        ("f", "Toggle full screen mode"),
+        ("m", "Toggle marker sidebar"),
+        ("c", "Toggle main controls"),
+        (":", "Enter command"),
+        ("<space>", "Forward one page in time"),
+        ("b", "Backward one page in time"),
+        ("<pagedown>", "Scroll tracks one page down"),
+        ("<pageup>", "Scroll tracks one page up"),
+        ("+", "Show one track more"),
+        ("-", "Show one track less"),
+        ("=", "Show initial number of tracks"),
+        ("g", "Go to selection / show all"),
+        ("G", "Zoom to selection / zoom to trace visibility"),
+        ("n", "Go to next marker"),
+        ("p", "Go to previous marker"),
+        ("N", "Go to next event marker"),
+        ("P", "Go to previous event marker"),
+        ("<tab>", "Go to next marker of active event"),
+        ("<shift> + <tab>", "Go to previous marker of active event"),
+        ("a", "Select all markers currently visible"),
+        ("A", "Select all markers"),
+        ("d", "Deselect all markers"),
+        ("0 ... 7", "Change color of marker"),
+        ("<f1> ... <f9>", "Convert to phase marker"),
+        ("e", "Convert to event marker / set active event"),
+        ("E", "Deactivate event"),
+        ("<f10>", "Convert phase marker to normal marker"),
+        ("<backspace>", "Delete marker"),
+        (
+            "<up>, <down>",
+            "Set first motion polarity on selected marker",
+        ),
+        (
+            "<shift> + <up>, <shift> + <down>",
+            "Unset first motion polarity on selected marker",
+        ),
+        (
+            "<escape>",
+            "Enter batch-picking / abort picking (native only)",
+        ),
+        ("?", "Help"),
+    ];
+    const MOUSE_ROWS: &[(&str, &str)] = &[
+        ("Click and drag", "Zoom and pan"),
+        ("Click and drag on time axis", "Pan only"),
+        ("Click on marker", "Select marker"),
+        ("<shift> + click on marker", "Select additional marker"),
+        ("Wheel", "Scroll tracks vertically"),
+        ("<ctrl> + wheel", "Change number of tracks shown"),
+        ("Right-click", "Menu (native only)"),
+        ("Double-click", "Enter picking mode / place pick"),
+        (
+            "Shift and left-click",
+            "Uncertainty selection for current phase marker (native only)",
+        ),
+    ];
+    const COMMAND_ROWS: &[(&str, &str)] = &[
+        (
+            "n|s|l|c [ <pattern> ]",
+            "Reduce traces to those matching a given pattern.",
+        ),
+        (
+            "hide <pattern>\nhide n|s|l|c <pattern>",
+            "Hide traces whose network, station, location, and channel IDs match a pattern.",
+        ),
+        (
+            "unhide <pattern>\nunhide n|s|l|c <pattern>",
+            "Unhide traces previously hidden with the hide command.",
+        ),
+        (
+            "goto YYYY-MM[-DD[ HH[:MM[:SS[.XXX]]]]]\ngoto HH:MM[:SS[.XXX]]",
+            "Jump to a given time.",
+        ),
+        ("markers ...", "Toggle marker visibility (native only)."),
+        ("scaling ...", "Set scaling rules (native only)."),
+    ];
+
+    egui::ScrollArea::both().show(ui, |ui| {
+        ui.columns(3, |cols| {
+            if let [key_col, mouse_col, command_col] = cols {
+                help_column(key_col, "Key", KEY_ROWS, false);
+                help_column(mouse_col, "Mouse", MOUSE_ROWS, false);
+                help_column(command_col, "Command", COMMAND_ROWS, true);
+            }
+        });
+    });
+}
+
+fn help_column(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)], monospace_key: bool) {
+    ui.heading(title);
+    ui.add_space(4.0);
+    egui::Grid::new(("help_column", title))
         .num_columns(2)
-        .spacing([18.0, 4.0])
+        .spacing([12.0, 6.0])
+        .striped(true)
         .show(ui, |ui| {
-            for (k, v) in [
-                ("Wheel", "zoom the time axis"),
-                ("Shift + Wheel", "scroll through tracks"),
-                ("Ctrl + Wheel", "adjust gain"),
-                ("Drag", "pan the time axis"),
-                ("Shift + Drag", "place a span marker"),
-                ("Double-click", "place a point marker"),
-                ("0 – 7", "set marker colour"),
-                ("F1 – F10", "assign a phase name"),
-                ("Up / Down", "phase polarity up / down (Shift = undecided)"),
-                ("Left / Right", "nudge selected marker (Shift = ×10)"),
-                ("Backspace", "delete selected marker"),
-                ("Space / B", "scroll time forward / back"),
-                ("n / p", "select next / previous marker"),
-                ("N / P", "select next / previous event"),
-                ("Tab / Shift+Tab", "cycle marker selection"),
-                ("a / A", "select markers in view / all"),
-                ("d / Esc", "deselect all"),
-                ("g / G", "go to selection / zoom tight"),
-                ("m / c", "toggle marker editor / controls"),
-            ] {
-                ui.strong(k);
-                ui.label(v);
+            for (key, description) in rows {
+                let key_text = egui::RichText::new(*key);
+                if monospace_key {
+                    ui.label(key_text.monospace());
+                } else {
+                    ui.label(key_text.italics());
+                }
+                ui.label(*description);
                 ui.end_row();
             }
         });
@@ -898,104 +1071,4 @@ fn about_text(ui: &mut egui::Ui) {
     );
     ui.add_space(6.0);
     ui.hyperlink("https://pyrocko.org");
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "screen-space plotting math: f64 frequencies map to f32 pixel coordinates and sample indices to f64 fractions; precision is ample for on-screen rendering"
-)]
-fn draw_spectrum(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
-    let Some(spec) = spec else {
-        ui.label("Computing…");
-        return;
-    };
-    if spec.meta.tracks.is_empty() {
-        ui.label("No spectrum (web only).");
-        return;
-    }
-    let dark = ui.visuals().dark_mode;
-    let (resp, painter) = ui.allocate_painter(
-        egui::vec2(ui.available_width().max(240.0), 240.0),
-        Sense::hover(),
-    );
-    let rect = resp.rect;
-    let bg = if dark {
-        Color32::from_rgb(22, 24, 27)
-    } else {
-        Color32::from_rgb(250, 250, 250)
-    };
-    painter.rect_filled(rect, 0.0, bg);
-
-    let fmin = spec.meta.fmin.max(1e-6);
-    let fmax = spec.meta.fmax.max(fmin * 1.0001);
-    let (lxmin, lxmax) = (fmin.log10(), fmax.log10());
-    let ymin = spec
-        .meta
-        .tracks
-        .iter()
-        .map(|t| t.ymin)
-        .fold(f32::INFINITY, f32::min);
-    let ymax = spec
-        .meta
-        .tracks
-        .iter()
-        .map(|t| t.ymax)
-        .fold(f32::NEG_INFINITY, f32::max);
-    let yspan = (ymax - ymin).max(1e-6);
-    let x_of = |f: f64| rect.left() + ((f.log10() - lxmin) / (lxmax - lxmin)) as f32 * rect.width();
-    let y_of = |v: f32| rect.bottom() - (v - ymin) / yspan * rect.height();
-
-    let grid = if dark {
-        Color32::from_rgb(48, 51, 56)
-    } else {
-        Color32::from_rgb(225, 225, 225)
-    };
-    let mut decade = 10f64.powf(lxmin.floor());
-    while decade <= fmax {
-        if decade >= fmin {
-            let x = x_of(decade);
-            painter.line_segment(
-                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                Stroke::new(1.0, grid),
-            );
-        }
-        decade *= 10.0;
-    }
-
-    for (ti, t) in spec.meta.tracks.iter().enumerate() {
-        let col = MARKER_COLORS
-            .get(ti % 8)
-            .copied()
-            .unwrap_or(Color32::from_rgb(204, 0, 0));
-        let end = (t.offset + t.count).min(spec.ys.len());
-        let Some(data) = spec.ys.get(t.offset.min(spec.ys.len())..end) else {
-            continue;
-        };
-        if data.len() < 2 {
-            continue;
-        }
-        let n = data.len();
-        let pts: Vec<_> = data
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| {
-                let frac = i as f64 / (n - 1) as f64;
-                let f = 10f64.powf(lxmin + frac * (lxmax - lxmin));
-                egui::pos2(x_of(f), y_of(v))
-            })
-            .collect();
-        painter.add(Shape::line(pts, Stroke::new(1.0, col)));
-    }
-    painter.text(
-        rect.left_top() + egui::vec2(5.0, 3.0),
-        Align2::LEFT_TOP,
-        format!("{fmin:.3} – {fmax:.0} Hz  (log freq, log amp)"),
-        FontId::proportional(11.0),
-        if dark {
-            Color32::GRAY
-        } else {
-            Color32::DARK_GRAY
-        },
-    );
 }

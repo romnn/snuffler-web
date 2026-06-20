@@ -3,6 +3,7 @@
 //! Field/enum names and defaults mirror pyrocko's snuffler (`pile_viewer.py` +
 //! `config.py`) so the egui frontend exposes the same settings.
 
+use crate::snufflings::SnufflingState;
 use crate::view::markers::Marker;
 
 /// Number of tracks shown by default, and the reset target for the "=" key.
@@ -280,6 +281,15 @@ impl VisibleLength {
     ];
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ViewDrag {
+    pub x: f32,
+    pub y: f32,
+    pub tmin: f64,
+    pub tmax: f64,
+    pub pan_only: bool,
+}
+
 pub struct AppState {
     /// Visible time window (epoch seconds).
     pub tmin: f64,
@@ -334,8 +344,8 @@ pub struct AppState {
     pub wf_integrate: bool,
     pub wf_color_scale: ColorScale,
 
-    /// Amplitude-spectrum snuffling window open.
-    pub show_spectrum: bool,
+    /// Built-in snuffling menu/panel state.
+    pub snufflings: SnufflingState,
     /// Snuffling text output (`MinMax` etc.) + its window visibility.
     pub snuffling_text: String,
     pub show_snuffling: bool,
@@ -349,8 +359,13 @@ pub struct AppState {
     pub marker_kind: u8,
     /// In-progress span-marker drag (start, current) in epoch seconds.
     pub pending_span: Option<(f64, f64)>,
+    /// Active mouse drag used for snuffler-style pan/zoom interaction.
+    pub view_drag: Option<ViewDrag>,
+    /// Accumulates wheel motion into Qt-style 120-unit notches.
+    pub wheel_pos: f32,
 
     pub show_controls: bool,
+    pub fullscreen: bool,
     /// "Snuffler controls" / "About" help windows.
     pub show_help: bool,
     pub show_about: bool,
@@ -419,7 +434,7 @@ impl Default for AppState {
             wf_abs: false,
             wf_integrate: false,
             wf_color_scale: ColorScale::Log,
-            show_spectrum: false,
+            snufflings: SnufflingState::default(),
             snuffling_text: String::new(),
             show_snuffling: false,
             ntracks_shown: DEFAULT_NTRACKS_SHOWN,
@@ -427,7 +442,10 @@ impl Default for AppState {
             markers: Vec::new(),
             marker_kind: 0,
             pending_span: None,
+            view_drag: None,
+            wheel_pos: 60.0,
             show_controls: true,
+            fullscreen: false,
             show_help: false,
             show_about: false,
             show_download: false,
