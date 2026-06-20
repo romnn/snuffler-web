@@ -630,6 +630,8 @@ impl eframe::App for App {
                     self.cake_rays_key = None;
                 }
                 SnufflingAction::AddCakeModel => self.bridge.add_cake_model(&ctx),
+                #[cfg(feature = "gf")]
+                SnufflingAction::AddGfStore => self.bridge.add_gf_store(&ctx),
             }
         }
 

@@ -138,6 +138,17 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
         if ui.button("Add Model…").clicked() {
             action = Some(Action::AddCakeModel);
         }
+        #[cfg(feature = "gf")]
+        if ui
+            .button("Add GF Store…")
+            .on_hover_text(
+                "Mount a Green's-functions store directory and use its embedded \
+                 1D earth model (pyrocko.gf).",
+            )
+            .clicked()
+        {
+            action = Some(Action::AddGfStore);
+        }
     });
 
     param_row(ui, "Global shift [s]", &mut config.tshift, -20.0, 20.0);

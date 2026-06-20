@@ -43,6 +43,10 @@ pub enum Action {
     CakePlotRays,
     /// Let the user upload a custom `.nd` earth model.
     AddCakeModel,
+    /// Mount a Green's-functions store directory (`NativeFS`) and add its 1D
+    /// earth model to the dropdown.
+    #[cfg(feature = "gf")]
+    AddGfStore,
 }
 
 #[derive(Default)]

@@ -42,11 +42,17 @@ allow_attributes_without_reason = "deny"
 struct_excessive_bools = "allow"
 
 [features]
-default = ["svg-raster"]
+default = ["svg-raster", "gf"]
 # Rasterize the export SVG to a crisp high-DPI PNG via resvg (pure Rust, compiles
 # to wasm). Adds ~1 MB to the bundle; disable it for a smaller download — the PNG
 # export then falls back to capturing the egui framebuffer at screen resolution.
 svg-raster = ["dep:resvg"]
+# Green's-functions stores: the Cake Phase "Add GF Store…" button (mount a store
+# directory via the File System Access API → Pyodide NativeFS) and its embedded
+# 1D earth model as a `GF Store: <id>` dropdown entry. Frontend toggle only; the
+# pyrocko C extensions that read stores are selected at wheel-build time
+# (PYROCKO_EXTS, see pybuild/setup.py).
+gf = []
 
 [dependencies]
 egui = "0.34"

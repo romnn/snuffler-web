@@ -164,6 +164,27 @@ function boot() {
   return pyodideReadyPromise;
 }
 
+// Green's-functions / synthetics need `import pyrocko.gf`, whose import chain
+// pulls pyrocko.gf.ws -> `import requests`. Install the real requests plus
+// pyodide-http, which patches requests/urllib onto synchronous XHR so pyrocko's
+// HTTP web-services actually work in the browser (via fetch) rather than just
+// importing. Lazy + idempotent: only paid when a GF feature is first used, to
+// keep the base boot lean.
+let gfReadyPromise = null;
+function ensureGf() {
+  if (gfReadyPromise) return gfReadyPromise;
+  gfReadyPromise = (async () => {
+    await boot();
+    await py.runPythonAsync(`
+import micropip
+await micropip.install(["requests", "pyodide-http"])
+import pyodide_http
+pyodide_http.patch_all()
+`);
+  })();
+  return gfReadyPromise;
+}
+
 export async function makeExample() {
   await boot();
   const scene = bridge.make_example(); // -> JSON string (SceneMeta)
@@ -288,6 +309,37 @@ export async function addCakeModel() {
   return name;
 }
 
+// Cake Phase 'Add GF Store': pick a Green's-functions store directory and mount
+// it into the Pyodide FS via NativeFS (File System Access API), so pyrocko reads
+// it by path with zero copy (huge stores stay on disk). Returns "GF Store: <id>"
+// for the model dropdown, or "" if cancelled. Reading the store's config + 1D
+// earth model needs no store_ext and no network. (For the future synthetics path
+// the whole store — including the GF traces — is then available by path.)
+let gfStoreCounter = 0;
+export async function addGfStore() {
+  await boot();
+  if (typeof window.showDirectoryPicker !== "function") {
+    throw new Error(
+      "This browser has no File System Access API (showDirectoryPicker); " +
+      "mounting a GF store directory needs a Chromium-based browser.");
+  }
+  let handle;
+  try {
+    handle = await window.showDirectoryPicker({ mode: "read" });
+  } catch (e) {
+    if (e && e.name === "AbortError") return ""; // user cancelled the picker
+    throw e;
+  }
+  gfStoreCounter += 1;
+  const mount = "/gfstores/" + gfStoreCounter;
+  try { py.FS.mkdir("/gfstores"); } catch (_e) { /* already exists */ }
+  py.FS.mkdir(mount);
+  await py.mountNativeFS(mount, handle);
+  const info = JSON.parse(bridge.gf_store_info(mount));
+  if (info.error) throw new Error("Not a usable GF store: " + info.error);
+  return info.label; // "GF Store: <id>"
+}
+
 export async function runCommand(line) {
   await boot();
   return bridge.command(line); // -> JSON string {action, ...}
@@ -395,12 +447,18 @@ export async function fetchTile(url) {
   return { w: img.width, h: img.height, rgba: new Uint8Array(img.data.buffer) };
 }
 
-// Debug hook so the bridge can be exercised from the devtools/tests.
+// Debug hook so the bridge can be exercised from the devtools/tests. Runs in
+// the user's own browser sandbox (Pyodide), so it grants no extra privilege.
+async function pyExec(code) {
+  await boot();
+  return py.runPythonAsync(code);
+}
+
 if (typeof window !== "undefined") {
   window.snuffler = {
     makeExample, loadBytes, loadUrl, getView, getSpectrum, runSnuffling,
     downloadWaveforms, catalogSearch, fetchStations, fetchResponses,
     mapData, fetchTile, openFiles, saveMarkers, loadMarkers, cakePlot, addCakeModel,
-    runCommand, rmsTraces, savePng, saveSvg,
+    addGfStore, runCommand, rmsTraces, savePng, saveSvg, pyExec, ensureGf,
   };
 }

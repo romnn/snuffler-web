@@ -644,6 +644,10 @@ mod web {
         #[wasm_bindgen(js_name = addCakeModel, catch)]
         async fn js_add_cake_model() -> Result<JsValue, JsValue>;
 
+        #[cfg(feature = "gf")]
+        #[wasm_bindgen(js_name = addGfStore, catch)]
+        async fn js_add_gf_store() -> Result<JsValue, JsValue>;
+
         #[wasm_bindgen(js_name = runCommand, catch)]
         async fn js_run_command(line: String) -> Result<JsValue, JsValue>;
 
@@ -1200,6 +1204,38 @@ mod web {
             });
         }
 
+        /// Mount a Green's-functions store directory (`NativeFS`, via the File
+        /// System Access API) and add its embedded 1D earth model to the Cake
+        /// Phase dropdown as `GF Store: <id>`. Errors (unsupported browser, not a
+        /// store) surface in the snuffling text window.
+        #[cfg(feature = "gf")]
+        pub fn add_gf_store(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                match js_add_gf_store().await {
+                    Ok(v) => {
+                        if let Some(name) = v.as_string()
+                            && !name.is_empty()
+                        {
+                            inner.borrow_mut().pending_cake_model = Some(name);
+                        }
+                    }
+                    Err(e) => {
+                        let mut i = inner.borrow_mut();
+                        i.snuffling = Some(SnufflingResult {
+                            show_window: true,
+                            text: format!("Add GF store failed: {}", jsval_to_string(e)),
+                            markers: Vec::new(),
+                            scene: None,
+                        });
+                        i.snuffling_gen += 1;
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
         /// Execute a ':' command line (goto / hide / unhide / reduce). A goto
         /// stores a pending time the App jumps to; a visibility change swaps the
         /// scene in place (no refit) and forces the view to re-dispatch.
@@ -1568,6 +1604,9 @@ mod native {
         pub fn cake_plot(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
 
         pub fn add_cake_model(&self, _ctx: &egui::Context) {}
+
+        #[cfg(feature = "gf")]
+        pub fn add_gf_store(&self, _ctx: &egui::Context) {}
 
         pub fn run_command(&self, _ctx: &egui::Context, _line: String) {}
 

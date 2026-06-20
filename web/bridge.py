@@ -1208,6 +1208,12 @@ def map_data() -> str:
 
 
 _marker_mod: Any = None
+_gf_store_mod: Any = None
+_gf_meta_mod: Any = None
+# Mounted Green's-function stores: dropdown id -> filesystem dir (Pyodide FS).
+_GF_STORES: Dict[str, str] = {}
+# Dropdown label prefix for GF-store earth models (mirrors Qt's "GF Store: <id>").
+GF_STORE_PREFIX = "GF Store: "
 
 
 def _marker_module() -> Any:
@@ -1240,6 +1246,60 @@ def _marker_module() -> Any:
             sys.modules[pkg_name] = stub
         _marker_mod = importlib.import_module(pkg_name + ".marker")
     return _marker_mod
+
+
+def _gf_modules():
+    """Load ``pyrocko.gf.store`` + ``pyrocko.gf.meta`` WITHOUT running
+    ``pyrocko/gf/__init__.py``.
+
+    ``import pyrocko.gf`` pulls seismosizer -> ws -> ``import requests`` (only
+    needed by RemoteEngine). Reading a local store's config + 1D earth model needs
+    neither requests nor ``store_ext``, so install a stub ``pyrocko.gf`` package
+    (real dir on ``__path__``) and import just the two submodules — the same trick
+    as :py:func:`_marker_module`.
+    """
+    global _gf_store_mod, _gf_meta_mod
+    if _gf_store_mod is None or _gf_meta_mod is None:
+        import importlib
+        import sys
+        import types
+
+        import pyrocko
+
+        pkg = "pyrocko.gf"
+        existing = sys.modules.get(pkg)
+        if existing is None or not getattr(existing, "_gf_stub", False):
+            stub = types.ModuleType(pkg)
+            stub.__path__ = [  # type: ignore[attr-defined]
+                os.path.join(os.path.dirname(pyrocko.__file__), "gf")
+            ]
+            stub.__package__ = pkg
+            stub._gf_stub = True  # type: ignore[attr-defined]
+            sys.modules[pkg] = stub
+        _gf_meta_mod = importlib.import_module(pkg + ".meta")
+        _gf_store_mod = importlib.import_module(pkg + ".store")
+    return _gf_store_mod, _gf_meta_mod
+
+
+def gf_store_info(store_dir: str) -> str:
+    """Read a mounted GF store's config (no ``store_ext`` / network needed) and
+    register it so its embedded 1D earth model is selectable in Cake Phase.
+
+    Returns JSON ``{id, label, sample_rate, has_earthmodel}`` or ``{error}``.
+    """
+    try:
+        gfstore, _gfmeta = _gf_modules()
+        cfg = gfstore.Store(store_dir).config
+        sid = str(cfg.id)
+        _GF_STORES[sid] = store_dir
+        return json.dumps({
+            "id": sid,
+            "label": GF_STORE_PREFIX + sid,
+            "sample_rate": float(getattr(cfg, "sample_rate", 0.0) or 0.0),
+            "has_earthmodel": getattr(cfg, "earthmodel_1d", None) is not None,
+        })
+    except Exception as e:
+        return json.dumps({"error": "%s: %s" % (type(e).__name__, e)})
 
 
 def markers_to_text(markers_json: str) -> str:
@@ -1321,7 +1381,22 @@ def _cake_model_path(name: str) -> str:
 
 
 def _cake_load_model(cake, name: str):
-    """Load the staged builtin cake earth model selected in the dropdown."""
+    """Load the cake earth model for a Cake Phase model selection.
+
+    A ``GF Store: <id>`` selection uses the mounted store's embedded 1D model
+    (``config.earthmodel_1d``, read without ``store_ext``); any other name is a
+    staged builtin ``.nd`` model loaded by path.
+    """
+    if name.startswith(GF_STORE_PREFIX):
+        sid = name[len(GF_STORE_PREFIX):]
+        store_dir = _GF_STORES.get(sid)
+        if store_dir is None:
+            raise ValueError("GF store %r is not mounted" % sid)
+        gfstore, _gfmeta = _gf_modules()
+        mod = gfstore.Store(store_dir).config.earthmodel_1d
+        if mod is None:
+            raise ValueError("GF store %r has no 1D earth model" % sid)
+        return mod
     return cake.load_model(_cake_model_path(name))
 
 
