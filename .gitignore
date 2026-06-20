@@ -21,6 +21,7 @@
 /.venv-pyodide
 /.pyodide-xbuildenv-*
 /.mypy_cache
+/.ruff_cache
 
 # Playwright/debug screenshots
 /snuffler-*.png

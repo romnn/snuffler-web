@@ -19,10 +19,24 @@ tasks:
       - typos
 
   check:
+    desc: "check Rust and Python workspace"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo check --workspace --all-targets {{.CLI_ARGS}}
+      - task: check:py
+
+  check:rust:
     desc: "check cargo workspace"
     dir: "{{.ROOT_DIR}}"
     cmds:
       - cargo check --workspace --all-targets {{.CLI_ARGS}}
+
+  check:py:
+    desc: "typecheck Python bridge"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - buf generate
+      - uvx --from mypy==1.18.2 --with protobuf==6.33.5 --with types-protobuf==6.32.1.20260221 --with numpy==2.3.5 mypy {{.CLI_ARGS}}
 
   check:fc:
     desc: "check cargo workspace for all combinations of features"
@@ -59,9 +73,32 @@ tasks:
       - cargo audit {{.CLI_ARGS}}
 
   format:
+    desc: "format Rust, Python, JavaScript, and protobuf schemas"
+    cmds:
+      - task: format:rust
+      - task: format:py
+      - task: format:js
+      - task: format:proto
+
+  format:rust:
     desc: "format cargo workspace"
     cmds:
       - cargo fmt --all {{.CLI_ARGS}}
+
+  format:py:
+    desc: "format Python bridge code"
+    cmds:
+      - uvx --from ruff==0.14.8 ruff format --cache-dir .ruff_cache --force-exclude web/bridge.py pybuild/setup.py qt/make_demo.py typings {{.CLI_ARGS}}
+
+  format:js:
+    desc: "format JavaScript bridge code"
+    cmds:
+      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.js web/bridge_worker.js pybuild/smoke-test.mjs package.json {{.CLI_ARGS}}
+
+  format:proto:
+    desc: "format protobuf schemas"
+    cmds:
+      - buf format -w
 
   test:
     desc: "test cargo workspace"

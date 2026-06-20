@@ -19,7 +19,7 @@ python = "3.12"
 emsdk = "3.1.58"
 node = "24"
 bun = "1.3.14"            # runs the headless wheel smoke test (pybuild/smoke-test.mjs)
-uv = "0.11.21"           # creates the .venv-pyodide that holds pyodide-build
+uv = "0.11.21"           # provides uv + uvx; uvx runs the pinned mypy-protobuf Buf plugin
 "ubi:trunk-rs/trunk" = "0.21.14"
 # binaryen/wasm-opt for the trunk post-build hook (see Trunk.toml). The
 # emsdk-bundled wasm-opt is too old for the post-MVP wasm features modern rustc

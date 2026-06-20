@@ -45,9 +45,20 @@ _OMP_ARGS = ["-fopenmp"] if _OPENMP else []
 libmseed_sources = [
     op.join("libmseed", f)
     for f in [
-        "fileutils.c", "genutils.c", "gswap.c", "lmplatform.c", "logging.c",
-        "lookup.c", "msrutils.c", "pack.c", "packdata.c", "parseutils.c",
-        "selection.c", "tracelist.c", "traceutils.c", "unpack.c",
+        "fileutils.c",
+        "genutils.c",
+        "gswap.c",
+        "lmplatform.c",
+        "logging.c",
+        "lookup.c",
+        "msrutils.c",
+        "pack.c",
+        "packdata.c",
+        "parseutils.c",
+        "selection.c",
+        "tracelist.c",
+        "traceutils.c",
+        "unpack.c",
         "unpackdata.c",
     ]
 ]
@@ -80,18 +91,12 @@ ALL_EXTS = {
         include_dirs=["libmseed"],
         extra_compile_args=["-fno-strict-aliasing"],
     ),
-    "eikonal_ext": _ext(
-        "pyrocko.eikonal_ext", [_p("ext", "eikonal_ext.c")], use_omp=True
-    ),
+    "eikonal_ext": _ext("pyrocko.eikonal_ext", [_p("ext", "eikonal_ext.c")], use_omp=True),
     "orthodrome_ext": _ext("pyrocko.orthodrome_ext", [_p("ext", "orthodrome_ext.c")]),
-    "parstack_ext": _ext(
-        "pyrocko.parstack_ext", [_p("ext", "parstack_ext.c")], use_omp=True
-    ),
+    "parstack_ext": _ext("pyrocko.parstack_ext", [_p("ext", "parstack_ext.c")], use_omp=True),
     "util_ext": _ext("pyrocko.util_ext", [_p("ext", "util_ext.c")]),
     "autopick_ext": _ext("pyrocko.autopick_ext", [_p("ext", "autopick_ext.c")]),
-    "ahfullgreen_ext": _ext(
-        "pyrocko.ahfullgreen_ext", [_p("ext", "ahfullgreen_ext.c")]
-    ),
+    "ahfullgreen_ext": _ext("pyrocko.ahfullgreen_ext", [_p("ext", "ahfullgreen_ext.c")]),
     # GF stores + synthetics. store_ext bundles its lookup-table helper (lut.c)
     # and #include "lut.h" from the same dir.
     "store_ext": _ext(
@@ -105,9 +110,7 @@ ALL_EXTS = {
         [_p("modelling", "ext", "okada_ext.c")],
         use_omp=True,
     ),
-    "disloc_ext": _ext(
-        "pyrocko.modelling.disloc_ext", [_p("modelling", "ext", "disloc_ext.c")]
-    ),
+    "disloc_ext": _ext("pyrocko.modelling.disloc_ext", [_p("modelling", "ext", "disloc_ext.c")]),
     "datacube_ext": _ext("pyrocko.datacube_ext", [_p("io", "ext", "datacube_ext.c")]),
     "ims_ext": _ext("pyrocko.ims_ext", [_p("io", "ext", "ims_ext.c")]),
 }
