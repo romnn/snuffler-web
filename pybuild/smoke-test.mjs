@@ -39,4 +39,28 @@ for t in trs[:4]:
     print("  ", '.'.join(t.nslc_id), "nsamp=", t.data_len(), "deltat=", t.deltat)
 `);
 
+// pyrocko.gf + the GF/synthetics C extensions (store_ext, eikonal_ext,
+// okada_ext, ...). `import pyrocko.gf` exercises the whole chain (seismosizer
+// imports eikonal_ext + okada_ext at module load); importing a wasm .so proves
+// its module-init ran, i.e. it cross-compiled to a valid Emscripten module.
+// pyrocko.gf.ws imports `requests`, so install it (+ pyodide-http, which patches
+// requests/urllib onto sync XHR) first — the same packages ensureGf() loads in
+// the browser bridge.
+await micropip.install(["requests", "pyodide-http"]);
+await py.runPythonAsync(`
+import pyodide_http
+pyodide_http.patch_all()
+from pyrocko import gf
+from pyrocko.gf import store as _gfstore
+from pyrocko import (
+    eikonal_ext, parstack_ext, ahfullgreen_ext, autopick_ext,
+    util_ext, orthodrome_ext)
+from pyrocko.modelling import okada_ext, disloc_ext
+assert _gfstore.store_ext is not None, "gf.store.store_ext did not load"
+eng = gf.LocalEngine(store_dirs=[])
+assert eng.get_store_ids() == [], "unexpected GF stores"
+print("gf ok: import pyrocko.gf + LocalEngine + store_ext/eikonal_ext/okada_ext"
+      "/parstack_ext/ahfullgreen_ext/autopick_ext/util_ext/orthodrome_ext/disloc_ext")
+`);
+
 console.log("SMOKE TEST PASSED");
