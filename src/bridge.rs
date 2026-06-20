@@ -106,6 +106,10 @@ pub struct SpectrumSnufflingParams {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names mirror snuffler's STA/LTA parameter names in the bridge.py wire contract"
+)]
 pub struct StaltaSnufflingParams {
     pub stalta_highpass: Option<f64>,
     pub stalta_lowpass: Option<f64>,
@@ -119,6 +123,10 @@ pub struct StaltaSnufflingParams {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names mirror snuffler's polarization parameter names in the bridge.py wire contract"
+)]
 pub struct PolarizationSnufflingParams {
     pub polarization_t_length: f64,
     pub polarization_ft_offset: f64,
@@ -133,6 +141,10 @@ pub struct PolarizationSnufflingParams {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names mirror snuffler's RMS parameter names in the bridge.py wire contract"
+)]
 pub struct RmsSnufflingParams {
     pub rms_highpass: Option<f64>,
     pub rms_lowpass: Option<f64>,
@@ -253,6 +265,10 @@ pub struct SnufMarker {
 
 /// Result of running a built-in snuffling: a text report and/or markers to add.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+#[allow(
+    dead_code,
+    reason = "deserialization wire contract mirroring bridge.py; the `scene` field is accepted but not yet consumed by the UI"
+)]
 pub struct SnufflingResult {
     #[serde(default = "default_show_window")]
     pub show_window: bool,

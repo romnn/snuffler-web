@@ -30,9 +30,7 @@ pub fn optional_freq_row(
         ui.label(value.map_or_else(|| "off".to_owned(), |v| format!("{v:.4}")));
         ui.add(Slider::new(&mut pos, 0.0..=1.0).show_value(false));
     });
-    *value = if low_is_none && pos <= 0.0 {
-        None
-    } else if !low_is_none && pos >= 1.0 {
+    *value = if (low_is_none && pos <= 0.0) || (!low_is_none && pos >= 1.0) {
         None
     } else {
         Some(pos_to_freq(pos, min, max))

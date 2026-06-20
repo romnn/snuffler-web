@@ -792,6 +792,10 @@ fn marker_row_spans(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "marker hit-testing needs the view + projection context to map a click to a marker"
+)]
 fn marker_hit_at(
     state: &AppState,
     visible: &[ViewTrack],
@@ -966,18 +970,17 @@ fn handle_interaction(
         }
     } else if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
-    {
-        if let Some(hit) = marker_hit_at(
+        && let Some(hit) = marker_hit_at(
             state, visible, track_area, row_h, view_tmin, window, rect, p,
-        ) {
-            if !modifiers.shift {
-                for m in &mut state.markers {
-                    m.selected = false;
-                }
+        )
+    {
+        if !modifiers.shift {
+            for m in &mut state.markers {
+                m.selected = false;
             }
-            if let Some(m) = state.markers.get_mut(hit) {
-                m.selected = true;
-            }
+        }
+        if let Some(m) = state.markers.get_mut(hit) {
+            m.selected = true;
         }
     }
 }

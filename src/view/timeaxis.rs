@@ -143,10 +143,10 @@ pub fn format_full(t: f64) -> String {
 
 /// Date context for the visible time axis, matching snuffler's `%b %d, %Y`.
 pub fn context_label(t: f64) -> String {
-    let c = civil(t);
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
+    let c = civil(t);
     let month = MONTHS
         .get(c.mon.saturating_sub(1) as usize)
         .copied()
