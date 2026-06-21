@@ -1,8 +1,22 @@
 name: GitHub Pages
 
-# Build the full web app (Rust/egui wasm + the pyrocko Pyodide wheel) and deploy
-# it to GitHub Pages. Set the repo's Pages source to "GitHub Actions" for this
-# to publish.
+# Build the full web app (Rust/egui wasm + BOTH Pyodide paths) and deploy it to
+# GitHub Pages. Set the repo's Pages source to "GitHub Actions" to publish.
+#
+# Both paths run our custom Pyodide 314 toolchain (docker/pyodide-mt):
+#   - threaded (py-mt): pthread + OpenMP + SIMD runtime + wheels, served at py-mt/
+#     and reachable via ?threads=1 (the coi-serviceworker provides the
+#     cross-origin isolation GitHub Pages can't set via response headers).
+#   - single-threaded (default): the stock Pyodide 314.0.0 CDN + a single-threaded
+#     pyrocko wheel (dist-py), differing from py-mt only in MT+SIMD.
+#
+# The custom build (CPython 3.14 + Pyodide from source) is multi-hour, so we
+# CACHE ITS OUTPUTS — docker/pyodide-mt/served (py-mt, ~54 MB) + dist-py (~1.3 MB)
+# — keyed on the build inputs (the patch, pinned commits, build scripts). A cache
+# hit skips the whole build; only an input change forces a rebuild.
+# NOTE: the first run (cold cache) does the full build on a GitHub-hosted runner
+# (6 h / ~14 GB disk limits). If it doesn't fit, switch to a self-hosted runner
+# or commit the built artifacts.
 on:
   push:
     branches: [main]
@@ -31,17 +45,35 @@ jobs:
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
 
-      # Provision the pinned toolchain (python, emscripten, node, bun, uv, trunk).
+      # Provision the pinned toolchain (node, bun, uv, trunk, binaryen). emsdk is
+      # NOT needed here — the Pyodide wheels build inside the pyodide-env docker
+      # image (build-all.sh), not via the host emsdk.
       - uses: jdx/mise-action@v2
 
-      # Fetches pyrocko at the pinned commit, builds the cross-compiled wheel
-      # into dist-py/, which index.html copies into the served site.
-      - name: Build the pyrocko Pyodide wheel
-        run: |
-          mise run setup
-          mise run build-wheel
+      # Cache the custom-Pyodide build OUTPUTS (not the multi-GB .work tree),
+      # keyed on everything that affects them. Hit -> skip the multi-hour build.
+      - name: Cache Pyodide 314 build outputs
+        id: pyodide-out
+        uses: actions/cache@v4
+        with:
+          path: |
+            docker/pyodide-mt/served
+            dist-py
+          key: "pyodide314-out-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-all.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/build-pyrocko-cdn.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/stage-web.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'pybuild/setup.py', 'pybuild/pyproject.toml', 'mise.toml') }}"
+
+      # pyrocko source is needed both by the build (on a cache miss) and by trunk
+      # (index.html ships test.mseed + the cake earthmodels from it), so always.
+      - name: Fetch pyrocko (pinned)
+        run: mise run fetch-pyrocko
+
+      # On a cache miss, build the custom runtime + both wheels + stage py-mt.
+      # Multi-hour the first time; near-instant cache restore afterwards.
+      - name: Build custom Pyodide 314 (runtime + both wheels + stage)
+        if: steps.pyodide-out.outputs.cache-hit != 'true'
+        run: docker/pyodide-mt/build-all.sh
 
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
+      # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/.
       - name: Trunk build (release)
         run: mise exec -- trunk build --release --public-url "/${{ github.event.repository.name }}/"
 
