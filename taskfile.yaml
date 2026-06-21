@@ -158,3 +158,9 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - docker/pyodide-pthread/build.sh
+
+  pyodide:smoke-pthread:
+    desc: "EXPERIMENTAL: threaded-C-ext smoke test for the pthread Pyodide (needs build-pthread first)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker/pyodide-pthread/smoke/run.sh
