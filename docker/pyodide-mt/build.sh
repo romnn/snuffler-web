@@ -19,10 +19,13 @@ repo="https://github.com/pyodide/pyodide.git"
 ref="807f16b054b2b0b4d5da3c8d465b502db92fdcaf"
 patch="$here/patches/0001-pthread.patch"
 jobs="${JOBS:-24}"
-# wasm SIMD (-msimd128) ON by default: autovectorizes our OpenMP kernels (which
-# carry #pragma omp simd) and numpy's scalar loops — free-or-faster, never
-# slower. Raises the browser floor to SIMD-capable engines (~2023+). SIMD=0 off.
-simd=" -msimd128"; [ "${SIMD:-1}" = "0" ] && simd=""
+# NOTE: do NOT pass -msimd128 to the CORE (CPython) build. It makes CPython's
+# configure detect a "standard" HACL SIMD128 implementation and compile
+# Modules/_hacl/Hacl_*_Simd128.c, which reference x86/NEON `vec128` intrinsics
+# that have no wasm definition -> "unknown type name Lib_IntVector_Intrinsics_vec128"
+# (build fails). The interpreter gains nothing from SIMD anyway; wasm SIMD is
+# applied where it matters — the numpy/pyrocko *package* kernels (packages.sh,
+# build-pyrocko*.sh, each with their own SIMD=0 toggle).
 # PIC system-lib archives (inside the container). The all-but-packages main only
 # pulls *referenced* objects from these, so it lacks the float-math / locale /
 # libc++ symbols that packages (numpy, scipy, pyrocko) need. We whole-archive the
@@ -76,9 +79,9 @@ docker run --rm \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
-    -e EXTRA_CFLAGS="-pthread$simd" \
+    -e EXTRA_CFLAGS="-pthread" \
     -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0" \
-    -e EMCC_CFLAGS="-pthread$simd" \
+    -e EMCC_CFLAGS="-pthread" \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && make -j'"$jobs"' all-but-packages'
 
@@ -99,9 +102,9 @@ docker run --rm \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
-    -e EXTRA_CFLAGS="-pthread$simd" \
+    -e EXTRA_CFLAGS="-pthread" \
     -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0 -Wl,--whole-archive /src/libomp.a $syslibs -Wl,--no-whole-archive /src/force_sjlj.o" \
-    -e EMCC_CFLAGS="-pthread$simd" \
+    -e EMCC_CFLAGS="-pthread" \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && source emsdk/emsdk/emsdk_env.sh 2>/dev/null && emcc -c -O2 -fPIC -pthread -sSUPPORT_LONGJMP=wasm -fwasm-exceptions force_sjlj.c -o force_sjlj.o && rm -f dist/pyodide.asm.mjs dist/pyodide.asm.wasm && make -j'"$jobs"' all-but-packages'
 
