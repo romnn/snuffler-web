@@ -7,7 +7,7 @@ jobs:
     name: fmt + clippy (native & wasm)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
 
       # egui's native (x11/wayland) backend needs these to build the native bin.
@@ -19,7 +19,7 @@ jobs:
 
       # Puts the pinned protoc on PATH — snuffler-proto's build.rs (prost-build)
       # shells out to it to compile the bridge .proto schema during clippy.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       # rust-toolchain.toml pins the channel, the wasm32 target, and the
       # rustfmt/clippy components; rustup installs them on the first cargo call.
