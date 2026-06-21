@@ -38,3 +38,4 @@ docker/pyodide-pthread/.work/
 
 docker/pyodide-mt/.work/
 docker/pyodide-mt/out/
+docker/pyodide-mt/served/

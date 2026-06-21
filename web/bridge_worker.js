@@ -1,5 +1,14 @@
+// When the page is cross-origin isolated (the ?threads=1 toggle + the
+// coi-serviceworker shim) we load our OWN fork-free Pyodide 314 build
+// (pthread + OpenMP + SIMD; py3.14 / emscripten 5.0.3) and all wheels from the
+// locally-served py-mt/ (runtime + pyodide-lock.json + wheels). Otherwise the
+// stock single-threaded Pyodide 0.27.2 CDN runtime stays the default — so the
+// app is unchanged unless threads are explicitly enabled.
+const THREADED = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
 const PYODIDE_VERSION = "0.27.2";
-const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+const PYODIDE_BASE = THREADED
+  ? new URL("py-mt/", self.location.href).href
+  : `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 let pyodideReadyPromise = null;
 let gfReadyPromise = null;
@@ -151,11 +160,20 @@ async function boot() {
   pyodideReadyPromise = (async () => {
     try {
       prog(0.08, "Downloading Python runtime…");
-      if (typeof loadPyodide === "undefined") {
-        importScripts(PYODIDE_BASE + "pyodide.js");
+      // Threaded path: this is a module worker, so import the ESM build (the
+      // 314 runtime rejects classic workers — its pthreads spawn as modules).
+      // CDN default: classic worker, importScripts the UMD build.
+      let loadPyodideFn;
+      if (THREADED) {
+        ({ loadPyodide: loadPyodideFn } = await import(PYODIDE_BASE + "pyodide.mjs"));
+      } else {
+        if (typeof loadPyodide === "undefined") {
+          importScripts(PYODIDE_BASE + "pyodide.js");
+        }
+        loadPyodideFn = loadPyodide;
       }
       prog(0.18, "Starting Python worker…");
-      py = await loadPyodide({ indexURL: PYODIDE_BASE });
+      py = await loadPyodideFn({ indexURL: PYODIDE_BASE });
 
       prog(0.25, "Loading numpy, scipy, matplotlib…");
       let creep = 0.25;
@@ -164,23 +182,42 @@ async function boot() {
         prog(creep, "Loading numpy, scipy, matplotlib…");
       }, 350);
       try {
-        await py.loadPackage(["numpy", "scipy", "micropip", "pyyaml", "matplotlib"]);
+        if (THREADED) {
+          // Everything (incl. pyrocko, protobuf, requests, pyodide-http) is in
+          // py-mt/pyodide-lock.json, built for this runtime — load by name.
+          await py.loadPackage([
+            "numpy",
+            "scipy",
+            "matplotlib",
+            "pyyaml",
+            "micropip",
+            "protobuf",
+            "requests",
+            "pyodide-http",
+            "pyrocko",
+          ]);
+        } else {
+          await py.loadPackage(["numpy", "scipy", "micropip", "pyyaml", "matplotlib"]);
+        }
       } finally {
         clearInterval(timer);
       }
 
-      prog(0.75, "Installing protobuf runtime…");
-      await py.runPythonAsync('import micropip\nawait micropip.install("protobuf==6.33.5")');
+      if (!THREADED) {
+        // CDN path: protobuf via micropip, pyrocko from the locally-built 0.27 wheel.
+        prog(0.75, "Installing protobuf runtime…");
+        await py.runPythonAsync('import micropip\nawait micropip.install("protobuf==6.33.5")');
 
-      prog(0.8, "Installing pyrocko…");
-      const wheels = await (await fetchOk(resolveUrl("py/wheels.json"))).json();
-      for (const w of wheels) {
-        const url = resolveUrl("py/" + w);
-        const buf = new Uint8Array(await (await fetchOk(url)).arrayBuffer());
-        py.FS.writeFile("/" + w, buf);
-        await py.runPythonAsync(
-          `import micropip\nawait micropip.install("emfs:/${w}", deps=False)`
-        );
+        prog(0.8, "Installing pyrocko…");
+        const wheels = await (await fetchOk(resolveUrl("py/wheels.json"))).json();
+        for (const w of wheels) {
+          const url = resolveUrl("py/" + w);
+          const buf = new Uint8Array(await (await fetchOk(url)).arrayBuffer());
+          py.FS.writeFile("/" + w, buf);
+          await py.runPythonAsync(
+            `import micropip\nawait micropip.install("emfs:/${w}", deps=False)`
+          );
+        }
       }
 
       prog(0.92, "Importing pyrocko…");
@@ -204,6 +241,27 @@ async function boot() {
       const bridgeSrc = await (await fetchOk(resolveUrl("bridge.py"))).text();
       py.FS.writeFile("/bridge.py", bridgeSrc);
       bridge = py.runPython('import sys; sys.path.insert(0, "/"); import bridge; bridge');
+
+      // Report the actual booted runtime (both paths) so the UI can show a
+      // truthful debug badge. pthreads is read back from the live interpreter,
+      // so the badge labels "wasm+openmp+simd" only when threading really came
+      // up on our py-mt build (vs the stock single-threaded CDN "wasm").
+      try {
+        self.postMessage({
+          type: "runtime",
+          threaded: THREADED,
+          simd: THREADED,
+          pthreads: py.runPython(
+            "import sys; bool(getattr(sys._emscripten_info, 'pthreads', False))"
+          ),
+          python: py.runPython("import sys; sys.version.split()[0]"),
+          numpy: py.runPython("import numpy; numpy.__version__"),
+          cores: (self.navigator && self.navigator.hardwareConcurrency) || 0,
+        });
+      } catch (_e) {
+        // Non-fatal: the badge just won't show.
+      }
+
       prog(0.97, "Almost ready…");
       return py;
     } catch (e) {
@@ -218,9 +276,10 @@ async function ensureGf() {
   if (gfReadyPromise) return gfReadyPromise;
   gfReadyPromise = (async () => {
     await boot();
+    // On the threaded path requests + pyodide-http are already loaded at boot
+    // (from the local lock); only install via micropip on the CDN path.
     await py.runPythonAsync(`
-import micropip
-await micropip.install(["requests", "pyodide-http"])
+${THREADED ? "" : 'import micropip\nawait micropip.install(["requests", "pyodide-http"])'}
 import pyodide_http
 pyodide_http.patch_all()
 `);

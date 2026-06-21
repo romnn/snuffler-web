@@ -175,12 +175,38 @@
             font-weight: 600;
             color: var(--fg);
         }
+
+        /* Subtle debug-only readout of the booted Pyodide runtime, shown
+           top-right once it has come up (set by __snufflerRuntime). Reports the
+           mode + Python/NumPy versions for both paths. Deliberately low-key. */
+        #runtime-badge {
+            position: absolute;
+            top: 5px;
+            right: 7px;
+            z-index: 11;
+            display: none;
+            padding: 0 2px;
+            font-size: 10px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            line-height: 1.4;
+            color: var(--muted);
+            opacity: 0.55;
+            white-space: nowrap;
+            user-select: text;
+            pointer-events: none;
+        }
+
+        #runtime-badge.show { display: inline-block; }
     </style>
 </head>
 
 <body>
     <!-- the id is hardcoded in main.rs; keep them in sync -->
     <canvas id="the_canvas_id"></canvas>
+
+    <!-- subtle debug readout of the booted Pyodide runtime (set by
+         __snufflerRuntime); shown on both the threaded and CDN paths -->
+    <div id="runtime-badge"></div>
 
     <div id="loading">
         <div class="panel">
@@ -210,6 +236,24 @@
                     setTimeout(() => el.remove(), 450);
                 }
             }
+        };
+
+        // Called by web/bridge.js when the Pyodide worker reports its booted
+        // runtime. Always shows a subtle debug readout of the versions; the lead
+        // token reflects the mode — "wasm+openmp+simd" only when threading
+        // actually came up (pthreads read back from the live interpreter, so
+        // libomp + SIMD are in play), else the stock single-threaded "wasm".
+        window.__snufflerRuntime = function (info) {
+            if (!info) return;
+            const badge = document.getElementById("runtime-badge");
+            if (!badge) return;
+            const mt = !!(info.threaded && info.pthreads);
+            const bits = [mt ? "wasm+openmp+simd" : "wasm"];
+            if (mt && info.cores) bits.push(info.cores + " cores");
+            if (info.python) bits.push("py" + info.python);
+            if (info.numpy) bits.push("np" + info.numpy);
+            badge.textContent = bits.join(" · ");
+            badge.classList.add("show");
         };
     </script>
 </body>

@@ -20,3 +20,17 @@ command_arguments = [
     "-c",
     "set -eu; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; for f in \"$d\"/*_bg.wasm; do [ -f \"$f\" ] || continue; mise exec 'github:WebAssembly/binaryen' -- wasm-opt -Oz -all -o \"$f\" \"$f\"; done; done; exit 0",
 ]
+
+# Stage the threaded Pyodide 314 runtime + wheels into py-mt/ (loaded by
+# web/bridge_worker.js on the ?threads=1 / cross-origin-isolated path). This is a
+# post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a
+# gitignored build artifact (docker/pyodide-mt/stage-web.sh): absent on a fresh
+# checkout, where the app correctly falls back to the single-threaded CDN runtime.
+# `cp -u` keeps rebuilds cheap by copying only changed files.
+[[hooks]]
+stage = "post_build"
+command = "bash"
+command_arguments = [
+    "-c",
+    "set -eu; src=\"$TRUNK_SOURCE_DIR/docker/pyodide-mt/served\"; [ -d \"$src\" ] || { echo '[py-mt] not staged (run docker/pyodide-mt/stage-web.sh) — single-threaded CDN only'; exit 0; }; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; mkdir -p \"$d/py-mt\"; cp -ru \"$src/.\" \"$d/py-mt/\"; done; echo '[py-mt] threaded runtime staged'; exit 0",
+]

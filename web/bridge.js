@@ -12,11 +12,25 @@ function workerUrl() {
 
 function ensureWorker() {
   if (worker) return worker;
-  worker = new Worker(workerUrl());
+  // The threaded 314 runtime spawns its pthread workers as ES modules, so its
+  // main worker must also be a module worker; the CDN single-threaded default
+  // stays a classic worker. (Cross-origin isolation gates the threaded path.)
+  const threaded = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
+  worker = new Worker(workerUrl(), threaded ? { type: "module" } : undefined);
   worker.onmessage = (event) => {
     const msg = event.data || {};
     if (msg.type === "progress") {
       prog(msg.frac, msg.label);
+      return;
+    }
+    if (msg.type === "runtime") {
+      try {
+        if (typeof window !== "undefined" && window.__snufflerRuntime) {
+          window.__snufflerRuntime(msg);
+        }
+      } catch (_e) {
+        // The badge is cosmetic; never let it break the bridge.
+      }
       return;
     }
     const slot = pending.get(msg.id);
