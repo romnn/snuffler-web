@@ -89,16 +89,21 @@ docker run --rm \
 #    pool can't see side modules dlopen'd later). Reuses the libomp builder with the
 #    em5 image; the LLVM openmp source compiles unchanged with em5's clang.
 PYODIDE_BUILD_TREE="$PWD" IMAGE="$image" "$here/../pyodide-pthread/libomp/build.sh"
+# force_sjlj.c gives the main a wasm-SJLJ __c_longjmp tag (DCE'd otherwise, since
+# no core TU uses wasm setjmp) so wasm-SJLJ side modules (scipy/Pillow/matplotlib
+# exts) can link. The packages are built -fwasm-exceptions (wasm-SJLJ) to match;
+# the main can't carry emulated SJLJ (incompatible with -fwasm-exceptions).
+cp "$here/force_sjlj.c" "$PWD/force_sjlj.c"
 docker run --rm \
     -v "$PWD:/src" -w /src \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
     -e EXTRA_CFLAGS="-pthread$simd" \
-    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0 -Wl,--whole-archive /src/libomp.a $syslibs -Wl,--no-whole-archive" \
+    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0 -Wl,--whole-archive /src/libomp.a $syslibs -Wl,--no-whole-archive /src/force_sjlj.o" \
     -e EMCC_CFLAGS="-pthread$simd" \
     "$image" \
-    bash -lc 'export PATH="$HOME/.local/bin:$PATH" && rm -f dist/pyodide.asm.mjs dist/pyodide.asm.wasm && make -j'"$jobs"' all-but-packages'
+    bash -lc 'export PATH="$HOME/.local/bin:$PATH" && source emsdk/emsdk/emsdk_env.sh 2>/dev/null && emcc -c -O2 -fPIC -pthread -sSUPPORT_LONGJMP=wasm -fwasm-exceptions force_sjlj.c -o force_sjlj.o && rm -f dist/pyodide.asm.mjs dist/pyodide.asm.wasm && make -j'"$jobs"' all-but-packages'
 
 if [ -d dist ]; then
     cp -r dist/. "$out/"

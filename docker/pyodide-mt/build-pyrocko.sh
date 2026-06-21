@@ -50,16 +50,18 @@ docker run --rm \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
-    -e EMCC_CFLAGS="-pthread$simd -I$ompinc" \
+    -e EMCC_CFLAGS="-pthread$simd -fwasm-exceptions -I$ompinc" \
     -e PYROCKO_OPENMP="1" \
     -e PYROCKO_EXTS="${PYROCKO_EXTS:-full}" \
     "$image" \
     bash -lc '
         export PATH="$HOME/.local/bin:$PATH"
         command -v pyodide >/dev/null 2>&1 || pip install -q -e ./pyodide-build
+        # -fwasm-exceptions -> wasm-SJLJ, matching the main (the wasm-EH main
+        # cannot link emulated-SJLJ side modules).
         pyodide build-recipes pyrocko \
-            --cflags="-pthread -sSHARED_MEMORY'"$simd"' -I'"$ompinc"'" \
-            --ldflags="-pthread -sSHARED_MEMORY"
+            --cflags="-pthread -sSHARED_MEMORY'"$simd"' -fwasm-exceptions -I'"$ompinc"'" \
+            --ldflags="-pthread -sSHARED_MEMORY -fwasm-exceptions"
     '
 
 echo "pyrocko wheel → $build/packages/pyrocko/dist/"

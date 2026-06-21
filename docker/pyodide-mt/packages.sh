@@ -25,16 +25,19 @@ docker run --rm \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
-    -e EMCC_CFLAGS="-pthread$simd" \
+    -e EMCC_CFLAGS="-pthread$simd -fwasm-exceptions" \
     "$image" \
     bash -lc '
         export PATH="$HOME/.local/bin:$PATH"
         # build-recipes lives in the in-tree pyodide-build (not installed by the
         # all-but-packages core build); install it once.
         command -v pyodide >/dev/null 2>&1 || pip install -q -e ./pyodide-build
+        # -fwasm-exceptions forces wasm-SJLJ (it is required for the config's
+        # -sSUPPORT_LONGJMP=wasm to take effect); without it some recipes default
+        # to EMULATED SJLJ (__THREW__), which the wasm-EH main module cannot link.
         pyodide build-recipes '"$pkgs"' \
-            --cflags="-pthread -sSHARED_MEMORY'"$simd"'" \
-            --ldflags="-pthread -sSHARED_MEMORY"
+            --cflags="-pthread -sSHARED_MEMORY'"$simd"' -fwasm-exceptions" \
+            --ldflags="-pthread -sSHARED_MEMORY -fwasm-exceptions"
     '
 
 echo "built: $pkgs → $build/packages/*/dist/*.whl"
