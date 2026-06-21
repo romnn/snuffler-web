@@ -19,6 +19,17 @@ repo="https://github.com/pyodide/pyodide.git"
 ref="807f16b054b2b0b4d5da3c8d465b502db92fdcaf"
 patch="$here/patches/0001-pthread.patch"
 jobs="${JOBS:-24}"
+# wasm SIMD (-msimd128) ON by default: autovectorizes our OpenMP kernels (which
+# carry #pragma omp simd) and numpy's scalar loops — free-or-faster, never
+# slower. Raises the browser floor to SIMD-capable engines (~2023+). SIMD=0 off.
+simd=" -msimd128"; [ "${SIMD:-1}" = "0" ] && simd=""
+# PIC system-lib archives (inside the container). The all-but-packages main only
+# pulls *referenced* objects from these, so it lacks the float-math / locale /
+# libc++ symbols that packages (numpy, scipy, pyrocko) need. We whole-archive the
+# PIC (relocatable) variants into the main module so it is package-capable; the
+# non-debug variants avoid pulling debug-only objects (e.g. emscripten_dbg).
+pic='/src/emsdk/emsdk/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/pic'
+syslibs="$pic/libc-mt.a $pic/libc++-mt-legacyexcept.a $pic/libc++abi-mt-legacyexcept.a"
 
 mkdir -p "$work" "$out"
 
@@ -65,9 +76,9 @@ docker run --rm \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
-    -e EXTRA_CFLAGS="-pthread" \
+    -e EXTRA_CFLAGS="-pthread$simd" \
     -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0" \
-    -e EMCC_CFLAGS="-pthread" \
+    -e EMCC_CFLAGS="-pthread$simd" \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && make -j'"$jobs"' all-but-packages'
 
@@ -83,9 +94,9 @@ docker run --rm \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
-    -e EXTRA_CFLAGS="-pthread" \
-    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0 -Wl,--whole-archive /src/libomp.a -Wl,--no-whole-archive" \
-    -e EMCC_CFLAGS="-pthread" \
+    -e EXTRA_CFLAGS="-pthread$simd" \
+    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0 -Wl,--whole-archive /src/libomp.a $syslibs -Wl,--no-whole-archive" \
+    -e EMCC_CFLAGS="-pthread$simd" \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && rm -f dist/pyodide.asm.mjs dist/pyodide.asm.wasm && make -j'"$jobs"' all-but-packages'
 
