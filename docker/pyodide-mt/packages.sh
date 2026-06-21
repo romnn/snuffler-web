@@ -32,7 +32,7 @@ docker run --rm \
         # build-recipes lives in the in-tree pyodide-build (not installed by the
         # all-but-packages core build); install it once.
         command -v pyodide >/dev/null 2>&1 || pip install -q -e ./pyodide-build
-        # -fwasm-exceptions forces wasm-SJLJ (it is required for the config's
+        # -fwasm-exceptions forces wasm-SJLJ (it is required for the build config
         # -sSUPPORT_LONGJMP=wasm to take effect); without it some recipes default
         # to EMULATED SJLJ (__THREW__), which the wasm-EH main module cannot link.
         pyodide build-recipes '"$pkgs"' \

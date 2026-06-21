@@ -12,11 +12,10 @@ function workerUrl() {
 
 function ensureWorker() {
   if (worker) return worker;
-  // The threaded 314 runtime spawns its pthread workers as ES modules, so its
-  // main worker must also be a module worker; the CDN single-threaded default
-  // stays a classic worker. (Cross-origin isolation gates the threaded path.)
-  const threaded = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
-  worker = new Worker(workerUrl(), threaded ? { type: "module" } : undefined);
+  // Pyodide 314 rejects classic workers on BOTH paths — the threaded build
+  // spawns its pthread workers as ES modules, and even the stock single-threaded
+  // 314 CDN build refuses a classic worker — so always use a module worker.
+  worker = new Worker(workerUrl(), { type: "module" });
   worker.onmessage = (event) => {
     const msg = event.data || {};
     if (msg.type === "progress") {

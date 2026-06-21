@@ -2,10 +2,12 @@
 // coi-serviceworker shim) we load our OWN fork-free Pyodide 314 build
 // (pthread + OpenMP + SIMD; py3.14 / emscripten 5.0.3) and all wheels from the
 // locally-served py-mt/ (runtime + pyodide-lock.json + wheels). Otherwise the
-// stock single-threaded Pyodide 0.27.2 CDN runtime stays the default — so the
-// app is unchanged unless threads are explicitly enabled.
+// stock single-threaded Pyodide 314 CDN runtime is the default — the SAME
+// Python 3.14 / numpy / scipy / protobuf as py-mt, so the only difference is
+// multithreading + SIMD. pyrocko (the one package not on the CDN) comes from a
+// single-threaded wheel we build (dist-py, served at py/).
 const THREADED = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
-const PYODIDE_VERSION = "0.27.2";
+const PYODIDE_VERSION = "314.0.0";
 const PYODIDE_BASE = THREADED
   ? new URL("py-mt/", self.location.href).href
   : `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
@@ -160,20 +162,12 @@ async function boot() {
   pyodideReadyPromise = (async () => {
     try {
       prog(0.08, "Downloading Python runtime…");
-      // Threaded path: this is a module worker, so import the ESM build (the
-      // 314 runtime rejects classic workers — its pthreads spawn as modules).
-      // CDN default: classic worker, importScripts the UMD build.
-      let loadPyodideFn;
-      if (THREADED) {
-        ({ loadPyodide: loadPyodideFn } = await import(PYODIDE_BASE + "pyodide.mjs"));
-      } else {
-        if (typeof loadPyodide === "undefined") {
-          importScripts(PYODIDE_BASE + "pyodide.js");
-        }
-        loadPyodideFn = loadPyodide;
-      }
+      // Pyodide 314 requires a module worker on both paths (it rejects classic
+      // workers), so import the ESM build from whichever base is active — our
+      // local py-mt/ when threaded, else the stock 314 CDN.
+      const { loadPyodide } = await import(PYODIDE_BASE + "pyodide.mjs");
       prog(0.18, "Starting Python worker…");
-      py = await loadPyodideFn({ indexURL: PYODIDE_BASE });
+      py = await loadPyodide({ indexURL: PYODIDE_BASE });
 
       prog(0.25, "Loading numpy, scipy, matplotlib…");
       let creep = 0.25;
@@ -197,17 +191,17 @@ async function boot() {
             "pyrocko",
           ]);
         } else {
-          await py.loadPackage(["numpy", "scipy", "micropip", "pyyaml", "matplotlib"]);
+          // CDN path: same 314 packages as py-mt (incl. protobuf 7.34.1), loaded
+          // by name from the stock CDN lock — no micropip/PyPI needed. micropip
+          // is loaded only to install the local pyrocko wheel below.
+          await py.loadPackage(["numpy", "scipy", "matplotlib", "pyyaml", "micropip", "protobuf"]);
         }
       } finally {
         clearInterval(timer);
       }
 
       if (!THREADED) {
-        // CDN path: protobuf via micropip, pyrocko from the locally-built 0.27 wheel.
-        prog(0.75, "Installing protobuf runtime…");
-        await py.runPythonAsync('import micropip\nawait micropip.install("protobuf==6.33.5")');
-
+        // CDN path: pyrocko from the locally-built single-threaded 314 wheel.
         prog(0.8, "Installing pyrocko…");
         const wheels = await (await fetchOk(resolveUrl("py/wheels.json"))).json();
         for (const w of wheels) {
@@ -276,10 +270,13 @@ async function ensureGf() {
   if (gfReadyPromise) return gfReadyPromise;
   gfReadyPromise = (async () => {
     await boot();
-    // On the threaded path requests + pyodide-http are already loaded at boot
-    // (from the local lock); only install via micropip on the CDN path.
+    // requests + pyodide-http: preloaded at boot on the threaded path (local
+    // lock); on the CDN path load them by name from the stock 314 lock here
+    // (lazy — only when GF is first used). Neither path needs micropip/PyPI.
+    if (!THREADED) {
+      await py.loadPackage(["requests", "pyodide-http"]);
+    }
     await py.runPythonAsync(`
-${THREADED ? "" : 'import micropip\nawait micropip.install(["requests", "pyodide-http"])'}
 import pyodide_http
 pyodide_http.patch_all()
 `);

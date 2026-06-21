@@ -58,8 +58,11 @@ docker run --rm \
         export PATH="$HOME/.local/bin:$PATH"
         command -v pyodide >/dev/null 2>&1 || pip install -q -e ./pyodide-build
         # -fwasm-exceptions -> wasm-SJLJ, matching the main (the wasm-EH main
-        # cannot link emulated-SJLJ side modules).
+        # cannot link emulated-SJLJ side modules). --install adds pyrocko (+ any
+        # deps) to dist-mt/pyodide-lock.json, which stage-web.sh reads to assemble
+        # the served py-mt/ — so the threaded lock includes pyrocko.
         pyodide build-recipes pyrocko \
+            --install --install-dir dist-mt \
             --cflags="-pthread -sSHARED_MEMORY'"$simd"' -fwasm-exceptions -I'"$ompinc"'" \
             --ldflags="-pthread -sSHARED_MEMORY -fwasm-exceptions"
     '
