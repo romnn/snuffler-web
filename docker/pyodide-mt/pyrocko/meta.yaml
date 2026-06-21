@@ -1,0 +1,19 @@
+package:
+  name: pyrocko
+  # PEP440-normalised form of pyrocko's 2026.06.02 (build-recipes checks it
+  # against the wheel version, which drops the leading zeros).
+  version: "2026.6.2"
+  top-level:
+    - pyrocko
+source:
+  # Local staged source (unmodified pyrocko src + extracted/patched libmseed +
+  # our minimal setup.py), prepared by build-pyrocko.sh into <tree>/pyrocko-build.
+  path: ../../pyrocko-build
+requirements:
+  host:
+    - numpy
+  run:
+    - numpy
+about:
+  summary: pyrocko (snuffler-web subset) — threaded + OpenMP + SIMD
+  license: GPL-3.0

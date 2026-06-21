@@ -55,14 +55,30 @@ IMAGE=pyodide/pyodide-env:20260211-chrome145-firefox146-py314
 ../pyodide-pthread/libomp/build.sh` (the smoke/bench runners need the same two
 overrides + a python3.14 include glob).
 
+## Packages (numpy + pyrocko) — WORKING end-to-end
+
+`packages.sh` builds numpy; `build-pyrocko.sh` builds the pyrocko wheel
+(`PYROCKO_OPENMP=1` + `-sSHARED_MEMORY` + `-msimd128`) via Pyodide's in-tree
+`build-recipes` pipeline (NOT `pyodide build`, which needs an out-of-tree
+xbuildenv). Both load into the threaded runtime and run via Python:
+
+- `numpy 2.4.3` + `pyrocko 2026.06.02` import and compute correctly.
+- `pyrocko.parstack` (method 0, through numpy arrays) scales across `nparallel`:
+  `1 / 1.87 / 3.26 / 4.37 / 5.14 / 5.53×` at 1/2/4/8/16/24 threads, checksum
+  bit-identical — real multithreading through the full numpy→pyrocko→OpenMP path.
+
+Two gotchas worth keeping: (1) the all-but-packages main lacks libc/libc++
+symbols packages need, fixed by whole-archiving the PIC variants into main
+(build.sh); (2) em5's clang ships no `omp.h`, so pyrocko's `#include <omp.h>`
+needs `-I` pointing at the libomp source's `include/` (build-pyrocko.sh).
+
 ## Next steps
 
-1. **Make the OpenMP runtime fork-free too**: `build.sh` currently fetches the
-   libomp source from the PR #25937 branch; vendor it (or build from official
-   LLVM openmp, whose wasm32 `KMP_ARCH` support is upstream) so nothing is a fork.
-2. **Packages**: build numpy + the pyrocko wheel (`PYROCKO_OPENMP=1` +
-   `-sSHARED_MEMORY`) via Pyodide's own package pipeline (NOT separately against
-   an `all-but-packages` main — that exposes libc gaps), then run pyrocko via
-   Python end-to-end.
-3. **Wire into the app** behind the existing `?threads=1` toggle (CDN
-   single-threaded stays the default).
+1. **Make the OpenMP runtime fork-free too**: `build.sh` still fetches the libomp
+   source from the PR #25937 branch; vendor it (or build from official LLVM
+   openmp, whose wasm32 `KMP_ARCH` support is upstream) so nothing is a fork.
+2. **Wire into the app** behind the existing `?threads=1` toggle (serve this
+   runtime + the numpy/pyrocko wheels via trunk; CDN single-threaded stays default).
+3. **Tune Python-level speedup**: pyrocko's method-1 kernel has no
+   `num_threads(nparallel)` clause so it always uses all cores; method-0 scales
+   with `nparallel`. Heavier real workloads scale better than the demo above.
