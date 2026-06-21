@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #
 # Threaded-C-ext smoke test for the locally-built pthread Pyodide. Answers the
-# question that gates the heavy numpy/scipy/pyrocko SHARED_MEMORY rebuild:
-# can an *imported* C-extension module actually run threads in wasm?
+# question that gates the heavy numpy/scipy/pyrocko rebuild: can an *imported*
+# C-extension module actually run threads — including OpenMP — in wasm?
 #
-# Builds two emscripten side modules against the build tree's emsdk + CPython
-# headers and imports them into the pthread Pyodide under node:
-#   pthreadext.so — raw pthreads        (expected: PASS, real concurrency)
-#   ompext.so     — #pragma omp / OpenMP (expected: FAIL, no emscripten libomp)
+# Builds libomp.a (see ../libomp/build.sh) and two emscripten side modules,
+# then imports them into the pthread Pyodide under node (node has
+# SharedArrayBuffer natively, so this tests the *runtime*, not the browser):
+#   pthreadext.so — raw pthreads        (PASS: real concurrency)
+#   ompext.so     — #pragma omp / OpenMP (PASS: linked against our libomp.a)
 #
 # Prerequisite: docker/pyodide-pthread/build.sh has populated .work + dist.
 # Usage: docker/pyodide-pthread/smoke/run.sh
@@ -35,6 +36,9 @@ if [ ! -f "$build/dist/pyodide-lock.json" ]; then
 JSON
 fi
 
+# OpenMP runtime (libomp.a) — needed for ompext.so. Skips fetch+build if present.
+"$here/../libomp/build.sh"
+
 mkdir -p "$build/smoke"
 cp "$here/pthreadext.c" "$here/ompext.c" "$here/test.mjs" "$build/smoke/"
 
@@ -50,9 +54,8 @@ docker run --rm \
         flags="-O2 -fPIC -sSIDE_MODULE=1 -pthread -sSHARED_MEMORY -Wno-experimental -I $INC"
         echo "--- compiling side modules ---"
         emcc smoke/pthreadext.c -o smoke/pthreadext.so $flags
-        # ompext links the OpenMP ABI; with no emscripten libomp the __kmpc_*
-        # symbols stay unresolved and surface at import time (the point of the test).
-        emcc smoke/ompext.c -o smoke/ompext.so $flags -fopenmp
-        echo "--- importing into pthread pyodide (node) ---"
-        cd smoke && node test.mjs
+        # ompext links our libomp.a so the #pragma omp __kmpc_* calls resolve.
+        emcc smoke/ompext.c libomp.a -o smoke/ompext.so $flags -fopenmp
+        echo "--- importing into pthread pyodide (node), one module per process ---"
+        cd smoke && node test.mjs pthreadext && node test.mjs ompext
     '
