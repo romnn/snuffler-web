@@ -43,6 +43,7 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - cargo fc check --workspace --all-targets {{.CLI_ARGS}}
+      - task: check:py
 
   clean:
     desc: "clean cargo workspace"
@@ -120,17 +121,25 @@ tasks:
     cmds: []
       # - sg scan
 
+  lint:py:
+    desc: "lint Python bridge with ruff"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py pybuild/setup.py qt/make_demo.py typings {{.CLI_ARGS}}
+
   lint:
-    desc: "lint cargo workspace"
+    desc: "lint Rust and Python workspace"
     cmds:
       - cargo lint --workspace --all-features {{.CLI_ARGS}}
       - task: lint:ast-grep
+      - task: lint:py
 
   lint:fc:
-    desc: "lint cargo workspace for all combinations of features"
+    desc: "lint Rust (all feature combinations) and Python workspace"
     cmds:
       - cargo fc lint {{.CLI_ARGS}}
       - task: lint:ast-grep
+      - task: lint:py
 
   lint:fix:
     desc: "lint and fix cargo workspace"

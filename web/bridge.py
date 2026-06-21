@@ -29,14 +29,13 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
-    TypeVar,
     TypedDict,
+    TypeVar,
     cast,
 )
 
 import numpy as np
 from google.protobuf.message import Message
-
 from pyrocko import io as pio
 from pyrocko import trace as ptrace
 from snuffler.bridge.v1 import common_pb2, data_pb2, scene_pb2, snuffling_pb2, view_pb2
@@ -1490,11 +1489,7 @@ def _marker_module() -> Any:
         existing = sys.modules.get(pkg_name)
         if existing is None or not getattr(existing, "_snuffler_stub", False):
             stub = types.ModuleType(pkg_name)
-            setattr(
-                stub,
-                "__path__",
-                [os.path.join(os.path.dirname(pyrocko.gui.__file__), "snuffler")],
-            )
+            stub.__path__ = [os.path.join(os.path.dirname(pyrocko.gui.__file__), "snuffler")]
             stub.__package__ = pkg_name
             setattr(stub, "_snuffler_stub", True)
             sys.modules[pkg_name] = stub
@@ -1524,11 +1519,7 @@ def _gf_modules() -> Tuple[Any, Any]:
         existing = sys.modules.get(pkg)
         if existing is None or not getattr(existing, "_gf_stub", False):
             stub = types.ModuleType(pkg)
-            setattr(
-                stub,
-                "__path__",
-                [os.path.join(os.path.dirname(pyrocko.__file__), "gf")],
-            )
+            stub.__path__ = [os.path.join(os.path.dirname(pyrocko.__file__), "gf")]
             stub.__package__ = pkg
             setattr(stub, "_gf_stub", True)
             sys.modules[pkg] = stub
@@ -1855,7 +1846,7 @@ def _cake_plot_model(cake: Any, mod: Any, title: str) -> Dict[str, Any]:
 
     def interleave(vals: np.ndarray) -> List[float]:
         out: List[float] = []
-        for vi, zi in zip(vals, z):
+        for vi, zi in zip(vals, z, strict=True):
             out.append(float(vi))
             out.append(float(zi))
         return out
@@ -1916,9 +1907,9 @@ def _cake_plot_rays(
             legend_names.append(name)
         fanz, fanx, _fant = ray.zxt_path_subdivided()
         segs = []
-        for zs, xs in zip(fanz, fanx):
+        for zs, xs in zip(fanz, fanx, strict=True):
             seg: List[float] = []
-            for xi, zi in zip(np.asarray(xs), np.asarray(zs)):
+            for xi, zi in zip(np.asarray(xs), np.asarray(zs), strict=True):
                 xkm = float(xi) * kmf
                 zkm = float(zi) / cake.km
                 seg.append(xkm)

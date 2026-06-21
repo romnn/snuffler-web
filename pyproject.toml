@@ -12,6 +12,16 @@ disallow_subclassing_any = true
 warn_unused_configs = true
 warn_no_return = true
 
+# The generated protobuf stubs subclass google.protobuf.Message; without the
+# (optional) types-protobuf stubs that base is Any, which trips
+# disallow_any_unimported/disallow_subclassing_any. Relax those for the generated
+# modules so the type check stays green regardless of whether types-protobuf is
+# present (the check:py task installs it; editors/CI may not).
+[[tool.mypy.overrides]]
+module = ["snuffler.bridge.v1.*"]
+disallow_any_unimported = false
+disallow_subclassing_any = false
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -20,3 +30,14 @@ line-length = 100
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
+
+[tool.ruff.lint]
+# pyflakes (F) + the pycodestyle error subset ruff enables by default, plus
+# import sorting (I) and bugbear (B). Line length is handled by `ruff format`, so
+# the noisy E501 is intentionally left out.
+select = ["E4", "E7", "E9", "F", "I", "B"]
+# B009/B010 (constant getattr/setattr) conflict with the deliberate dynamic
+# access this bridge uses to reach attributes missing from the scipy/pyrocko
+# type stubs and to set custom attributes on sys.modules stub objects — the
+# explicit type annotations there keep mypy correct.
+ignore = ["B009", "B010"]
