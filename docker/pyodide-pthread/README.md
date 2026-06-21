@@ -31,6 +31,23 @@ bundled libomp) into the runtime under node.
 | `ompext.so` | `#pragma omp parallel num_threads(4)` + reduction, resolving libomp from main | **PASS** (gating) — `run(4) = (4, 48, 23999980)`: 4 threads, 48 cores detected, reduction correct, 3/3 reliable |
 | `pthreadext.so` | spawns N raw pthreads | informational — raw `pthread_create` from the main thread needs the event loop / a pool, which can't complete here once libomp is in main; pyrocko uses OpenMP |
 
+## OpenMP speedup on a REAL pyrocko kernel (`bench/run.sh`)
+
+`bench/run.sh` extracts pyrocko's actual `parstackf` seismic-stacking kernel from
+the fetched source (not vendored — pyrocko is GPL), builds it as a thin
+`-fopenmp` side module against the libomp-in-main runtime, and times it at
+increasing thread counts (workload: 40 traces × 1000 samples, 20000 stacking
+shifts, method 1 / semblance-max). Measured on a 24-core host:
+
+| threads | 1 | 2 | 4 | 8 | 16 | 24 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ms/rep | 189.8 | 92.0 | 45.5 | 23.1 | 14.5 | 8.6 |
+| speedup | 1.00× | 2.06× | 4.17× | 8.22× | 13.09× | **22.07×** |
+
+Near-linear scaling, and the result checksum is **identical across all thread
+counts** (parallel == serial, bit-for-bit). This validates the premise: OpenMP
+gives real, large speedups for actual pyrocko compute in browser-grade Pyodide.
+
 ## libomp.a — the OpenMP runtime (`libomp/build.sh`)
 
 emscripten ships **no** OpenMP: PR

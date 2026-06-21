@@ -164,3 +164,9 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - docker/pyodide-pthread/smoke/run.sh
+
+  pyodide:bench-pthread:
+    desc: "EXPERIMENTAL: benchmark real pyrocko parstack OpenMP speedup in the pthread Pyodide"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker/pyodide-pthread/bench/run.sh
