@@ -36,7 +36,7 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - buf generate
-      - uvx --from mypy==1.18.2 --with protobuf==6.33.5 --with types-protobuf==6.32.1.20260221 --with numpy==2.3.5 mypy {{.CLI_ARGS}}
+      - uvx --from mypy==1.18.2 --with protobuf==7.34.1 --with types-protobuf==7.34.1.20260518 --with numpy==2.4.3 mypy {{.CLI_ARGS}}
 
   check:fc:
     desc: "check cargo workspace for all combinations of features"
@@ -94,7 +94,7 @@ tasks:
   format:js:
     desc: "format JavaScript bridge code"
     cmds:
-      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.js web/bridge_worker.js pybuild/smoke-test.mjs package.json {{.CLI_ARGS}}
+      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.js web/bridge_worker.js package.json {{.CLI_ARGS}}
 
   format:proto:
     desc: "format protobuf schemas"

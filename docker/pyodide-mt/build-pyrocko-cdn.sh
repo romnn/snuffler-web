@@ -10,9 +10,9 @@
 #
 # Output: dist-py/pyrocko-*.whl + dist-py/wheels.json (consumed by
 # web/bridge_worker.js on the non-threaded path; trunk copies dist-py → dist/py).
-# This is the 314 counterpart of pybuild/build-wheel.sh (the old 0.27 path) —
-# reusing the docker/pyodide-mt 314 env so both wheels share one toolchain and
-# differ ONLY in multithreading + SIMD.
+# This is the single-threaded counterpart of build-pyrocko.sh — same docker/
+# pyodide-mt 314 env, so both wheels share one toolchain and differ ONLY in
+# multithreading + SIMD.
 #
 # Prereq: docker/pyodide-mt/build.sh + packages.sh (numpy) already built (the
 # in-tree build-recipes env + host numpy).

@@ -17,6 +17,10 @@ jobs:
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
 
+      # Puts the pinned protoc on PATH — snuffler-proto's build.rs (prost-build)
+      # shells out to it to compile the bridge .proto schema during clippy.
+      - uses: jdx/mise-action@v2
+
       # rust-toolchain.toml pins the channel, the wasm32 target, and the
       # rustfmt/clippy components; rustup installs them on the first cargo call.
       # The wasm web_sys_unstable_apis cfg comes from .cargo/config.toml.

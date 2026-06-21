@@ -27,7 +27,7 @@ ompinc_host="$build/libomp-src/system/lib/libomp/include"
 [ -f "$ompinc_host/omp.h" ] || { echo "ERROR: libomp source missing — run build.sh (libomp step) first." >&2; exit 1; }
 ompinc="/src/libomp-src/system/lib/libomp/include"
 
-# 1) Stage pyrocko src + libmseed + setup.py (mirrors pybuild/build-wheel.sh).
+# 1) Stage pyrocko src + libmseed + setup.py (same layout build-pyrocko-cdn.sh uses).
 b="$build/pyrocko-build"
 rm -rf "$b"; mkdir -p "$b"
 cp -r "$src/src" "$b/pyrocko"

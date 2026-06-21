@@ -57,25 +57,24 @@ Everything is pinned in `mise.toml` + `rust-toolchain.toml`. With
 [mise](https://mise.jdx.dev) installed:
 
 ```sh
-mise install          # Python, emscripten, node, bun, uv, trunk (all pinned)
-mise run setup        # fetch pyrocko (pinned commit) + create .venv-pyodide
-mise run build-wheel  # cross-compile pyrocko → dist-py/pyrocko-*.whl
-mise run serve        # trunk serve  → http://127.0.0.1:8080
+mise install                    # node, bun, uv, trunk, binaryen, protoc (all pinned)
+docker/pyodide-mt/build-all.sh  # build the custom Pyodide 314 (both wheels + py-mt)
+mise run serve                  # trunk serve  → http://127.0.0.1:8080
 ```
 
 `rustup` reads `rust-toolchain.toml` and installs the pinned Rust toolchain plus
 the `wasm32-unknown-unknown` target automatically on first build.
 
 **pyrocko is not vendored.** `mise run fetch-pyrocko` clones it at a pinned,
-known-good commit (`PYROCKO_REF` in `mise.toml`) into the gitignored `sources/`;
-`setup`, `build-wheel`, and `serve` all depend on it, so it is pulled on demand —
-no manual step needed. To validate the cross-compiled wheel against the real
-Pyodide runtime, run `mise run smoke-test` (headless: imports pyrocko, filters a
-trace, loads MiniSEED).
+known-good commit (`PYROCKO_REF` in `mise.toml`) into the gitignored `sources/`
+(`build-all.sh` and `serve` depend on it, so it is pulled on demand).
 
-The whole version chain is dictated by the Pyodide **runtime** loaded in
-`web/bridge_worker.js` (0.27.2): runtime → `pyodide-build` 0.35.0 → cross-build env
-0.27.2 → emscripten 3.1.58 → host CPython 3.12.
+**Both Pyodide paths run our custom Pyodide 314** (py3.14 / emscripten 5.0.3),
+built in `docker/pyodide-mt` (`build-all.sh`, the multi-hour but cacheable step):
+the threaded `py-mt/` runtime (pthread + OpenMP + SIMD, reachable via `?threads=1`
++ the coi-serviceworker) and a single-threaded `dist-py/` pyrocko wheel for the
+stock 314.0.0 CDN fallback — differing only in multithreading + SIMD. No host
+emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
 
 ## Layout
 
@@ -87,8 +86,9 @@ The whole version chain is dictated by the Pyodide **runtime** loaded in
 | `web/bridge.py` | type-checked pyrocko shim (`make_example`, `load_bytes`, `get_view`) |
 | `proto/` | protobuf schema for the Rust/Python bridge |
 | `crates/snuffler-proto/` | generated Rust protobuf crate |
-| `pybuild/` | wheel cross-compile + `fetch-pyrocko.sh` + toolchain bootstrap |
-| `dist-py/` | output wheel + `wheels.json` (served at `/py/`); gitignored, rebuilt by `build-wheel` |
+| `pybuild/` | `setup.py` (the pyrocko wheel build def, used by `docker/pyodide-mt`) + `fetch-pyrocko.sh` + `protoc-gen-mypy` |
+| `docker/pyodide-mt/` | the custom Pyodide 314 build (runtime + both wheels): `build-all.sh` |
+| `dist-py/` | single-threaded CDN pyrocko wheel + `wheels.json` (served at `/py/`); gitignored, built by `build-all.sh` |
 | `sources/pyrocko/` | upstream pyrocko — **fetched on demand at a pinned commit, gitignored (not vendored)** |
 
 ## Notes & limitations
