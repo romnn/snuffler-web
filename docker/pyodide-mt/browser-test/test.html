@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>mt test</title></head>
+<body><pre id="log">starting…
+</pre><script type="module">
+const log = document.getElementById("log");
+const w = new Worker("./test-worker.mjs", { type: "module" });
+w.onmessage = (e) => { log.textContent += e.data + "\n"; };
+w.onerror = (e) => { log.textContent += "WORKER ERROR: " + (e.message||e.filename) + "\n"; };
+</script></body></html>
