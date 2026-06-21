@@ -20,6 +20,10 @@ out="$here/out"
 image="pyodide/pyodide-env:20250915-chrome140-firefox140-py313"
 fork="https://github.com/yosefk/pyodide-pthread.git"
 ref="mt"
+# Parallelism. The host has 24 physical cores but the clang/CPython compiles are
+# memory-hungry (~60 GB RAM), so default to the physical-core count rather than
+# nproc (48 w/ HT) to avoid OOM. Override with JOBS=N.
+jobs="${JOBS:-24}"
 
 mkdir -p "$work" "$out"
 
@@ -30,8 +34,13 @@ fi
 cd "$work/pyodide-pthread"
 git submodule update --init --recursive --depth 1
 
-# 2) Build inside the pinned pyodide-env image with the pthread flags the fork
-#    documents. -g1 keeps pyodide.asm.js readable for tools/fixup-threading-support.py.
+# 2) Build the CORE runtime (all-but-packages) inside the pinned pyodide-env
+#    image with the pthread flags the fork documents. -g1 keeps pyodide.asm.js
+#    readable for tools/fixup-threading-support.py (the Makefile runs it). We
+#    build `all-but-packages`, NOT the default `all` (which compiles the entire
+#    package set for hours); numpy/scipy with -sSHARED_MEMORY=1 are a separate
+#    phase (gated on the threaded-C-ext smoke test — see README). pip puts the
+#    pyodide CLI under $HOME/.local/bin, so add that to PATH.
 docker run --rm \
     -v "$PWD:/src" -w /src \
     --shm-size 2g \
@@ -40,7 +49,7 @@ docker run --rm \
     -e EXTRA_CFLAGS="-pthread" \
     -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB" \
     "$image" \
-    bash -lc "make"
+    bash -lc 'export PATH="$HOME/.local/bin:$PATH" && make -j'"$jobs"' all-but-packages'
 
 # 3) Copy the runtime out of the build tree into ./out (the bind mount already
 #    surfaces dist/ on the host; this just isolates the bits the app serves).
