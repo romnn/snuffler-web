@@ -1,5 +1,5 @@
 diff --git a/Makefile b/Makefile
-index e6ca08c..362e57d 100644
+index e6ca08c4..362e57dd 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -11,8 +11,8 @@ CXX=em++
@@ -31,7 +31,7 @@ index e6ca08c..362e57d 100644
  
  env:
 diff --git a/src/core/pre.js b/src/core/pre.js
-index 340ce79..e9ece4a 100644
+index 340ce79b..e9ece4a1 100644
 --- a/src/core/pre.js
 +++ b/src/core/pre.js
 @@ -1,12 +1,15 @@
@@ -89,7 +89,7 @@ index 340ce79..e9ece4a 100644
  Module.iterObject = function* (object) {
    for (let k in object) {
 diff --git a/src/core/stack_switching/stack_switching.mjs b/src/core/stack_switching/stack_switching.mjs
-index d47a782..717d553 100644
+index d47a7829..717d5530 100644
 --- a/src/core/stack_switching/stack_switching.mjs
 +++ b/src/core/stack_switching/stack_switching.mjs
 @@ -37,5 +37,7 @@ Module.oldJspiSupported = oldJspiSupported;
@@ -103,20 +103,22 @@ index d47a782..717d553 100644
  }
 diff --git a/tools/fixup-threading-support.py b/tools/fixup-threading-support.py
 new file mode 100644
-index 0000000..2761125
+index 00000000..299548cb
 --- /dev/null
 +++ b/tools/fixup-threading-support.py
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,117 @@
 +'''
 +patches the emscripten-produced pyodide.asm.js to support spawning pthreads
 +'''
 +
-+def insert_after(lines, after_what, insert_what):
++def insert_after(lines, after_what, insert_what, required=True):
 +    for i,line in enumerate(lines):
 +        if after_what == line.strip():
 +            lines.insert(i+1, insert_what)
-+            return
-+    assert False, 'failed to insert `{insert_what}` after `{after_what}` - did not find the latter'
++            return True
++    if required:
++        assert False, 'failed to insert `{insert_what}` after `{after_what}` - did not find the latter'.format(insert_what=insert_what, after_what=after_what)
++    return False
 +
 +def add_sentinel_dummies(lines):
 +    '''is_sentinel and create_sentinel won't resolve in the pthread; we want them to resolve quietly to
@@ -133,11 +135,14 @@ index 0000000..2761125
 +    worker before spawning the pthread; failing that, the pthread will try loading the worker js file instead
 +    of pyodide.asm.js, and fail'''
 +
++    # On Pyodide 314 emscripten initialises pthreadMainJs from
++    # Module["mainScriptUrlOrBlob"] (set by Pyodide), so this _scriptName anchor
++    # no longer exists and the override is unnecessary; skip if absent.
 +    insert_after(lines, 'var pthreadMainJs = _scriptName;', '''
 +    if(typeof PTHREAD_MAIN_JS !== 'undefined') {
 +        pthreadMainJs = PTHREAD_MAIN_JS;
 +    }
-+''')
++''', required=False)
 +
 +def add_dyn_lib_offsets(lines):
 +    '''this fixes a problem that seems to exist regardless of Pyodide, but is perhaps somewhat Pyodide-specific
@@ -191,6 +196,21 @@ index 0000000..2761125
 +  myDynamicLibraryOffsets[libName] = wasmTable.length;
 +''')
 +
++def fix_trampoline_shared_memory(lines):
++    '''emscripten's call-indirect-overlong trampoline (getWasmTrampolineModule) embeds a
++    tiny wasm whose imported env.memory is declared NON-shared; under -pthread the real
++    memory is shared, so instantiating the trampoline throws LinkError "mismatch in shared
++    state of memory". Patch the embedded hex so the memory import is shared (flags 03 + a
++    max matching MAXIMUM_MEMORY=4GB=65536 pages). Tolerant: no-op if the trampoline is
++    absent (other emscripten versions).'''
++    old = "02310203656e76066d656d6f727902000103656e76195f5f"
++    new = "02340203656e76066d656d6f727902030180800403656e76195f5f"
++    for i, line in enumerate(lines):
++        if old in line:
++            lines[i] = line.replace(old, new)
++            return True
++    return False
++
 +import sys
 +
 +asm_js_file = sys.argv[1]
@@ -199,6 +219,7 @@ index 0000000..2761125
 +add_sentinel_dummies(lines)
 +add_pthread_main_js(lines)
 +add_dyn_lib_offsets(lines)
++fix_trampoline_shared_memory(lines)
 +
 +with open(asm_js_file,'w') as f:
 +    f.write('\n'.join(lines))

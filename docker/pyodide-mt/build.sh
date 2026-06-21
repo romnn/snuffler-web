@@ -44,13 +44,30 @@ fi
 # 3) Build the CORE runtime (all-but-packages) with the pthread flags. -g1 keeps
 #    pyodide.asm.mjs readable for tools/fixup-threading-support.py (the patch runs
 #    it). Packages (numpy/scipy/pyrocko) are a later, separate phase.
+#
+#    EMCC_CFLAGS=-pthread is REQUIRED in addition to EXTRA_CFLAGS: 314 statically
+#    links the stdlib C libs sqlite3/lzma/zstd/ffi (and libhiwire) into the main
+#    module, but their cpython sub-build hard-codes/overwrites CFLAGS (e.g.
+#    `CFLAGS="-fPIC -Os"`, and libffi's build.sh `export CFLAGS=`), so EXTRA_CFLAGS
+#    never reaches them and their objects lack the wasm 'atomics' feature. emcc.py
+#    appends EMCC_CFLAGS to EVERY compile regardless, so -pthread there gives those
+#    objects atomics+bulk-memory — required for a --shared-memory (pthread) main
+#    link. (libpython already gets -pthread via CFLAGS_BASE.)
+#
+#    -sERROR_ON_UNDEFINED_SYMBOLS=0: 314 dropped this from the dylink main link
+#    (it's only in the DISABLE_DYLINK variant now). With -pthread, the $JSEvents
+#    JS library references emscripten_run_callback_on_thread (event proxying to
+#    threads) which isn't pulled in; without =0 the jsifier hard-errors. 0.29 set
+#    =0 here and threads (compute-only, no event proxying) worked fine — the
+#    yosefk design stubs such unused threading symbols. So we restore =0.
 docker run --rm \
     -v "$PWD:/src" -w /src \
     --shm-size 2g \
     --user "$(id -u):$(id -g)" \
     -e HOME=/src/.docker_home \
     -e EXTRA_CFLAGS="-pthread" \
-    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB" \
+    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0" \
+    -e EMCC_CFLAGS="-pthread" \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && make -j'"$jobs"' all-but-packages'
 
