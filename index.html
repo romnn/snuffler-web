@@ -6,6 +6,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>snuffler-web — seismic waveform inspector</title>
 
+    <!-- Cross-origin isolation (opt-in) for SharedArrayBuffer / wasm threads.
+         OFF by default so the app behaves exactly as the current single-threaded
+         build; append ?threads=1 to enable (persists), ?threads=0 to turn it back
+         off. Uses a coi-serviceworker shim with COEP credentialless, so the
+         cross-origin Pyodide CDN, map tiles and FDSN keep loading. When off, any
+         previously-registered shim is deregistered — fully reversible. -->
+    <script>
+        (function () {
+            var p = new URLSearchParams(location.search);
+            if (p.has("threads")) {
+                localStorage.setItem(
+                    "snufflerThreads", p.get("threads") === "0" ? "0" : "1");
+            }
+            var on = localStorage.getItem("snufflerThreads") === "1";
+            window.__snufflerThreads = on;
+            window.coi = {
+                coepCredentialless: function () { return true; },
+                shouldRegister: function () { return on; },
+                shouldDeregister: function () { return !on; },
+                quiet: true,
+            };
+        })();
+    </script>
+    <script src="coi-serviceworker.js"></script>
+
     <!-- the egui/eframe wasm binary. Trunk's built-in wasm-opt is off because it
          can't pass `-all` (needed for the post-MVP wasm features rustc emits);
          wasm-opt runs instead as a Trunk post-build hook with a mise-pinned
@@ -21,6 +46,8 @@
     <link data-trunk rel="copy-dir" href="dist-py" data-target-path="py" />
     <link data-trunk rel="copy-file" href="web/bridge.py" />
     <link data-trunk rel="copy-file" href="web/bridge_worker.js" />
+    <!-- cross-origin isolation shim (opt-in; see the script in <head>) -->
+    <link data-trunk rel="copy-file" href="web/coi-serviceworker.js" />
     <link data-trunk rel="copy-dir" href="web/proto" data-target-path="proto" />
     <!-- demo data from the on-demand pyrocko checkout (see mise run fetch-pyrocko) -->
     <link data-trunk rel="copy-file" href="sources/pyrocko/doc/source/static/test.mseed" />
