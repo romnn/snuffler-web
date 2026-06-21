@@ -17,7 +17,9 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 build="${PYODIDE_BUILD_TREE:-$here/../.work/pyodide-pthread}"
-image="pyodide/pyodide-env:20250915-chrome140-firefox140-py313"
+# Override IMAGE for a different toolchain (e.g. the em5.0.3/py314 image used by
+# the fork-free docker/pyodide-mt build).
+image="${IMAGE:-pyodide/pyodide-env:20250915-chrome140-firefox140-py313}"
 # JAicewizard/emscripten@libomp — the source behind emscripten PR #25937.
 repo="https://github.com/JAicewizard/emscripten.git"
 sha="67a610023bafdb84fa08c6b6e658036fb7dde43a"

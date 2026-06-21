@@ -71,9 +71,27 @@ docker run --rm \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && make -j'"$jobs"' all-but-packages'
 
+# 4) OpenMP: build libomp.a (emscripten ships none) for this toolchain, then
+#    relink the MAIN module with it whole-archived in so every -fopenmp C-ext
+#    (pyrocko) shares one OpenMP runtime — MAIN_MODULE=1/EXPORT_ALL re-export the
+#    __kmpc_*/omp_* symbols for side modules. NO -sPTHREAD_POOL_SIZE (a pre-spawned
+#    pool can't see side modules dlopen'd later). Reuses the libomp builder with the
+#    em5 image; the LLVM openmp source compiles unchanged with em5's clang.
+PYODIDE_BUILD_TREE="$PWD" IMAGE="$image" "$here/../pyodide-pthread/libomp/build.sh"
+docker run --rm \
+    -v "$PWD:/src" -w /src \
+    --shm-size 2g \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/src/.docker_home \
+    -e EXTRA_CFLAGS="-pthread" \
+    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -sERROR_ON_UNDEFINED_SYMBOLS=0 -Wl,--whole-archive /src/libomp.a -Wl,--no-whole-archive" \
+    -e EMCC_CFLAGS="-pthread" \
+    "$image" \
+    bash -lc 'export PATH="$HOME/.local/bin:$PATH" && rm -f dist/pyodide.asm.mjs dist/pyodide.asm.wasm && make -j'"$jobs"' all-but-packages'
+
 if [ -d dist ]; then
     cp -r dist/. "$out/"
-    echo "fork-free pthread Pyodide staged in: $out"
+    echo "fork-free pthread+OpenMP Pyodide staged in: $out"
 else
     echo "ERROR: dist/ not produced." >&2
     exit 1
