@@ -202,23 +202,12 @@ impl Subsort {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorScale {
     Log,
-    Sqrt,
-    Lin,
 }
 
 impl ColorScale {
     pub fn as_str(self) -> &'static str {
         match self {
             ColorScale::Log => "log",
-            ColorScale::Sqrt => "sqrt",
-            ColorScale::Lin => "lin",
-        }
-    }
-    pub fn label(self) -> &'static str {
-        match self {
-            ColorScale::Log => "log",
-            ColorScale::Sqrt => "sqrt",
-            ColorScale::Lin => "linear",
         }
     }
 }
@@ -430,7 +419,7 @@ impl Default for AppState {
             sort: SortMode::Name,
             subsort: Subsort::Nslc,
             view_mode: ViewMode::Wiggle,
-            wiggle_theme: WiggleTheme::ColorLines,
+            wiggle_theme: WiggleTheme::SnufflerQt,
             visible_length: VisibleLength::Short,
             show_boxes: true,
             clip_traces: true,

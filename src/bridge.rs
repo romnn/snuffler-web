@@ -58,7 +58,7 @@ pub struct ViewParams {
     pub rotate: f64,
     /// Deconvolve instrument response (inert without response metadata).
     pub remove_response: bool,
-    /// "wiggle" or "waterfall" (spectrogram).
+    /// "wiggle" or "waterfall".
     pub mode: String,
     /// Remove the per-trace mean before display (snuffler default on).
     pub demean: bool,
@@ -78,9 +78,17 @@ pub struct ViewParams {
     /// "`per_station_location`" | "`per_component`" (pyrocko derives the per-track
     /// display scale from this).
     pub scaling_group: String,
-    /// Waterfall: rectify (abs) before the spectrogram.
+    /// Manual gain applied to pyrocko's scale range, matching snuffler's display projection.
+    pub gain: f64,
+    /// Keep previous scale ranges instead of recomputing from the current visible window.
+    pub fix_scale_ranges: bool,
+    /// Include formatted min/max labels on the right of each trace row.
+    pub show_scale_ranges: bool,
+    /// Include scale ticks on the right of each trace row.
+    pub show_scale_axes: bool,
+    /// Waterfall: show absolute/envelope amplitudes.
     pub wf_abs: bool,
-    /// Waterfall: integrate (÷ω) before the spectrogram.
+    /// Waterfall: integrate amplitudes over time before coloring.
     pub wf_integrate: bool,
     /// Waterfall colour mapping: "log" | "sqrt" | "lin".
     pub wf_color_scale: String,
@@ -208,17 +216,18 @@ pub struct ViewTrack {
     pub ymin: f32,
     pub ymax: f32,
     pub ymean: f32,
-    /// Display half-range (units→pixels) computed by pyrocko per the Scaling
-    /// group+base, so the egui side does no scaling math of its own.
+    /// Gain-adjusted display half-range computed by pyrocko per the Scaling
+    /// group+base. Rust only applies the UI gain factor during projection.
     #[serde(default)]
     pub yscale: f32,
-    /// Spectrogram dims (0 ⇒ this is a plain wiggle). When `nf > 0` the `ys`
-    /// slice holds `nf*nt` log-power values, row-major as [time][freq].
+    /// Waterfall raster dimensions (0 ⇒ plain wiggle). Qt-style waterfall uses
+    /// `nf=1`; older spectrogram-like payloads used more rows.
     #[serde(default)]
     pub nf: usize,
     #[serde(default)]
     pub nt: usize,
-    /// Max frequency of the spectrogram (Hz).
+    /// Max frequency when the payload is frequency-resolved; zero for Qt-style
+    /// amplitude waterfall strips.
     #[serde(default)]
     pub fmax: f64,
 }

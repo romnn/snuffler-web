@@ -3,8 +3,8 @@
 //! control strip (`pile_viewer.py` `controls()` + `ColorbarControl`).
 
 use crate::state::{
-    AppState, ColorScale, Colormap, MAX_TRACK_H, MIN_TRACK_H, ScalingBase, ScalingGroup, SortMode,
-    Subsort, ViewMode, WiggleTheme,
+    AppState, Colormap, MAX_TRACK_H, MIN_TRACK_H, ScalingBase, ScalingGroup, SortMode, Subsort,
+    ViewMode, WiggleTheme,
 };
 
 const FILTER_MIN_HZ: f64 = 0.001;
@@ -291,15 +291,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
             if state.wf_clip.0 > state.wf_clip.1 - 0.05 {
                 state.wf_clip.0 = (state.wf_clip.1 - 0.05).max(0.0);
             }
-
-            ui.separator();
-            egui::ComboBox::from_label("Color scale")
-                .selected_text(state.wf_color_scale.label())
-                .show_ui(ui, |ui| {
-                    for cs in [ColorScale::Log, ColorScale::Sqrt, ColorScale::Lin] {
-                        ui.selectable_value(&mut state.wf_color_scale, cs, cs.label());
-                    }
-                });
 
             ui.separator();
             ui.checkbox(&mut state.wf_reverse, "Reverse");

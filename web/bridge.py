@@ -18,7 +18,21 @@ import math
 import os
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple, TypeVar, TypedDict
+from importlib import import_module
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+    TypeVar,
+    TypedDict,
+    cast,
+)
 
 import numpy as np
 from google.protobuf.message import Message
@@ -60,10 +74,10 @@ class ViewTrack(TypedDict):
     ymin: float
     ymax: float
     ymean: float
-    yscale: float  # display half-range (units→px), grouped per scaling_group
-    nf: int  # spectrogram freq bins (0 ⇒ plain wiggle)
-    nt: int  # spectrogram time bins
-    fmax: float  # spectrogram max frequency (Hz)
+    yscale: float  # gain-adjusted display half-range, grouped per scaling_group
+    nf: int  # waterfall raster rows (0 ⇒ plain wiggle, 1 ⇒ Qt-style waterfall)
+    nt: int  # waterfall time bins
+    fmax: float  # spectrogram max frequency when frequency-resolved
 
 
 class ViewMeta(TypedDict):
@@ -74,6 +88,12 @@ class ViewMeta(TypedDict):
 
 NslcId = Tuple[str, str, str, str]
 MessageT = TypeVar("MessageT", bound=Message)
+TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
+
+
+class AutoScalerLike(Protocol):
+    def make_scale(self, data_range: Tuple[float, float]) -> Tuple[float, float, float]: ...
+
 
 # The current set of loaded traces (snuffler's "pile").
 _TRACES: List[ptrace.Trace] = []
@@ -87,10 +107,15 @@ _DATA_GEN = 0
 _RESPONSE_GEN = 0
 _VIEW_CACHE_LIMIT = 256
 _VIEW_CACHE: "OrderedDict[Tuple[Any, ...], Tuple[float, float, np.ndarray]]" = OrderedDict()
+_OLD_DATA_RANGES: Dict[Any, Tuple[float, float]] = {}
+_OLD_DATA_RANGE_CONTEXT: Optional[Tuple[Any, ...]] = None
 
 
 def _clear_view_cache() -> None:
+    global _OLD_DATA_RANGE_CONTEXT
     _VIEW_CACHE.clear()
+    _OLD_DATA_RANGES.clear()
+    _OLD_DATA_RANGE_CONTEXT = None
 
 
 def _mark_traces_changed() -> None:
@@ -404,36 +429,76 @@ def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int
     return sorted(range(len(traces)), key=lambda i: namekey(traces[i]))
 
 
-def _group_key(t: "ViewTrack", group: str) -> Any:
-    """Grouping key for shared amplitude scaling (snuffler's Scaling grouping)."""
+def _track_scaling_key(t: "ViewTrack", group: str) -> Any:
+    """Grouping key for shared amplitude scaling (snuffler's Scaling menu)."""
     if group == "common":
-        return ""
+        return None
     if group == "per_station":
         return (t["net"], t["sta"])
     if group == "per_station_location":
         return (t["net"], t["sta"], t["loc"])
     if group == "per_component":
         return t["cha"]
-    return t["label"]  # individual
+    return (t["net"], t["sta"], t["loc"], t["cha"])
 
 
-def _scale_range(y: np.ndarray, base: str) -> Tuple[float, float]:
-    """Amplitude (lo, hi) for a trace per snuffler's scaling base statistic."""
-    if len(y) == 0:
-        return 0.0, 1e-12
+def _trace_scaling_key(tr: ptrace.Trace, group: str) -> Any:
+    if group == "common":
+        return None
+    if group == "per_station":
+        return (tr.network, tr.station)
+    if group == "per_station_location":
+        return (tr.network, tr.station, tr.location)
+    if group == "per_component":
+        return tr.channel
+    return tr.nslc_id
+
+
+def _scaling_base_modes(base: str) -> Tuple[Any, str]:
     if base == "robust":
-        lo, hi = float(np.percentile(y, 1)), float(np.percentile(y, 99))
-    elif base == "mean2":
-        m, s = float(y.mean()), float(y.std())
-        lo, hi = m - 2.0 * s, m + 2.0 * s
-    elif base == "mean4":
-        m, s = float(y.mean()), float(y.std())
-        lo, hi = m - 4.0 * s, m + 4.0 * s
-    else:  # minmax
-        lo, hi = float(y.min()), float(y.max())
-    if hi <= lo:
-        hi = lo + 1e-12
-    return lo, hi
+        return "minmax", "robust"
+    if base == "mean2":
+        return 2.0, "minmax"
+    if base == "mean4":
+        return 4.0, "minmax"
+    return "minmax", "minmax"
+
+
+def _range_trace(
+    nslc: NslcId,
+    tmin: float,
+    deltat: float,
+    ydata: np.ndarray,
+) -> ptrace.Trace:
+    net, sta, loc, cha = nslc
+    return ptrace.Trace(
+        network=net,
+        station=sta,
+        location=loc,
+        channel=cha,
+        tmin=tmin,
+        deltat=deltat,
+        ydata=np.asarray(ydata, dtype=np.float64),
+    )
+
+
+def _scale_context(p: Mapping[str, Any]) -> Tuple[Any, ...]:
+    return (
+        _DATA_GEN,
+        _RESPONSE_GEN,
+        p.get("sort", "name"),
+        p.get("subsort", "nslc"),
+        _float_key(float(p.get("rotate", 0.0) or 0.0)),
+        bool(p.get("remove_response", False)),
+        bool(p.get("demean", True)),
+        bool(p.get("degap", True)),
+        _float_key(p.get("highpass")),
+        _float_key(p.get("lowpass")),
+        bool(p.get("fft_filtering", False)),
+        bool(p.get("bandpass_lphp", True)),
+        p.get("scaling_base", "minmax"),
+        p.get("scaling_group", "individual"),
+    )
 
 
 def _brickwall(
@@ -550,16 +615,12 @@ def _slice_segment(
     entry: Tuple[float, float, np.ndarray],
     tmin: float,
     tmax: float,
-    include_sample_support: bool = False,
+    sample_support: float = 0.0,
 ) -> Optional[Tuple[np.ndarray, float, float]]:
     seg_tmin, deltat, y = entry
-    if include_sample_support:
-        half = 0.5 * deltat
-        start = max(0, int(math.ceil((tmin - half - seg_tmin) / deltat)))
-        stop = min(len(y), int(math.floor((tmax + half - seg_tmin) / deltat)) + 1)
-    else:
-        start = max(0, int(math.floor((tmin - seg_tmin) / deltat)))
-        stop = min(len(y), int(math.ceil((tmax - seg_tmin) / deltat)) + 1)
+    pad = max(0.0, float(sample_support)) * deltat
+    start = max(0, int(math.floor((tmin - pad - seg_tmin) / deltat)))
+    stop = min(len(y), int(math.ceil((tmax + pad - seg_tmin) / deltat)) + 1)
     if stop <= start:
         return None
     return y[start:stop], seg_tmin + start * deltat, deltat
@@ -573,57 +634,43 @@ def _display_time_span(tr: ptrace.Trace) -> Tuple[float, float]:
     return t0, t1
 
 
-def _spectrogram(
-    seg: ptrace.Trace,
+def _waterfall_trace(
+    yview: np.ndarray,
+    deltat: float,
     npx: int,
     want_abs: bool,
     want_integrate: bool,
-    cscale: str,
-) -> Optional[Tuple[np.ndarray, int, int, float, float, float, float, float]]:
-    """Return (flat [time][freq] float32, nf, nt, fmax, vmin, vmax, t0_rel, dt)."""
+) -> Tuple[np.ndarray, float]:
+    """Snuffler TraceWaterfall data for one trace: normalized amplitude over time."""
     from scipy import signal as sps
 
-    y = seg.ydata.astype(np.float64)
-    if want_abs:
-        y = np.abs(y)
-    n = len(y)
-    if n < 32:
-        return None
-    fs = 1.0 / float(seg.deltat)
-    nperseg = int(min(256, max(32, 2 ** int(np.log2(max(32, n // 64))))))
-    f, t, sxx = sps.spectrogram(
-        y, fs=fs, nperseg=nperseg, noverlap=nperseg // 2, scaling="spectrum"
-    )
+    y = np.asarray(yview, dtype=np.float64)
+    if y.size == 0:
+        return np.zeros(0, dtype="<f4"), float(deltat)
+
+    step = max(1, int(y.size // max(1, 2 * int(npx))))
+    data = np.ascontiguousarray(y[::step], dtype=np.float64)
     if want_integrate:
-        w = np.where(f == 0.0, 1e-9, 2.0 * np.pi * f)
-        sxx = sxx / (w[:, None] ** 2)
-    if cscale == "lin":
-        power = sxx
-    elif cscale == "sqrt":
-        power = np.sqrt(sxx)
-    else:  # log (dB)
-        power = 10.0 * np.log10(sxx + 1e-20)
-    # cap time columns to ~npx for transport
-    nt_target = max(1, min(int(npx), 600))
-    if power.shape[1] > nt_target:
-        idx = np.linspace(0, power.shape[1] - 1, nt_target).astype(int)
-        power = power[:, idx]
-        t = t[idx]
-    nf, nt = power.shape
-    flat = np.ascontiguousarray(power.T, dtype="<f4").ravel()  # [time][freq]
-    vmin = float(np.percentile(power, 5))
-    vmax = float(np.percentile(power, 99))
-    dt = float(t[1] - t[0]) if nt > 1 else float(seg.deltat)
-    return flat, nf, nt, float(f[-1]), vmin, vmax, float(t[0]), dt
+        data = np.cumsum(data) * float(deltat)
+
+    peak = float(np.abs(data).max()) if data.size else 0.0
+    if peak > 0.0:
+        data = data / peak
+
+    if want_abs and data.size:
+        hilbert: Callable[[np.ndarray], np.ndarray] = getattr(sps, "hilbert")
+        data = np.abs(hilbert(data))
+
+    return np.ascontiguousarray(data, dtype="<f4"), float(deltat) * float(step)
 
 
 def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
-    """Compute the requested view (wiggle waveforms or a waterfall spectrogram).
+    """Compute the requested view (wiggle waveforms or a Qt-style waterfall).
 
     Returns {meta: <ViewMeta dict>, ys: <float32 ndarray>}. For wiggles `ys`
     holds raw uniform samples at close zooms, or explicit `(t_rel, y)` extrema
     points for reduced long-window views. For the waterfall it holds per-track
-    [time][freq] log-power for the requested track page.
+    normalized amplitude strips for the requested track page.
     """
     tmin = float(p["tmin"])
     tmax = float(p["tmax"])
@@ -645,9 +692,15 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
     lphp = bool(p.get("bandpass_lphp", True))
     base = p.get("scaling_base", "minmax")
     scaling_group = p.get("scaling_group", "individual")
+    gain = float(p.get("gain", 1.0) or 1.0)
+    if gain <= 0.0 or not math.isfinite(gain):
+        gain = 1.0
+    fix_scale_ranges = bool(p.get("fix_scale_ranges", False))
+    show_scale_ranges = bool(p.get("show_scale_ranges", False))
+    show_scale_axes = bool(p.get("show_scale_axes", False))
     wf_abs = bool(p.get("wf_abs", False))
     wf_integrate = bool(p.get("wf_integrate", False))
-    wf_cscale = p.get("wf_color_scale", "log")
+    scale_context = _scale_context(p)
 
     traces = list(_visible_traces())
     if degap:
@@ -662,6 +715,7 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
 
     ys_parts: List[np.ndarray] = []
     tracks: List[ViewTrack] = []
+    range_traces: List[ptrace.Trace] = []
     offset = 0
     view_idx = 0
     for tr_idx, tr in enumerate(work):
@@ -673,27 +727,42 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
         label = ".".join(tr.nslc_id)
         want_samples = track_offset <= view_idx < track_end
         view_idx += 1
+        track_key = (
+            tr_idx,
+            tuple(tr.nslc_id),
+            _float_key(float(tr.tmin)),
+            _float_key(float(tr.tmax)),
+            _float_key(float(tr.deltat)),
+            int(tr.data_len()),
+            _float_key(rotate),
+            bool(remove_response),
+            bool(degap),
+        )
 
         if mode == "waterfall":
             flat = np.zeros(0, dtype="<f4")
             nf = nt = 0
-            fmax = vmin = vmax = 0.0
+            fmax = 0.0
+            vmin, vmax = (-1.0, 1.0) if not wf_abs else (0.0, 1.0)
             t0_rel = max(float(tr.tmin), tmin) - tmin
             dt = float(tr.deltat)
             if want_samples:
-                try:
-                    seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
-                except Exception:
-                    seg = None
-                if seg is not None and seg.ydata is not None and len(seg.ydata) > 0:
-                    seg.ydata = seg.ydata.astype(np.float64)
-                    if demean:
-                        seg.ydata = seg.ydata - seg.ydata.mean()
-                    _filter_seg(seg, hp, lp, fft, lphp)
-                    spec = _spectrogram(seg, npx, wf_abs, wf_integrate, wf_cscale)
-                    if spec is not None:
-                        flat, nf, nt, fmax, vmin, vmax, spec_t0_rel, dt = spec
-                        t0_rel = (float(seg.tmin) - tmin) + spec_t0_rel
+                entry = _processed_trace(tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
+                if entry is not None:
+                    sliced = _slice_segment(entry, tmin, tmax, 4.0)
+                else:
+                    sliced = None
+                if sliced is not None:
+                    yview, ytmin, deltat = sliced
+                    strip, dt = _waterfall_trace(yview, deltat, npx, wf_abs, wf_integrate)
+                    if strip.size:
+                        flat = strip
+                        nf = 1
+                        nt = int(strip.size)
+                        if wf_abs:
+                            vmin = float(strip.min())
+                            vmax = float(strip.max())
+                        t0_rel = ytmin - tmin
             tracks.append(
                 ViewTrack(
                     net=net,
@@ -718,27 +787,14 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
                 ys_parts.append(np.ascontiguousarray(flat, dtype="<f4"))
                 offset += int(nf * nt)
         else:
-            track_key = (
-                tr_idx,
-                tuple(tr.nslc_id),
-                _float_key(float(tr.tmin)),
-                _float_key(float(tr.tmax)),
-                _float_key(float(tr.deltat)),
-                int(tr.data_len()),
-                _float_key(rotate),
-                bool(remove_response),
-                bool(degap),
-            )
             entry = _processed_trace(tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
             if entry is None:
                 continue
-            sliced = _slice_segment(entry, tmin, tmax, cha.endswith("-RMS"))
+            sliced = _slice_segment(entry, tmin, tmax, 4.0)
             if sliced is None:
                 continue
             yview, ytmin, deltat = sliced
-            yscale_source = entry[2]
-            lo, hi = _scale_range(yscale_source, base)
-            ymean = float(yscale_source.mean()) if len(yscale_source) else 0.0
+            range_traces.append(_range_trace(tr.nslc_id, ytmin, deltat, yview))
             count = 0
             dt = deltat
             t0_rel = ytmin - tmin
@@ -759,10 +815,10 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
                     dt=dt,
                     count=int(count),
                     offset=int(offset),
-                    ymin=lo,
-                    ymax=hi,
-                    ymean=ymean,
-                    yscale=0.0,
+                    ymin=0.0,
+                    ymax=1.0,
+                    ymean=0.0,
+                    yscale=1.0,
                     nf=0,
                     nt=0,
                     fmax=0.0,
@@ -771,19 +827,64 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
             if want_samples:
                 offset += payload_len
 
-    # Grouped display scale (snuffler's Scaling grouping): per group, the largest
-    # half-range; egui multiplies by this directly (no scaling math on its side).
-    if mode != "waterfall":
-        halfs: Dict[Any, float] = {}
+    if mode == "waterfall":
+        if wf_abs:
+            lo = min((t["ymin"] for t in tracks if t["nf"]), default=0.0)
+            hi = max((t["ymax"] for t in tracks if t["nf"]), default=1.0)
+            if hi <= lo:
+                hi = lo + 1e-12
+            for t in tracks:
+                if t["nf"]:
+                    t["ymin"] = lo
+                    t["ymax"] = hi
+    elif range_traces:
+        global _OLD_DATA_RANGE_CONTEXT
+        mode_param, outer_mode = _scaling_base_modes(base)
+
+        def scaling_key(tr: ptrace.Trace) -> Any:
+            return _trace_scaling_key(tr, scaling_group)
+
+        trace_minmax = cast(TraceRangeFunc, getattr(ptrace, "minmax"))
+        raw_ranges = trace_minmax(
+            range_traces,
+            key=scaling_key,
+            mode=mode_param,
+            outer_mode=outer_mode,
+        )
+        data_ranges: Dict[Any, Tuple[float, float]] = {
+            key: (float(lo), float(hi)) for key, (lo, hi) in raw_ranges.items()
+        }
+        if fix_scale_ranges and _OLD_DATA_RANGE_CONTEXT == scale_context:
+            data_ranges.update(_OLD_DATA_RANGES)
+        elif not fix_scale_ranges:
+            _OLD_DATA_RANGES.clear()
+            _OLD_DATA_RANGES.update(data_ranges)
+            _OLD_DATA_RANGE_CONTEXT = scale_context
+
+        auto_scaler = cast(
+            Callable[..., AutoScalerLike], getattr(import_module("pyrocko.plot"), "AutoScaler")
+        )
+        yscaler = auto_scaler(
+            no_exp_interval=(-3, 2),
+            approx_ticks=15.0,
+            snap=(show_scale_ranges or show_scale_axes) and not show_scale_axes,
+        )
         for t in tracks:
             if t["nf"]:
                 continue
-            h = max(t["ymax"] - t["ymean"], t["ymean"] - t["ymin"], 1e-12)
-            k = _group_key(t, scaling_group)
-            halfs[k] = max(halfs.get(k, 0.0), h)
-        for t in tracks:
-            if not t["nf"]:
-                t["yscale"] = halfs.get(_group_key(t, scaling_group), 1.0)
+            dymin, dymax = data_ranges.get(_track_scaling_key(t, scaling_group), (0.0, 1.0))
+            if not math.isfinite(dymin) or not math.isfinite(dymax) or dymax <= dymin:
+                dymin, dymax = 0.0, 1.0
+            ymin, ymax, _yinc = yscaler.make_scale((dymin / gain, dymax / gain))
+            ymin = float(ymin)
+            ymax = float(ymax)
+            if ymax <= ymin:
+                ymax = ymin + 1e-12
+            half = max(0.5 * (ymax - ymin), 1e-12)
+            t["ymin"] = ymin
+            t["ymax"] = ymax
+            t["ymean"] = 0.5 * (ymin + ymax)
+            t["yscale"] = max(gain * half, 1e-12)
 
     ys = (
         np.ascontiguousarray(np.concatenate(ys_parts), dtype="<f4")
@@ -2107,6 +2208,10 @@ def _view_params_dict(msg: view_pb2.ViewParams) -> Dict[str, Any]:
         "distances_3d": bool(msg.distances_3d),
         "scaling_base": str(msg.scaling_base or "minmax"),
         "scaling_group": str(msg.scaling_group or "individual"),
+        "gain": float(msg.gain or 1.0),
+        "fix_scale_ranges": bool(msg.fix_scale_ranges),
+        "show_scale_ranges": bool(msg.show_scale_ranges),
+        "show_scale_axes": bool(msg.show_scale_axes),
         "wf_abs": bool(msg.wf_abs),
         "wf_integrate": bool(msg.wf_integrate),
         "wf_color_scale": str(msg.wf_color_scale or "log"),

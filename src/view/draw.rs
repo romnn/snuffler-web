@@ -111,7 +111,7 @@ impl DrawTarget for EguiTarget<'_> {
 /// SVG backend: serializes draw calls to an `<svg>` string. Wiggle traces become
 /// `<polyline>`, axes/labels `<line>`/`<text>`, and the waterfall heatmap an
 /// embedded base64 PNG `<image>` (it is inherently raster), yielding a clean
-/// vector overlay over a raster spectrogram.
+/// vector overlay over raster waterfall cells.
 pub struct SvgTarget {
     ctx: egui::Context,
     body: String,

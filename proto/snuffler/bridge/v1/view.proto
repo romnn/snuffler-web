@@ -26,6 +26,10 @@ message ViewParams {
   string wf_color_scale = 21;
   uint64 track_offset = 22;
   uint64 track_count = 23;
+  double gain = 24;
+  bool fix_scale_ranges = 25;
+  bool show_scale_ranges = 26;
+  bool show_scale_axes = 27;
 }
 
 message ViewTrack {

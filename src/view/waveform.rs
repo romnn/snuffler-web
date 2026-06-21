@@ -1,6 +1,6 @@
 //! The waveform canvas: vertically stacked tracks, a shared adaptive time axis,
-//! NSLC labels, snuffler-style amplitude scaling, an optional waterfall
-//! (spectrogram) view, markers, and mouse/keyboard interaction.
+//! NSLC labels, snuffler-style amplitude scaling, an optional waterfall view,
+//! markers, and mouse/keyboard interaction.
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -51,12 +51,12 @@ fn palette(dark: bool, theme: WiggleTheme) -> Palette {
         },
         (false, WiggleTheme::SnufflerQt) => Palette {
             bg: Color32::from_rgb(255, 255, 255),
-            trace: Color32::from_rgb(72, 78, 84),
+            trace: Color32::from_rgb(85, 87, 83),
             grid: Color32::from_rgb(224, 224, 224),
             zero: Color32::from_rgb(236, 236, 236),
-            axis_text: Color32::from_rgb(64, 64, 64),
+            axis_text: Color32::from_rgb(85, 87, 83),
             sep: Color32::from_rgb(214, 214, 214),
-            label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 216),
+            label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
             cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
         },
         (true, WiggleTheme::ColorLines) => Palette {
@@ -156,11 +156,11 @@ fn build_texture(
     style: WfStyle,
 ) -> Option<TextureHandle> {
     let img = build_image(view, t, style)?;
-    Some(ctx.load_texture(format!("wf{idx}"), img, TextureOptions::LINEAR))
+    Some(ctx.load_texture(format!("wf{idx}"), img, TextureOptions::NEAREST))
 }
 
-/// Rasterize one track's spectrogram into an RGBA image (the texture source for
-/// the egui view, and the embedded PNG for SVG export).
+/// Rasterize one track's waterfall cells into an RGBA image (the texture source
+/// for the egui view, and the embedded PNG for SVG export).
 #[allow(
     clippy::indexing_slicing,
     reason = "index provably in bounds: data.len() >= nf*nt is checked above, and \
@@ -187,7 +187,7 @@ fn build_image(view: &ViewData, t: &ViewTrack, style: WfStyle) -> Option<ColorIm
     let mut rgba = vec![0u8; nt * nf * 4];
     for c in 0..nt {
         for r in 0..nf {
-            let f = nf - 1 - r; // low freq at the bottom
+            let f = nf - 1 - r;
             let v = data[c * nf + f];
             let mut tn = ((v - lo) / range).clamp(0.0, 1.0);
             if style.reverse {
@@ -332,12 +332,68 @@ fn row_tint(color: Color32, dark: bool, theme: WiggleTheme) -> Color32 {
     Color32::from_rgb(mix(color.r()), mix(color.g()), mix(color.b()))
 }
 
+fn qt_box_style(index: usize) -> (Color32, Color32) {
+    type Rgb = (u8, u8, u8);
+    const STYLES: [(Rgb, Rgb); 7] = [
+        ((252, 175, 62), (206, 92, 0)),
+        ((114, 159, 207), (32, 74, 135)),
+        ((252, 233, 79), (196, 160, 0)),
+        ((138, 226, 52), (78, 154, 6)),
+        ((233, 185, 110), (143, 89, 2)),
+        ((173, 127, 168), (92, 53, 102)),
+        ((239, 41, 41), (164, 0, 0)),
+    ];
+    let (fill, frame) = STYLES
+        .get(index % STYLES.len())
+        .copied()
+        .unwrap_or(((128, 128, 128), (64, 64, 64)));
+    (
+        Color32::from_rgba_unmultiplied(fill.0, fill.1, fill.2, 100),
+        Color32::from_rgb(frame.0, frame.1, frame.2),
+    )
+}
+
 fn theme_uses_row_tints(theme: WiggleTheme) -> bool {
-    matches!(theme, WiggleTheme::SnufflerQt | WiggleTheme::NightBands)
+    matches!(theme, WiggleTheme::NightBands)
 }
 
 fn theme_uses_colored_strokes(theme: WiggleTheme) -> bool {
     matches!(theme, WiggleTheme::ColorLines)
+}
+
+fn track_time_bounds(view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
+    if track.nf > 0 && track.nt > 0 {
+        return Some((
+            track.t0_rel,
+            track.t0_rel + track.nt.saturating_sub(1) as f64 * track.dt,
+        ));
+    }
+    if track.dt > 0.0 && track.count > 0 {
+        return Some((
+            track.t0_rel,
+            track.t0_rel + track.count.saturating_sub(1) as f64 * track.dt,
+        ));
+    }
+    if track.dt == 0.0 && track.count > 0 {
+        let start = track.offset.min(view.ys.len());
+        let end = (track.offset + track.count.saturating_mul(2)).min(view.ys.len());
+        return view.ys.get(start..end).and_then(|points| {
+            let mut chunks = points.chunks_exact(2);
+            let [first_t, _] = chunks.next()? else {
+                return None;
+            };
+            let mut tmin = f64::from(*first_t);
+            let mut tmax = tmin;
+            for pair in chunks {
+                let [pt, _] = pair else { continue };
+                let t = f64::from(*pt);
+                tmin = tmin.min(t);
+                tmax = tmax.max(t);
+            }
+            Some((track.t0_rel + tmin, track.t0_rel + tmax))
+        });
+    }
+    None
 }
 
 /// Geometry of one waveform frame, derived from the view + canvas rect. Shared by
@@ -477,7 +533,29 @@ fn paint(
 
     target.fill_rect(rect, 0.0, pal.bg);
 
-    if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
+    if state.show_boxes && !waterfall && state.wiggle_theme == WiggleTheme::SnufflerQt {
+        target.push_clip(track_area);
+        for (k, t) in visible.iter().enumerate() {
+            let Some((t0, t1)) = track_time_bounds(view, t) else {
+                continue;
+            };
+            let top = top0 + k as f32 * row_h + row_h * 0.05;
+            let bot = top0 + k as f32 * row_h + row_h * 0.95;
+            let x0 = x_of(t0).clamp(track_area.left(), track_area.right());
+            let x1 = x_of(t1).clamp(track_area.left(), track_area.right());
+            if x1 <= x0 || bot <= top {
+                continue;
+            }
+            let (fill, frame) = qt_box_style(lay.off + k);
+            let r = Rect::from_min_max(egui::pos2(x0, top), egui::pos2(x1, bot));
+            target.fill_rect(r, 0.0, fill);
+            target.line(r.left_top(), r.right_top(), 1.0, frame);
+            target.line(r.right_top(), r.right_bottom(), 1.0, frame);
+            target.line(r.right_bottom(), r.left_bottom(), 1.0, frame);
+            target.line(r.left_bottom(), r.left_top(), 1.0, frame);
+        }
+        target.pop_clip();
+    } else if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
         target.push_clip(track_area);
         for (k, t) in visible.iter().enumerate() {
             let top = top0 + k as f32 * row_h;
@@ -536,7 +614,7 @@ fn paint(
         let bot = top + row_h;
         let mid = top + row_h * 0.5;
 
-        if state.show_boxes {
+        if state.show_boxes && (state.wiggle_theme != WiggleTheme::SnufflerQt || waterfall) {
             let r = Rect::from_min_max(
                 egui::pos2(rect.left() + 0.5, top + 1.0),
                 egui::pos2(rect.right() - 0.5, bot - 1.0),
@@ -545,7 +623,7 @@ fn paint(
             target.line(r.right_top(), r.right_bottom(), 1.0, pal.sep);
             target.line(r.right_bottom(), r.left_bottom(), 1.0, pal.sep);
             target.line(r.left_bottom(), r.left_top(), 1.0, pal.sep);
-        } else if k > 0 {
+        } else if !state.show_boxes && k > 0 {
             target.line(
                 egui::pos2(rect.left(), top),
                 egui::pos2(rect.right(), top),
