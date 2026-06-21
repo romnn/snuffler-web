@@ -35,3 +35,6 @@ __pycache__/
 # experimental pthread Pyodide build (see docker/pyodide-pthread/)
 docker/pyodide-pthread/out/
 docker/pyodide-pthread/.work/
+
+docker/pyodide-mt/.work/
+docker/pyodide-mt/out/

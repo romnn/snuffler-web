@@ -1,0 +1,205 @@
+diff --git a/Makefile b/Makefile
+index e6ca08c..362e57d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -11,8 +11,8 @@ CXX=em++
+ all: \
+ 	all-but-packages \
+ 	dist/pyodide-lock.json \
+-	dist/pyodide.d.ts \
+ 	dist/snapshot.bin \
++	# pyodide.d.ts does not build with -pthread
+ 
+ 
+ all-but-packages: \
+@@ -57,7 +57,9 @@ src/core/pyodide_pre.gen.dat: src/js/generated/_pyodide.out.js src/core/pre.js s
+ # the init function.
+ 	rm -f $@
+ 	echo '()<::>{' >> $@                       # zero argument argspec and start body
++	echo 'if(!ENVIRONMENT_IS_PTHREAD) {' >> $@ # threads don't re-run init
+ 	cat src/js/generated/_pyodide.out.js >> $@ # All of _pyodide.out.js is body
++	echo '}' >> $@
+ 	echo '}' >> $@                             # Close function body
+ 	cat src/core/stack_switching/stack_switching.out.js >> $@
+ 	cat src/core/pre.js >> $@                  # Execute pre.js too
+@@ -132,6 +134,7 @@ dist/pyodide.asm.mjs: \
+    # cat dist/pyodide.asm.mjs | grep -ohE '__Z[A-Za-z0-9_]+' | sort -u | wc -l
+ 	$(SED) -i -E 's/__Z[A-Za-z0-9_]+=[^;]*;//g' dist/pyodide.asm.mjs
+ 	$(SED) -i -E 's/,__Z[A-Za-z0-9_]+//g' dist/pyodide.asm.mjs
++	python3 tools/fixup-threading-support.py dist/pyodide.asm.mjs
+ 	@date +"[%F %T] done building pyodide.asm.mjs."
+ 
+ env:
+diff --git a/src/core/pre.js b/src/core/pre.js
+index 340ce79..e9ece4a 100644
+--- a/src/core/pre.js
++++ b/src/core/pre.js
+@@ -1,12 +1,15 @@
+ const API = Module.API;
+ const Hiwire = {};
+ const Tests = {};
++var pyproxyIsAlive;
++if (!ENVIRONMENT_IS_PTHREAD) {
+ API.tests = Tests;
+ API.version = "314.1.0.dev0";
+ // This version should be equal to the one in the Makefile.envs
+ // TODO: Pass this value dynamically from outside.
+ API.abiVersion = "2026_0";
+ Module.hiwire = Hiwire;
++}
+ 
+ function getTypeTag(x) {
+   try {
+@@ -15,7 +18,7 @@ function getTypeTag(x) {
+     return "";
+   }
+ }
+-API.getTypeTag = getTypeTag;
++if (!ENVIRONMENT_IS_PTHREAD) { API.getTypeTag = getTypeTag; }
+ 
+ /**
+  * Safe property check
+@@ -57,8 +60,8 @@ function hasMethod(obj, prop) {
+   }
+ }
+ 
+-const pyproxyIsAlive = (px) => !!Module.PyProxy_getAttrsQuiet(px).shared.ptr;
+-API.pyproxyIsAlive = pyproxyIsAlive;
++pyproxyIsAlive = (px) => !!Module.PyProxy_getAttrsQuiet(px).shared.ptr;
++if (!ENVIRONMENT_IS_PTHREAD) { API.pyproxyIsAlive = pyproxyIsAlive; }
+ 
+ const errNoRet = () => {
+   throw new Error(
+@@ -76,7 +79,7 @@ function isPromise(obj) {
+     return false;
+   }
+ }
+-API.isPromise = isPromise;
++if (!ENVIRONMENT_IS_PTHREAD) { API.isPromise = isPromise; }
+ 
+ /**
+  * Turn any ArrayBuffer view or ArrayBuffer into a Uint8Array.
+@@ -91,7 +94,7 @@ function bufferAsUint8Array(arg) {
+     return new Uint8Array(arg);
+   }
+ }
+-API.typedArrayAsUint8Array = bufferAsUint8Array;
++if (!ENVIRONMENT_IS_PTHREAD) { API.typedArrayAsUint8Array = bufferAsUint8Array; }
+ 
+ Module.iterObject = function* (object) {
+   for (let k in object) {
+diff --git a/src/core/stack_switching/stack_switching.mjs b/src/core/stack_switching/stack_switching.mjs
+index d47a782..717d553 100644
+--- a/src/core/stack_switching/stack_switching.mjs
++++ b/src/core/stack_switching/stack_switching.mjs
+@@ -37,5 +37,7 @@ Module.oldJspiSupported = oldJspiSupported;
+ Module.jspiSupported = jspiSupported;
+ 
+ if (jspiSupported) {
+-  Module.preRun.push(initSuspenders);
++  if(!ENVIRONMENT_IS_PTHREAD) {
++    Module.preRun.push(initSuspenders);
++  }
+ }
+diff --git a/tools/fixup-threading-support.py b/tools/fixup-threading-support.py
+new file mode 100644
+index 0000000..2761125
+--- /dev/null
++++ b/tools/fixup-threading-support.py
+@@ -0,0 +1,96 @@
++'''
++patches the emscripten-produced pyodide.asm.js to support spawning pthreads
++'''
++
++def insert_after(lines, after_what, insert_what):
++    for i,line in enumerate(lines):
++        if after_what == line.strip():
++            lines.insert(i+1, insert_what)
++            return
++    assert False, 'failed to insert `{insert_what}` after `{after_what}` - did not find the latter'
++
++def add_sentinel_dummies(lines):
++    '''is_sentinel and create_sentinel won't resolve in the pthread; we want them to resolve quietly to
++    'whatever' - currently threads are just for self-contained C code that won't call these or anything
++    else outside C libraries'''
++
++    insert_after(lines, '"env": wasmImports,', '''
++    ...(ENVIRONMENT_IS_PTHREAD && { "sentinel": {"is_sentinel":_is_sentinel, "create_sentinel":_create_sentinel} }), //stubs-won't actually work, but the linking will pass
++''')
++
++def add_pthread_main_js(lines):
++    '''since Pyodide currently doesn't seem to provide a way to set Module["mainScriptUrlOrBlob"], we add code
++    getting the location of pyodide.asm.js from a global variable PTHREAD_MAIN_JS which can be set in the
++    worker before spawning the pthread; failing that, the pthread will try loading the worker js file instead
++    of pyodide.asm.js, and fail'''
++
++    insert_after(lines, 'var pthreadMainJs = _scriptName;', '''
++    if(typeof PTHREAD_MAIN_JS !== 'undefined') {
++        pthreadMainJs = PTHREAD_MAIN_JS;
++    }
++''')
++
++def add_dyn_lib_offsets(lines):
++    '''this fixes a problem that seems to exist regardless of Pyodide, but is perhaps somewhat Pyodide-specific
++    in that Pyodide might be adding entries to wasmTable which many modules presumably don't do.
++
++    emscripten generates code which loads all the shared objects in the newly spawned pthread in the order
++    in which they were loaded in the parent thread. this fails if the parent thread added entries to wasmTable
++    between these modules; you'll get different offsets in the parent and child thread, and when you pass function
++    pointers (such as the thread entry point), the wrong function will get called.
++
++    to fix this, we pass the list of offsets to which the libraries where loaded in the parent thread, and grow
++    the table to the size matching the offset of each library in the parent before loading it in the child.
++    '''
++   
++    insert_after(lines, 'var moduleRtn;', '''
++  var myDynamicLibraryOffsets = {};
++  var parentDynamicLibraryOffsets = {};
++''')
++
++    insert_after(lines, 'dynamicLibraries = msgData.dynamicLibraries;', '''
++        //we use this to make sure dynamic libraries are loaded to the same wasmTable offset in this thread
++        //as they are in the parent (this is not obviously going to happen since eg getEmptyTableSlot() grows the table
++        //and could have been called in the parent in between dlopen/other module loading calls)
++        if(msgData.dynamicLibraryOffsets !== undefined) {
++          parentDynamicLibraryOffsets = msgData.dynamicLibraryOffsets;
++        }
++''')
++
++    insert_after(lines, 'dynamicLibraries,', '''
++      dynamicLibraryOffsets: myDynamicLibraryOffsets,
++''')
++
++    insert_after(lines, '}, localScope, handle) {', '''
++  if(ENVIRONMENT_IS_PTHREAD && parentDynamicLibraryOffsets !== undefined) {
++    const offset = parentDynamicLibraryOffsets[libName];
++    //offset<wasmTable.length means that we can't load the library to the right offset, so we give up.
++    //note that it will fail, in practice, when a thread finishes and is reused since the library
++    //is already loaded into that thread and wasmTable.length will be too high.
++    //we don't really want to "properly" support this ATM though it's doable and would require to keep track
++    //of the offsets of previously loaded libraries.
++    if(offset === undefined || offset < wasmTable.length) {
++      throw new Error(`failing to load dynamic library ${libName} - parent offset is ${offset}, wasmTable.length=${wasmTable.length} (NOTE: if you joined a thread and created a new one, it might have caused this error)`);
++    }
++    //make sure we load the dynamic library to the same offset as it was loaded to in the parent -
++    //otherwise function pointers (indexes) will not match in the child & parent thread
++    if(offset > wasmTable.length) {
++      wasmTable.grow(offset - wasmTable.length);
++    }
++  }
++
++  myDynamicLibraryOffsets[libName] = wasmTable.length;
++''')
++
++import sys
++
++asm_js_file = sys.argv[1]
++lines=open(asm_js_file).read().split('\n')
++
++add_sentinel_dummies(lines)
++add_pthread_main_js(lines)
++add_dyn_lib_offsets(lines)
++
++with open(asm_js_file,'w') as f:
++    f.write('\n'.join(lines))
++    f.write('\n')
