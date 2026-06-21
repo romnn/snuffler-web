@@ -30,17 +30,39 @@ docker/pyodide-mt/build.sh        # → docker/pyodide-mt/out/
 
 `out/` and `.work/` are gitignored.
 
-## Status / next steps
+## Status: threading + OpenMP WORK (validated)
 
-1. **Core pthread build** (this script) — in progress.
-2. **OpenMP/libomp**: build `libomp.a` from **official LLVM** openmp source
-   matching em5.0.3's clang (verify wasm32 `KMP_ARCH` is upstream, ref LLVM
-   D142593; if so, only our `kmp_wasm_compat.c` + a wasm `kmp_config.h` are
-   needed — no fork), then whole-archive it into the main module (as proven in
-   `../pyodide-pthread`).
-3. **Packages**: build numpy + the pyrocko wheel (`PYROCKO_OPENMP=1` +
+`build.sh` produces a runtime that **builds, loads, threads, and runs OpenMP** —
+all from official sources + only our patch:
+
+- `sys._emscripten_info`: `pthreads=True, shared_memory=True`, python 3.14.2,
+  emscripten (5, 0, 3).
+- raw pthreads in an imported C-ext: `pthreadext.run(4) = (4, 4, 4)` (sync+async).
+- OpenMP in an imported C-ext (libomp in main): `ompext.run(4) = (4, 48, …)`.
+- **real pyrocko `parstack` kernel** (24-core host): near-linear speedup
+  `1 / 2.00 / 3.84 / 7.75 / 14.61 / 18.61×` at 1/2/4/8/16/24 threads, result
+  bit-identical to the em4.0.9 baseline.
+
+Six em5.0.3-vs-em4.0.9 differences were fixed in our own tree (see `build.sh`
+comments + `patches/0001-pthread.patch`); the decisive one was that our fixup
+referenced `_is_sentinel`/`_create_sentinel`, which em4 auto-generated but em5
+does not — a dangling ref that crashed every spawned worker at boot and looked
+exactly like a dlsync deadlock (now guarded with `typeof`).
+
+To reproduce the smoke/bench on this tree, point the `../pyodide-pthread`
+harnesses at it, e.g. `PYODIDE_BUILD_TREE=$PWD/.work/pyodide
+IMAGE=pyodide/pyodide-env:20260211-chrome145-firefox146-py314
+../pyodide-pthread/libomp/build.sh` (the smoke/bench runners need the same two
+overrides + a python3.14 include glob).
+
+## Next steps
+
+1. **Make the OpenMP runtime fork-free too**: `build.sh` currently fetches the
+   libomp source from the PR #25937 branch; vendor it (or build from official
+   LLVM openmp, whose wasm32 `KMP_ARCH` support is upstream) so nothing is a fork.
+2. **Packages**: build numpy + the pyrocko wheel (`PYROCKO_OPENMP=1` +
    `-sSHARED_MEMORY`) via Pyodide's own package pipeline (NOT separately against
-   an `all-but-packages` main — that exposes libc gaps), then re-run the parstack
-   benchmark end-to-end through Python.
-4. **Wire into the app** behind the existing `?threads=1` toggle (CDN
+   an `all-but-packages` main — that exposes libc gaps), then run pyrocko via
+   Python end-to-end.
+3. **Wire into the app** behind the existing `?threads=1` toggle (CDN
    single-threaded stays the default).
