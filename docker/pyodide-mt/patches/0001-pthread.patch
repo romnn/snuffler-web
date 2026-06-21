@@ -103,10 +103,10 @@ index d47a7829..717d5530 100644
  }
 diff --git a/tools/fixup-threading-support.py b/tools/fixup-threading-support.py
 new file mode 100644
-index 00000000..299548cb
+index 00000000..671307ce
 --- /dev/null
 +++ b/tools/fixup-threading-support.py
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,123 @@
 +'''
 +patches the emscripten-produced pyodide.asm.js to support spawning pthreads
 +'''
@@ -125,8 +125,14 @@ index 00000000..299548cb
 +    'whatever' - currently threads are just for self-contained C code that won't call these or anything
 +    else outside C libraries'''
 +
++    # em4.0.9 auto-generated _is_sentinel/_create_sentinel JS stubs; em5.0.3 does
++    # NOT, so a bare reference is dangling and throws ReferenceError in every
++    # spawned pthread worker at boot (worker dies -> no {cmd:"loaded"} -> the
++    # queued run message is never delivered -> looks like a spawn deadlock).
++    # Guard with typeof so it uses the real stub when present (em4) and a no-op
++    # otherwise (em5); these are never actually called by self-contained C threads.
 +    insert_after(lines, '"env": wasmImports,', '''
-+    ...(ENVIRONMENT_IS_PTHREAD && { "sentinel": {"is_sentinel":_is_sentinel, "create_sentinel":_create_sentinel} }), //stubs-won't actually work, but the linking will pass
++    ...(ENVIRONMENT_IS_PTHREAD && { "sentinel": {"is_sentinel":(typeof _is_sentinel!=="undefined"?_is_sentinel:()=>0), "create_sentinel":(typeof _create_sentinel!=="undefined"?_create_sentinel:()=>0)} }), //stubs won't be called; just satisfy the import
 +''')
 +
 +def add_pthread_main_js(lines):
