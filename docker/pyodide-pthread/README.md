@@ -15,19 +15,21 @@ docker/pyodide-pthread/smoke/run.sh    # builds libomp.a + proves threading
 # task pyodide:build-pthread / task pyodide:smoke-pthread do the same
 ```
 
-`build.sh` clones `yosefk/pyodide-pthread@mt` (the pthread patch set) and builds
-the core runtime (`all-but-packages`) in `pyodide/pyodide-env:…-py313` with
-`EXTRA_CFLAGS=-pthread`. Result: Pyodide 0.29.0 / Python 3.13.2 / emscripten
-4.0.9 with `sys._emscripten_info` reporting `pthreads=True, shared_memory=True`.
-`smoke/run.sh` then builds `libomp.a` (see below) and imports two C-ext side
-modules into the runtime under node.
+`build.sh` clones `yosefk/pyodide-pthread@mt` (the pthread patch set), builds the
+core runtime (`all-but-packages`) in `pyodide/pyodide-env:…-py313` with
+`EXTRA_CFLAGS=-pthread`, then **builds `libomp.a` and relinks the main module
+with it** (see below) so OpenMP is available to every imported C-ext. Result:
+Pyodide 0.29.0 / Python 3.13.2 / emscripten 4.0.9, `sys._emscripten_info`
+reporting `pthreads=True, shared_memory=True`, and the main module exporting
+`__kmpc_*`/`omp_*`. `smoke/run.sh` then imports thin C-ext side modules (no
+bundled libomp) into the runtime under node.
 
 ## Smoke test results (`smoke/run.sh`)
 
 | module | what it does | result |
 | --- | --- | --- |
-| `pthreadext.so` | spawns N raw pthreads, tracks peak concurrency | **PASS** — `run(4) = (4, 4, 4)`: 4 threads, all overlapping |
-| `ompext.so` | `#pragma omp parallel num_threads(4)` + reduction | **PASS** — `run(4) = (4, 48, 23999980)`: 4 threads, 48 cores detected, reduction correct |
+| `ompext.so` | `#pragma omp parallel num_threads(4)` + reduction, resolving libomp from main | **PASS** (gating) — `run(4) = (4, 48, 23999980)`: 4 threads, 48 cores detected, reduction correct, 3/3 reliable |
+| `pthreadext.so` | spawns N raw pthreads | informational — raw `pthread_create` from the main thread needs the event loop / a pool, which can't complete here once libomp is in main; pyrocko uses OpenMP |
 
 ## libomp.a — the OpenMP runtime (`libomp/build.sh`)
 
@@ -49,33 +51,36 @@ wasm32 OpenMP **codegen** (D142593), so `#pragma omp` compiles to the libomp ABI
 3. Archives `libomp.a` (~868 KB, defines `__kmpc_fork_call`,
    `__kmpc_global_thread_num`, `omp_*`, the C `__kmp_invoke_microtask`, …).
 
-A `-fopenmp` C-ext then links `libomp.a` and the `__kmpc_*` calls resolve.
+`build.sh` then relinks the main module with `-Wl,--whole-archive libomp.a` so the
+runtime lives in main and `MAIN_MODULE=1`/`EXPORT_ALL` re-export it; a `-fopenmp`
+C-ext is then a *thin* side module whose `__kmpc_*` calls resolve from main.
 
-### Two requirements discovered
+### Things discovered
 
 - **The compat shim** (above) — one undefined symbol otherwise.
-- **`runPythonAsync`** for the OpenMP call: libomp spawns its worker pool lazily
-  on the first parallel region, and emscripten can only create pthreads from the
-  main thread by unwinding to the JS event loop (Asyncify / stack switching). A
-  synchronous `runPython` throws `unwind`. For robust mixing of OpenMP with other
-  threading in one interpreter, the main module needs a pre-sized pool
-  (`-sPTHREAD_POOL_SIZE`) — see "next steps".
+- **No `-sPTHREAD_POOL_SIZE`** — a *pre-spawned* pool breaks side modules
+  dlopen'd later: those workers were created before the module loaded, so libomp
+  dispatching a microtask to them hits "table index out of bounds". With dynamic
+  spawn, libomp creates its workers *after* the module loads, so they have its
+  table. OpenMP from main is then reliable (3/3) under both `runPython` and
+  `runPythonAsync` in node.
+- **Raw `pthread_create` from the main thread** still needs the event loop and
+  can't complete synchronously once libomp is in main (it throws `unwind`) — so
+  `pthreadext` is informational. Not the pyrocko path (pyrocko uses OpenMP). In
+  the browser, OpenMP calls go through the worker bridge / `runPythonAsync`.
 
 ## Findings (evidence-based)
 
 1. **Imported C-extension modules run real, concurrent OS threads** (refutes the
-   earlier "fork only threads ctypes CDLLs" claim): `pthreadext.run(4)` →
-   `max_concurrent == 4`.
-2. **OpenMP works** once a wasm libomp is present — `ompext.run(4)` ran a 4-thread
-   parallel region with a correct reduction. This is the path pyrocko's kernels
-   use (`#pragma omp`, gated behind `PYROCKO_OPENMP`).
+   earlier "fork only threads ctypes CDLLs" claim).
+2. **OpenMP works, sharing one runtime in the main module** — `ompext.run(4)` ran
+   a 4-thread parallel region with a correct reduction (`(4, 48, …)`), resolving
+   libomp from main. This is the path pyrocko's kernels use (`#pragma omp`, gated
+   behind `PYROCKO_OPENMP`); numpy/scipy/etc. would share the same runtime.
 3. **Python threads stay serial** — only C thread pools run in workers.
 
-## Next steps (tasks #34, #35)
+## Next steps (task #35)
 
-- **libomp into the main module** + `-sPTHREAD_POOL_SIZE`: one shared OpenMP
-  runtime + pre-spawned pool for all side modules (numpy/scipy/pyrocko), so
-  `-fopenmp` works everywhere and the spawn-from-main unwind goes away.
 - **Migrate to latest Pyodide** (314.0.0 / Python 3.14.2 / emscripten 5.0.3) and
   maintain the small (~25-line) yosefk pthread patch ourselves, rather than
   pinning the fork's branch. Upstream Pyodide still has no pthread support

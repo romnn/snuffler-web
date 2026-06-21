@@ -51,6 +51,27 @@ docker run --rm \
     "$image" \
     bash -lc 'export PATH="$HOME/.local/bin:$PATH" && make -j'"$jobs"' all-but-packages'
 
+# 2b) Build libomp.a (the OpenMP runtime — emscripten ships none) now that the
+#     core build has produced the emsdk + CPython headers it needs.
+"$here/libomp/build.sh"
+
+# 2c) Relink the MAIN module with libomp whole-archived in, so every imported
+#     C-extension (numpy/scipy/pyrocko) shares ONE OpenMP runtime: MAIN_MODULE=1
+#     + EXPORT_ALL re-export libomp's __kmpc_*/omp_* for side modules to resolve.
+#     No -sPTHREAD_POOL_SIZE on purpose: a pre-spawned pool can't see side
+#     modules dlopen'd later (the worker hits "table index out of bounds"); with
+#     dynamic spawn libomp creates its workers AFTER the module loads. The relink
+#     only rebuilds dist/pyodide.asm.{js,wasm}; the rest of the build is cached.
+docker run --rm \
+    -v "$PWD:/src" -w /src \
+    --shm-size 2g \
+    --user "$(id -u):$(id -g)" \
+    -e HOME=/src/.docker_home \
+    -e EXTRA_CFLAGS="-pthread" \
+    -e EXTRA_LDFLAGS="-pthread -g1 -sMAXIMUM_MEMORY=4GB -Wl,--whole-archive /src/libomp.a -Wl,--no-whole-archive" \
+    "$image" \
+    bash -lc 'export PATH="$HOME/.local/bin:$PATH" && rm -f dist/pyodide.asm.js dist/pyodide.asm.wasm && make -j'"$jobs"' all-but-packages'
+
 # 3) Copy the runtime out of the build tree into ./out (the bind mount already
 #    surfaces dist/ on the host; this just isolates the bits the app serves).
 if [ -d dist ]; then
