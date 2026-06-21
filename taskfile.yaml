@@ -152,3 +152,9 @@ tasks:
     desc: "lint github actions"
     cmds:
       - actionlint
+
+  pyodide:build-pthread:
+    desc: "EXPERIMENTAL: build a pthread-enabled Pyodide in Docker (see docker/pyodide-pthread/README.md)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker/pyodide-pthread/build.sh

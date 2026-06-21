@@ -31,3 +31,7 @@
 
 # Python bytecode cache
 __pycache__/
+
+# experimental pthread Pyodide build (see docker/pyodide-pthread/)
+docker/pyodide-pthread/out/
+docker/pyodide-pthread/.work/
