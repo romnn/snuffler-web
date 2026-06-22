@@ -13,13 +13,14 @@
 # threaded py-mt runtime + the single-threaded CDN pyrocko wheel both come from
 # build-all.sh and differ only in multithreading + SIMD. So mise here pins only
 # the *web* toolchain (trunk/binaryen for the wasm app, node/bun/uv for JS + the
-# ruff/mypy tooling) plus protoc — which build.rs (prost) and `buf generate` use
-# to compile the bridge .proto.
+# ruff/mypy tooling) plus buf + protoc — which the trunk `buf generate` pre-build
+# hook and build.rs (prost) use to compile the bridge .proto.
 [tools]
 python = "3.12"          # host Python for the uvx-run tooling (ruff, mypy)
 node = "24"
 bun = "1.3.14"           # bunx prettier (JS/markdown formatting)
 uv = "0.11.21"           # uv + uvx; uvx runs ruff/mypy + the mypy-protobuf Buf plugin
+buf = "1.71.0"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
 protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
                          # the runtime on both paths; build.rs (prost) + buf generate use it
 "ubi:trunk-rs/trunk" = "0.21.14"
