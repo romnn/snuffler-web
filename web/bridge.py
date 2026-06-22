@@ -18,12 +18,14 @@ import math
 import os
 import traceback
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import import_module
 from typing import (
     Any,
     Callable,
     Dict,
+    Generic,
     Iterator,
     List,
     Mapping,
@@ -2612,63 +2614,202 @@ def markers_from_text_pb(text: str) -> bytes:
 
 # --- Single dispatch + proto-error failsafe -------------------------------
 #
-# Every bridge call from the worker goes through call(): it runs the handler,
-# wraps the concrete proto result in the BridgeResult oneof, and — crucially —
-# catches ANY exception and returns it as the BridgeError variant. No bridge
-# function may ever raise across the JS boundary: on the threaded
-# SharedArrayBuffer build a raised exception's traceback can't be converted to
-# JS (TextDecoder rejects the shared view). Errors travel as proto bytes like
-# every other DTO. See AGENTS.md.
+# Every bridge call from the worker goes through call(): it runs the method's
+# handler, packs the concrete proto result into the BridgeResult oneof, and —
+# crucially — catches ANY exception and returns it as the BridgeError variant. No
+# bridge function may ever raise across the JS boundary: on the threaded
+# SharedArrayBuffer build a raised exception's traceback can't be converted to JS
+# (TextDecoder rejects the shared view). Errors travel as proto bytes like every
+# other DTO. See AGENTS.md.
 #
-# Each entry maps a method name to (adapter(request, data) -> result, oneof field).
-# The handler's existing return type implies how it is packed:
-#   - field in {"view", "spectrum"}: adapter returns {"meta": bytes, "ys": ndarray};
-#     meta is parsed into the oneof, ys ships out-of-band (zero-copy).
-#   - field == "text": adapter returns a str -> StringValue.
-#   - otherwise: adapter returns serialized proto bytes -> parsed into the oneof.
-_BUFFER_FIELDS = frozenset({"view", "spectrum"})
+# Type safety: each _Method[M] ties its success message type M to the `put` setter
+# that writes M into the matching BridgeResult oneof field, so mypy rejects a
+# method wired to the wrong field — the one binding the dynamic protobuf API can't
+# check on its own. The typed setters also make the field names mypy-checked via
+# the generated stubs.
+M = TypeVar("M", bound=Message)
 
-_DISPATCH: Dict[str, Any] = {
-    "makeExample": (lambda request, data: make_example_pb(), "scene"),
-    "loadBytes": (lambda request, data: load_staged_file_pb(request, data), "scene"),
-    "loadUrl": (lambda request, data: load_url_staged_pb(request, data), "scene"),
-    "emptyScene": (lambda request, data: empty_scene_pb(), "scene"),
-    "loadWaveformPath": (lambda request, data: load_waveform_path_pb(data), "scene"),
-    "getView": (lambda request, data: get_view_pb(request), "view"),
-    "getSpectrum": (lambda request, data: get_spectrum_pb(request), "spectrum"),
-    "runSnuffling": (lambda request, data: run_snuffling_pb(request), "snuffling"),
-    "rmsTraces": (lambda request, data: rms_pb(request), "scene"),
-    "cakePlot": (lambda request, data: cake_plot_pb(request), "cake_plot"),
-    "runCommand": (lambda request, data: command_pb(request), "command"),
-    "parseEvents": (lambda request, data: parse_events_pb(data), "snuffling"),
-    "parseStations": (lambda request, data: parse_stations_pb(data), "snuffling"),
-    "loadResponses": (lambda request, data: load_responses_pb(data), "snuffling"),
-    "mapData": (lambda request, data: map_data_pb(), "map_data"),
-    "markersToText": (lambda request, data: markers_to_text_pb(request), "text"),
-    "loadMarkers": (lambda request, data: markers_from_text_pb(data or ""), "markers"),
-    "dataselectUrl": (lambda request, data: dataselect_url_pb(request), "text"),
-    "eventUrl": (lambda request, data: event_url_pb(request), "text"),
-    "stationUrl": (lambda request, data: station_url_pb(request), "text"),
-    "responseUrl": (lambda request, data: response_url_pb(request), "text"),
-    "gfStoreLabel": (lambda request, data: gf_store_label(data or ""), "text"),
+
+@dataclass(frozen=True)
+class _Method(Generic[M]):
+    # message: the concrete BridgeResult success variant this method produces.
+    # run: (request, data) -> (serialized message bytes, optional zero-copy ys buffer).
+    # put: copy the parsed message into its BridgeResult oneof field.
+    message: type[M]
+    run: Callable[[bytes, Any], Tuple[bytes, Any]]
+    put: Callable[[bridge_pb2.BridgeResult, M], None]
+
+
+def _put_scene(r: bridge_pb2.BridgeResult, m: scene_pb2.SceneMeta) -> None:
+    r.scene.CopyFrom(m)
+
+
+def _put_view(r: bridge_pb2.BridgeResult, m: view_pb2.ViewMeta) -> None:
+    r.view.CopyFrom(m)
+
+
+def _put_spectrum(r: bridge_pb2.BridgeResult, m: view_pb2.SpecMeta) -> None:
+    r.spectrum.CopyFrom(m)
+
+
+def _put_snuffling(r: bridge_pb2.BridgeResult, m: snuffling_pb2.SnufflingResult) -> None:
+    r.snuffling.CopyFrom(m)
+
+
+def _put_cake_plot(r: bridge_pb2.BridgeResult, m: snuffling_pb2.CakePlotResult) -> None:
+    r.cake_plot.CopyFrom(m)
+
+
+def _put_map_data(r: bridge_pb2.BridgeResult, m: data_pb2.MapData) -> None:
+    r.map_data.CopyFrom(m)
+
+
+def _put_command(r: bridge_pb2.BridgeResult, m: data_pb2.CommandResult) -> None:
+    r.command.CopyFrom(m)
+
+
+def _put_markers(r: bridge_pb2.BridgeResult, m: data_pb2.SnufMarkerList) -> None:
+    r.markers.CopyFrom(m)
+
+
+def _put_text(r: bridge_pb2.BridgeResult, m: bridge_pb2.StringValue) -> None:
+    r.text.CopyFrom(m)
+
+
+def _run_view(request: bytes, data: Any) -> Tuple[bytes, Any]:
+    res = get_view_pb(request)
+    return res["meta"], res["ys"]
+
+
+def _run_spectrum(request: bytes, data: Any) -> Tuple[bytes, Any]:
+    res = get_spectrum_pb(request)
+    return res["meta"], res["ys"]
+
+
+def _text_bytes(value: str) -> bytes:
+    return bridge_pb2.StringValue(value=value).SerializeToString()
+
+
+def _method(
+    message: type[M],
+    run: Callable[[bytes, Any], Tuple[bytes, Any]],
+    put: Callable[[bridge_pb2.BridgeResult, M], None],
+) -> _Method[Any]:
+    # The shared TypeVar M ties `message` to `put`, so mypy rejects a call whose
+    # setter's message type doesn't match the declared message class — even though
+    # the return is erased to _Method[Any] for the heterogeneous dispatch table
+    # (annotating the table _Method[Any] is what would otherwise skip the check).
+    return _Method(message, run, put)
+
+
+_DISPATCH: Dict[str, _Method[Any]] = {
+    "makeExample": _method(
+        scene_pb2.SceneMeta, lambda request, data: (make_example_pb(), None), _put_scene
+    ),
+    "loadBytes": _method(
+        scene_pb2.SceneMeta,
+        lambda request, data: (load_staged_file_pb(request, data), None),
+        _put_scene,
+    ),
+    "loadUrl": _method(
+        scene_pb2.SceneMeta,
+        lambda request, data: (load_url_staged_pb(request, data), None),
+        _put_scene,
+    ),
+    "emptyScene": _method(
+        scene_pb2.SceneMeta, lambda request, data: (empty_scene_pb(), None), _put_scene
+    ),
+    "loadWaveformPath": _method(
+        scene_pb2.SceneMeta, lambda request, data: (load_waveform_path_pb(data), None), _put_scene
+    ),
+    "getView": _method(view_pb2.ViewMeta, _run_view, _put_view),
+    "getSpectrum": _method(view_pb2.SpecMeta, _run_spectrum, _put_spectrum),
+    "runSnuffling": _method(
+        snuffling_pb2.SnufflingResult,
+        lambda request, data: (run_snuffling_pb(request), None),
+        _put_snuffling,
+    ),
+    "rmsTraces": _method(
+        scene_pb2.SceneMeta, lambda request, data: (rms_pb(request), None), _put_scene
+    ),
+    "cakePlot": _method(
+        snuffling_pb2.CakePlotResult,
+        lambda request, data: (cake_plot_pb(request), None),
+        _put_cake_plot,
+    ),
+    "runCommand": _method(
+        data_pb2.CommandResult, lambda request, data: (command_pb(request), None), _put_command
+    ),
+    "parseEvents": _method(
+        snuffling_pb2.SnufflingResult,
+        lambda request, data: (parse_events_pb(data), None),
+        _put_snuffling,
+    ),
+    "parseStations": _method(
+        snuffling_pb2.SnufflingResult,
+        lambda request, data: (parse_stations_pb(data), None),
+        _put_snuffling,
+    ),
+    "loadResponses": _method(
+        snuffling_pb2.SnufflingResult,
+        lambda request, data: (load_responses_pb(data), None),
+        _put_snuffling,
+    ),
+    "mapData": _method(
+        data_pb2.MapData, lambda request, data: (map_data_pb(), None), _put_map_data
+    ),
+    "markersToText": _method(
+        bridge_pb2.StringValue,
+        lambda request, data: (_text_bytes(markers_to_text_pb(request)), None),
+        _put_text,
+    ),
+    "loadMarkers": _method(
+        data_pb2.SnufMarkerList,
+        lambda request, data: (markers_from_text_pb(data or ""), None),
+        _put_markers,
+    ),
+    "dataselectUrl": _method(
+        bridge_pb2.StringValue,
+        lambda request, data: (_text_bytes(dataselect_url_pb(request)), None),
+        _put_text,
+    ),
+    "eventUrl": _method(
+        bridge_pb2.StringValue,
+        lambda request, data: (_text_bytes(event_url_pb(request)), None),
+        _put_text,
+    ),
+    "stationUrl": _method(
+        bridge_pb2.StringValue,
+        lambda request, data: (_text_bytes(station_url_pb(request)), None),
+        _put_text,
+    ),
+    "responseUrl": _method(
+        bridge_pb2.StringValue,
+        lambda request, data: (_text_bytes(response_url_pb(request)), None),
+        _put_text,
+    ),
+    "gfStoreLabel": _method(
+        bridge_pb2.StringValue,
+        lambda request, data: (_text_bytes(gf_store_label(data or "")), None),
+        _put_text,
+    ),
 }
 
 
 def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
     """Dispatch a bridge method; always return {"result": <BridgeResult bytes>,
-    "buffer"?: ndarray}. Never raises."""
+    "buffer"?: ndarray}. Never raises — any exception becomes a BridgeError."""
     result = bridge_pb2.BridgeResult()
     try:
-        adapter, field = _DISPATCH[method]
-        out = adapter(request, data)
-        if field in _BUFFER_FIELDS:
-            getattr(result, field).MergeFromString(out["meta"])
-            return {"result": result.SerializeToString(), "buffer": out["ys"]}
-        if field == "text":
-            getattr(result, field).value = out
-            return {"result": result.SerializeToString()}
-        getattr(result, field).MergeFromString(out)
-        return {"result": result.SerializeToString()}
+        entry = _DISPATCH[method]
+        raw, buffer = entry.run(request, data)
+        msg = entry.message()
+        msg.MergeFromString(raw)
+        entry.put(result, msg)
+        env: Dict[str, Any] = {"result": result.SerializeToString()}
+        if buffer is not None:
+            env["buffer"] = buffer
+        return env
     except Exception as exc:  # noqa: BLE001 — the whole point is to catch everything
         err = bridge_pb2.BridgeResult()
         err.error.kind = type(exc).__name__
