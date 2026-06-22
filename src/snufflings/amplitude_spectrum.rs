@@ -114,7 +114,7 @@ pub fn draw_plot(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
             let x = x_of(decade);
             painter.line_segment(
                 [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                Stroke::new(1.0, grid),
+                Stroke::new(1.0_f32, grid),
             );
         }
         decade *= 10.0;
@@ -142,7 +142,7 @@ pub fn draw_plot(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
                 egui::pos2(x_of(f), y_of(v))
             })
             .collect();
-        painter.add(Shape::line(pts, Stroke::new(1.0, col)));
+        painter.add(Shape::line(pts, Stroke::new(1.0_f32, col)));
     }
     painter.text(
         rect.left_top() + egui::vec2(5.0, 3.0),

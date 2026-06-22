@@ -933,7 +933,7 @@ pub fn show(
                 egui::pos2(p.x, lay.track_area.top()),
                 egui::pos2(p.x, lay.track_area.bottom()),
             ],
-            Stroke::new(1.0, pal.cursor),
+            Stroke::new(1.0_f32, pal.cursor),
         );
     }
 

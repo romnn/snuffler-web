@@ -87,7 +87,7 @@ fn draw_model_background(
         }
         painter.line_segment(
             [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(1.0, line_col),
+            Stroke::new(1.0_f32, line_col),
         );
         if let Some(name) = &d.name {
             painter.text(
@@ -124,7 +124,7 @@ fn draw_profile(
 
 fn flush_run(painter: &egui::Painter, run: &mut Vec<Pos2>, col: Color32) {
     if run.len() >= 2 {
-        painter.add(Shape::line(std::mem::take(run), Stroke::new(2.0, col)));
+        painter.add(Shape::line(std::mem::take(run), Stroke::new(2.0_f32, col)));
     } else {
         run.clear();
     }
@@ -238,7 +238,7 @@ fn draw_ray_legend(painter: &egui::Painter, rect: Rect, legend: &[CakeLegendEntr
     for entry in legend.iter().take(14) {
         painter.line_segment(
             [Pos2::new(lx, ly), Pos2::new(lx + 18.0, ly)],
-            Stroke::new(2.5, palette(entry.color)),
+            Stroke::new(2.5_f32, palette(entry.color)),
         );
         painter.text(
             Pos2::new(lx + 24.0, ly),
@@ -313,7 +313,7 @@ pub fn draw_rays_plot(ui: &mut egui::Ui, plot: Option<&CakeRaysPlot>) {
                 })
                 .collect();
             if pts.len() >= 2 {
-                painter.add(Shape::line(pts, Stroke::new(1.5, col)));
+                painter.add(Shape::line(pts, Stroke::new(1.5_f32, col)));
             }
         }
     }

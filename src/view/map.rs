@@ -195,7 +195,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
                         egui::pos2(p.x + 5.5, p.y + 4.0),
                     ],
                     Color32::from_rgb(0x33, 0x99, 0xFF),
-                    Stroke::new(1.0, Color32::BLACK),
+                    Stroke::new(1.0_f32, Color32::BLACK),
                 ));
                 painter.text(
                     egui::pos2(p.x + 7.0, p.y),
@@ -214,7 +214,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
                     p,
                     r,
                     Color32::from_rgba_unmultiplied(0xE0, 0x30, 0x30, 160),
-                    Stroke::new(1.0, Color32::from_rgb(0x60, 0, 0)),
+                    Stroke::new(1.0_f32, Color32::from_rgb(0x60, 0, 0)),
                 );
             }
         }

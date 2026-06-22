@@ -10,7 +10,7 @@
 /// the background work is still running. Always indeterminate (a spinner): the
 /// off-thread jobs are single, opaque calls with no sub-step progress to report.
 pub fn progress_overlay(ctx: &egui::Context, label: &str) {
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     egui::Area::new(egui::Id::new("job_overlay_scrim"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::Pos2::ZERO)
