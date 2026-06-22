@@ -42,6 +42,7 @@ import json, shutil, sys, pathlib
 src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 lock = json.loads((dst / "pyodide-lock.json").read_text())
 copied = skipped = 0
+missing = []
 for pkg in lock["packages"].values():
     fn = pkg["file_name"]
     if fn.endswith("-tests.tar"):
@@ -52,9 +53,20 @@ for pkg in lock["packages"].values():
         shutil.copy2(s, dst / fn)
         copied += 1
     else:
-        print(f"  WARN: lock references {fn} but it is not in {src}", file=sys.stderr)
+        missing.append(fn)
 print(f"  staged {copied} artifacts ({skipped} test tarball(s) skipped)")
+# A lock-referenced (non-test) wheel that isn't on disk = a partial build; refuse
+# it here rather than ship a served/ whose lock resolves to a 404 at loadPackage().
+if missing:
+    sys.exit(f"  ERROR: {len(missing)} lock-referenced artifact(s) absent from {src}: "
+             f"{sorted(missing)} — refusing to stage a partial build.")
 PY
 
 echo "threaded runtime staged → $out"
 du -sh "$out"
+
+# Refuse to ship a partial/stale build: every package the bridge loads at boot must
+# be in the staged lock, or loadPackage() fails at runtime. This also turns a stale
+# or partial *cached* dist-mt into a loud failure here instead of a broken deploy.
+# Invoked via `bash` so it works even if the file's exec bit is ever lost.
+bash "$here/check-lock.sh" "$out/pyodide-lock.json"
