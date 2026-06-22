@@ -28,6 +28,7 @@ from typing import (
     Iterator,
     List,
     Mapping,
+    NamedTuple,
     Optional,
     Protocol,
     Tuple,
@@ -48,7 +49,6 @@ from snuffler.bridge.v1 import (
     view_pb2,
 )
 
-# The TypedDicts below document the Python-side shape used by pyrocko helpers.
 NslcId = Tuple[str, str, str, str]
 MessageT = TypeVar("MessageT", bound=Message)
 TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
@@ -116,7 +116,7 @@ _ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
 # Instrument responses (a parsed FDSNStationXML), used by Deconvolution.
 _STATIONXML: Any = None
 # Catalog events (lat, lon, depth_m, mag, time) for the Map overlay.
-_EVENTS: List[Dict[str, float]] = []
+_EVENTS: List[data_pb2.MapEvent] = []
 
 # CORS-enabled FDSN web services (verified to allow cross-origin fetch).
 _FDSN = {
@@ -1065,7 +1065,7 @@ def _run_snuffling_result(
         else:
             ptmin, ptmax = tmin, tmax
 
-        groups: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        groups: Dict[Tuple[str, str, str], Dict[str, np.ndarray]] = {}
         comp_of = {"Z": "Z", "N": "N", "1": "N", "E": "E", "2": "E"}
         for tr, seg in chopped(php, plp, ptmin, ptmax):
             net, sta, loc, cha = tr.nslc_id
@@ -1116,17 +1116,17 @@ def _run_snuffling_result(
 # the request URLs and parse the responses, so all logic stays in Python.
 
 
-def _dataselect_url(p: Dict[str, Any]) -> str:
+def _dataselect_url(req: data_pb2.WaveformDownloadRequest) -> str:
     """FDSN dataselect (waveform) query URL."""
-    base = _fdsn_base(p.get("datacenter", "geofon"))
+    base = _fdsn_base(req.datacenter)
     q = "&".join(
         [
-            "net=%s" % (p.get("net") or "*"),
-            "sta=%s" % (p.get("sta") or "*"),
-            "loc=%s" % (p.get("loc") or "*"),
-            "cha=%s" % (p.get("cha") or "*"),
-            "starttime=%s" % p["start"],
-            "endtime=%s" % p["end"],
+            "net=%s" % (req.net or "*"),
+            "sta=%s" % (req.sta or "*"),
+            "loc=%s" % (req.loc or "*"),
+            "cha=%s" % (req.cha or "*"),
+            "starttime=%s" % req.start,
+            "endtime=%s" % req.end,
             "nodata=204",
         ]
     )
@@ -1142,15 +1142,15 @@ def _load_waveform_path_scene(path: str) -> scene_pb2.SceneMeta:
     return _scene_meta()
 
 
-def _event_url(p: Dict[str, Any]) -> str:
+def _event_url(req: data_pb2.CatalogRequest) -> str:
     """FDSN event (catalog) query URL (text format)."""
-    base = _fdsn_base(p.get("datacenter", "usgs"))
+    base = _fdsn_base(req.datacenter)
     q = "&".join(
         [
             "format=text",
-            "starttime=%s" % p["start"],
-            "endtime=%s" % p["end"],
-            "minmagnitude=%s" % p.get("minmag", 5.0),
+            "starttime=%s" % req.start,
+            "endtime=%s" % req.end,
+            "minmagnitude=%s" % req.minmag,
             "orderby=time",
             "limit=1000",
         ]
@@ -1166,11 +1166,11 @@ def _ftime(s: str) -> float:
         return 0.0
 
 
-def _parse_events_result(text: str) -> Dict[str, Any]:
+def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse FDSN event 'text' format into event markers; set the active event
     (largest magnitude) for distance/azimuth sorting."""
     global _ACTIVE_EVENT, _EVENTS
-    markers = []
+    result = snuffling_pb2.SnufflingResult(show_window=True)
     lines = []
     _EVENTS = []
     best = None
@@ -1188,15 +1188,11 @@ def _parse_events_result(text: str) -> Dict[str, Any]:
         mag = float(c[10]) if len(c) > 10 and c[10] else 0.0
         name = c[12] if len(c) > 12 else ""
         when = c[1].replace("T", " ")[:19]
-        markers.append(
-            {
-                "t": t,
-                "phase": ("M%.1f %s" % (mag, name)).strip()[:48],
-                "kind": 0,
-                "is_event": True,
-            }
-        )
-        _EVENTS.append({"lat": lat, "lon": lon, "depth": depth, "mag": mag, "time": t})
+        marker = result.markers.add()
+        marker.t = t
+        marker.phase = ("M%.1f %s" % (mag, name)).strip()[:48]
+        marker.is_event = True
+        _EVENTS.append(data_pb2.MapEvent(lat=lat, lon=lon, mag=mag))
         lines.append("M%.1f  %s  %s" % (mag, when, name))
         if best is None or mag > best[0]:
             best = (mag, lat, lon, depth, t)
@@ -1205,22 +1201,23 @@ def _parse_events_result(text: str) -> Dict[str, Any]:
         header = (
             "%d event(s) found; active event M%.1f (distance sort enabled).\n"
             "Jumped the view to the events — load waveforms for this time to "
-            "see them on data." % (len(markers), best[0])
+            "see them on data." % (len(result.markers), best[0])
         )
     else:
         header = "No events found in this time window."
     body = "\n".join(lines[:30])
-    return {"text": header + ("\n\n" + body if body else ""), "markers": markers}
+    result.text = header + ("\n\n" + body if body else "")
+    return result
 
 
-def _station_url(p: Dict[str, Any]) -> str:
+def _station_url(req: data_pb2.StationRequest) -> str:
     """FDSN station query URL (text format, station level)."""
-    base = _fdsn_base(p.get("datacenter", "geofon"))
+    base = _fdsn_base(req.datacenter)
     q = "&".join(
         [
-            "net=%s" % (p.get("net") or "*"),
-            "sta=%s" % (p.get("sta") or "*"),
-            "cha=%s" % (p.get("cha") or "*"),
+            "net=%s" % (req.net or "*"),
+            "sta=%s" % (req.sta or "*"),
+            "cha=%s" % (req.cha or "*"),
             "level=station",
             "format=text",
         ]
@@ -1228,7 +1225,7 @@ def _station_url(p: Dict[str, Any]) -> str:
     return "%s/fdsnws/station/1/query?%s" % (base, q)
 
 
-def _parse_stations_result(text: str) -> Dict[str, Any]:
+def _parse_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse FDSN station 'text' format (#Net|Sta|Lat|Lon|Elev|Site|Start|End)
     and remember coordinates for distance/azimuth sorting."""
     global _STATIONS
@@ -1245,30 +1242,32 @@ def _parse_stations_result(text: str) -> Dict[str, Any]:
             n += 1
         except Exception:
             pass
-    return {"text": "%d station(s) with coordinates loaded" % n, "markers": []}
+    return snuffling_pb2.SnufflingResult(
+        show_window=True, text="%d station(s) with coordinates loaded" % n
+    )
 
 
-def _response_url(p: Dict[str, Any]) -> str:
+def _response_url(req: data_pb2.StationRequest) -> str:
     """FDSN station query URL at response level (StationXML with instrument
     responses, for deconvolution)."""
-    base = _fdsn_base(p.get("datacenter", "geofon"))
+    base = _fdsn_base(req.datacenter)
     q = "&".join(
         [
-            "net=%s" % (p.get("net") or "*"),
-            "sta=%s" % (p.get("sta") or "*"),
-            "cha=%s" % (p.get("cha") or "*"),
+            "net=%s" % (req.net or "*"),
+            "sta=%s" % (req.sta or "*"),
+            "cha=%s" % (req.cha or "*"),
             "level=response",
         ]
     )
     return "%s/fdsnws/station/1/query?%s" % (base, q)
 
 
-def _load_responses_result(xml_text: str) -> Dict[str, Any]:
+def _load_responses_result(xml_text: str) -> snuffling_pb2.SnufflingResult:
     """Parse fetched StationXML into instrument responses (for Deconvolution) and
     also harvest station coordinates (for distance/azimuth sorting)."""
     global _STATIONXML, _RESPONSE_GEN
     if not xml_text.strip():
-        return {"text": "no station metadata returned", "markers": []}
+        return snuffling_pb2.SnufflingResult(show_window=True, text="no station metadata returned")
     from pyrocko.io import stationxml
 
     _STATIONXML = stationxml.load_xml(string=xml_text)
@@ -1286,23 +1285,23 @@ def _load_responses_result(xml_text: str) -> Dict[str, Any]:
                 )
             except Exception:
                 pass
-    return {
-        "text": "%d channel response(s) loaded — enable Options ▸ Deconvolution" % nchan,
-        "markers": [],
-    }
+    return snuffling_pb2.SnufflingResult(
+        show_window=True,
+        text="%d channel response(s) loaded — enable Options ▸ Deconvolution" % nchan,
+    )
 
 
-def _map_data_result() -> Dict[str, Any]:
+def _map_data_result() -> data_pb2.MapData:
     """Station + event coordinates for the Map overlay (no network — reads what
     the FDSN fetches already loaded)."""
-    stations = [
-        {"label": "%s.%s" % (net, sta), "lat": lat, "lon": lon}
-        for (net, sta), (lat, lon, _elev) in _STATIONS.items()
-    ]
-    events = [
-        {"lat": e["lat"], "lon": e["lon"], "mag": e["mag"], "time": e["time"]} for e in _EVENTS
-    ]
-    return {"stations": stations, "events": events}
+    msg = data_pb2.MapData()
+    for (net, sta), (lat, lon, _elev) in _STATIONS.items():
+        station = msg.stations.add()
+        station.label = "%s.%s" % (net, sta)
+        station.lat = lat
+        station.lon = lon
+    msg.events.extend(_EVENTS)
+    return msg
 
 
 # --- Marker file I/O (pyrocko marker format) -------------------------------
@@ -1378,49 +1377,47 @@ def _gf_modules() -> Tuple[Any, Any]:
     return _gf_store_mod, _gf_meta_mod
 
 
-def _gf_store_info_result(store_dir: str) -> Dict[str, Any]:
+class GfStoreInfo(NamedTuple):
+    id: str
+    label: str
+    sample_rate: float
+    has_earthmodel: bool
+
+
+def _gf_store_info_result(store_dir: str) -> GfStoreInfo:
     """Read a mounted GF store's config (no ``store_ext`` / network needed) and
     register it so its embedded 1D earth model is selectable in Cake Phase.
 
-    Returns ``{id, label, sample_rate, has_earthmodel}`` or ``{error}``.
+    Raises on failure; the ``call()`` failsafe turns that into a BridgeError.
     """
-    try:
-        gfstore, _gfmeta = _gf_modules()
-        cfg = gfstore.Store(store_dir).config
-        sid = str(cfg.id)
-        _GF_STORES[sid] = store_dir
-        return {
-            "id": sid,
-            "label": GF_STORE_PREFIX + sid,
-            "sample_rate": float(getattr(cfg, "sample_rate", 0.0) or 0.0),
-            "has_earthmodel": getattr(cfg, "earthmodel_1d", None) is not None,
-        }
-    except Exception as e:
-        return {"error": "%s: %s" % (type(e).__name__, e)}
+    gfstore, _gfmeta = _gf_modules()
+    cfg = gfstore.Store(store_dir).config
+    sid = str(cfg.id)
+    _GF_STORES[sid] = store_dir
+    return GfStoreInfo(
+        id=sid,
+        label=GF_STORE_PREFIX + sid,
+        sample_rate=float(getattr(cfg, "sample_rate", 0.0) or 0.0),
+        has_earthmodel=getattr(cfg, "earthmodel_1d", None) is not None,
+    )
 
 
 def gf_store_label(store_dir: str) -> str:
-    info = _gf_store_info_result(store_dir)
-    if info.get("error"):
-        raise ValueError(str(info["error"]))
-    return str(info.get("label", ""))
+    return _gf_store_info_result(store_dir).label
 
 
-def _markers_to_text(markers: List[Dict[str, Any]]) -> str:
+def _markers_to_text(req: data_pb2.MarkerFile) -> str:
     """Serialize markers to pyrocko's snuffler marker-file format."""
     pm = _marker_module()
 
     ms = []
-    for m in markers:
-        tmin = float(m["tmin"])
-        tmax = float(m.get("tmax", tmin))
-        kind = int(m.get("kind", 0))
-        nslc = m.get("nslc")
-        ids = [tuple(nslc)] if nslc else []
-        phase = m.get("phase")
-        polarity = m.get("polarity")
-        if polarity is not None:
-            polarity = int(polarity)
+    for m in req.markers:
+        tmin = float(m.tmin)
+        tmax = float(m.tmax)
+        kind = int(m.kind)
+        ids = [(m.nslc.net, m.nslc.sta, m.nslc.loc, m.nslc.cha)] if m.HasField("nslc") else []
+        phase = m.phase if m.HasField("phase") else None
+        polarity = int(m.polarity) if m.HasField("polarity") else None
         # A polarity is only meaningful on a PhaseMarker, so promote any marker
         # that carries one even if it has no phase name yet.
         if phase or polarity is not None:
@@ -1433,44 +1430,41 @@ def _markers_to_text(markers: List[Dict[str, Any]]) -> str:
         return f.read()
 
 
-def _markers_from_text(text: str) -> List[Dict[str, Any]]:
-    """Parse a pyrocko marker file into the marker dicts the egui side adds."""
+def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
+    """Parse a pyrocko marker file into the SnufMarker messages the egui side adds."""
     pm = _marker_module()
 
+    result = data_pb2.SnufMarkerList()
     path = "/tmp/markers_in.txt"
     with open(path, "w") as f:
         f.write(text)
     try:
         ms = pm.load_markers(path)
     except Exception:
-        return []
-    out = []
+        return result
     for mk in ms:
         ids = mk.get_nslc_ids()
-        nslc = list(ids[0]) if ids else None
-        phase = None
-        polarity = None
+        marker = result.markers.add()
+        marker.t = float(mk.tmin)
+        marker.tmax = float(mk.tmax)
+        marker.kind = int(mk.kind or 0)
+        marker.is_event = isinstance(mk, pm.EventMarker)
+        if ids:
+            marker.nslc.CopyFrom(_nslc_pb(list(ids[0])))
         if isinstance(mk, pm.PhaseMarker):
             try:
                 phase = mk.get_phasename()
             except Exception:
                 phase = None
+            if phase is not None:
+                marker.phase = phase
             try:
                 polarity = mk.get_polarity()
             except Exception:
                 polarity = None
-        out.append(
-            {
-                "t": float(mk.tmin),
-                "tmax": float(mk.tmax),
-                "kind": int(mk.kind or 0),
-                "phase": phase,
-                "polarity": polarity,
-                "nslc": nslc,
-                "is_event": isinstance(mk, pm.EventMarker),
-            }
-        )
-    return out
+            if polarity is not None:
+                marker.polarity = int(polarity)
+    return result
 
 
 # Directory where bridge.js stages the cake earth models (tiny .nd text files
@@ -1763,10 +1757,16 @@ def _command_glob(scope: Optional[str], pattern: str) -> str:
     return pattern if "." in pattern else "*%s*" % pattern
 
 
-def _command_result(line: str) -> Dict[str, Any]:
-    """Execute a snuffler ':' command line. Returns a dict describing the action:
-    {"action": "goto", "t": <epoch>} | {"action": "scene", "scene": <SceneMeta>}
-    | {"action": "error", "message": ...} | {"action": "none"}.
+def _command_scene() -> data_pb2.CommandResult:
+    result = data_pb2.CommandResult(action="scene")
+    result.scene.CopyFrom(_scene_meta())
+    return result
+
+
+def _command_result(line: str) -> data_pb2.CommandResult:
+    """Execute a snuffler ':' command line into a CommandResult whose ``action``
+    is ``goto`` (with ``t``), ``scene`` (with ``scene``), ``error`` (with
+    ``message``), or ``none``.
 
     Supported: ``goto <time>``; ``hide [n|s|l|c] <pattern>``;
     ``unhide [[n|s|l|c] <pattern>]``; ``n|s|l|c <pattern>`` (reduce to matching).
@@ -1774,19 +1774,19 @@ def _command_result(line: str) -> Dict[str, Any]:
     global _HIDDEN, _REDUCE
     parts = line.split()
     if not parts:
-        return {"action": "none"}
+        return data_pb2.CommandResult(action="none")
     cmd, args = parts[0], parts[1:]
 
     if cmd == "goto":
         if not args:
-            return {"action": "error", "message": "usage: goto <time>"}
+            return data_pb2.CommandResult(action="error", message="usage: goto <time>")
         from pyrocko import util
 
         try:
             t = float(util.str_to_time_fillup(" ".join(args)))
         except Exception as e:
-            return {"action": "error", "message": "bad time: %s" % e}
-        return {"action": "goto", "t": t}
+            return data_pb2.CommandResult(action="error", message="bad time: %s" % e)
+        return data_pb2.CommandResult(action="goto", t=t)
 
     if cmd in ("hide", "unhide"):
         scope, rest = None, args
@@ -1795,10 +1795,9 @@ def _command_result(line: str) -> Dict[str, Any]:
         pattern = rest[0] if rest else None
         if cmd == "hide":
             if pattern is None:
-                return {
-                    "action": "error",
-                    "message": "usage: hide [n|s|l|c] <pattern>",
-                }
+                return data_pb2.CommandResult(
+                    action="error", message="usage: hide [n|s|l|c] <pattern>"
+                )
             glob = _command_glob(scope, pattern)
             if glob not in _HIDDEN:
                 _HIDDEN.append(glob)
@@ -1809,13 +1808,13 @@ def _command_result(line: str) -> Dict[str, Any]:
             else:
                 glob = _command_glob(scope, pattern)
                 _HIDDEN = [h for h in _HIDDEN if h != glob]
-        return {"action": "scene", "scene": _scene_meta()}
+        return _command_scene()
 
     if cmd in ("n", "s", "l", "c"):
         _REDUCE = _command_glob(cmd, args[0] if args else "*")
-        return {"action": "scene", "scene": _scene_meta()}
+        return _command_scene()
 
-    return {"action": "error", "message": "unknown command: %s" % cmd}
+    return data_pb2.CommandResult(action="error", message="unknown command: %s" % cmd)
 
 
 def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
@@ -1964,60 +1963,6 @@ def _nslc_pb(value: Any) -> common_pb2.Nslc:
     return msg
 
 
-def _marker_msg(data: Mapping[str, Any]) -> snuffling_pb2.SnufMarker:
-    msg = snuffling_pb2.SnufMarker()
-    msg.t = float(data.get("t", data.get("tmin", 0.0)) or 0.0)
-    if data.get("tmax") is not None:
-        msg.tmax = float(data["tmax"])
-    if data.get("phase") is not None:
-        msg.phase = str(data["phase"])
-    msg.kind = int(data.get("kind", 0) or 0)
-    msg.is_event = bool(data.get("is_event", False))
-    if data.get("nslc"):
-        msg.nslc.CopyFrom(_nslc_pb(data["nslc"]))
-    if data.get("polarity") is not None:
-        msg.polarity = int(data["polarity"])
-    return msg
-
-
-def _snuffling_result_pb(data: Mapping[str, Any]) -> bytes:
-    msg = snuffling_pb2.SnufflingResult()
-    msg.show_window = bool(data.get("show_window", True))
-    msg.text = str(data.get("text", ""))
-    for marker in data.get("markers", []):
-        msg.markers.add().CopyFrom(_marker_msg(marker))
-    if data.get("scene") is not None:
-        msg.scene.CopyFrom(data["scene"])
-    return msg.SerializeToString()
-
-
-def _command_result_pb(data: Mapping[str, Any]) -> bytes:
-    msg = data_pb2.CommandResult()
-    msg.action = str(data.get("action", "none"))
-    if data.get("t") is not None:
-        msg.t = float(data["t"])
-    if data.get("scene") is not None:
-        msg.scene.CopyFrom(data["scene"])
-    if data.get("message") is not None:
-        msg.message = str(data["message"])
-    return msg.SerializeToString()
-
-
-def _map_data_pb(data: Mapping[str, Any]) -> bytes:
-    msg = data_pb2.MapData()
-    for station in data.get("stations", []):
-        station_item = msg.stations.add()
-        station_item.label = str(station.get("label", ""))
-        station_item.lat = float(station.get("lat", 0.0) or 0.0)
-        station_item.lon = float(station.get("lon", 0.0) or 0.0)
-    for event in data.get("events", []):
-        event_item = msg.events.add()
-        event_item.lat = float(event.get("lat", 0.0) or 0.0)
-        event_item.lon = float(event.get("lon", 0.0) or 0.0)
-        event_item.mag = float(event.get("mag", 0.0) or 0.0)
-    return msg.SerializeToString()
-
-
 def make_example_pb() -> bytes:
     return _make_example_scene().SerializeToString()
 
@@ -2065,21 +2010,11 @@ def cake_plot_pb(request: Any) -> bytes:
 
 def command_pb(request: Any) -> bytes:
     req = _parse_pb(data_pb2.StringRequest, request)
-    return _command_result_pb(_command_result(req.value))
+    return _command_result(req.value).SerializeToString()
 
 
 def dataselect_url_pb(request: Any) -> str:
-    req = _parse_pb(data_pb2.WaveformDownloadRequest, request)
-    data = {
-        "datacenter": req.datacenter,
-        "net": req.net,
-        "sta": req.sta,
-        "loc": req.loc,
-        "cha": req.cha,
-        "start": req.start,
-        "end": req.end,
-    }
-    return _dataselect_url(data)
+    return _dataselect_url(_parse_pb(data_pb2.WaveformDownloadRequest, request))
 
 
 def load_waveform_path_pb(path: str) -> bytes:
@@ -2087,84 +2022,39 @@ def load_waveform_path_pb(path: str) -> bytes:
 
 
 def event_url_pb(request: Any) -> str:
-    req = _parse_pb(data_pb2.CatalogRequest, request)
-    data = {
-        "datacenter": req.datacenter,
-        "start": req.start,
-        "end": req.end,
-        "minmag": req.minmag,
-    }
-    return _event_url(data)
+    return _event_url(_parse_pb(data_pb2.CatalogRequest, request))
 
 
 def parse_events_pb(text: str) -> bytes:
-    return _snuffling_result_pb(_parse_events_result(text))
+    return _parse_events_result(text).SerializeToString()
 
 
 def station_url_pb(request: Any) -> str:
-    req = _parse_pb(data_pb2.StationRequest, request)
-    data = {
-        "datacenter": req.datacenter,
-        "net": req.net,
-        "sta": req.sta,
-        "cha": req.cha,
-    }
-    return _station_url(data)
+    return _station_url(_parse_pb(data_pb2.StationRequest, request))
 
 
 def parse_stations_pb(text: str) -> bytes:
-    return _snuffling_result_pb(_parse_stations_result(text))
+    return _parse_stations_result(text).SerializeToString()
 
 
 def response_url_pb(request: Any) -> str:
-    req = _parse_pb(data_pb2.StationRequest, request)
-    data = {
-        "datacenter": req.datacenter,
-        "net": req.net,
-        "sta": req.sta,
-        "cha": req.cha,
-    }
-    return _response_url(data)
+    return _response_url(_parse_pb(data_pb2.StationRequest, request))
 
 
 def load_responses_pb(text: str) -> bytes:
-    return _snuffling_result_pb(_load_responses_result(text))
+    return _load_responses_result(text).SerializeToString()
 
 
 def map_data_pb() -> bytes:
-    return _map_data_pb(_map_data_result())
+    return _map_data_result().SerializeToString()
 
 
 def markers_to_text_pb(request: Any) -> str:
-    req = _parse_pb(data_pb2.MarkerFile, request)
-    out = []
-    for marker in req.markers:
-        item: Dict[str, Any] = {
-            "tmin": float(marker.tmin),
-            "tmax": float(marker.tmax),
-            "kind": int(marker.kind),
-        }
-        if marker.HasField("phase"):
-            item["phase"] = marker.phase
-        if marker.HasField("nslc"):
-            item["nslc"] = [
-                marker.nslc.net,
-                marker.nslc.sta,
-                marker.nslc.loc,
-                marker.nslc.cha,
-            ]
-        if marker.HasField("polarity"):
-            item["polarity"] = int(marker.polarity)
-        out.append(item)
-    return _markers_to_text(out)
+    return _markers_to_text(_parse_pb(data_pb2.MarkerFile, request))
 
 
 def markers_from_text_pb(text: str) -> bytes:
-    data = _markers_from_text(text)
-    msg = data_pb2.SnufMarkerList()
-    for marker in data:
-        msg.markers.add().CopyFrom(_marker_msg(marker))
-    return msg.SerializeToString()
+    return _markers_from_text(text).SerializeToString()
 
 
 # --- Single dispatch + proto-error failsafe -------------------------------
