@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+import "snuffler/bridge/v1/data.proto";
+import "snuffler/bridge/v1/scene.proto";
+import "snuffler/bridge/v1/snuffling.proto";
+import "snuffler/bridge/v1/view.proto";
+
+// A Python exception, carried as a DTO instead of raised across the JS boundary.
+// (A raised exception's traceback can't be converted to JS on the threaded
+// SharedArrayBuffer build — TextDecoder rejects the shared view — so errors must
+// travel as proto bytes like every other DTO. See AGENTS.md.)
+message BridgeError {
+  string kind = 1; // exception class name
+  string message = 2; // str(exc)
+  string traceback = 3; // traceback.format_exc(), for debugging
+}
+
+message StringValue {
+  string value = 1;
+}
+
+// The envelope every bridge response is wrapped in: exactly one of `error` or a
+// concrete success payload. bridge.py's single `call()` failsafe always returns
+// one of these; Rust decodes it into a Result. The zero-copy waveform buffer for
+// `view`/`spectrum` ships out-of-band alongside this message (not in the oneof).
+message BridgeResult {
+  oneof result {
+    BridgeError error = 1;
+    SceneMeta scene = 2; // makeExample, loadBytes, loadUrl, emptyScene, rms, loadWaveformPath
+    ViewMeta view = 3; // getView (paired with the ys buffer)
+    SpecMeta spectrum = 4; // getSpectrum (paired with the ys buffer)
+    SnufflingResult snuffling = 5; // runSnuffling, parseEvents, parseStations, loadResponses
+    CakePlotResult cake_plot = 6; // cakePlot
+    MapData map_data = 7; // mapData
+    CommandResult command = 8; // runCommand
+    SnufMarkerList markers = 9; // loadMarkers
+    StringValue text = 10; // dataselect/event/station/response URLs, gf_store_label, markers_to_text
+  }
+}

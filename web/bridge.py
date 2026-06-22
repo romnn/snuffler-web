@@ -39,7 +39,14 @@ import numpy as np
 from google.protobuf.message import Message
 from pyrocko import io as pio
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import common_pb2, data_pb2, scene_pb2, snuffling_pb2, view_pb2
+from snuffler.bridge.v1 import (
+    bridge_pb2,
+    common_pb2,
+    data_pb2,
+    scene_pb2,
+    snuffling_pb2,
+    view_pb2,
+)
 
 
 # The TypedDicts below document the Python-side shape used by pyrocko helpers.
@@ -2601,3 +2608,86 @@ def markers_from_text_pb(text: str) -> bytes:
     for marker in data:
         msg.markers.add().CopyFrom(_marker_msg(marker))
     return msg.SerializeToString()
+
+
+# --- Single dispatch + proto-error failsafe -------------------------------
+#
+# Every bridge call from the worker goes through call(): it runs the handler,
+# wraps the concrete proto result in the BridgeResult oneof, and — crucially —
+# catches ANY exception and returns it as the BridgeError variant. No bridge
+# function may ever raise across the JS boundary: on the threaded
+# SharedArrayBuffer build a raised exception's traceback can't be converted to
+# JS (TextDecoder rejects the shared view). Errors travel as proto bytes like
+# every other DTO. See AGENTS.md.
+#
+# Each entry maps a method name to (adapter(request, data) -> result, oneof field).
+# The handler's existing return type implies how it is packed:
+#   - field in {"view", "spectrum"}: adapter returns {"meta": bytes, "ys": ndarray};
+#     meta is parsed into the oneof, ys ships out-of-band (zero-copy).
+#   - field == "text": adapter returns a str -> StringValue.
+#   - otherwise: adapter returns serialized proto bytes -> parsed into the oneof.
+_BUFFER_FIELDS = frozenset({"view", "spectrum"})
+
+_DISPATCH: Dict[str, Any] = {
+    "makeExample": (lambda request, data: make_example_pb(), "scene"),
+    "loadBytes": (lambda request, data: load_staged_file_pb(request, data), "scene"),
+    "loadUrl": (lambda request, data: load_url_staged_pb(request, data), "scene"),
+    "emptyScene": (lambda request, data: empty_scene_pb(), "scene"),
+    "loadWaveformPath": (lambda request, data: load_waveform_path_pb(data), "scene"),
+    "getView": (lambda request, data: get_view_pb(request), "view"),
+    "getSpectrum": (lambda request, data: get_spectrum_pb(request), "spectrum"),
+    "runSnuffling": (lambda request, data: run_snuffling_pb(request), "snuffling"),
+    "rmsTraces": (lambda request, data: rms_pb(request), "scene"),
+    "cakePlot": (lambda request, data: cake_plot_pb(request), "cake_plot"),
+    "runCommand": (lambda request, data: command_pb(request), "command"),
+    "parseEvents": (lambda request, data: parse_events_pb(data), "snuffling"),
+    "parseStations": (lambda request, data: parse_stations_pb(data), "snuffling"),
+    "loadResponses": (lambda request, data: load_responses_pb(data), "snuffling"),
+    "mapData": (lambda request, data: map_data_pb(), "map_data"),
+    "markersToText": (lambda request, data: markers_to_text_pb(request), "text"),
+    "loadMarkers": (lambda request, data: markers_from_text_pb(data or ""), "markers"),
+    "dataselectUrl": (lambda request, data: dataselect_url_pb(request), "text"),
+    "eventUrl": (lambda request, data: event_url_pb(request), "text"),
+    "stationUrl": (lambda request, data: station_url_pb(request), "text"),
+    "responseUrl": (lambda request, data: response_url_pb(request), "text"),
+    "gfStoreLabel": (lambda request, data: gf_store_label(data or ""), "text"),
+}
+
+
+def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
+    """Dispatch a bridge method; always return {"result": <BridgeResult bytes>,
+    "buffer"?: ndarray}. Never raises."""
+    result = bridge_pb2.BridgeResult()
+    try:
+        adapter, field = _DISPATCH[method]
+        out = adapter(request, data)
+        if field in _BUFFER_FIELDS:
+            getattr(result, field).MergeFromString(out["meta"])
+            return {"result": result.SerializeToString(), "buffer": out["ys"]}
+        if field == "text":
+            getattr(result, field).value = out
+            return {"result": result.SerializeToString()}
+        getattr(result, field).MergeFromString(out)
+        return {"result": result.SerializeToString()}
+    except Exception as exc:  # noqa: BLE001 — the whole point is to catch everything
+        err = bridge_pb2.BridgeResult()
+        err.error.kind = type(exc).__name__
+        err.error.message = str(exc)
+        err.error.traceback = traceback.format_exc()
+        return {"result": err.SerializeToString()}
+
+
+def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
+    """For two-step worker flows (URL builders, gf_store_label, markers_to_text)
+    that need the string back in the worker. Returns {"text": str, "error": str}
+    — never raises (a raised exception over the threaded worker boundary would
+    hit the same TextDecoder issue call() guards against)."""
+    env = call(method, request, data)
+    result = bridge_pb2.BridgeResult()
+    result.ParseFromString(env["result"])
+    which = result.WhichOneof("result")
+    if which == "error":
+        return {"text": "", "error": f"{result.error.kind}: {result.error.message}"}
+    if which == "text":
+        return {"text": result.text.value, "error": ""}
+    return {"text": "", "error": f"unexpected bridge result variant: {which}"}

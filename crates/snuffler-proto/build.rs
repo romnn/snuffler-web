@@ -5,6 +5,7 @@ fn main() {
         "view.proto",
         "snuffling.proto",
         "data.proto",
+        "bridge.proto",
     ] {
         println!("cargo:rerun-if-changed=../../proto/snuffler/bridge/v1/{file}");
     }
@@ -16,6 +17,7 @@ fn main() {
                 "../../proto/snuffler/bridge/v1/view.proto",
                 "../../proto/snuffler/bridge/v1/snuffling.proto",
                 "../../proto/snuffler/bridge/v1/data.proto",
+                "../../proto/snuffler/bridge/v1/bridge.proto",
             ],
             &["../../proto"],
         )

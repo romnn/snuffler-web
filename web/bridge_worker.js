@@ -65,35 +65,6 @@ function pyBytes(value) {
   }
 }
 
-function pyBufferResult(res, label) {
-  let metaProxy = null;
-  let ysProxy = null;
-  let buffer = null;
-  try {
-    metaProxy = res.get("meta");
-    ysProxy = res.get("ys");
-    buffer = ysProxy.getBuffer();
-    const data = buffer.data;
-    const bytes =
-      data instanceof Uint8Array
-        ? data
-        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    return {
-      meta: pyBytes(metaProxy),
-      ys: ownedBytes(bytes),
-    };
-  } catch (e) {
-    throw new Error(`${label}: ${e && e.message ? e.message : e}`);
-  } finally {
-    try {
-      if (buffer) buffer.release();
-    } finally {
-      destroyMaybe(ysProxy);
-      destroyMaybe(res);
-    }
-  }
-}
-
 function readVarint(bytes, pos) {
   let value = 0;
   let shift = 0;
@@ -228,6 +199,7 @@ async function boot() {
         "view_pb2.py",
         "snuffling_pb2.py",
         "data_pb2.py",
+        "bridge_pb2.py",
       ]) {
         const src = await (await fetchOk(resolveUrl(`proto/snuffler/bridge/v1/${file}`))).text();
         py.FS.writeFile(`/snuffler/bridge/v1/${file}`, src);
@@ -321,30 +293,60 @@ async function ensureEarthModels() {
   earthModelsStaged = true;
 }
 
-function bytesResult(bytes) {
-  const out = ownedBytes(bytes);
-  return { bytes: out.buffer, transfer: [out.buffer] };
+// Shape the {"result": BridgeResult bytes, "buffer"?: ndarray} dict that
+// bridge.call() returns into the worker's postMessage payload. The result bytes
+// (the proto envelope — success variant OR BridgeError) always flow through;
+// the zero-copy ys buffer is transferred only when present (getView/getSpectrum).
+function bridgeResult(res) {
+  try {
+    const result = pyBytes(res.get("result")); // pyBytes owns + destroys the inner proxy
+    const out = { result: result.buffer, transfer: [result.buffer] };
+    if (res.has("buffer")) {
+      const ysProxy = res.get("buffer");
+      let buf = null;
+      try {
+        buf = ysProxy.getBuffer();
+        const d = buf.data;
+        const ys = ownedBytes(
+          d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength)
+        );
+        out.ys = ys.buffer;
+        out.transfer.push(ys.buffer);
+      } finally {
+        if (buf) buf.release();
+        destroyMaybe(ysProxy);
+      }
+    }
+    return out;
+  } finally {
+    destroyMaybe(res);
+  }
 }
 
-function bufferResult(result) {
-  return {
-    meta: result.meta.buffer,
-    ys: result.ys.buffer,
-    transfer: [result.meta.buffer, result.ys.buffer],
-  };
+// Extract the string from a bridge.call_text() {"text", "error"} reply. Throws a
+// plain JS Error on the error variant (a JS-side throw is safe — only a *Python*
+// exception crossing the threaded worker boundary hits the TextDecoder issue).
+function callText(res) {
+  try {
+    const error = res.get("error");
+    if (error) throw new Error(error);
+    return res.get("text") || "";
+  } finally {
+    destroyMaybe(res);
+  }
 }
 
 async function handleRequest(msg) {
   const method = msg.method;
   if (method === "makeExample") {
     await boot();
-    return bytesResult(bridge.make_example_pb());
+    return bridgeResult(bridge.call("makeExample"));
   }
   if (method === "loadBytes") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
     const path = writeStagedFile(fields.get(1) || "data", msg.data || new Uint8Array(0));
-    return bytesResult(bridge.load_staged_file_pb(msg.request, path));
+    return bridgeResult(bridge.call("loadBytes", msg.request, path));
   }
   if (method === "loadUrl") {
     await boot();
@@ -353,67 +355,67 @@ async function handleRequest(msg) {
     const name = url.split("/").pop() || "data";
     const buf = new Uint8Array(await (await fetchOk(resolveUrl(url))).arrayBuffer());
     const path = writeStagedFile(name, buf);
-    return bytesResult(bridge.load_url_staged_pb(msg.request, path));
+    return bridgeResult(bridge.call("loadUrl", msg.request, path));
   }
   if (method === "getView") {
     await boot();
-    return bufferResult(pyBufferResult(bridge.get_view_pb(msg.request), "getView"));
+    return bridgeResult(bridge.call("getView", msg.request));
   }
   if (method === "getSpectrum") {
     await boot();
-    return bufferResult(pyBufferResult(bridge.get_spectrum_pb(msg.request), "getSpectrum"));
+    return bridgeResult(bridge.call("getSpectrum", msg.request));
   }
   if (method === "runSnuffling") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
     if ((fields.get(1) || "") === "cake") await ensureEarthModels();
-    return bytesResult(bridge.run_snuffling_pb(msg.request));
+    return bridgeResult(bridge.call("runSnuffling", msg.request));
   }
   if (method === "rmsTraces") {
     await boot();
-    return bytesResult(bridge.rms_pb(msg.request));
+    return bridgeResult(bridge.call("rmsTraces", msg.request));
   }
   if (method === "downloadWaveforms") {
     await boot();
-    const url = pyValueToString(bridge.dataselect_url_pb(msg.request));
+    const url = callText(bridge.call_text("dataselectUrl", msg.request));
     const r = await fetch(url);
     if (!r.ok && r.status !== 204) {
       throw new Error(`dataselect HTTP ${r.status} ${r.statusText}`);
     }
     const buf = new Uint8Array(await r.arrayBuffer());
-    if (buf.byteLength === 0) return bytesResult(bridge.empty_scene_pb());
+    if (buf.byteLength === 0) return bridgeResult(bridge.call("emptyScene"));
     const path = writeStagedFile("fdsn.mseed", buf);
-    return bytesResult(bridge.load_waveform_path_pb(path));
+    return bridgeResult(bridge.call("loadWaveformPath", null, path));
   }
   if (method === "catalogSearch") {
     await boot();
-    const url = pyValueToString(bridge.event_url_pb(msg.request));
+    const url = callText(bridge.call_text("eventUrl", msg.request));
     const r = await fetch(url);
     const text = r.ok ? await r.text() : "";
-    return bytesResult(bridge.parse_events_pb(text));
+    return bridgeResult(bridge.call("parseEvents", null, text));
   }
   if (method === "fetchStations") {
     await boot();
-    const url = pyValueToString(bridge.station_url_pb(msg.request));
+    const url = callText(bridge.call_text("stationUrl", msg.request));
     const r = await fetch(url);
     const text = r.ok ? await r.text() : "";
-    return bytesResult(bridge.parse_stations_pb(text));
+    return bridgeResult(bridge.call("parseStations", null, text));
   }
   if (method === "fetchResponses") {
     await boot();
-    const url = pyValueToString(bridge.response_url_pb(msg.request));
+    const url = callText(bridge.call_text("responseUrl", msg.request));
     const r = await fetch(url);
     const text = r.ok ? await r.text() : "";
-    return bytesResult(bridge.load_responses_pb(text));
+    return bridgeResult(bridge.call("loadResponses", null, text));
   }
   if (method === "mapData") {
     await boot();
-    return bytesResult(bridge.map_data_pb());
+    return bridgeResult(bridge.call("mapData"));
   }
   if (method === "cakePlot") {
     await boot();
     await ensureEarthModels();
-    return bytesResult(bridge.cake_plot_pb(msg.request));
+    return bridgeResult(bridge.call("cakePlot", msg.request));
   }
   if (method === "addCakeModel") {
     await boot();
@@ -438,19 +440,19 @@ async function handleRequest(msg) {
     }
     py.FS.mkdir(mount);
     await py.mountNativeFS(mount, msg.handle);
-    return { text: pyValueToString(bridge.gf_store_label(mount)) };
+    return { text: callText(bridge.call_text("gfStoreLabel", null, mount)) };
   }
   if (method === "runCommand") {
     await boot();
-    return bytesResult(bridge.command_pb(msg.request));
+    return bridgeResult(bridge.call("runCommand", msg.request));
   }
   if (method === "saveMarkers") {
     await boot();
-    return { text: pyValueToString(bridge.markers_to_text_pb(msg.request)) };
+    return { text: callText(bridge.call_text("markersToText", msg.request)) };
   }
   if (method === "loadMarkers") {
     await boot();
-    return bytesResult(bridge.markers_from_text_pb(String(msg.text || "")));
+    return bridgeResult(bridge.call("loadMarkers", null, String(msg.text || "")));
   }
   if (method === "pyExec") {
     await boot();

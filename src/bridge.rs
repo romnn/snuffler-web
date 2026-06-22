@@ -693,15 +693,15 @@ mod web {
     }
 
     fn parse_view(obj: JsValue) -> Result<ViewData, String> {
-        let meta_bytes = object_uint8(&obj, "meta")?;
+        let result_bytes = object_uint8(&obj, "result")?;
         let ys_bytes = object_uint8(&obj, "ys")?;
-        proto::view_data_from_parts(&meta_bytes, &ys_bytes)
+        proto::view_data_from_parts(&result_bytes, &ys_bytes)
     }
 
     fn parse_spectrum(obj: JsValue) -> Result<SpectrumData, String> {
-        let meta_bytes = object_uint8(&obj, "meta")?;
+        let result_bytes = object_uint8(&obj, "result")?;
         let ys_bytes = object_uint8(&obj, "ys")?;
-        proto::spectrum_data_from_parts(&meta_bytes, &ys_bytes)
+        proto::spectrum_data_from_parts(&result_bytes, &ys_bytes)
     }
 
     fn object_uint8(obj: &JsValue, key: &str) -> Result<Vec<u8>, String> {
@@ -1011,10 +1011,7 @@ mod web {
                 let res = js_run_snuffling(request).await;
                 let parsed = match res {
                     Ok(v) => js_bytes(v, "snuffling")
-                        .and_then(|b| {
-                            proto::decode_message::<pb::SnufflingResult>(&b, "snuffling")
-                                .map(proto::snuffling_result_from_proto)
-                        })
+                        .and_then(|b| proto::snuffling_from_bytes(&b, "snuffling"))
                         .ok(),
                     Err(_) => None,
                 };
@@ -1101,10 +1098,7 @@ mod web {
             spawn_local(async move {
                 let parsed = match js_catalog_search(request).await {
                     Ok(v) => js_bytes(v, "catalog")
-                        .and_then(|b| {
-                            proto::decode_message::<pb::SnufflingResult>(&b, "catalog")
-                                .map(proto::snuffling_result_from_proto)
-                        })
+                        .and_then(|b| proto::snuffling_from_bytes(&b, "catalog"))
                         .ok(),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
@@ -1151,7 +1145,7 @@ mod web {
             spawn_local(async move {
                 let parsed = match js_cake_plot(request).await {
                     Ok(v) => js_bytes(v, "cake plot")
-                        .and_then(|b| proto::decode_message::<pb::CakePlotResult>(&b, "cake plot"))
+                        .and_then(|b| proto::cake_plot_from_bytes(&b, "cake plot"))
                         .ok(),
                     Err(_) => None,
                 };
@@ -1234,10 +1228,7 @@ mod web {
             spawn_local(async move {
                 let res = match js_run_command(request).await {
                     Ok(v) => js_bytes(v, "command")
-                        .and_then(|b| {
-                            proto::decode_message::<pb::CommandResult>(&b, "command")
-                                .map(proto::command_from_proto)
-                        })
+                        .and_then(|b| proto::command_from_bytes(&b, "command"))
                         .ok(),
                     Err(e) => Some(CommandResult {
                         action: "error".into(),
@@ -1272,10 +1263,7 @@ mod web {
             spawn_local(async move {
                 let parsed = match js_fetch_stations(request).await {
                     Ok(v) => js_bytes(v, "stations")
-                        .and_then(|b| {
-                            proto::decode_message::<pb::SnufflingResult>(&b, "stations")
-                                .map(proto::snuffling_result_from_proto)
-                        })
+                        .and_then(|b| proto::snuffling_from_bytes(&b, "stations"))
                         .ok(),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
@@ -1305,10 +1293,7 @@ mod web {
             spawn_local(async move {
                 let parsed = match js_fetch_responses(request).await {
                     Ok(v) => js_bytes(v, "responses")
-                        .and_then(|b| {
-                            proto::decode_message::<pb::SnufflingResult>(&b, "responses")
-                                .map(proto::snuffling_result_from_proto)
-                        })
+                        .and_then(|b| proto::snuffling_from_bytes(&b, "responses"))
                         .ok(),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
@@ -1341,20 +1326,16 @@ mod web {
                     match res {
                         Ok(v) => match js_bytes(v, "open_files") {
                             Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => {
-                                match proto::decode_message::<pb::SceneMeta>(&bytes, "open_files")
-                                    .map(proto::scene_from_proto)
-                                {
-                                    Ok(scene) => {
-                                        i.scene = Some(scene);
-                                        i.scene_gen += 1;
-                                        i.status = Status::Ready;
-                                        i.view = None;
-                                        i.applied = None;
-                                    }
-                                    Err(e) => i.status = Status::Error(e),
+                            Ok(bytes) => match proto::scene_from_bytes(&bytes, "open_files") {
+                                Ok(scene) => {
+                                    i.scene = Some(scene);
+                                    i.scene_gen += 1;
+                                    i.status = Status::Ready;
+                                    i.view = None;
+                                    i.applied = None;
                                 }
-                            }
+                                Err(e) => i.status = Status::Error(e),
+                            },
                             Err(e) => i.status = Status::Error(e),
                         },
                         Err(e) => i.status = Status::Error(jsval_to_string(e)),
@@ -1402,9 +1383,7 @@ mod web {
                     Ok(v) => js_bytes(v, "markers")
                         .ok()
                         .filter(|bytes| !bytes.is_empty())
-                        .and_then(|bytes| {
-                            proto::decode_message::<pb::SnufMarkerList>(&bytes, "markers").ok()
-                        })
+                        .and_then(|bytes| proto::markers_from_bytes(&bytes, "markers").ok())
                         .map(|msg| {
                             msg.markers
                                 .into_iter()
@@ -1435,10 +1414,7 @@ mod web {
             spawn_local(async move {
                 let parsed = match js_map_data().await {
                     Ok(v) => js_bytes(v, "map")
-                        .and_then(|b| {
-                            proto::decode_message::<pb::MapData>(&b, "map")
-                                .map(proto::map_data_from_proto)
-                        })
+                        .and_then(|b| proto::map_from_bytes(&b, "map"))
                         .ok(),
                     Err(_) => None,
                 };

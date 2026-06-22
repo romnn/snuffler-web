@@ -26,27 +26,90 @@ mod wasm {
         M::decode(bytes).map_err(|e| format!("{what}: {e}"))
     }
 
-    pub fn scene_from_bytes(bytes: &[u8], what: &str) -> Result<SceneMeta, String> {
-        decode_message::<pb::SceneMeta>(bytes, what).map(scene_from_proto)
+    // Every bridge response is a BridgeResult envelope (one success variant OR a
+    // BridgeError). Decode it and either return the matched oneof variant or turn
+    // the error variant into an `Err(String)` for the UI. Python never raises
+    // across the boundary, so this is the single place errors enter Rust.
+    fn bridge_oneof(bytes: &[u8], what: &str) -> Result<pb::bridge_result::Result, String> {
+        let br = decode_message::<pb::BridgeResult>(bytes, what)?;
+        match br.result {
+            Some(pb::bridge_result::Result::Error(e)) => Err(if e.message.is_empty() {
+                format!("{what}: {}", e.kind)
+            } else {
+                format!("{}: {}", e.kind, e.message)
+            }),
+            Some(other) => Ok(other),
+            None => Err(format!("{what}: empty BridgeResult")),
+        }
     }
 
-    pub fn view_data_from_parts(meta_bytes: &[u8], ys_bytes: &[u8]) -> Result<ViewData, String> {
-        Ok(ViewData {
-            meta: decode_message::<pb::ViewMeta>(meta_bytes, "view.meta")
-                .map(view_meta_from_proto)?,
-            ys: f32_vec_from_le_bytes(ys_bytes, "view.ys")?,
-        })
+    fn unexpected(what: &str) -> String {
+        format!("{what}: unexpected BridgeResult variant")
+    }
+
+    pub fn scene_from_bytes(bytes: &[u8], what: &str) -> Result<SceneMeta, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::Scene(m) => Ok(scene_from_proto(m)),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn snuffling_from_bytes(bytes: &[u8], what: &str) -> Result<SnufflingResult, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::Snuffling(m) => Ok(snuffling_result_from_proto(m)),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn command_from_bytes(bytes: &[u8], what: &str) -> Result<CommandResult, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::Command(m) => Ok(command_from_proto(m)),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn map_from_bytes(bytes: &[u8], what: &str) -> Result<MapData, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::MapData(m) => Ok(map_data_from_proto(m)),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn cake_plot_from_bytes(bytes: &[u8], what: &str) -> Result<pb::CakePlotResult, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::CakePlot(m) => Ok(m),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn markers_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufMarkerList, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::Markers(m) => Ok(m),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn view_data_from_parts(result_bytes: &[u8], ys_bytes: &[u8]) -> Result<ViewData, String> {
+        match bridge_oneof(result_bytes, "view")? {
+            pb::bridge_result::Result::View(m) => Ok(ViewData {
+                meta: view_meta_from_proto(m),
+                ys: f32_vec_from_le_bytes(ys_bytes, "view.ys")?,
+            }),
+            _ => Err(unexpected("view")),
+        }
     }
 
     pub fn spectrum_data_from_parts(
-        meta_bytes: &[u8],
+        result_bytes: &[u8],
         ys_bytes: &[u8],
     ) -> Result<SpectrumData, String> {
-        Ok(SpectrumData {
-            meta: decode_message::<pb::SpecMeta>(meta_bytes, "spectrum.meta")
-                .map(spec_meta_from_proto)?,
-            ys: f32_vec_from_le_bytes(ys_bytes, "spectrum.ys")?,
-        })
+        match bridge_oneof(result_bytes, "spectrum")? {
+            pb::bridge_result::Result::Spectrum(m) => Ok(SpectrumData {
+                meta: spec_meta_from_proto(m),
+                ys: f32_vec_from_le_bytes(ys_bytes, "spectrum.ys")?,
+            }),
+            _ => Err(unexpected("spectrum")),
+        }
     }
 
     pub fn scene_from_proto(msg: pb::SceneMeta) -> SceneMeta {

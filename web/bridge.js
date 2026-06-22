@@ -98,9 +98,12 @@ function rpc(
   return promise;
 }
 
+// Both data helpers now carry the BridgeResult envelope bytes in `result`
+// (success variant OR BridgeError); Rust decodes the oneof. rpcBytes returns the
+// envelope bytes; rpcBufferResult additionally carries the zero-copy ys buffer.
 async function rpcBytes(method, args) {
   const msg = await rpc(method, args);
-  return new Uint8Array(msg.bytes || new ArrayBuffer(0));
+  return new Uint8Array(msg.result || new ArrayBuffer(0));
 }
 
 async function rpcText(method, args) {
@@ -111,7 +114,7 @@ async function rpcText(method, args) {
 async function rpcBufferResult(method, args) {
   const msg = await rpc(method, args);
   return {
-    meta: new Uint8Array(msg.meta || new ArrayBuffer(0)),
+    result: new Uint8Array(msg.result || new ArrayBuffer(0)),
     ys: new Uint8Array(msg.ys || new ArrayBuffer(0)),
   };
 }
