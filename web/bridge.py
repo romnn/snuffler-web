@@ -436,21 +436,29 @@ def _scale_context(req: view_pb2.ViewParams) -> Tuple[Any, ...]:
     )
 
 
-def _brickwall(
-    y: np.ndarray, deltat: float, hp: Optional[float], lp: Optional[float]
-) -> np.ndarray:
-    """Zero-phase brick-wall band filter in the frequency domain (snuffler's
-    'FFT filtering' option)."""
-    y = np.asarray(y, dtype=np.float64)
-    n = len(y)
-    spec = np.fft.rfft(y - y.mean())
-    f = np.fft.rfftfreq(n, d=deltat)
-    mask = np.ones_like(f)
-    if hp is not None:
-        mask[f < float(hp)] = 0.0
+def _fft_filter(seg: ptrace.Trace, hp: Optional[float], lp: Optional[float]) -> None:
+    """snuffler's 'FFT filtering': linear-detrend, multiply the (pow2-padded)
+    spectrum by a Butterworth (order 4) low/high response, irfft, then retrend.
+
+    Matches pyrocko.gui.snuffler.pile_viewer.prepare_cutout2 exactly (a smooth
+    Butterworth roll-off, not a hard brick-wall mask). detrend/retrend are the
+    OLS-line removal those snuffler helpers do (np.polyfit == their linregress)."""
+    from pyrocko import response
+
+    it = np.arange(seg.data_len(), dtype=float)
+    y = np.asarray(seg.ydata, dtype=np.float64)
+    coeffs = np.polyfit(it, y, 1)
+    slope, offset = float(coeffs[0]), float(coeffs[1])
+    seg.set_ydata(y - slope * it - offset)
+    freqs, fdata = seg.spectrum(pad_to_pow2=True, tfade=None)
+    resps = []
     if lp is not None:
-        mask[f > float(lp)] = 0.0
-    return np.fft.irfft(spec * mask, n)
+        resps.append(response.ButterworthResponse(order=4, corner=float(lp), type="low"))
+    if hp is not None:
+        resps.append(response.ButterworthResponse(order=4, corner=float(hp), type="high"))
+    tf = response.MultiplyResponse(resps).evaluate(freqs)
+    filtered = np.fft.irfft(fdata * tf)[: seg.data_len()]
+    seg.set_ydata(it * slope + filtered + offset)
 
 
 def _filter_seg(
@@ -461,20 +469,20 @@ def _filter_seg(
     lphp: bool,
 ) -> None:
     """Apply the main filter to a chopped trace, honoring the FFT-filtering and
-    bandpass-as-low+highpass options."""
+    bandpass-as-low+highpass options. Filter corners at/above Nyquist are skipped
+    (snuffler's ``< 0.5/deltat`` guards), not left to a bare try/except."""
     try:
         if fft and (hp is not None or lp is not None):
-            seg.set_ydata(_brickwall(seg.ydata, float(seg.deltat), hp, lp))
-        elif hp is not None and lp is not None and hp < lp:
-            if lphp:
+            _fft_filter(seg, hp, lp)
+            return
+        fmax = 0.5 / float(seg.deltat)
+        if not lphp and hp is not None and lp is not None and hp < lp < fmax and hp < fmax:
+            seg.bandpass(2, float(hp), float(lp))
+        else:
+            if lp is not None and lp < fmax:
                 seg.lowpass(4, float(lp))
+            if hp is not None and (lp is None or hp < lp) and hp < fmax:
                 seg.highpass(4, float(hp))
-            else:
-                seg.bandpass(2, float(hp), float(lp))
-        elif hp is not None:
-            seg.highpass(4, float(hp))
-        elif lp is not None:
-            seg.lowpass(4, float(lp))
     except Exception:
         pass
 
