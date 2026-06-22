@@ -16,4 +16,4 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Check spelling of entire workspace
-        uses: crate-ci/typos@master
+        uses: crate-ci/typos@v1.47.2
