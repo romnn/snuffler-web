@@ -1,1 +1,6 @@
+from collections.abc import Sequence
+
 def str_to_time_fillup(value: str) -> float: ...
+def match_nslc(
+    patterns: str | Sequence[str], nslc: tuple[str, str, str, str] | str
+) -> bool: ...

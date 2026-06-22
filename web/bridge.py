@@ -94,14 +94,16 @@ def _set_traces(traces: List[ptrace.Trace], append: bool = False) -> None:
 
 
 def _visible_traces() -> List[ptrace.Trace]:
-    import fnmatch
+    # pyrocko's canonical NSLC matcher (shell globs, case-insensitive, anchored on
+    # the full "net.sta.loc.cha" code), the same one snuffler's hide/quick-filter
+    # use — match_nslc takes a list of patterns and returns True if any matches.
+    from pyrocko.util import match_nslc
 
     out = []
     for tr in _TRACES:
-        s = ".".join(tr.nslc_id)
-        if _REDUCE is not None and not fnmatch.fnmatch(s, _REDUCE):
+        if _REDUCE is not None and not match_nslc(_REDUCE, tr.nslc_id):
             continue
-        if any(fnmatch.fnmatch(s, pat) for pat in _HIDDEN):
+        if _HIDDEN and match_nslc(_HIDDEN, tr.nslc_id):
             continue
         out.append(tr)
     return out
