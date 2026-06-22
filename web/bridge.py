@@ -809,16 +809,6 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     return meta, ys
 
 
-def _snuffling_section(params: Dict[str, Any], name: str) -> Dict[str, Any]:
-    snufflings = params.get("snufflings") or {}
-    section = snufflings.get(name) if isinstance(snufflings, dict) else None
-    return section if isinstance(section, dict) else {}
-
-
-def _cfg(section: Dict[str, Any], params: Dict[str, Any], key: str, default: Any) -> Any:
-    return section.get(key, params.get(key, default))
-
-
 def _is_stalta_trace(tr: ptrace.Trace) -> bool:
     return bool(tr.nslc_id[3].endswith("-STALTA"))
 
@@ -923,19 +913,23 @@ def _get_spectrum_data(
     return meta, np.ascontiguousarray(ys, dtype="<f4")
 
 
-def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
+def _run_snuffling_result(
+    name: str, req: snuffling_pb2.SnufflingRequestParams
+) -> snuffling_pb2.SnufflingResult:
     """Run a built-in snuffling over the current window."""
-    tmin, tmax = float(p["tmin"]), float(p["tmax"])
-    hp, lp = p.get("highpass"), p.get("lowpass")
-    rotate = float(p.get("rotate", 0.0) or 0.0)
-    fft = bool(p.get("fft_filtering", False))
-    lphp = bool(p.get("bandpass_lphp", True))
+    view = req.view
+    tmin, tmax = float(view.tmin), float(view.tmax)
+    hp = view.highpass if view.HasField("highpass") else None
+    lp = view.lowpass if view.HasField("lowpass") else None
+    rotate = float(view.rotate)
+    fft = bool(view.fft_filtering)
+    lphp = bool(view.bandpass_lphp)
 
     if name == "cake":
-        return _cake_run(p)
+        return _cake_run(req)
 
     vis = _visible_traces()
-    order = _sort_order(vis, p.get("sort", "name"), p.get("subsort", "nslc"))
+    order = _sort_order(vis, view.sort or "name", view.subsort or "nslc")
     work = _apply_rotation([vis[i] for i in order], rotate)
 
     def chopped(
@@ -965,25 +959,25 @@ def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
                 % (".".join(tr.nslc_id), float(y.min()), float(y.max()), float(y.max() - y.min()))
             )
         text = "\n".join(lines) if len(lines) > 1 else "No data in the visible window."
-        return {"text": text, "markers": []}
+        return snuffling_pb2.SnufflingResult(show_window=True, text=text)
 
     if name == "stalta":
-        params = _snuffling_section(p, "stalta")
-        shp = _cfg(params, p, "stalta_highpass", None)
-        slp = _cfg(params, p, "stalta_lowpass", None)
-        tshort = float(_cfg(params, p, "stalta_swin", 30.0) or 30.0)
-        ratio = float(_cfg(params, p, "stalta_ratio", 3.0) or 3.0)
-        level = float(_cfg(params, p, "stalta_level", 0.5) or 0.5)
-        variant = str(_cfg(params, p, "stalta_variant", "centered") or "centered")
-        scaling_name = str(_cfg(params, p, "stalta_scalingmethod", "[0-1]") or "[0-1]")
-        apply_to_sum = bool(_cfg(params, p, "stalta_apply_to_sum", False))
-        show_level_traces = bool(_cfg(params, p, "stalta_show_level_traces", False))
+        stalta = req.snufflings.stalta
+        shp = stalta.stalta_highpass if stalta.HasField("stalta_highpass") else None
+        slp = stalta.stalta_lowpass if stalta.HasField("stalta_lowpass") else None
+        tshort = float(stalta.stalta_swin or 30.0)
+        ratio = float(stalta.stalta_ratio or 3.0)
+        level = float(stalta.stalta_level or 0.5)
+        variant = stalta.stalta_variant or "centered"
+        scaling_name = stalta.stalta_scalingmethod or "[0-1]"
+        apply_to_sum = bool(stalta.stalta_apply_to_sum)
+        show_level_traces = bool(stalta.stalta_show_level_traces)
         scaling_method = {
             "[0-1]": 1,
             "[-1/ratio,1]": 2,
             "[-1/ratio,1] clipped to [0,1]": 3,
         }.get(scaling_name, 1)
-        markers = []
+        result = snuffling_pb2.SnufflingResult(show_window=False)
         processed = []
         derived = []
         source_work = [tr for tr in work if not _is_stalta_trace(tr)]
@@ -1021,14 +1015,9 @@ def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 continue
             for tp in tpeaks:
-                markers.append(
-                    {
-                        "t": float(tp),
-                        "phase": None,
-                        "kind": 0,
-                        "nslc": list(tr.nslc_id),
-                    }
-                )
+                marker = result.markers.add()
+                marker.t = float(tp)
+                marker.nslc.CopyFrom(_nslc_pb(list(tr.nslc_id)))
         if apply_to_sum and processed:
             min_len = min(len(c.ydata) for c in processed)
             if min_len >= 64:
@@ -1037,32 +1026,39 @@ def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
                     csum.ydata = np.mean([c.ydata[:min_len] for c in processed], axis=0)
                     tpeaks, _apeaks = csum.peaks(level, tshort)
                     for tp in tpeaks:
-                        markers.append({"t": float(tp), "phase": None, "kind": 0})
+                        result.markers.add().t = float(tp)
                 except Exception:
                     pass
-        scene = None
         if show_level_traces:
             _TRACES.extend(derived)
         if had_level_traces or show_level_traces:
             _mark_traces_changed()
-            scene = _scene_meta()
-        return {
-            "show_window": False,
-            "text": "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)"
-            % (len(markers), tshort, ratio, level),
-            "markers": markers,
-            "scene": scene,
-        }
+            result.scene.CopyFrom(_scene_meta())
+        result.text = "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)" % (
+            len(result.markers),
+            tshort,
+            ratio,
+            level,
+        )
+        return result
 
     if name == "polarization":
         # Covariance-eigenvalue polarization analysis (Jurkevics, 1988) per
         # 3-component station over the visible window. Pure numpy.
-        params = _snuffling_section(p, "polarization")
-        php = _cfg(params, p, "polarization_highpass", None)
-        plp = _cfg(params, p, "polarization_lowpass", None)
-        length = float(_cfg(params, p, "polarization_t_length", tmax - tmin) or (tmax - tmin))
-        offset = float(_cfg(params, p, "polarization_ft_offset", 0.0) or 0.0)
-        azimuth = float(_cfg(params, p, "polarization_azimuth", 0.0) or 0.0)
+        polarization = req.snufflings.polarization
+        php = (
+            polarization.polarization_highpass
+            if polarization.HasField("polarization_highpass")
+            else None
+        )
+        plp = (
+            polarization.polarization_lowpass
+            if polarization.HasField("polarization_lowpass")
+            else None
+        )
+        length = float(polarization.polarization_t_length or (tmax - tmin))
+        offset = float(polarization.polarization_ft_offset)
+        azimuth = float(polarization.polarization_azimuth)
         if 0.0 < length < (tmax - tmin):
             center = 0.5 * (tmin + tmax) + offset * length
             ptmin, ptmax = center - 0.5 * length, center + 0.5 * length
@@ -1110,9 +1106,9 @@ def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
             if len(lines) > 1
             else "Need 3-component (Z/N/E) data in the visible window."
         )
-        return {"text": text, "markers": []}
+        return snuffling_pb2.SnufflingResult(show_window=True, text=text)
 
-    return {"text": "Unknown snuffling: %s" % name, "markers": []}
+    return snuffling_pb2.SnufflingResult(show_window=True, text="Unknown snuffling: %s" % name)
 
 
 # --- FDSN web services (network) -------------------------------------------
@@ -1520,14 +1516,16 @@ def _phase_color_id(name: str) -> int:
     return sum(ord(ch) for ch in name) % 8
 
 
-def _cake_section(p: Dict[str, Any]) -> Tuple[str, List[str], float, bool, str]:
+def _cake_section(
+    req: snuffling_pb2.SnufflingRequestParams,
+) -> Tuple[str, List[str], float, bool, str]:
     """Extract the Cake Phase knobs from the snuffling params."""
-    c = _snuffling_section(p, "cake")
-    model = str(c.get("cake_model", "ak135-f-continental.m"))
-    phases = [str(x) for x in (c.get("cake_phases") or ["~P"])]
-    tshift = float(c.get("cake_tshift", 0.0) or 0.0)
-    use_station_depth = bool(c.get("cake_use_station_depth", False))
-    mode = str(c.get("cake_mode", "run") or "run")
+    c = req.snufflings.cake
+    model = c.cake_model or "ak135-f-continental.m"
+    phases = [str(x) for x in (list(c.cake_phases) or ["~P"])]
+    tshift = float(c.cake_tshift)
+    use_station_depth = bool(c.cake_use_station_depth)
+    mode = c.cake_mode or "run"
     return model, phases, tshift, use_station_depth, mode
 
 
@@ -1575,48 +1573,44 @@ def _cake_stations() -> List[Tuple[str, str, float, float]]:
     return out
 
 
-def _cake_model_geometry(
-    cake: Any,
-    mod: Any,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """(discontinuities, layers) of a cake model in km, for the egui plots.
+def _fill_cake_geometry(cake: Any, mod: Any, discs: Any, layers: Any) -> None:
+    """Append a cake model's discontinuities and layers (in km) to the given
+    repeated proto fields, for the egui plots.
 
     Mirrors :py:func:`pyrocko.plot.cake_plot.sketch_model`: water layers have
     ``vs == 0`` top and bottom; gradient layers are ``cake.GradientLayer``.
     """
-    discs = [{"z_km": float(d.z) / 1000.0, "name": d.name} for d in mod.discontinuities()]
-    layers = [
-        {
-            "ztop_km": float(lay.ztop) / 1000.0,
-            "zbot_km": float(lay.zbot) / 1000.0,
-            "water": bool(lay.mtop.vs == 0.0 and lay.mbot.vs == 0.0),
-            "gradient": isinstance(lay, cake.GradientLayer),
-            "name": lay.name,
-        }
-        for lay in mod.layers()
-    ]
-    return discs, layers
+    for d in mod.discontinuities():
+        disc = discs.add()
+        disc.z_km = float(d.z) / 1000.0
+        if d.name is not None:
+            disc.name = str(d.name)
+    for lay in mod.layers():
+        layer = layers.add()
+        layer.ztop_km = float(lay.ztop) / 1000.0
+        layer.zbot_km = float(lay.zbot) / 1000.0
+        layer.water = bool(lay.mtop.vs == 0.0 and lay.mbot.vs == 0.0)
+        layer.gradient = isinstance(lay, cake.GradientLayer)
 
 
-def _cake_run(p: Dict[str, Any]) -> Dict[str, Any]:
+def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.SnufflingResult:
     """Theoretical arrivals → phase markers (the Cake Phase 'Run' action).
 
     All travel-time computation is pyrocko's :py:mod:`pyrocko.cake` (pure
     numpy/scipy ray tracing) and the geometry is :py:func:`_dist_deg`; this only
     marshals the rays into markers and a per-pick angle table.
     """
-    model, phase_names, tshift, use_station_depth, _mode = _cake_section(p)
+    model, phase_names, tshift, use_station_depth, _mode = _cake_section(req)
     if _ACTIVE_EVENT is None:
-        return {
-            "text": "No active event. Run a catalog search first (Data ▸ Catalog search).",
-            "markers": [],
-        }
+        return snuffling_pb2.SnufflingResult(
+            show_window=True,
+            text="No active event. Run a catalog search first (Data ▸ Catalog search).",
+        )
     if not _STATIONS:
-        return {
-            "text": "No station coordinates. Fetch stations first "
-            "(Data ▸ Download ▸ Fetch stations).",
-            "markers": [],
-        }
+        return snuffling_pb2.SnufflingResult(
+            show_window=True,
+            text="No station coordinates. Fetch stations first (Data ▸ Download ▸ Fetch stations).",
+        )
 
     from pyrocko import cake
 
@@ -1624,7 +1618,7 @@ def _cake_run(p: Dict[str, Any]) -> Dict[str, Any]:
     mod = _cake_load_model(cake, model)
     wanted, errors = _cake_wanted_phases(cake, phase_names)
 
-    markers: List[Dict[str, Any]] = []
+    result = snuffling_pb2.SnufflingResult(show_window=True)
     lines = ["%-14s %-8s %12s %8s %8s" % ("station", "phase", "t-rel[s]", "inc[deg]", "tko[deg]")]
     nstations = 0
     for net, sta, dist_deg, elev in _cake_stations():
@@ -1639,35 +1633,33 @@ def _cake_run(p: Dict[str, Any]) -> Dict[str, Any]:
             tt = float(ray.t) + tshift
             inc = float(ray.incidence_angle())
             tko = float(ray.takeoff_angle())
-            markers.append(
-                {
-                    "t": etime + tt,
-                    "tmax": etime + tt,
-                    "kind": _phase_color_id(name),
-                    "phase": name,
-                    "nslc": [net, sta, "", "*"],
-                }
-            )
+            marker = result.markers.add()
+            marker.t = etime + tt
+            marker.tmax = etime + tt
+            marker.kind = _phase_color_id(name)
+            marker.phase = name
+            marker.nslc.CopyFrom(_nslc_pb([net, sta, "", "*"]))
             lines.append(
                 "%-14s %-8s %12.3f %8.1f %8.1f" % ("%s.%s" % (net, sta), name, tt, inc, tko)
             )
 
-    header = "Cake arrivals (%s): %d pick(s) at %d station(s)." % (model, len(markers), nstations)
+    npicks = len(result.markers)
+    header = "Cake arrivals (%s): %d pick(s) at %d station(s)." % (model, npicks, nstations)
     if errors:
         header += "\nSkipped phases: " + ", ".join(errors)
-    text = header + "\n\n" + "\n".join(lines) if len(markers) else header
-    return {"text": text, "markers": markers}
+    result.text = header + "\n\n" + "\n".join(lines) if npicks else header
+    return result
 
 
-def _cake_plot_result(p: Dict[str, Any]) -> Dict[str, Any]:
+def _cake_plot_result(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.CakePlotResult:
     """Numeric data for the Cake Phase 'Plot Model' / 'Plot Rays' windows.
 
     All geometry is pyrocko's cake ray tracer; this only converts to the km
     units the egui plot expects and serialises polylines — the Rust side renders
-    (no matplotlib, unlike the Qt snuffling). Returns a tagged dict whose
-    ``kind`` is ``"model"`` or ``"rays"``.
+    (no matplotlib, unlike the Qt snuffling). Returns a CakePlotResult whose
+    oneof is ``model`` or ``rays``.
     """
-    model, phase_names, _tshift, use_station_depth, mode = _cake_section(p)
+    model, phase_names, _tshift, use_station_depth, mode = _cake_section(req)
 
     from pyrocko import cake
 
@@ -1677,56 +1669,43 @@ def _cake_plot_result(p: Dict[str, Any]) -> Dict[str, Any]:
     return _cake_plot_rays(cake, mod, model, phase_names, use_station_depth)
 
 
-def _cake_plot_model(cake: Any, mod: Any, title: str) -> Dict[str, Any]:
+def _cake_plot_model(cake: Any, mod: Any, title: str) -> snuffling_pb2.CakePlotResult:
     z = np.asarray(mod.profile("z"), dtype=np.float64) / 1000.0
     vp = np.asarray(mod.profile("vp"), dtype=np.float64) / 1000.0
     vs = np.asarray(mod.profile("vs"), dtype=np.float64) / 1000.0
 
-    def interleave(vals: np.ndarray) -> List[float]:
-        out: List[float] = []
-        for vi, zi in zip(vals, z, strict=True):
-            out.append(float(vi))
-            out.append(float(zi))
-        return out
-
-    discs, layers = _cake_model_geometry(cake, mod)
-    return {
-        "kind": "model",
-        "title": title,
-        "vp": interleave(vp),
-        "vs": interleave(vs),
-        "discontinuities": discs,
-        "layers": layers,
-        "vmax_km": float(np.nanmax(vp)) if vp.size else 0.0,
-        "zmax_km": float(np.nanmax(z)) if z.size else 0.0,
-    }
+    result = snuffling_pb2.CakePlotResult()
+    plot = result.model
+    plot.title = title
+    for vi, zi in zip(vp, z, strict=True):
+        plot.vp.append(float(vi))
+        plot.vp.append(float(zi))
+    for vi, zi in zip(vs, z, strict=True):
+        plot.vs.append(float(vi))
+        plot.vs.append(float(zi))
+    _fill_cake_geometry(cake, mod, plot.discontinuities, plot.layers)
+    plot.vmax_km = float(np.nanmax(vp)) if vp.size else 0.0
+    plot.zmax_km = float(np.nanmax(z)) if z.size else 0.0
+    return result
 
 
 def _cake_plot_rays(
     cake: Any, mod: Any, title: str, phase_names: List[str], use_station_depth: bool
-) -> Dict[str, Any]:
+) -> snuffling_pb2.CakePlotResult:
+    result = snuffling_pb2.CakePlotResult()
+    plot = result.rays
     if _ACTIVE_EVENT is None or not _STATIONS:
-        return {
-            "kind": "rays",
-            "title": "Ray Paths",
-            "rays": [],
-            "discontinuities": [],
-            "layers": [],
-            "legend": [],
-            "source": {"x_km": 0.0, "z_km": 0.0},
-            "receivers": [],
-            "xmin_km": 0.0,
-            "xmax_km": 1.0,
-            "zmax_km": 1.0,
-            "text": "No active event / stations for ray paths.",
-        }
+        plot.title = "Ray Paths"
+        plot.xmax_km = 1.0
+        plot.zmax_km = 1.0
+        return result
 
     _elat, _elon, edepth, _etime = _ACTIVE_EVENT
     wanted, _errors = _cake_wanted_phases(cake, phase_names)
     kmf = cake.d2r * cake.earthradius / cake.km  # epicentral degrees -> km
 
+    plot.title = "Ray Paths (%s)" % title
     allrays = []
-    receivers: List[Dict[str, float]] = []
     xmax = 0.0
     zmax = 0.0
     for _net, _sta, dist_deg, elev in _cake_stations():
@@ -1734,17 +1713,18 @@ def _cake_plot_rays(
         rays = mod.arrivals(phases=wanted, distances=[dist_deg], zstart=edepth, zstop=rdepth)
         allrays.extend(rays)
         xkm = float(dist_deg) * kmf
-        receivers.append({"x_km": xkm, "z_km": float(rdepth) / cake.km})
+        receiver = plot.receivers.add()
+        receiver.x_km = xkm
+        receiver.z_km = float(rdepth) / cake.km
         xmax = max(xmax, xkm)
 
-    out_rays = []
     legend_names: List[str] = []
     for ray in allrays:
         name = ray.given_phase().name
         if name not in legend_names:
             legend_names.append(name)
         fanz, fanx, _fant = ray.zxt_path_subdivided()
-        segs = []
+        ray_msg = snuffling_pb2.CakeRay(color=_phase_color_id(name))
         for zs, xs in zip(fanz, fanx, strict=True):
             seg: List[float] = []
             for xi, zi in zip(np.asarray(xs), np.asarray(zs), strict=True):
@@ -1755,24 +1735,21 @@ def _cake_plot_rays(
                 xmax = max(xmax, xkm)
                 zmax = max(zmax, zkm)
             if seg:
-                segs.append(seg)
-        if segs:
-            out_rays.append({"color": _phase_color_id(name), "phase": name, "segs": segs})
+                ray_msg.segs.add().values.extend(seg)
+        if ray_msg.segs:
+            plot.rays.append(ray_msg)
 
-    discs, layers = _cake_model_geometry(cake, mod)
-    return {
-        "kind": "rays",
-        "title": "Ray Paths (%s)" % title,
-        "rays": out_rays,
-        "discontinuities": discs,
-        "layers": layers,
-        "source": {"x_km": 0.0, "z_km": float(edepth) / cake.km},
-        "receivers": receivers,
-        "legend": [{"phase": n, "color": _phase_color_id(n)} for n in legend_names],
-        "xmin_km": 0.0,
-        "xmax_km": xmax if xmax > 0.0 else 1.0,
-        "zmax_km": zmax if zmax > 0.0 else 1.0,
-    }
+    _fill_cake_geometry(cake, mod, plot.discontinuities, plot.layers)
+    plot.source.x_km = 0.0
+    plot.source.z_km = float(edepth) / cake.km
+    for n in legend_names:
+        entry = plot.legend.add()
+        entry.phase = n
+        entry.color = _phase_color_id(n)
+    plot.xmin_km = 0.0
+    plot.xmax_km = xmax if xmax > 0.0 else 1.0
+    plot.zmax_km = zmax if zmax > 0.0 else 1.0
+    return result
 
 
 def _command_glob(scope: Optional[str], pattern: str) -> str:
@@ -1841,7 +1818,7 @@ def _command_result(line: str) -> Dict[str, Any]:
     return {"action": "error", "message": "unknown command: %s" % cmd}
 
 
-def _rms_scene(p: Dict[str, Any]) -> scene_pb2.SceneMeta:
+def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
     """Blockwise root-mean-square derived traces (pyrocko's RMS snuffling).
 
     For each visible trace, RMS is computed over fixed-length blocks across the
@@ -1850,14 +1827,13 @@ def _rms_scene(p: Dict[str, Any]) -> scene_pb2.SceneMeta:
     Appends the derived traces and returns the updated scene. All numpy.
     """
     global _TRACES
-    tmin, tmax = float(p["tmin"]), float(p["tmax"])
-    params = _snuffling_section(p, "rms")
-    hp = _cfg(params, p, "rms_highpass", None)
-    lp = _cfg(params, p, "rms_lowpass", None)
-    block = _cfg(params, p, "rms_block", None)
-    block = float(block) if block else max(1.0, (tmax - tmin) / 100.0)
-    group = bool(_cfg(params, p, "rms_group", True))
-    logrms = bool(_cfg(params, p, "rms_log", False))
+    tmin, tmax = float(req.view.tmin), float(req.view.tmax)
+    rms = req.snufflings.rms
+    hp = rms.rms_highpass if rms.HasField("rms_highpass") else None
+    lp = rms.rms_lowpass if rms.HasField("rms_lowpass") else None
+    block = float(rms.rms_block) if rms.rms_block else max(1.0, (tmax - tmin) / 100.0)
+    group = bool(rms.rms_group)
+    logrms = bool(rms.rms_log)
 
     # Drop previous RMS output, then work only on original traces. Qt marks
     # snuffling-produced traces as tabu and RMS skips them.
@@ -1988,109 +1964,6 @@ def _nslc_pb(value: Any) -> common_pb2.Nslc:
     return msg
 
 
-def _view_params_dict(msg: view_pb2.ViewParams) -> Dict[str, Any]:
-    out = {
-        "tmin": float(msg.tmin),
-        "tmax": float(msg.tmax),
-        "npx": int(msg.npx),
-        "sort": str(msg.sort or "name"),
-        "subsort": str(msg.subsort or "nslc"),
-        "rotate": float(msg.rotate),
-        "remove_response": bool(msg.remove_response),
-        "mode": str(msg.mode or "wiggle"),
-        "demean": bool(msg.demean),
-        "degap": bool(msg.degap),
-        "allow_downsampling": bool(msg.allow_downsampling),
-        "fft_filtering": bool(msg.fft_filtering),
-        "bandpass_lphp": bool(msg.bandpass_lphp),
-        "distances_3d": bool(msg.distances_3d),
-        "scaling_base": str(msg.scaling_base or "minmax"),
-        "scaling_group": str(msg.scaling_group or "individual"),
-        "gain": float(msg.gain or 1.0),
-        "fix_scale_ranges": bool(msg.fix_scale_ranges),
-        "show_scale_ranges": bool(msg.show_scale_ranges),
-        "show_scale_axes": bool(msg.show_scale_axes),
-        "wf_abs": bool(msg.wf_abs),
-        "wf_integrate": bool(msg.wf_integrate),
-        "wf_color_scale": str(msg.wf_color_scale or "log"),
-        "track_offset": int(msg.track_offset),
-        "track_count": int(msg.track_count),
-    }
-    out["highpass"] = float(msg.highpass) if msg.HasField("highpass") else None
-    out["lowpass"] = float(msg.lowpass) if msg.HasField("lowpass") else None
-    return out
-
-
-def _snuffling_request_dict(msg: snuffling_pb2.SnufflingRequestParams) -> Dict[str, Any]:
-    view = _view_params_dict(msg.view)
-    sn = msg.snufflings
-    spectrum = sn.spectrum
-    stalta = sn.stalta
-    polarization = sn.polarization
-    rms_params = sn.rms
-    cake = sn.cake
-    view["snufflings"] = {
-        "spectrum": {
-            "spec_smoothing": bool(spectrum.spec_smoothing),
-            "spec_smoothing_bandwidth": float(spectrum.spec_smoothing_bandwidth),
-        },
-        "stalta": {
-            "stalta_highpass": (
-                float(stalta.stalta_highpass) if stalta.HasField("stalta_highpass") else None
-            ),
-            "stalta_lowpass": (
-                float(stalta.stalta_lowpass) if stalta.HasField("stalta_lowpass") else None
-            ),
-            "stalta_swin": float(stalta.stalta_swin),
-            "stalta_ratio": float(stalta.stalta_ratio),
-            "stalta_level": float(stalta.stalta_level),
-            "stalta_show_level_traces": bool(stalta.stalta_show_level_traces),
-            "stalta_variant": str(stalta.stalta_variant or "centered"),
-            "stalta_scalingmethod": str(stalta.stalta_scalingmethod or "[0-1]"),
-            "stalta_apply_to_sum": bool(stalta.stalta_apply_to_sum),
-        },
-        "polarization": {
-            "polarization_t_length": float(polarization.polarization_t_length),
-            "polarization_ft_offset": float(polarization.polarization_ft_offset),
-            "polarization_azimuth": float(polarization.polarization_azimuth),
-            "polarization_highpass": (
-                float(polarization.polarization_highpass)
-                if polarization.HasField("polarization_highpass")
-                else None
-            ),
-            "polarization_lowpass": (
-                float(polarization.polarization_lowpass)
-                if polarization.HasField("polarization_lowpass")
-                else None
-            ),
-            "polarization_dot_position": float(polarization.polarization_dot_position),
-            "polarization_rotate_to_rt": bool(polarization.polarization_rotate_to_rt),
-            "polarization_show_eigensystem_2d": bool(polarization.polarization_show_eigensystem_2d),
-            "polarization_show_eigensystem_3d": bool(polarization.polarization_show_eigensystem_3d),
-            "polarization_fix_scale": bool(polarization.polarization_fix_scale),
-        },
-        "rms": {
-            "rms_highpass": (
-                float(rms_params.rms_highpass) if rms_params.HasField("rms_highpass") else None
-            ),
-            "rms_lowpass": (
-                float(rms_params.rms_lowpass) if rms_params.HasField("rms_lowpass") else None
-            ),
-            "rms_block": float(rms_params.rms_block),
-            "rms_group": bool(rms_params.rms_group),
-            "rms_log": bool(rms_params.rms_log),
-        },
-        "cake": {
-            "cake_model": str(cake.cake_model or "ak135-f-continental.m"),
-            "cake_phases": [str(x) for x in cake.cake_phases],
-            "cake_tshift": float(cake.cake_tshift),
-            "cake_use_station_depth": bool(cake.cake_use_station_depth),
-            "cake_mode": str(cake.cake_mode or "run"),
-        },
-    }
-    return view
-
-
 def _marker_msg(data: Mapping[str, Any]) -> snuffling_pb2.SnufMarker:
     msg = snuffling_pb2.SnufMarker()
     msg.t = float(data.get("t", data.get("tmin", 0.0)) or 0.0)
@@ -2145,66 +2018,6 @@ def _map_data_pb(data: Mapping[str, Any]) -> bytes:
     return msg.SerializeToString()
 
 
-def _cake_disc_msg(data: Mapping[str, Any]) -> snuffling_pb2.CakeDiscontinuity:
-    msg = snuffling_pb2.CakeDiscontinuity()
-    msg.z_km = float(data.get("z_km", 0.0) or 0.0)
-    if data.get("name") is not None:
-        msg.name = str(data["name"])
-    return msg
-
-
-def _cake_layer_msg(data: Mapping[str, Any]) -> snuffling_pb2.CakeLayer:
-    msg = snuffling_pb2.CakeLayer()
-    msg.ztop_km = float(data.get("ztop_km", 0.0) or 0.0)
-    msg.zbot_km = float(data.get("zbot_km", 0.0) or 0.0)
-    msg.water = bool(data.get("water", False))
-    msg.gradient = bool(data.get("gradient", False))
-    return msg
-
-
-def _cake_point_msg(data: Mapping[str, Any]) -> snuffling_pb2.CakePoint:
-    msg = snuffling_pb2.CakePoint()
-    msg.x_km = float(data.get("x_km", 0.0) or 0.0)
-    msg.z_km = float(data.get("z_km", 0.0) or 0.0)
-    return msg
-
-
-def _cake_plot_result_pb(data: Mapping[str, Any]) -> bytes:
-    msg = snuffling_pb2.CakePlotResult()
-    if data.get("kind") == "model":
-        model = snuffling_pb2.CakeModelPlot()
-        model.title = str(data.get("title", ""))
-        model.vp.extend(float(x) for x in data.get("vp", []))
-        model.vs.extend(float(x) for x in data.get("vs", []))
-        model.discontinuities.extend(_cake_disc_msg(x) for x in data.get("discontinuities", []))
-        model.layers.extend(_cake_layer_msg(x) for x in data.get("layers", []))
-        model.vmax_km = float(data.get("vmax_km", 0.0) or 0.0)
-        model.zmax_km = float(data.get("zmax_km", 0.0) or 0.0)
-        msg.model.CopyFrom(model)
-    else:
-        rays = snuffling_pb2.CakeRaysPlot()
-        rays.title = str(data.get("title", ""))
-        rays.discontinuities.extend(_cake_disc_msg(x) for x in data.get("discontinuities", []))
-        rays.layers.extend(_cake_layer_msg(x) for x in data.get("layers", []))
-        rays.source.CopyFrom(_cake_point_msg(data.get("source", {})))
-        rays.receivers.extend(_cake_point_msg(x) for x in data.get("receivers", []))
-        for ray in data.get("rays", []):
-            ray_item = rays.rays.add()
-            ray_item.color = int(ray.get("color", 0) or 0)
-            for seg in ray.get("segs", []):
-                series = ray_item.segs.add()
-                series.values.extend(float(x) for x in seg)
-        for entry in data.get("legend", []):
-            legend_item = rays.legend.add()
-            legend_item.phase = str(entry.get("phase", ""))
-            legend_item.color = int(entry.get("color", 0) or 0)
-        rays.xmin_km = float(data.get("xmin_km", 0.0) or 0.0)
-        rays.xmax_km = float(data.get("xmax_km", 0.0) or 0.0)
-        rays.zmax_km = float(data.get("zmax_km", 0.0) or 0.0)
-        msg.rays.CopyFrom(rays)
-    return msg.SerializeToString()
-
-
 def make_example_pb() -> bytes:
     return _make_example_scene().SerializeToString()
 
@@ -2232,26 +2045,22 @@ def run_snuffling_pb(request: Any) -> bytes:
     # ("ArrayBufferView must not be shared"), masking the real error. So surface
     # it in SnufflingResult.text (which the UI already shows). See AGENTS.md.
     try:
-        return _snuffling_result_pb(
-            _run_snuffling_result(req.name, _snuffling_request_dict(req.params))
-        )
+        return _run_snuffling_result(req.name, req.params).SerializeToString()
     except Exception as exc:
-        return _snuffling_result_pb(
-            {
-                "show_window": True,
-                "text": f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-            }
-        )
+        return snuffling_pb2.SnufflingResult(
+            show_window=True,
+            text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+        ).SerializeToString()
 
 
 def rms_pb(request: Any) -> bytes:
     req = _parse_pb(snuffling_pb2.SnufflingRequestParams, request)
-    return _rms_scene(_snuffling_request_dict(req)).SerializeToString()
+    return _rms_scene(req).SerializeToString()
 
 
 def cake_plot_pb(request: Any) -> bytes:
     req = _parse_pb(snuffling_pb2.SnufflingRequestParams, request)
-    return _cake_plot_result_pb(_cake_plot_result(_snuffling_request_dict(req)))
+    return _cake_plot_result(req).SerializeToString()
 
 
 def command_pb(request: Any) -> bytes:
