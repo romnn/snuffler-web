@@ -14,9 +14,11 @@
 #                            non-threaded build hosted on a separate path.
 #   5. stage-web.sh        — assemble the served py-mt/ from dist + dist-mt.
 #
-# Output the app + CI consume: docker/pyodide-mt/served/ (py-mt, ~54 MB). CI
-# caches it keyed on this dir's build inputs, so the multi-hour step 1 runs only
-# when the patch / pinned commit / build scripts change.
+# Output the app + CI consume: docker/pyodide-mt/served/ (py-mt, ~27 MB), assembled
+# by step 5 from the runtime (dist/) + wheels (dist-mt/). CI caches those two
+# pre-stage artifacts (NOT served/) keyed on the builder inputs, and re-runs only
+# stage-web.sh on a hit — so the expensive steps 1-3 run only when the patch /
+# pinned commits / builder scripts change.
 #
 # Usage:  docker/pyodide-mt/build-all.sh         # reuse an existing runtime build
 #         FORCE=1 docker/pyodide-mt/build-all.sh # rebuild the runtime too

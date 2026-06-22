@@ -10,13 +10,14 @@ name: GitHub Pages
 # There is no single-threaded CDN path anymore; a non-threaded build, if ever
 # needed, is produced via the `threads` build-time feature on a separate path.
 #
-# The custom build (CPython 3.14 + Pyodide from source) is multi-hour, so we
-# CACHE ITS OUTPUT — docker/pyodide-mt/served (py-mt, ~54 MB) — keyed on the build
-# inputs (the patch, pinned commits, build scripts). A cache hit skips the whole
-# build; only an input change forces a rebuild.
-# NOTE: the first run (cold cache) does the full build on a GitHub-hosted runner
-# (6 h / ~14 GB disk limits). If it doesn't fit, switch to a self-hosted runner
-# or commit the built artifacts.
+# The custom build (CPython 3.14 + Pyodide from source) is ~1 h, so we CACHE its
+# expensive PRE-STAGE artifacts — the relinked runtime (.work/pyodide/dist) and the
+# threaded wheels + lock (.work/pyodide/dist-mt) — keyed only on the inputs that
+# determine those bytes. The cheap staging (stage-web.sh -> served/) always re-runs,
+# so editing orchestration / staging / the web app reuses the cache and only
+# re-stages (seconds); only a builder / patch / pin change forces the full rebuild.
+# NOTE: the cold-cache build runs on a GitHub-hosted runner (6 h / ~14 GB limits);
+# it has measured ~1 h, comfortably within budget.
 on:
   push:
     branches: [main]
@@ -60,26 +61,71 @@ jobs:
       - name: Install nightly Rust (threaded wasm build-std)
         run: rustup toolchain install nightly --profile minimal --component rust-src --target wasm32-unknown-unknown
 
-      # Cache the custom-Pyodide build OUTPUTS (not the multi-GB .work tree),
-      # keyed on everything that affects them. Hit -> skip the multi-hour build.
-      - name: Cache Pyodide 314 build outputs
+      # The pyrocko source pin is a cache discriminator that isn't a file (it lives
+      # in mise.toml [env]); extract it so a TOOL-version bump in mise.toml does not
+      # invalidate the expensive Pyodide build, but a pyrocko bump does.
+      - name: Pyodide build cache discriminator
+        id: pyodide-disc
+        run: |
+          ref=$(sed -nE 's/^PYROCKO_REF[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' mise.toml | head -1)
+          test -n "$ref"
+          echo "pyrocko=$ref" >> "$GITHUB_OUTPUT"
+
+      # Cache the EXPENSIVE pre-stage artifacts — the relinked runtime
+      # (.work/pyodide/dist) and the threaded wheels + lock (.work/pyodide/dist-mt),
+      # built together against one ABI — NOT the staged served/ (cheap) nor the
+      # multi-GB .work tree. Keyed ONLY on what determines those bytes: the three
+      # builder scripts (each pins the pyodide / recipes commit + docker image), the
+      # pthread patch, force_sjlj.c, the libomp builder, the pyrocko recipe + pybuild,
+      # and the pyrocko source pin. It deliberately EXCLUDES build-all.sh
+      # (orchestration), stage-web.sh (staging) and mise.toml tool versions — none
+      # change the built bytes. Exact key, no restore-keys: a hit is byte-identical to
+      # a fresh build; any input change misses and rebuilds (no stale-restore hazard).
+      # Restore only here; we SAVE in a separate step right after the build (below)
+      # so a later trunk/backstop failure can't discard the ~1 h artifacts. The key
+      # globs docker/pyodide-pthread/libomp/** (build.sh AND kmp_wasm_compat.c, both
+      # compiled into libomp.a and whole-archived into the runtime), so a libomp
+      # change correctly busts the cache.
+      - name: Restore Pyodide 314 build artifacts
         id: pyodide-out
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: |
-            docker/pyodide-mt/served
-          key: "pyodide314-out-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-all.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/stage-web.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'pybuild/setup.py', 'pybuild/pyproject.toml', 'mise.toml') }}"
+            docker/pyodide-mt/.work/pyodide/dist
+            docker/pyodide-mt/.work/pyodide/dist-mt
+          key: "pyodide314-artifacts-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'docker/pyodide-pthread/libomp/**', 'pybuild/setup.py', 'pybuild/pyproject.toml') }}-pyrocko-${{ steps.pyodide-disc.outputs.pyrocko }}"
 
-      # pyrocko source is needed both by the build (on a cache miss) and by trunk
+      # pyrocko source is needed by the build (on a cache miss) and by trunk
       # (index.html ships test.mseed + the cake earthmodels from it), so always.
       - name: Fetch pyrocko (pinned)
         run: mise run fetch-pyrocko
 
-      # On a cache miss, build the custom runtime + the py-mt wheel + stage py-mt.
-      # Multi-hour the first time; near-instant cache restore afterwards.
-      - name: Build custom Pyodide 314 (runtime + py-mt wheel + stage)
+      # Cache MISS: full build (~1 h cold) -> produces dist + dist-mt, then its final
+      # stage-web.sh assembles served/ and runs the lock-completeness guard.
+      - name: Build custom Pyodide 314 (runtime + wheels + stage)
+        id: build-pyodide
         if: steps.pyodide-out.outputs.cache-hit != 'true'
         run: docker/pyodide-mt/build-all.sh
+
+      # Persist the ~1 h artifacts the moment they exist — BEFORE the trunk build and
+      # the final lock backstop — so a later flake/rejection never forces another full
+      # rebuild next run. The implicit success() in this `if` means a FAILED
+      # build-all.sh skips the save, so a broken/partial artifact is never cached.
+      - name: Save Pyodide 314 build artifacts
+        if: steps.pyodide-out.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            docker/pyodide-mt/.work/pyodide/dist
+            docker/pyodide-mt/.work/pyodide/dist-mt
+          key: ${{ steps.pyodide-out.outputs.cache-primary-key }}
+
+      # Cache HIT: the expensive artifacts are restored; just (re)assemble served/
+      # from them (no docker / emsdk / pyodide tree needed). stage-web.sh runs the
+      # guard, so a stale or partial cached lock fails here instead of shipping.
+      - name: Stage py-mt from cached artifacts
+        if: steps.pyodide-out.outputs.cache-hit == 'true'
+        run: docker/pyodide-mt/stage-web.sh
 
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
       # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/.
@@ -93,6 +139,12 @@ jobs:
           # Worker import is rewritten post-build (Trunk.toml); skip SRI for it.
           TRUNK_BUILD_NO_SRI: "true"
         run: mise exec -- trunk build --release --features threads --public-url "/${{ github.event.repository.name }}/"
+
+      # Final backstop: validate the lock in the ACTUAL artifact about to be
+      # published (trunk copied served/ -> dist/py-mt). A truncated/stale lock —
+      # from any cause — fails the deploy here rather than breaking it for users.
+      - name: Verify the deployed Pyodide lock is complete
+        run: bash docker/pyodide-mt/check-lock.sh dist/py-mt/pyodide-lock.json
 
       - uses: actions/upload-pages-artifact@v5
         with:
