@@ -5,7 +5,7 @@
 //! layer cross-section), but all geometry is computed by pyrocko and handed over
 //! as numeric arrays in km — this module only draws.
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Theme};
 
 use crate::bridge::{
     CakeDiscontinuity, CakeLayer, CakeLegendEntry, CakeModelPlot, CakePoint, CakeRaysPlot,
@@ -15,8 +15,8 @@ use crate::view::markers::MARKER_COLORS;
 /// Scarlet red (palette index 0) — a fallback if a color id is out of range.
 const DEFAULT_PHASE_COLOR: Color32 = Color32::from_rgb(204, 0, 0);
 
-fn bg(dark: bool) -> Color32 {
-    if dark {
+fn bg(theme: Theme) -> Color32 {
+    if theme == Theme::Dark {
         Color32::from_rgb(22, 24, 27)
     } else {
         Color32::from_rgb(250, 250, 250)
@@ -32,7 +32,7 @@ fn palette(color: u8) -> Color32 {
 
 /// A low-alpha tint for a model layer, mirroring `cake_plot`'s water/gradient/
 /// homogeneous shade tables (alternating brightness by layer index).
-fn layer_shade(lay: &CakeLayer, idx: usize, dark: bool) -> Color32 {
+fn layer_shade(lay: &CakeLayer, idx: usize, theme: Theme) -> Color32 {
     let base = if lay.water {
         Color32::from_rgb(52, 101, 164) // sky blue
     } else if lay.gradient {
@@ -41,7 +41,11 @@ fn layer_shade(lay: &CakeLayer, idx: usize, dark: bool) -> Color32 {
         Color32::from_rgb(245, 121, 0) // orange
     };
     let alpha: u8 = if idx.is_multiple_of(2) { 30 } else { 18 };
-    let alpha = if dark { alpha } else { alpha.saturating_add(8) };
+    let alpha = if theme == Theme::Dark {
+        alpha
+    } else {
+        alpha.saturating_add(8)
+    };
     Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
 }
 
@@ -52,7 +56,7 @@ fn draw_model_background(
     y_of: &dyn Fn(f32) -> f32,
     layers: &[CakeLayer],
     discs: &[CakeDiscontinuity],
-    dark: bool,
+    theme: Theme,
 ) {
     for (idx, lay) in layers.iter().enumerate() {
         let (top, bot) = (y_of(lay.ztop_km), y_of(lay.zbot_km));
@@ -62,16 +66,16 @@ fn draw_model_background(
                 Pos2::new(rect.right(), top.max(bot)),
             ),
             0.0,
-            layer_shade(lay, idx, dark),
+            layer_shade(lay, idx, theme),
         );
     }
 
-    let line_col = if dark {
+    let line_col = if theme == Theme::Dark {
         Color32::from_rgb(120, 120, 120)
     } else {
         Color32::from_rgb(95, 95, 95)
     };
-    let text_col = if dark {
+    let text_col = if theme == Theme::Dark {
         Color32::from_gray(205)
     } else {
         Color32::from_gray(60)
@@ -126,13 +130,13 @@ fn flush_run(painter: &egui::Painter, run: &mut Vec<Pos2>, col: Color32) {
     }
 }
 
-fn annotate(painter: &egui::Painter, rect: Rect, text: String, dark: bool) {
+fn annotate(painter: &egui::Painter, rect: Rect, text: String, theme: Theme) {
     painter.text(
         rect.left_top() + egui::vec2(5.0, 3.0),
         Align2::LEFT_TOP,
         text,
         FontId::proportional(11.0),
-        if dark {
+        if theme == Theme::Dark {
             Color32::GRAY
         } else {
             Color32::DARK_GRAY
@@ -150,14 +154,14 @@ pub fn draw_model_plot(ui: &mut egui::Ui, plot: Option<&CakeModelPlot>) {
         ui.label("No model data.");
         return;
     }
-    let dark = ui.visuals().dark_mode;
+    let theme = ui.ctx().theme();
     let size = egui::vec2(
         ui.available_width().max(280.0),
         ui.available_height().max(320.0),
     );
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
     let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, bg(dark));
+    painter.rect_filled(rect, 0.0, bg(theme));
 
     let vmax = (plot.vmax_km * 1.2).max(1e-3);
     let zmax = plot.zmax_km.max(1e-3);
@@ -173,7 +177,7 @@ pub fn draw_model_plot(ui: &mut egui::Ui, plot: Option<&CakeModelPlot>) {
         &y_of,
         &plot.layers,
         &plot.discontinuities,
-        dark,
+        theme,
     );
     draw_profile(&painter, &plot.vp, &x_of, &y_of, palette(0));
     draw_profile(&painter, &plot.vs, &x_of, &y_of, palette(2));
@@ -185,7 +189,7 @@ pub fn draw_model_plot(ui: &mut egui::Ui, plot: Option<&CakeModelPlot>) {
             "{}  —  vp (red) / vs (blue) [km/s] vs depth [km]",
             plot.title
         ),
-        dark,
+        theme,
     );
 }
 
@@ -196,9 +200,13 @@ fn draw_ray_markers(
     y_of: &dyn Fn(f32) -> f32,
     source: &CakePoint,
     receivers: &[CakePoint],
-    dark: bool,
+    theme: Theme,
 ) {
-    let mark_col = if dark { Color32::WHITE } else { Color32::BLACK };
+    let mark_col = if theme == Theme::Dark {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
     painter.circle_filled(
         Pos2::new(x_of(source.x_km), y_of(source.z_km)),
         4.0,
@@ -219,8 +227,8 @@ fn draw_ray_markers(
 }
 
 /// Phase legend (swatch + name) in the top-right of the ray-paths plot.
-fn draw_ray_legend(painter: &egui::Painter, rect: Rect, legend: &[CakeLegendEntry], dark: bool) {
-    let text_col = if dark {
+fn draw_ray_legend(painter: &egui::Painter, rect: Rect, legend: &[CakeLegendEntry], theme: Theme) {
+    let text_col = if theme == Theme::Dark {
         Color32::from_gray(210)
     } else {
         Color32::from_gray(40)
@@ -250,16 +258,16 @@ pub fn draw_rays_plot(ui: &mut egui::Ui, plot: Option<&CakeRaysPlot>) {
         ui.label("Computing…");
         return;
     };
-    let dark = ui.visuals().dark_mode;
+    let theme = ui.ctx().theme();
     let size = egui::vec2(
         ui.available_width().max(320.0),
         ui.available_height().max(320.0),
     );
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
     let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, bg(dark));
+    painter.rect_filled(rect, 0.0, bg(theme));
 
-    let muted = if dark {
+    let muted = if theme == Theme::Dark {
         Color32::GRAY
     } else {
         Color32::DARK_GRAY
@@ -291,7 +299,7 @@ pub fn draw_rays_plot(ui: &mut egui::Ui, plot: Option<&CakeRaysPlot>) {
         &y_of,
         &plot.layers,
         &plot.discontinuities,
-        dark,
+        theme,
     );
 
     for ray in &plot.rays {
@@ -310,13 +318,13 @@ pub fn draw_rays_plot(ui: &mut egui::Ui, plot: Option<&CakeRaysPlot>) {
         }
     }
 
-    draw_ray_markers(&painter, &x_of, &y_of, &plot.source, &plot.receivers, dark);
-    draw_ray_legend(&painter, rect, &plot.legend, dark);
+    draw_ray_markers(&painter, &x_of, &y_of, &plot.source, &plot.receivers, theme);
+    draw_ray_legend(&painter, rect, &plot.legend, theme);
 
     annotate(
         &painter,
         rect,
         format!("{}  —  distance [km] vs depth [km]", plot.title),
-        dark,
+        theme,
     );
 }

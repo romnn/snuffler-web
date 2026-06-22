@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, FontId, Sense, Shape, Stroke};
+use egui::{Align2, Color32, FontId, Sense, Shape, Stroke, Theme};
 
 use crate::bridge::{SpectrumData, SpectrumSnufflingParams};
 use crate::view::markers::MARKER_COLORS;
@@ -71,13 +71,13 @@ pub fn draw_plot(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
         ui.label("No spectrum (web only).");
         return;
     }
-    let dark = ui.visuals().dark_mode;
+    let theme = ui.ctx().theme();
     let (resp, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width().max(240.0), 240.0),
         Sense::hover(),
     );
     let rect = resp.rect;
-    let bg = if dark {
+    let bg = if theme == Theme::Dark {
         Color32::from_rgb(22, 24, 27)
     } else {
         Color32::from_rgb(250, 250, 250)
@@ -103,7 +103,7 @@ pub fn draw_plot(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
     let x_of = |f: f64| rect.left() + ((f.log10() - lxmin) / (lxmax - lxmin)) as f32 * rect.width();
     let y_of = |v: f32| rect.bottom() - (v - ymin) / yspan * rect.height();
 
-    let grid = if dark {
+    let grid = if theme == Theme::Dark {
         Color32::from_rgb(48, 51, 56)
     } else {
         Color32::from_rgb(225, 225, 225)
@@ -149,7 +149,7 @@ pub fn draw_plot(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
         Align2::LEFT_TOP,
         format!("{fmin:.3} - {fmax:.0} Hz  (log freq, log amp)"),
         FontId::proportional(11.0),
-        if dark {
+        if theme == Theme::Dark {
             Color32::GRAY
         } else {
             Color32::DARK_GRAY

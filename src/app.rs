@@ -162,12 +162,12 @@ impl App {
     /// isolation). See `AGENTS.md`: never block the egui render loop.
     #[cfg(feature = "svg-raster")]
     fn start_png_export(&mut self, ctx: &egui::Context) {
-        let dark = ctx.global_style().visuals.dark_mode;
+        let theme = ctx.theme();
         let size = self.last_waveform_rect.size();
         let Some(view) = self.bridge.view() else {
             return;
         };
-        let svg = waveform::render_svg(ctx, &self.state, &view, size, dark);
+        let svg = waveform::render_svg(ctx, &self.state, &view, size, theme);
         drop(view);
 
         #[cfg(all(target_arch = "wasm32", feature = "threads"))]
@@ -607,12 +607,12 @@ impl eframe::App for App {
         // SVG export: re-render the current view through the shared DrawTarget to a
         // vector file at the on-screen size (no framebuffer round-trip needed).
         if std::mem::take(&mut self.svg_request) {
-            let dark = ctx.global_style().visuals.dark_mode;
+            let theme = ctx.theme();
             let size = self.last_waveform_rect.size();
             let svg = self
                 .bridge
                 .view()
-                .map(|view| waveform::render_svg(&ctx, &self.state, &view, size, dark));
+                .map(|view| waveform::render_svg(&ctx, &self.state, &view, size, theme));
             if let Some(svg) = svg {
                 self.bridge.save_image_svg(svg, "snuffler.svg".to_owned());
             }

@@ -12,6 +12,7 @@
 
 use egui::{
     Align2, Color32, ColorImage, FontId, Key, Rect, Sense, Stroke, TextureHandle, TextureOptions,
+    Theme,
 };
 
 use crate::bridge::{ViewData, ViewTrack};
@@ -37,9 +38,9 @@ struct Palette {
     cursor: Color32,
 }
 
-fn palette(dark: bool, theme: WiggleTheme) -> Palette {
-    match (dark, theme) {
-        (true, WiggleTheme::SnufflerQt) => Palette {
+fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
+    match (theme, wiggle) {
+        (Theme::Dark, WiggleTheme::SnufflerQt) => Palette {
             bg: Color32::from_rgb(12, 15, 18),
             trace: Color32::from_rgb(206, 212, 218),
             grid: Color32::from_rgb(42, 49, 56),
@@ -49,7 +50,7 @@ fn palette(dark: bool, theme: WiggleTheme) -> Palette {
             label_bg: Color32::from_rgba_unmultiplied(12, 15, 18, 218),
             cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 55),
         },
-        (false, WiggleTheme::SnufflerQt) => Palette {
+        (Theme::Light, WiggleTheme::SnufflerQt) => Palette {
             bg: Color32::from_rgb(255, 255, 255),
             trace: Color32::from_rgb(85, 87, 83),
             grid: Color32::from_rgb(224, 224, 224),
@@ -59,7 +60,7 @@ fn palette(dark: bool, theme: WiggleTheme) -> Palette {
             label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
             cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
         },
-        (true, WiggleTheme::ColorLines) => Palette {
+        (Theme::Dark, WiggleTheme::ColorLines) => Palette {
             bg: Color32::from_rgb(22, 24, 27),
             trace: Color32::from_rgb(222, 224, 228),
             grid: Color32::from_rgb(48, 51, 56),
@@ -69,7 +70,7 @@ fn palette(dark: bool, theme: WiggleTheme) -> Palette {
             label_bg: Color32::from_rgba_unmultiplied(16, 18, 20, 205),
             cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 50),
         },
-        (false, WiggleTheme::ColorLines) => Palette {
+        (Theme::Light, WiggleTheme::ColorLines) => Palette {
             bg: Color32::from_rgb(250, 250, 250),
             trace: Color32::from_rgb(45, 48, 52),
             grid: Color32::from_rgb(224, 224, 224),
@@ -79,7 +80,7 @@ fn palette(dark: bool, theme: WiggleTheme) -> Palette {
             label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 216),
             cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
         },
-        (true, WiggleTheme::NightBands) => Palette {
+        (Theme::Dark, WiggleTheme::NightBands) => Palette {
             bg: Color32::from_rgb(6, 12, 16),
             trace: Color32::from_rgb(213, 230, 226),
             grid: Color32::from_rgb(28, 45, 52),
@@ -89,7 +90,7 @@ fn palette(dark: bool, theme: WiggleTheme) -> Palette {
             label_bg: Color32::from_rgba_unmultiplied(6, 12, 16, 225),
             cursor: Color32::from_rgba_unmultiplied(137, 230, 211, 72),
         },
-        (false, WiggleTheme::NightBands) => Palette {
+        (Theme::Light, WiggleTheme::NightBands) => Palette {
             bg: Color32::from_rgb(248, 250, 247),
             trace: Color32::from_rgb(39, 58, 62),
             grid: Color32::from_rgb(216, 225, 219),
@@ -316,14 +317,14 @@ fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
     Color32::from_rgb(red, green, blue)
 }
 
-fn row_tint(color: Color32, dark: bool, theme: WiggleTheme) -> Color32 {
-    let (target, keep) = match (dark, theme) {
-        (false, WiggleTheme::SnufflerQt) => (255.0, 0.30),
-        (true, WiggleTheme::SnufflerQt) => (17.0, 0.36),
-        (false, WiggleTheme::NightBands) => (248.0, 0.26),
-        (true, WiggleTheme::NightBands) => (11.0, 0.48),
-        (false, WiggleTheme::ColorLines) => (250.0, 0.0),
-        (true, WiggleTheme::ColorLines) => (24.0, 0.0),
+fn row_tint(color: Color32, theme: Theme, wiggle: WiggleTheme) -> Color32 {
+    let (target, keep) = match (theme, wiggle) {
+        (Theme::Light, WiggleTheme::SnufflerQt) => (255.0, 0.30),
+        (Theme::Dark, WiggleTheme::SnufflerQt) => (17.0, 0.36),
+        (Theme::Light, WiggleTheme::NightBands) => (248.0, 0.26),
+        (Theme::Dark, WiggleTheme::NightBands) => (11.0, 0.48),
+        (Theme::Light, WiggleTheme::ColorLines) => (250.0, 0.0),
+        (Theme::Dark, WiggleTheme::ColorLines) => (24.0, 0.0),
     };
     let mix = |channel: u8| {
         let value = f32::from(channel) * keep + target * (1.0 - keep);
@@ -518,7 +519,7 @@ fn paint(
     view: &ViewData,
     pal: &Palette,
     lay: &Layout,
-    dark: bool,
+    theme: Theme,
     waterfall: bool,
 ) {
     let rect = lay.rect;
@@ -559,7 +560,7 @@ fn paint(
         target.push_clip(track_area);
         for (k, t) in visible.iter().enumerate() {
             let top = top0 + k as f32 * row_h;
-            let fill = row_tint(trace_color(t, state.subsort), dark, state.wiggle_theme);
+            let fill = row_tint(trace_color(t, state.subsort), theme, state.wiggle_theme);
             target.fill_rect(
                 Rect::from_min_max(
                     egui::pos2(track_area.left(), top),
@@ -798,9 +799,9 @@ pub fn render_svg(
     state: &AppState,
     view: &ViewData,
     size: egui::Vec2,
-    dark: bool,
+    theme: Theme,
 ) -> String {
-    let pal = palette(dark, state.wiggle_theme);
+    let pal = palette(theme, state.wiggle_theme);
     let rect = Rect::from_min_size(egui::Pos2::ZERO, size);
     let lay = compute_layout(state, view, rect);
     let waterfall = state.view_mode == ViewMode::Waterfall;
@@ -825,7 +826,7 @@ pub fn render_svg(
         Vec::new()
     };
     let mut target = SvgTarget::new(ctx.clone(), size.x, size.y, images);
-    paint(&mut target, state, view, &pal, &lay, dark, waterfall);
+    paint(&mut target, state, view, &pal, &lay, theme, waterfall);
     target.finish()
 }
 
@@ -842,8 +843,8 @@ pub fn show(
     view_epoch: u64,
     scene_range: Option<(f64, f64)>,
 ) {
-    let dark = ui.visuals().dark_mode;
-    let pal = palette(dark, state.wiggle_theme);
+    let theme = ui.ctx().theme();
+    let pal = palette(theme, state.wiggle_theme);
     ui.ctx()
         .options_mut(|o| o.tessellation_options.feathering = state.antialiasing);
     // Reserve the whole canvas for the painter; the waveform and the scrollbar
@@ -898,7 +899,7 @@ pub fn show(
 
     let lay = compute_layout(state, view, wave_rect);
     let mut target = EguiTarget::new(painter.clone(), &wf.textures);
-    paint(&mut target, state, view, &pal, &lay, dark, waterfall);
+    paint(&mut target, state, view, &pal, &lay, theme, waterfall);
 
     if overflow {
         let strip = Rect::from_min_max(
@@ -966,7 +967,7 @@ fn draw_scrollbar(
     row_h: f32,
 ) {
     let painter = ui.painter();
-    let dark = ui.visuals().dark_mode;
+    let theme = ui.ctx().theme();
     let total_f = total.max(1) as f32;
     let area = strip.height().max(1.0);
     let fits = (area / row_h.max(1.0)).max(1.0);
@@ -1001,7 +1002,7 @@ fn draw_scrollbar(
         egui::pos2(strip.left() + 2.0, thumb_top),
         egui::pos2(strip.right() - 2.0, thumb_top + thumb_h),
     );
-    let (trough, thumb_col, thumb_hot) = if dark {
+    let (trough, thumb_col, thumb_hot) = if theme == Theme::Dark {
         (
             Color32::from_gray(38),
             Color32::from_gray(96),
