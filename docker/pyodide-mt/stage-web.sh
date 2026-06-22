@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Assemble the threaded Pyodide 314 runtime + wheels into a clean, web-servable
-# directory the app loads on the ?threads=1 path (see web/bridge_worker.js, which
-# sets PYODIDE_BASE to py-mt/ when the page is cross-origin isolated). Trunk's
-# post_build hook copies this dir to dist/py-mt/ when it exists (so a checkout
-# without the built runtime just falls back to the CDN single-threaded path).
+# directory the app loads from py-mt/ (see web/bridge_worker.js, which sets
+# PYODIDE_BASE to py-mt/). Trunk's post_build hook copies this dir to dist/py-mt/.
+# The app is MT-only, so this runtime must be present for the app to boot — build
+# it with docker/pyodide-mt/build-all.sh (a fresh checkout has no Pyodide until then).
 #
 # Sources (both produced by the docker/pyodide-mt build steps):
 #   - core runtime (relinked MT + OpenMP + SIMD main) from build.sh's   .work/pyodide/dist/

@@ -13,6 +13,15 @@ include = ["LICENSE", "**/*.rs", "Cargo.toml"]
 all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
+[package.metadata.cargo-fc]
+# `threads` needs a nightly + atomics + build-std build (the precompiled wasm32
+# std is single-threaded), produced ONLY by trunk via the mise tasks. Exclude it
+# from the `cargo fc` matrix so lint:fc / check:fc / test:fc stay on stable + the
+# precompiled std and never try to compile rayon without atomics. The threaded
+# build is instead compile-checked on its own by `task check:threads` (wired into
+# lint:fc), which supplies that nightly + build-std env.
+exclude_features = ["threads"]
+
 [profile.release]
 # Optimize for size: this is a render-only wasm frontend — all heavy computation
 # runs in Pyodide — so a smaller download matters more than peak CPU throughput.
@@ -25,6 +34,7 @@ codegen-units = 1
 strip = true
 
 [lints.rust]
+warnings = { level = "warn", priority = -1 }
 unsafe_code = "deny"
 unused_must_use = "deny"
 # Warn-only: keep iteration fast during development; CI/review still adds the docs.
@@ -57,6 +67,14 @@ svg-raster = ["dep:resvg"]
 # pyrocko C extensions that read stores are selected at wheel-build time
 # (PYROCKO_EXTS, see pybuild/setup.py).
 gf = []
+# A general-purpose rayon worker pool for the wasm frontend (the app's OWN
+# threads, separate from Pyodide), via wasm-bindgen-rayon — currently runs the
+# resvg PNG export off the egui main thread, and is available for any future
+# compute-heavy loop. Requires a nightly + atomics + build-std + cross-origin
+# -isolated build, produced only by trunk (mise run serve / build, and CI); see
+# the `cargo-fc` metadata above + mise.toml. Without it, parallel paths fall back
+# to running on the main thread.
+threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]
 
 [dependencies]
 egui = "0.34"
@@ -89,6 +107,18 @@ env_logger = "0.11"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement"] }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    # navigator.hardwareConcurrency sizes the rayon pool (see the `threads` feature).
+    "Navigator",
+] }
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
+# General-purpose rayon worker pool for the wasm frontend (the `threads` feature):
+# the app's OWN threads, separate from Pyodide. wasm-bindgen-rayon provides the
+# Web Worker glue + `init_thread_pool`. Built only under the nightly + atomics +
+# build-std trunk build; see the `threads` feature + mise.toml.
+rayon = { version = "1", optional = true }
+wasm-bindgen-rayon = { version = "1", optional = true }

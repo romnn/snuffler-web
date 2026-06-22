@@ -45,6 +45,20 @@ tasks:
       - cargo fc check --workspace --all-targets {{.CLI_ARGS}}
       - task: check:py
 
+  check:threads:
+    desc: "type-check the threaded wasm build (the `threads` feature, excluded from the fc matrix)"
+    dir: "{{.ROOT_DIR}}"
+    # `threads` is wasm32-only and needs a nightly that rebuilds std with atomics
+    # (-Z build-std) — the precompiled wasm32 std is single-threaded — so the fc
+    # matrix (stable, no build-std) cannot compile it. This closes that gap. It is
+    # a compile-check, NOT clippy: nightly's lint set is stricter than our pinned
+    # stable toolchain, so clippy here would flag unrelated nightly-only lints.
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+    cmds:
+      - cargo check --target wasm32-unknown-unknown --features threads {{.CLI_ARGS}}
+
   clean:
     desc: "clean cargo workspace"
     cmds:
@@ -144,6 +158,9 @@ tasks:
       # Same feature matrix on wasm32 — catches wasm-only code (the bridge) that
       # the host pass never compiles.
       - cargo fc lint --target wasm32-unknown-unknown {{.CLI_ARGS}}
+      # The fc matrix excludes `threads` (it needs nightly + build-std); compile-
+      # check that build separately so threaded-only code can't rot unnoticed.
+      - task: check:threads
       - task: lint:ast-grep
       - task: lint:py
 

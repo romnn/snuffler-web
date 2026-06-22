@@ -8,13 +8,13 @@
 # pyrocko is NOT vendored: `fetch-pyrocko` clones it (pinned to PYROCKO_REF) into
 # the gitignored sources/, pulled on demand by fetch-pyrocko/serve.
 #
-# BOTH Pyodide paths run our CUSTOM Pyodide 314 build (py3.14 / emscripten 5.0.3),
-# built in docker (docker/pyodide-mt) — NOT via a host emsdk or xbuildenv. The
-# threaded py-mt runtime + the single-threaded CDN pyrocko wheel both come from
-# build-all.sh and differ only in multithreading + SIMD. So mise here pins only
-# the *web* toolchain (trunk/binaryen for the wasm app, node/bun/uv for JS + the
-# ruff/mypy tooling) plus buf + protoc — which the trunk `buf generate` pre-build
-# hook and build.rs (prost) use to compile the bridge .proto.
+# The Pyodide runtime is our CUSTOM threaded Pyodide 314 build (py3.14 /
+# emscripten 5.0.3, pthread + OpenMP + SIMD), built in docker (docker/pyodide-mt)
+# — NOT via a host emsdk or xbuildenv — and produced by build-all.sh. (A
+# single-threaded wheel for a future non-threaded build is opt-in: BUILD_CDN=1.)
+# So mise here pins only the *web* toolchain (trunk/binaryen for the wasm app,
+# node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — which the trunk
+# `buf generate` pre-build hook and build.rs (prost) use to compile the bridge .proto.
 [tools]
 python = "3.12"          # host Python for the uvx-run tooling (ruff, mypy)
 node = "24"
@@ -40,14 +40,38 @@ description = "Clone pyrocko at the pinned commit into sources/ (gitignored)"
 run = "./pybuild/fetch-pyrocko.sh"
 
 [tasks.build-pyodide]
-description = "Build the custom Pyodide 314 (threaded py-mt + single-threaded CDN wheel)"
+description = "Build the custom threaded Pyodide 314 (py-mt; BUILD_CDN=1 also builds the single-threaded wheel)"
 depends = ["fetch-pyrocko"]
 run = "./docker/pyodide-mt/build-all.sh"
 
+# The web app is built THREADED: the egui wasm runs the heavy resvg PNG export on
+# a wasm-bindgen-rayon worker pool (the `threads` feature) so a big export never
+# freezes the UI. The wasm atomics/link flags live in .cargo/config.toml (declared
+# once, inert for clippy/check). The only things that must be build-scoped — and so
+# live here, NOT in shared config — are nightly + `-Z build-std` (via env): the
+# precompiled wasm32 std is single-threaded, so std is rebuilt with atomics, and
+# build-std is global (it would otherwise rebuild the HOST std on every cargo
+# command). Plain `cargo`/clippy/the lint+test matrix stay on the pinned stable
+# toolchain (rust-toolchain.toml) and never rebuild std. The nightly needs rust-src
+# (rustup component add rust-src --toolchain nightly).
+# NO_SRI: the post_build hook rewrites wasm-bindgen-rayon's worker import (see
+# Trunk.toml), which would otherwise mismatch Trunk's subresource-integrity hash
+# for that snippet. SRI on a same-origin, self-hosted bundle adds little anyway.
 [tasks.serve]
-description = "Run the web app (trunk serve)"
+description = "Run the web app (trunk serve) — threaded (off-main-thread PNG export)"
 depends = ["fetch-pyrocko"]
-run = "trunk serve"
+env.RUSTUP_TOOLCHAIN = "nightly"
+env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
+env.TRUNK_BUILD_NO_SRI = "true"
+run = "trunk serve --features threads"
+
+[tasks.build]
+description = "Build the web app for release — threaded (off-main-thread PNG export)"
+depends = ["fetch-pyrocko"]
+env.RUSTUP_TOOLCHAIN = "nightly"
+env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
+env.TRUNK_BUILD_NO_SRI = "true"
+run = "trunk build --release --features threads"
 
 # --- Qt frontend track: the ORIGINAL PyQt5 snuffler, streamed to the browser ---
 # Fully independent of the egui frontend (own Docker image + port). Needs Docker.

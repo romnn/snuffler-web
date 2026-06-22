@@ -1,8 +1,39 @@
-# The clipboard API is still unstable, so web-sys requires this flag for copy
-# (Ctrl+C) to work in the browser:
-# https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
+# Flags for the wasm web target only (these never touch the native host build).
+#
+# - web_sys_unstable_apis: the clipboard API is still unstable, so web-sys needs
+#   this for copy (Ctrl+C) in the browser.
+#   https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
+# - the rest are the wasm-bindgen-rayon threading flags: the egui app runs the
+#   heavy resvg PNG export on a worker pool (the `threads` feature) so it never
+#   blocks the UI. atomics/bulk-memory + a shared, IMPORTED memory (so every
+#   worker shares it) + the TLS/heap symbols wasm-bindgen's threading pass needs.
+#   We `strip` in release, which drops their names, so they must be exported
+#   explicitly; __heap_base is the one extra vs the wasm-bindgen-rayon README,
+#   needed only because we strip. (See https://github.com/RReverser/wasm-bindgen-rayon.)
+#
+# These are declared here (not as env hacking) because they are wasm-only and
+# INERT for `cargo clippy`/`check`: there is no link step, so the link-args are
+# ignored and the unstable-atomics notice is a codegen warning, not a lint — the
+# stable host+wasm lint/test matrix is unaffected. The actual threaded LINK only
+# happens in the trunk build, which additionally selects nightly + `-Z build-std`
+# (rebuilding std with atomics); those two MUST stay build-scoped (build-std is
+# global and would otherwise rebuild the host std), so they live on the mise
+# `serve`/`build` tasks + CI, not here. Consequently a bare `cargo build`/`trunk
+# build` (no build-std) links against the single-threaded precompiled std and
+# fails — build the app with `mise run serve` / `mise run build`.
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg=web_sys_unstable_apis"]
+rustflags = [
+    "--cfg=web_sys_unstable_apis",
+    "-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
+    "-Clink-arg=--shared-memory",
+    "-Clink-arg=--max-memory=1073741824",
+    "-Clink-arg=--import-memory",
+    "-Clink-arg=--export=__wasm_init_tls",
+    "-Clink-arg=--export=__tls_size",
+    "-Clink-arg=--export=__tls_align",
+    "-Clink-arg=--export=__tls_base",
+    "-Clink-arg=--export=__heap_base",
+]
 
 [env]
 CARGO_WORKSPACE_DIR = { value = "", relative = true }

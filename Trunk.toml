@@ -21,6 +21,22 @@ command_arguments = [
     "set -eu; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; for f in \"$d\"/*_bg.wasm; do [ -f \"$f\" ] || continue; mise exec 'github:WebAssembly/binaryen' -- wasm-opt -Oz -all -o \"$f\" \"$f\"; done; done; exit 0",
 ]
 
+# Point wasm-bindgen-rayon's worker at the real (hashed) main JS module. Its
+# workerHelpers.js does `import('../../..')`, which assumes a wasm-pack `pkg/`
+# layout where that resolves to the package's main module; under Trunk's flat,
+# hashed layout it resolves to the site root (index.html) and the worker fails to
+# load — so the rayon pool never comes up. We rewrite it to the actual
+# `snuffler-web-<hash>.js`. No-op on the non-threaded build (no workerHelpers).
+# The threaded build also passes --no-sri (see mise.toml) so this edit doesn't
+# trip Trunk's subresource-integrity hash for the snippet.
+[[hooks]]
+stage = "post_build"
+command = "bash"
+command_arguments = [
+    "-c",
+    "set -eu; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; main=$(basename \"$d\"/snuffler-web-*.js 2>/dev/null) || continue; for wh in \"$d\"/snippets/wasm-bindgen-rayon-*/src/workerHelpers.js; do [ -f \"$wh\" ] || continue; sed -i \"s#import('../../..')#import('../../../$main')#\" \"$wh\"; echo \"[rayon] patched worker module import -> $main\"; done; done; exit 0",
+]
+
 # Stage the threaded Pyodide 314 runtime + wheels into py-mt/ (loaded by
 # web/bridge_worker.js on the ?threads=1 / cross-origin-isolated path). This is a
 # post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a

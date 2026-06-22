@@ -1,19 +1,19 @@
 name: GitHub Pages
 
-# Build the full web app (Rust/egui wasm + BOTH Pyodide paths) and deploy it to
+# Build the web app (Rust/egui wasm + the py-mt Pyodide runtime) and deploy it to
 # GitHub Pages. Set the repo's Pages source to "GitHub Actions" to publish.
 #
-# Both paths run our custom Pyodide 314 toolchain (docker/pyodide-mt):
-#   - threaded (py-mt): pthread + OpenMP + SIMD runtime + wheels, served at py-mt/
-#     and reachable via ?threads=1 (the coi-serviceworker provides the
-#     cross-origin isolation GitHub Pages can't set via response headers).
-#   - single-threaded (default): the stock Pyodide 314.0.0 CDN + a single-threaded
-#     pyrocko wheel (dist-py), differing from py-mt only in MT+SIMD.
+# The app is a single threaded build: our custom Pyodide 314 (docker/pyodide-mt) —
+# pthread + OpenMP + SIMD runtime + wheels, served at py-mt/ — plus the egui wasm
+# built threaded (wasm-bindgen-rayon). Both need cross-origin isolation, which the
+# coi-serviceworker provides (GitHub Pages can't set COOP/COEP response headers).
+# There is no single-threaded CDN path anymore; a non-threaded build, if ever
+# needed, is produced via the `threads` build-time feature on a separate path.
 #
 # The custom build (CPython 3.14 + Pyodide from source) is multi-hour, so we
-# CACHE ITS OUTPUTS — docker/pyodide-mt/served (py-mt, ~54 MB) + dist-py (~1.3 MB)
-# — keyed on the build inputs (the patch, pinned commits, build scripts). A cache
-# hit skips the whole build; only an input change forces a rebuild.
+# CACHE ITS OUTPUT — docker/pyodide-mt/served (py-mt, ~54 MB) — keyed on the build
+# inputs (the patch, pinned commits, build scripts). A cache hit skips the whole
+# build; only an input change forces a rebuild.
 # NOTE: the first run (cold cache) does the full build on a GitHub-hosted runner
 # (6 h / ~14 GB disk limits). If it doesn't fit, switch to a self-hosted runner
 # or commit the built artifacts.
@@ -51,6 +51,15 @@ jobs:
       # image (build-all.sh), not via the host emsdk.
       - uses: jdx/mise-action@v4
 
+      # The egui app is built THREADED (off-main-thread PNG export via
+      # wasm-bindgen-rayon), which needs a nightly + rust-src to rebuild std with
+      # atomics (-Z build-std) — the precompiled wasm32 std is single-threaded.
+      # rust-toolchain.toml stays on stable; plain clippy/test (rust.yml) are
+      # unaffected. Only this trunk build uses nightly (see the env on the build
+      # step + mise.toml).
+      - name: Install nightly Rust (threaded wasm build-std)
+        run: rustup toolchain install nightly --profile minimal --component rust-src --target wasm32-unknown-unknown
+
       # Cache the custom-Pyodide build OUTPUTS (not the multi-GB .work tree),
       # keyed on everything that affects them. Hit -> skip the multi-hour build.
       - name: Cache Pyodide 314 build outputs
@@ -59,24 +68,31 @@ jobs:
         with:
           path: |
             docker/pyodide-mt/served
-            dist-py
-          key: "pyodide314-out-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-all.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/build-pyrocko-cdn.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/stage-web.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'pybuild/setup.py', 'pybuild/pyproject.toml', 'mise.toml') }}"
+          key: "pyodide314-out-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-all.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/stage-web.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'pybuild/setup.py', 'pybuild/pyproject.toml', 'mise.toml') }}"
 
       # pyrocko source is needed both by the build (on a cache miss) and by trunk
       # (index.html ships test.mseed + the cake earthmodels from it), so always.
       - name: Fetch pyrocko (pinned)
         run: mise run fetch-pyrocko
 
-      # On a cache miss, build the custom runtime + both wheels + stage py-mt.
+      # On a cache miss, build the custom runtime + the py-mt wheel + stage py-mt.
       # Multi-hour the first time; near-instant cache restore afterwards.
-      - name: Build custom Pyodide 314 (runtime + both wheels + stage)
+      - name: Build custom Pyodide 314 (runtime + py-mt wheel + stage)
         if: steps.pyodide-out.outputs.cache-hit != 'true'
         run: docker/pyodide-mt/build-all.sh
 
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
       # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/.
-      - name: Trunk build (release)
-        run: mise exec -- trunk build --release --public-url "/${{ github.event.repository.name }}/"
+      # Threaded build: the wasm atomics/link flags come from .cargo/config.toml;
+      # only nightly + `-Z build-std` (rebuild std with atomics) are build-scoped
+      # here, matching the mise serve/build tasks.
+      - name: Trunk build (release, threaded)
+        env:
+          RUSTUP_TOOLCHAIN: nightly
+          CARGO_UNSTABLE_BUILD_STD: "std,panic_abort"
+          # Worker import is rewritten post-build (Trunk.toml); skip SRI for it.
+          TRUNK_BUILD_NO_SRI: "true"
+        run: mise exec -- trunk build --release --features threads --public-url "/${{ github.event.repository.name }}/"
 
       - uses: actions/upload-pages-artifact@v5
         with:

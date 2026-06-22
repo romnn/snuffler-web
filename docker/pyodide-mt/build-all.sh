@@ -8,17 +8,19 @@
 #                            rebuild from scratch).
 #   2. build-packages.sh   — the full THREADED package set into dist-mt/.
 #   3. build-pyrocko.sh    — the THREADED pyrocko wheel (+ into dist-mt's lock).
-#   4. build-pyrocko-cdn.sh— the SINGLE-THREADED pyrocko wheel into dist-py/ (the
-#                            CDN/fallback path; differs only in MT+SIMD).
+#   4. build-pyrocko-cdn.sh— the SINGLE-THREADED pyrocko wheel into dist-py/.
+#                            Off by default (BUILD_CDN=1 to build it): the app is
+#                            MT-only now. The script is kept for a future
+#                            non-threaded build hosted on a separate path.
 #   5. stage-web.sh        — assemble the served py-mt/ from dist + dist-mt.
 #
-# Outputs the two things the app + CI consume: docker/pyodide-mt/served/ (py-mt,
-# ~54 MB) and dist-py/ (the single-threaded wheel). CI caches THOSE outputs
-# keyed on this dir's build inputs, so the multi-hour step 1 runs only when the
-# patch / pinned commit / build scripts change.
+# Output the app + CI consume: docker/pyodide-mt/served/ (py-mt, ~54 MB). CI
+# caches it keyed on this dir's build inputs, so the multi-hour step 1 runs only
+# when the patch / pinned commit / build scripts change.
 #
-# Usage:  docker/pyodide-mt/build-all.sh        # reuse an existing runtime build
+# Usage:  docker/pyodide-mt/build-all.sh         # reuse an existing runtime build
 #         FORCE=1 docker/pyodide-mt/build-all.sh # rebuild the runtime too
+#         BUILD_CDN=1 docker/pyodide-mt/build-all.sh # also build the CDN wheel
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -37,8 +39,12 @@ echo "== [2/5] build-packages.sh (full threaded package set) =="
 echo "== [3/5] build-pyrocko.sh (threaded wheel) =="
 "$here/build-pyrocko.sh"
 
-echo "== [4/5] build-pyrocko-cdn.sh (single-threaded CDN wheel) =="
-"$here/build-pyrocko-cdn.sh"
+if [ "${BUILD_CDN:-0}" = "1" ]; then
+    echo "== [4/5] build-pyrocko-cdn.sh (single-threaded CDN wheel — BUILD_CDN=1) =="
+    "$here/build-pyrocko-cdn.sh"
+else
+    echo "== [4/5] CDN single-threaded wheel — skipped (BUILD_CDN=1 for the future non-threaded build) =="
+fi
 
 echo "== [5/5] stage-web.sh (assemble served py-mt/) =="
 "$here/stage-web.sh"
@@ -46,4 +52,4 @@ echo "== [5/5] stage-web.sh (assemble served py-mt/) =="
 echo
 echo "build-all complete:"
 echo "  threaded runtime  -> $here/served/   (trunk stages to dist/py-mt/)"
-echo "  single-threaded   -> $(cd "$here/../.." && pwd)/dist-py/  (trunk copies to dist/py/)"
+[ "${BUILD_CDN:-0}" = "1" ] && echo "  single-threaded   -> $(cd "$here/../.." && pwd)/dist-py/  (BUILD_CDN=1)"
