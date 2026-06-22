@@ -7,6 +7,39 @@
 // so the two never interfere; there is no runtime CDN fallback / ?threads toggle.
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
 
+// TextDecoder.decode() throws "The provided ArrayBufferView value must not be
+// shared" when handed a view backed by a SharedArrayBuffer in this engine. Our
+// Pyodide is a threaded (pthread) build, so its WASM heap IS a SharedArrayBuffer,
+// and Pyodide's hiwire Python->JS string conversion decodes straight off that heap
+// (e.g. loadPackage()'s unpack_buffer -> to_js(get_dynlibs(...)), and any Python
+// string/exception crossing into JS). (wasm-bindgen sidesteps this by `.slice()`-ing
+// out of shared memory first.) NOTE most decodes — emscripten's own pervasive
+// C-string reads — do NOT trip this, so we must not slow them down: try the native
+// decode first and only copy-and-retry the rare inputs the engine actually rejects.
+// The success path is thus native speed, and on engines that already accept shared
+// views no copy ever happens. Must run before Pyodide is loaded.
+if (typeof SharedArrayBuffer !== "undefined") {
+  const proto = TextDecoder.prototype;
+  const decode = proto.decode;
+  proto.decode = function (input, options) {
+    try {
+      return decode.call(this, input, options);
+    } catch (e) {
+      const shared =
+        input instanceof SharedArrayBuffer ||
+        (ArrayBuffer.isView(input) && input.buffer instanceof SharedArrayBuffer);
+      if (!shared || !(e instanceof TypeError)) throw e;
+      const bytes =
+        input instanceof SharedArrayBuffer
+          ? new Uint8Array(input)
+          : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      return decode.call(this, copy, options);
+    }
+  };
+}
+
 let pyodideReadyPromise = null;
 let gfReadyPromise = null;
 let py = null;
@@ -307,9 +340,10 @@ function bridgeResult(res) {
   }
 }
 
-// Extract the string from a bridge.call_text() {"text", "error"} reply. Throws a
-// plain JS Error on the error variant (a JS-side throw is safe — only a *Python*
-// exception crossing the threaded worker boundary hits the TextDecoder issue).
+// Extract the string from a bridge.call_text() {"text", "error"} reply. The
+// error variant is surfaced as a plain JS Error; bridge.py returns the message as
+// a field (rather than raising) so it crosses as data, and the TextDecoder shim
+// above now also covers Python strings/exceptions decoded off the shared heap.
 function callText(res) {
   try {
     const error = res.get("error");

@@ -285,7 +285,11 @@ export async function saveMarkers(request) {
 }
 
 export function savePng(bytes, filename) {
-  const blob = new Blob([bytes], { type: "image/png" });
+  // `bytes` is a wasm-bindgen view over the egui WASM heap, which is a
+  // SharedArrayBuffer on this threaded build; the Blob constructor rejects shared
+  // views ("must not be shared"). copyBytes() lifts it into a private,
+  // non-shared buffer first (same trick wasm-bindgen uses for strings).
+  const blob = new Blob([copyBytes(bytes)], { type: "image/png" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename || "snuffler.png";
