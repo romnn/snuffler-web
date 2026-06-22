@@ -44,6 +44,11 @@ pub struct App {
     screenshot_crop: egui::Rect,
     /// A "Save image (SVG)" menu click, handled after layout once the view is known.
     svg_request: bool,
+    /// In-flight off-thread PNG export: receives the encoded bytes from the rayon
+    /// pool, paired with the download filename. Only the threaded build runs the
+    /// export off-thread; otherwise it rasterizes synchronously (no receiver).
+    #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+    export_rx: Option<(std::sync::mpsc::Receiver<Option<Vec<u8>>>, String)>,
 }
 
 fn configure_look(ctx: &egui::Context) {
@@ -105,6 +110,8 @@ impl App {
             screenshot_awaiting: false,
             screenshot_crop: egui::Rect::ZERO,
             svg_request: false,
+            #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+            export_rx: None,
         }
     }
 
@@ -145,6 +152,68 @@ impl App {
         SnufflingRequestParams {
             view: self.current_params(npx),
             snufflings: self.state.snufflings.params(),
+        }
+    }
+
+    /// Start a high-DPI PNG export of the current waveform view. The vector SVG is
+    /// built here (it needs the egui `Context`), then rasterized: on the rayon
+    /// worker pool when available — so a big export never freezes the UI — and
+    /// otherwise synchronously on the main thread (native, or no cross-origin
+    /// isolation). See `AGENTS.md`: never block the egui render loop.
+    #[cfg(feature = "svg-raster")]
+    fn start_png_export(&mut self, ctx: &egui::Context) {
+        let dark = ctx.global_style().visuals.dark_mode;
+        let size = self.last_waveform_rect.size();
+        let Some(view) = self.bridge.view() else {
+            return;
+        };
+        let svg = waveform::render_svg(ctx, &self.state, &view, size, dark);
+        drop(view);
+
+        #[cfg(all(target_arch = "wasm32", feature = "threads"))]
+        if crate::pool::ready() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (w, h) = (size.x, size.y);
+            rayon::spawn(move || {
+                let _ = tx.send(crate::view::raster::rasterize_svg(
+                    &svg,
+                    w,
+                    h,
+                    PNG_EXPORT_SCALE,
+                ));
+            });
+            self.export_rx = Some((rx, "snuffler.png".to_owned()));
+            return;
+        }
+
+        if let Some(png) =
+            crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE)
+        {
+            self.bridge.save_image_png(png, "snuffler.png".to_owned());
+        }
+    }
+
+    /// Deliver a finished off-thread PNG export, or keep the progress overlay up
+    /// (and frames coming) while the rayon pool is still rasterizing.
+    #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+    fn poll_png_export(&mut self, ctx: &egui::Context) {
+        let status = self.export_rx.as_ref().map(|(rx, _)| rx.try_recv());
+        match status {
+            Some(Ok(png)) => {
+                if let Some((_, filename)) = self.export_rx.take()
+                    && let Some(png) = png
+                {
+                    self.bridge.save_image_png(png, filename);
+                }
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {
+                crate::job::progress_overlay(ctx, "Rendering PNG…");
+                ctx.request_repaint();
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.export_rx = None;
+            }
+            None => {}
         }
     }
 
@@ -554,17 +623,7 @@ impl eframe::App for App {
         // resolution (delivered a couple frames later as Event::Screenshot).
         if std::mem::take(&mut self.screenshot_request) {
             #[cfg(feature = "svg-raster")]
-            {
-                let dark = ctx.global_style().visuals.dark_mode;
-                let size = self.last_waveform_rect.size();
-                let png = self.bridge.view().and_then(|view| {
-                    let svg = waveform::render_svg(&ctx, &self.state, &view, size, dark);
-                    crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE)
-                });
-                if let Some(png) = png {
-                    self.bridge.save_image_png(png, "snuffler.png".to_owned());
-                }
-            }
+            self.start_png_export(&ctx);
             #[cfg(not(feature = "svg-raster"))]
             {
                 self.screenshot_crop = self.last_waveform_rect;
@@ -572,6 +631,8 @@ impl eframe::App for App {
                 self.screenshot_awaiting = true;
             }
         }
+        #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+        self.poll_png_export(&ctx);
         if self.screenshot_awaiting {
             let shot = ctx.input(|i| {
                 i.events.iter().rev().find_map(|e| match e {
