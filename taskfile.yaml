@@ -128,16 +128,22 @@ tasks:
       - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py pybuild/setup.py qt/make_demo.py typings {{.CLI_ARGS}}
 
   lint:
-    desc: "lint Rust and Python workspace"
+    desc: "lint Rust (host + wasm32) and Python workspace"
     cmds:
       - cargo lint --workspace --all-features {{.CLI_ARGS}}
+      # wasm32 is the real web target — much of src/bridge.rs is
+      # #[cfg(target_arch = "wasm32")] and is NOT compiled on the host.
+      - cargo lint --workspace --all-features --target wasm32-unknown-unknown {{.CLI_ARGS}}
       - task: lint:ast-grep
       - task: lint:py
 
   lint:fc:
-    desc: "lint Rust (all feature combinations) and Python workspace"
+    desc: "lint Rust (all feature combinations, host + wasm32) and Python workspace"
     cmds:
       - cargo fc lint {{.CLI_ARGS}}
+      # Same feature matrix on wasm32 — catches wasm-only code (the bridge) that
+      # the host pass never compiles.
+      - cargo fc lint --target wasm32-unknown-unknown {{.CLI_ARGS}}
       - task: lint:ast-grep
       - task: lint:py
 
