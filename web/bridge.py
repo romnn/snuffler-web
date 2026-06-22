@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import traceback
 from collections import OrderedDict
 from datetime import datetime, timezone
 from importlib import import_module
@@ -2470,9 +2471,22 @@ def get_spectrum_pb(request: Any) -> Dict[str, Any]:
 
 def run_snuffling_pb(request: Any) -> bytes:
     req = _parse_pb(snuffling_pb2.NamedSnufflingRequest, request)
-    return _snuffling_result_pb(
-        _run_snuffling_result(req.name, _snuffling_request_dict(req.params))
-    )
+    # Errors travel as proto, never as a raised exception: a raised Python
+    # exception's traceback can't be converted to JS on the threaded
+    # (SharedArrayBuffer) build — pyodide's TextDecoder rejects the shared view
+    # ("ArrayBufferView must not be shared"), masking the real error. So surface
+    # it in SnufflingResult.text (which the UI already shows). See AGENTS.md.
+    try:
+        return _snuffling_result_pb(
+            _run_snuffling_result(req.name, _snuffling_request_dict(req.params))
+        )
+    except Exception as exc:
+        return _snuffling_result_pb(
+            {
+                "show_window": True,
+                "text": f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+            }
+        )
 
 
 def rms_pb(request: Any) -> bytes:
