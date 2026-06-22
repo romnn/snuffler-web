@@ -4,8 +4,8 @@ frontend.
 This module is the *only* place that touches pyrocko. It exposes a tiny, stable,
 protobuf API to the Pyodide worker (`web/bridge_worker.js`), which in turn is
 called from Rust (`src/bridge.rs`) via `web/bridge.js`. The worker-facing
-``*_pb`` functions parse and return generated protobuf messages;
-legacy JSON wrappers remain only for devtools compatibility.
+``*_pb`` functions parse and return generated protobuf messages; every request
+and response on the live path is protobuf bytes (no JSON crosses the boundary).
 
 pyrocko itself is left completely unmodified; we only call its public API
 (`pyrocko.trace.Trace`, `pyrocko.io.load`).
@@ -13,7 +13,6 @@ pyrocko itself is left completely unmodified; we only call its public API
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import traceback
@@ -199,10 +198,6 @@ def _scene_dict() -> SceneMeta:
     return SceneMeta(tmin=tmin, tmax=tmax, tracks=metas)
 
 
-def _scene_json() -> str:
-    return json.dumps(_scene_dict())
-
-
 def _make_example_scene() -> SceneMeta:
     """Synthesize a small multi-station / 3-component dataset (noise + a
     travelling event packet), so the viewer is populated without any file IO."""
@@ -245,11 +240,6 @@ def _make_example_scene() -> SceneMeta:
     return _scene_dict()
 
 
-def make_example() -> str:
-    _make_example_scene()
-    return _scene_json()
-
-
 def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> SceneMeta:
     """Load a file already staged in Pyodide's FS with pyrocko's ``io.load``."""
     del name
@@ -257,24 +247,6 @@ def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> Sc
     traces = list(pio.load(path, format=fmt2))
     _set_traces(traces, append=append)
     return _scene_dict()
-
-
-def load_path(name: str, path: str, fmt: str, append: bool = False) -> str:
-    _load_path_scene(name, path, fmt, append)
-    return _scene_json()
-
-
-def load_bytes(name: str, data: Any, fmt: str, append: bool = False) -> str:
-    """Write the given file bytes into Pyodide's virtual FS and load them with
-    pyrocko's `io.load`. `data` arrives as a JS Uint8Array. With `append`, add to
-    the current pile instead of replacing it (for multi-file open)."""
-    raw = bytes(data.to_py()) if hasattr(data, "to_py") else bytes(data)
-    os.makedirs("/data", exist_ok=True)
-    path = "/data/" + (name or "data")
-    with open(path, "wb") as f:
-        f.write(raw)
-    fmt2 = "detect" if fmt in (None, "", "detect") else fmt
-    return load_path(name, path, fmt2, append=append)
 
 
 def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, float]:
@@ -904,11 +876,6 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
     return {"meta": meta, "ys": ys}
 
 
-def get_view(params_json: str) -> Dict[str, Any]:
-    res = _get_view_data(json.loads(params_json))
-    return {"meta": json.dumps(res["meta"]), "ys": res["ys"]}
-
-
 def _snuffling_section(params: Dict[str, Any], name: str) -> Dict[str, Any]:
     snufflings = params.get("snufflings") or {}
     section = snufflings.get(name) if isinstance(snufflings, dict) else None
@@ -1019,11 +986,6 @@ def _get_spectrum_data(p: Dict[str, Any]) -> Dict[str, Any]:
     ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, "<f4")
     meta = {"fmin": float(fmin_global), "fmax": float(fmax_global), "tracks": tracks}
     return {"meta": meta, "ys": np.ascontiguousarray(ys, dtype="<f4")}
-
-
-def get_spectrum(params_json: str) -> Dict[str, Any]:
-    res = _get_spectrum_data(json.loads(params_json))
-    return {"meta": json.dumps(res["meta"]), "ys": res["ys"]}
 
 
 def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
@@ -1218,10 +1180,6 @@ def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
     return {"text": "Unknown snuffling: %s" % name, "markers": []}
 
 
-def run_snuffling(name: str, params_json: str) -> str:
-    return json.dumps(_run_snuffling_result(name, json.loads(params_json)))
-
-
 # --- FDSN web services (network) -------------------------------------------
 # The browser performs the actual fetch (it has CORS); these helpers only build
 # the request URLs and parse the responses, so all logic stays in Python.
@@ -1244,22 +1202,6 @@ def _dataselect_url(p: Dict[str, Any]) -> str:
     return "%s/fdsnws/dataselect/1/query?%s" % (base, q)
 
 
-def dataselect_url(params_json: str) -> str:
-    return _dataselect_url(json.loads(params_json))
-
-
-def load_waveform_bytes(data: Any) -> str:
-    """Load fetched MiniSEED bytes into the pile and return the scene JSON."""
-    raw = bytes(data.to_py()) if hasattr(data, "to_py") else bytes(data)
-    if not raw:
-        return json.dumps(SceneMeta(tmin=0.0, tmax=1.0, tracks=[]))
-    os.makedirs("/data", exist_ok=True)
-    path = "/data/fdsn.mseed"
-    with open(path, "wb") as f:
-        f.write(raw)
-    return load_waveform_path(path)
-
-
 def _load_waveform_path_scene(path: str) -> SceneMeta:
     """Load staged FDSN MiniSEED bytes into the pile and return the scene."""
     if not path:
@@ -1267,11 +1209,6 @@ def _load_waveform_path_scene(path: str) -> SceneMeta:
     traces = list(pio.load(path, format="mseed"))
     _set_traces(traces)
     return _scene_dict()
-
-
-def load_waveform_path(path: str) -> str:
-    """Load staged FDSN MiniSEED bytes into the pile and return the scene JSON."""
-    return json.dumps(_load_waveform_path_scene(path))
 
 
 def _event_url(p: Dict[str, Any]) -> str:
@@ -1288,10 +1225,6 @@ def _event_url(p: Dict[str, Any]) -> str:
         ]
     )
     return "%s/fdsnws/event/1/query?%s" % (base, q)
-
-
-def event_url(params_json: str) -> str:
-    return _event_url(json.loads(params_json))
 
 
 def _ftime(s: str) -> float:
@@ -1349,10 +1282,6 @@ def _parse_events_result(text: str) -> Dict[str, Any]:
     return {"text": header + ("\n\n" + body if body else ""), "markers": markers}
 
 
-def parse_events(text: str) -> str:
-    return json.dumps(_parse_events_result(text))
-
-
 def _station_url(p: Dict[str, Any]) -> str:
     """FDSN station query URL (text format, station level)."""
     base = _fdsn_base(p.get("datacenter", "geofon"))
@@ -1366,10 +1295,6 @@ def _station_url(p: Dict[str, Any]) -> str:
         ]
     )
     return "%s/fdsnws/station/1/query?%s" % (base, q)
-
-
-def station_url(params_json: str) -> str:
-    return _station_url(json.loads(params_json))
 
 
 def _parse_stations_result(text: str) -> Dict[str, Any]:
@@ -1392,10 +1317,6 @@ def _parse_stations_result(text: str) -> Dict[str, Any]:
     return {"text": "%d station(s) with coordinates loaded" % n, "markers": []}
 
 
-def parse_stations(text: str) -> str:
-    return json.dumps(_parse_stations_result(text))
-
-
 def _response_url(p: Dict[str, Any]) -> str:
     """FDSN station query URL at response level (StationXML with instrument
     responses, for deconvolution)."""
@@ -1409,10 +1330,6 @@ def _response_url(p: Dict[str, Any]) -> str:
         ]
     )
     return "%s/fdsnws/station/1/query?%s" % (base, q)
-
-
-def response_url(params_json: str) -> str:
-    return _response_url(json.loads(params_json))
 
 
 def _load_responses_result(xml_text: str) -> Dict[str, Any]:
@@ -1444,10 +1361,6 @@ def _load_responses_result(xml_text: str) -> Dict[str, Any]:
     }
 
 
-def load_responses(xml_text: str) -> str:
-    return json.dumps(_load_responses_result(xml_text))
-
-
 def _map_data_result() -> Dict[str, Any]:
     """Station + event coordinates for the Map overlay (no network — reads what
     the FDSN fetches already loaded)."""
@@ -1459,10 +1372,6 @@ def _map_data_result() -> Dict[str, Any]:
         {"lat": e["lat"], "lon": e["lon"], "mag": e["mag"], "time": e["time"]} for e in _EVENTS
     ]
     return {"stations": stations, "events": events}
-
-
-def map_data() -> str:
-    return json.dumps(_map_data_result())
 
 
 # --- Marker file I/O (pyrocko marker format) -------------------------------
@@ -1566,10 +1475,6 @@ def gf_store_label(store_dir: str) -> str:
     return str(info.get("label", ""))
 
 
-def gf_store_info(store_dir: str) -> str:
-    return json.dumps(_gf_store_info_result(store_dir))
-
-
 def _markers_to_text(markers: List[Dict[str, Any]]) -> str:
     """Serialize markers to pyrocko's snuffler marker-file format."""
     pm = _marker_module()
@@ -1597,12 +1502,8 @@ def _markers_to_text(markers: List[Dict[str, Any]]) -> str:
         return f.read()
 
 
-def markers_to_text(markers_json: str) -> str:
-    return _markers_to_text(json.loads(markers_json))
-
-
 def _markers_from_text(text: str) -> List[Dict[str, Any]]:
-    """Parse a pyrocko marker file into the JSON the egui side adds."""
+    """Parse a pyrocko marker file into the marker dicts the egui side adds."""
     pm = _marker_module()
 
     path = "/tmp/markers_in.txt"
@@ -1639,10 +1540,6 @@ def _markers_from_text(text: str) -> List[Dict[str, Any]]:
             }
         )
     return out
-
-
-def markers_from_text(text: str) -> str:
-    return json.dumps(_markers_from_text(text))
 
 
 # Directory where bridge.js stages the cake earth models (tiny .nd text files
@@ -1832,7 +1729,7 @@ def _cake_plot_result(p: Dict[str, Any]) -> Dict[str, Any]:
 
     All geometry is pyrocko's cake ray tracer; this only converts to the km
     units the egui plot expects and serialises polylines — the Rust side renders
-    (no matplotlib, unlike the Qt snuffling). Returns a tagged JSON object whose
+    (no matplotlib, unlike the Qt snuffling). Returns a tagged dict whose
     ``kind`` is ``"model"`` or ``"rays"``.
     """
     model, phase_names, _tshift, use_station_depth, mode = _cake_section(p)
@@ -1843,10 +1740,6 @@ def _cake_plot_result(p: Dict[str, Any]) -> Dict[str, Any]:
     if mode == "plot_model":
         return _cake_plot_model(cake, mod, model)
     return _cake_plot_rays(cake, mod, model, phase_names, use_station_depth)
-
-
-def cake_plot(params_json: str) -> str:
-    return json.dumps(_cake_plot_result(json.loads(params_json)))
 
 
 def _cake_plot_model(cake: Any, mod: Any, title: str) -> Dict[str, Any]:
@@ -1959,7 +1852,7 @@ def _command_glob(scope: Optional[str], pattern: str) -> str:
 
 
 def _command_result(line: str) -> Dict[str, Any]:
-    """Execute a snuffler ':' command line. Returns JSON describing the action:
+    """Execute a snuffler ':' command line. Returns a dict describing the action:
     {"action": "goto", "t": <epoch>} | {"action": "scene", "scene": <SceneMeta>}
     | {"action": "error", "message": ...} | {"action": "none"}.
 
@@ -2013,17 +1906,13 @@ def _command_result(line: str) -> Dict[str, Any]:
     return {"action": "error", "message": "unknown command: %s" % cmd}
 
 
-def command(line: str) -> str:
-    return json.dumps(_command_result(line))
-
-
 def _rms_scene(p: Dict[str, Any]) -> SceneMeta:
     """Blockwise root-mean-square derived traces (pyrocko's RMS snuffling).
 
     For each visible trace, RMS is computed over fixed-length blocks across the
     visible window and emitted as a new low-rate trace (channel suffix '-RMS').
     With grouping on, a station's components are combined into one RMS trace.
-    Appends the derived traces and returns the updated scene JSON. All numpy.
+    Appends the derived traces and returns the updated scene. All numpy.
     """
     global _TRACES
     tmin, tmax = float(p["tmin"]), float(p["tmax"])
@@ -2138,11 +2027,6 @@ def _rms_scene(p: Dict[str, Any]) -> SceneMeta:
 
     _mark_traces_changed()
     return _scene_dict()
-
-
-def rms(params_json: str) -> str:
-    _rms_scene(json.loads(params_json))
-    return _scene_json()
 
 
 def _raw_bytes(value: Any) -> bytes:
@@ -2819,7 +2703,7 @@ def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
 
 
 def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
-    """For two-step worker flows (URL builders, gf_store_label, markers_to_text)
+    """For two-step worker flows (URL builders, gfStoreLabel, markersToText)
     that need the string back in the worker. Returns {"text": str, "error": str}
     — never raises (a raised exception over the threaded worker boundary would
     hit the same TextDecoder issue call() guards against)."""
