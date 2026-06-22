@@ -6,25 +6,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>snuffler-web — seismic waveform inspector</title>
 
-    <!-- Cross-origin isolation (opt-in) for SharedArrayBuffer / wasm threads.
-         OFF by default so the app behaves exactly as the current single-threaded
-         build; append ?threads=1 to enable (persists), ?threads=0 to turn it back
-         off. Uses a coi-serviceworker shim with COEP credentialless, so the
-         cross-origin Pyodide CDN, map tiles and FDSN keep loading. When off, any
-         previously-registered shim is deregistered — fully reversible. -->
+    <!-- Cross-origin isolation is always on. The app is a single threaded build:
+         the egui wasm runs its PNG export on a wasm-bindgen-rayon worker pool and
+         the Pyodide runtime is our py-mt (pthread + OpenMP + SIMD) build — both
+         need SharedArrayBuffer, which requires COI. The coi-serviceworker shim
+         uses COEP credentialless so the cross-origin map tiles + FDSN keep
+         loading. There is no runtime toggle: a non-threaded build, if ever
+         needed, is produced via the `threads` build-time feature and hosted on a
+         separate path so the two never interfere. -->
     <script>
         (function () {
-            var p = new URLSearchParams(location.search);
-            if (p.has("threads")) {
-                localStorage.setItem(
-                    "snufflerThreads", p.get("threads") === "0" ? "0" : "1");
-            }
-            var on = localStorage.getItem("snufflerThreads") === "1";
-            window.__snufflerThreads = on;
             window.coi = {
                 coepCredentialless: function () { return true; },
-                shouldRegister: function () { return on; },
-                shouldDeregister: function () { return !on; },
+                shouldRegister: function () { return true; },
+                shouldDeregister: function () { return false; },
                 quiet: true,
             };
         })();
@@ -42,8 +37,8 @@
     <!-- same boar mark, copied verbatim for the loading-screen logo (<img> below) -->
     <link data-trunk rel="copy-file" href="assets/favicon.png" />
 
-    <!-- runtime assets fetched by web/bridge.js -->
-    <link data-trunk rel="copy-dir" href="dist-py" data-target-path="py" />
+    <!-- runtime assets fetched by web/bridge.js (the py-mt Pyodide runtime +
+         wheels are staged into py-mt/ by Trunk.toml's post_build hook) -->
     <link data-trunk rel="copy-file" href="web/bridge.py" />
     <link data-trunk rel="copy-file" href="web/bridge_worker.js" />
     <!-- cross-origin isolation shim (opt-in; see the script in <head>) -->
@@ -204,8 +199,8 @@
     <!-- the id is hardcoded in main.rs; keep them in sync -->
     <canvas id="the_canvas_id"></canvas>
 
-    <!-- subtle debug readout of the booted Pyodide runtime (set by
-         __snufflerRuntime); shown on both the threaded and CDN paths -->
+    <!-- subtle debug readout of the booted py-mt Pyodide runtime (set by
+         __snufflerRuntime) -->
     <div id="runtime-badge"></div>
 
     <div id="loading">
@@ -239,10 +234,10 @@
         };
 
         // Called by web/bridge.js when the Pyodide worker reports its booted
-        // runtime. Always shows a subtle debug readout of the versions; the lead
-        // token reflects the mode — "wasm+openmp+simd" only when threading
-        // actually came up (pthreads read back from the live interpreter, so
-        // libomp + SIMD are in play), else the stock single-threaded "wasm".
+        // runtime. Shows a subtle debug readout of the versions; the lead token is
+        // "wasm+openmp+simd" once threading is confirmed (pthreads read back from
+        // the live interpreter, so libomp + SIMD are in play) — it should always
+        // be, on this MT-only build; a bare "wasm" would signal threading failed.
         window.__snufflerRuntime = function (info) {
             if (!info) return;
             const badge = document.getElementById("runtime-badge");
