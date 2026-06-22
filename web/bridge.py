@@ -31,7 +31,6 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
-    TypedDict,
     TypeVar,
     cast,
 )
@@ -49,51 +48,7 @@ from snuffler.bridge.v1 import (
     view_pb2,
 )
 
-
 # The TypedDicts below document the Python-side shape used by pyrocko helpers.
-class TraceMeta(TypedDict):
-    net: str
-    sta: str
-    loc: str
-    cha: str
-    label: str
-    tmin: float
-    tmax: float
-    deltat: float
-    nsamples: int
-
-
-class SceneMeta(TypedDict):
-    tmin: float
-    tmax: float
-    tracks: List[TraceMeta]
-
-
-class ViewTrack(TypedDict):
-    net: str
-    sta: str
-    loc: str
-    cha: str
-    label: str
-    t0_rel: float
-    dt: float  # >0 raw sample spacing, 0 explicit (t_rel, y) points
-    count: int
-    offset: int
-    ymin: float
-    ymax: float
-    ymean: float
-    yscale: float  # gain-adjusted display half-range, grouped per scaling_group
-    nf: int  # waterfall raster rows (0 ⇒ plain wiggle, 1 ⇒ Qt-style waterfall)
-    nt: int  # waterfall time bins
-    fmax: float  # spectrogram max frequency when frequency-resolved
-
-
-class ViewMeta(TypedDict):
-    view_tmin: float
-    view_tmax: float
-    tracks: List[ViewTrack]
-
-
 NslcId = Tuple[str, str, str, str]
 MessageT = TypeVar("MessageT", bound=Message)
 TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
@@ -176,29 +131,26 @@ def _fdsn_base(name: str, default: str = "geofon") -> str:
     return _FDSN.get(name, _FDSN[default])
 
 
-def _meta(tr: ptrace.Trace) -> TraceMeta:
+def _trace_meta(msg: scene_pb2.TraceMeta, tr: ptrace.Trace) -> None:
     net, sta, loc, cha = tr.nslc_id
-    return TraceMeta(
-        net=net,
-        sta=sta,
-        loc=loc,
-        cha=cha,
-        label=".".join(tr.nslc_id),
-        tmin=float(tr.tmin),
-        tmax=float(tr.tmax),
-        deltat=float(tr.deltat),
-        nsamples=int(tr.data_len()),
-    )
+    msg.net, msg.sta, msg.loc, msg.cha = net, sta, loc, cha
+    msg.label = ".".join(tr.nslc_id)
+    msg.tmin = float(tr.tmin)
+    msg.tmax = float(tr.tmax)
+    msg.deltat = float(tr.deltat)
+    msg.nsamples = int(tr.data_len())
 
 
-def _scene_dict() -> SceneMeta:
-    metas = [_meta(tr) for tr in _visible_traces()]
-    tmin = min((m["tmin"] for m in metas), default=0.0)
-    tmax = max((m["tmax"] for m in metas), default=1.0)
-    return SceneMeta(tmin=tmin, tmax=tmax, tracks=metas)
+def _scene_meta() -> scene_pb2.SceneMeta:
+    msg = scene_pb2.SceneMeta()
+    for tr in _visible_traces():
+        _trace_meta(msg.tracks.add(), tr)
+    msg.tmin = min((t.tmin for t in msg.tracks), default=0.0)
+    msg.tmax = max((t.tmax for t in msg.tracks), default=1.0)
+    return msg
 
 
-def _make_example_scene() -> SceneMeta:
+def _make_example_scene() -> scene_pb2.SceneMeta:
     """Synthesize a small multi-station / 3-component dataset (noise + a
     travelling event packet), so the viewer is populated without any file IO."""
     deltat = 0.02  # 50 Hz
@@ -237,16 +189,16 @@ def _make_example_scene() -> SceneMeta:
             )
 
     _set_traces(traces)
-    return _scene_dict()
+    return _scene_meta()
 
 
-def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> SceneMeta:
+def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> scene_pb2.SceneMeta:
     """Load a file already staged in Pyodide's FS with pyrocko's ``io.load``."""
     del name
     fmt2 = "detect" if fmt in (None, "", "detect") else fmt
     traces = list(pio.load(path, format=fmt2))
     _set_traces(traces, append=append)
-    return _scene_dict()
+    return _scene_meta()
 
 
 def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, float]:
@@ -410,17 +362,17 @@ def _sort_order(traces: List[ptrace.Trace], sort: str, subsort: str) -> List[int
     return sorted(range(len(traces)), key=lambda i: namekey(traces[i]))
 
 
-def _track_scaling_key(t: "ViewTrack", group: str) -> Any:
+def _track_scaling_key(t: view_pb2.ViewTrack, group: str) -> Any:
     """Grouping key for shared amplitude scaling (snuffler's Scaling menu)."""
     if group == "common":
         return None
     if group == "per_station":
-        return (t["net"], t["sta"])
+        return (t.net, t.sta)
     if group == "per_station_location":
-        return (t["net"], t["sta"], t["loc"])
+        return (t.net, t.sta, t.loc)
     if group == "per_component":
-        return t["cha"]
-    return (t["net"], t["sta"], t["loc"], t["cha"])
+        return t.cha
+    return (t.net, t.sta, t.loc, t.cha)
 
 
 def _trace_scaling_key(tr: ptrace.Trace, group: str) -> Any:
@@ -463,22 +415,22 @@ def _range_trace(
     )
 
 
-def _scale_context(p: Mapping[str, Any]) -> Tuple[Any, ...]:
+def _scale_context(req: view_pb2.ViewParams) -> Tuple[Any, ...]:
     return (
         _DATA_GEN,
         _RESPONSE_GEN,
-        p.get("sort", "name"),
-        p.get("subsort", "nslc"),
-        _float_key(float(p.get("rotate", 0.0) or 0.0)),
-        bool(p.get("remove_response", False)),
-        bool(p.get("demean", True)),
-        bool(p.get("degap", True)),
-        _float_key(p.get("highpass")),
-        _float_key(p.get("lowpass")),
-        bool(p.get("fft_filtering", False)),
-        bool(p.get("bandpass_lphp", True)),
-        p.get("scaling_base", "minmax"),
-        p.get("scaling_group", "individual"),
+        req.sort or "name",
+        req.subsort or "nslc",
+        _float_key(float(req.rotate)),
+        bool(req.remove_response),
+        bool(req.demean),
+        bool(req.degap),
+        _float_key(req.highpass if req.HasField("highpass") else None),
+        _float_key(req.lowpass if req.HasField("lowpass") else None),
+        bool(req.fft_filtering),
+        bool(req.bandpass_lphp),
+        req.scaling_base or "minmax",
+        req.scaling_group or "individual",
     )
 
 
@@ -645,43 +597,43 @@ def _waterfall_trace(
     return np.ascontiguousarray(data, dtype="<f4"), float(deltat) * float(step)
 
 
-def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
+def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
     """Compute the requested view (wiggle waveforms or a Qt-style waterfall).
 
-    Returns {meta: <ViewMeta dict>, ys: <float32 ndarray>}. For wiggles `ys`
-    holds raw uniform samples at close zooms, or explicit `(t_rel, y)` extrema
-    points for reduced long-window views. For the waterfall it holds per-track
-    normalized amplitude strips for the requested track page.
+    Returns (ViewMeta, ys). For wiggles `ys` holds raw uniform samples at close
+    zooms, or explicit `(t_rel, y)` extrema points for reduced long-window views.
+    For the waterfall it holds per-track normalized amplitude strips for the
+    requested track page.
     """
-    tmin = float(p["tmin"])
-    tmax = float(p["tmax"])
-    npx = int(p["npx"])
-    track_offset = max(0, int(p.get("track_offset", 0) or 0))
-    track_count = max(0, int(p.get("track_count", 0) or 0))
+    tmin = float(req.tmin)
+    tmax = float(req.tmax)
+    npx = int(req.npx)
+    track_offset = max(0, int(req.track_offset))
+    track_count = max(0, int(req.track_count))
     track_end = track_offset + track_count
-    hp: Optional[float] = p.get("highpass")
-    lp: Optional[float] = p.get("lowpass")
-    sort = p.get("sort", "name")
-    subsort = p.get("subsort", "nslc")
-    rotate = float(p.get("rotate", 0.0) or 0.0)
-    remove_response = bool(p.get("remove_response", False))
-    mode = p.get("mode", "wiggle")
-    demean = bool(p.get("demean", True))
-    degap = bool(p.get("degap", True))
-    allow_ds = bool(p.get("allow_downsampling", True))
-    fft = bool(p.get("fft_filtering", False))
-    lphp = bool(p.get("bandpass_lphp", True))
-    base = p.get("scaling_base", "minmax")
-    scaling_group = p.get("scaling_group", "individual")
-    gain = float(p.get("gain", 1.0) or 1.0)
+    hp: Optional[float] = req.highpass if req.HasField("highpass") else None
+    lp: Optional[float] = req.lowpass if req.HasField("lowpass") else None
+    sort = req.sort or "name"
+    subsort = req.subsort or "nslc"
+    rotate = float(req.rotate)
+    remove_response = bool(req.remove_response)
+    mode = req.mode or "wiggle"
+    demean = bool(req.demean)
+    degap = bool(req.degap)
+    allow_ds = bool(req.allow_downsampling)
+    fft = bool(req.fft_filtering)
+    lphp = bool(req.bandpass_lphp)
+    base = req.scaling_base or "minmax"
+    scaling_group = req.scaling_group or "individual"
+    gain = float(req.gain or 1.0)
     if gain <= 0.0 or not math.isfinite(gain):
         gain = 1.0
-    fix_scale_ranges = bool(p.get("fix_scale_ranges", False))
-    show_scale_ranges = bool(p.get("show_scale_ranges", False))
-    show_scale_axes = bool(p.get("show_scale_axes", False))
-    wf_abs = bool(p.get("wf_abs", False))
-    wf_integrate = bool(p.get("wf_integrate", False))
-    scale_context = _scale_context(p)
+    fix_scale_ranges = bool(req.fix_scale_ranges)
+    show_scale_ranges = bool(req.show_scale_ranges)
+    show_scale_axes = bool(req.show_scale_axes)
+    wf_abs = bool(req.wf_abs)
+    wf_integrate = bool(req.wf_integrate)
+    scale_context = _scale_context(req)
 
     traces = list(_visible_traces())
     if degap:
@@ -694,8 +646,8 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
     work = _apply_rotation(work, rotate)
     work = _remove_response(work, remove_response)
 
+    meta = view_pb2.ViewMeta(view_tmin=tmin, view_tmax=tmax)
     ys_parts: List[np.ndarray] = []
-    tracks: List[ViewTrack] = []
     range_traces: List[ptrace.Trace] = []
     offset = 0
     view_idx = 0
@@ -744,26 +696,19 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
                             vmin = float(strip.min())
                             vmax = float(strip.max())
                         t0_rel = ytmin - tmin
-            tracks.append(
-                ViewTrack(
-                    net=net,
-                    sta=sta,
-                    loc=loc,
-                    cha=cha,
-                    label=label,
-                    t0_rel=t0_rel,
-                    dt=dt,
-                    count=int(nf * nt),
-                    offset=int(offset),
-                    ymin=vmin,
-                    ymax=vmax,
-                    ymean=0.0,
-                    yscale=1.0,
-                    nf=int(nf),
-                    nt=int(nt),
-                    fmax=fmax,
-                )
-            )
+            t = meta.tracks.add()
+            t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
+            t.label = label
+            t.t0_rel = t0_rel
+            t.dt = dt
+            t.count = int(nf * nt)
+            t.offset = int(offset)
+            t.ymin = vmin
+            t.ymax = vmax
+            t.yscale = 1.0
+            t.nf = int(nf)
+            t.nt = int(nt)
+            t.fmax = fmax
             if want_samples and flat.size:
                 ys_parts.append(np.ascontiguousarray(flat, dtype="<f4"))
                 offset += int(nf * nt)
@@ -785,39 +730,28 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
                 y, count, dt = _decimate(yview, deltat, target)
                 ys_parts.append(np.ascontiguousarray(y, dtype="<f4"))
                 payload_len = int(y.size)
-            tracks.append(
-                ViewTrack(
-                    net=net,
-                    sta=sta,
-                    loc=loc,
-                    cha=cha,
-                    label=label,
-                    t0_rel=t0_rel,
-                    dt=dt,
-                    count=int(count),
-                    offset=int(offset),
-                    ymin=0.0,
-                    ymax=1.0,
-                    ymean=0.0,
-                    yscale=1.0,
-                    nf=0,
-                    nt=0,
-                    fmax=0.0,
-                )
-            )
+            t = meta.tracks.add()
+            t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
+            t.label = label
+            t.t0_rel = t0_rel
+            t.dt = dt
+            t.count = int(count)
+            t.offset = int(offset)
+            t.ymax = 1.0
+            t.yscale = 1.0
             if want_samples:
                 offset += payload_len
 
     if mode == "waterfall":
         if wf_abs:
-            lo = min((t["ymin"] for t in tracks if t["nf"]), default=0.0)
-            hi = max((t["ymax"] for t in tracks if t["nf"]), default=1.0)
+            lo = min((t.ymin for t in meta.tracks if t.nf), default=0.0)
+            hi = max((t.ymax for t in meta.tracks if t.nf), default=1.0)
             if hi <= lo:
                 hi = lo + 1e-12
-            for t in tracks:
-                if t["nf"]:
-                    t["ymin"] = lo
-                    t["ymax"] = hi
+            for t in meta.tracks:
+                if t.nf:
+                    t.ymin = lo
+                    t.ymax = hi
     elif range_traces:
         global _OLD_DATA_RANGE_CONTEXT
         mode_param, outer_mode = _scaling_base_modes(base)
@@ -850,8 +784,8 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
             approx_ticks=15.0,
             snap=(show_scale_ranges or show_scale_axes) and not show_scale_axes,
         )
-        for t in tracks:
-            if t["nf"]:
+        for t in meta.tracks:
+            if t.nf:
                 continue
             dymin, dymax = data_ranges.get(_track_scaling_key(t, scaling_group), (0.0, 1.0))
             if not math.isfinite(dymin) or not math.isfinite(dymax) or dymax <= dymin:
@@ -862,18 +796,17 @@ def _get_view_data(p: Dict[str, Any]) -> Dict[str, Any]:
             if ymax <= ymin:
                 ymax = ymin + 1e-12
             half = max(0.5 * (ymax - ymin), 1e-12)
-            t["ymin"] = ymin
-            t["ymax"] = ymax
-            t["ymean"] = 0.5 * (ymin + ymax)
-            t["yscale"] = max(gain * half, 1e-12)
+            t.ymin = ymin
+            t.ymax = ymax
+            t.ymean = 0.5 * (ymin + ymax)
+            t.yscale = max(gain * half, 1e-12)
 
     ys = (
         np.ascontiguousarray(np.concatenate(ys_parts), dtype="<f4")
         if ys_parts
         else np.zeros(0, dtype="<f4")
     )
-    meta: ViewMeta = ViewMeta(view_tmin=tmin, view_tmax=tmax, tracks=tracks)
-    return {"meta": meta, "ys": ys}
+    return meta, ys
 
 
 def _snuffling_section(params: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -914,24 +847,28 @@ def _konno_ohmachi_smooth(values: np.ndarray, freqs: np.ndarray, bandwidth: floa
     return out
 
 
-def _get_spectrum_data(p: Dict[str, Any]) -> Dict[str, Any]:
+def _get_spectrum_data(
+    req: snuffling_pb2.SnufflingRequestParams,
+) -> Tuple[view_pb2.SpecMeta, np.ndarray]:
     """Amplitude spectrum (|rFFT|) of each visible trace — a built-in snuffling.
 
-    Returns {meta: <dict>, ys: <float32 bytes>} with per-track log10-amplitude
-    sampled on a shared log-frequency axis [fmin, fmax]."""
-    tmin, tmax = float(p["tmin"]), float(p["tmax"])
-    spectrum_params = _snuffling_section(p, "spectrum")
-    smoothing = bool(_cfg(spectrum_params, p, "spec_smoothing", False))
-    smoothing_bandwidth = float(_cfg(spectrum_params, p, "spec_smoothing_bandwidth", 40.0) or 40.0)
-    hp, lp = p.get("highpass"), p.get("lowpass")
-    rotate = float(p.get("rotate", 0.0) or 0.0)
+    Returns (SpecMeta, ys) with per-track log10-amplitude sampled on a shared
+    log-frequency axis [fmin, fmax]."""
+    view = req.view
+    tmin, tmax = float(view.tmin), float(view.tmax)
+    spectrum = req.snufflings.spectrum
+    smoothing = bool(spectrum.spec_smoothing)
+    smoothing_bandwidth = float(spectrum.spec_smoothing_bandwidth or 40.0)
+    hp = view.highpass if view.HasField("highpass") else None
+    lp = view.lowpass if view.HasField("lowpass") else None
+    rotate = float(view.rotate)
     nbins = 400
 
     vis = _visible_traces()
     order = sorted(range(len(vis)), key=lambda i: vis[i].nslc_id)
     work = _apply_rotation([vis[i] for i in order], rotate)
-    track_offset = max(0, int(p.get("track_offset", 0) or 0))
-    track_count = max(0, int(p.get("track_count", len(work)) or len(work)))
+    track_offset = max(0, int(view.track_offset))
+    track_count = max(0, int(view.track_count) or len(work))
     work = work[track_offset : track_offset + track_count]
 
     fmin_global, fmax_global = 1e30, 0.0
@@ -962,30 +899,28 @@ def _get_spectrum_data(p: Dict[str, Any]) -> Dict[str, Any]:
         specs.append((".".join(tr.nslc_id), freq, amp))
 
     if not specs or fmax_global <= 0:
-        return {"meta": {"fmin": 0.1, "fmax": 1.0, "tracks": []}, "ys": np.zeros(0, "<f4")}
+        return view_pb2.SpecMeta(fmin=0.1, fmax=1.0), np.zeros(0, "<f4")
 
     fmin_global = max(fmin_global, fmax_global * 1e-4)
     grid = np.logspace(np.log10(fmin_global), np.log10(fmax_global), nbins)
-    ys_parts, tracks, offset = [], [], 0
+    meta = view_pb2.SpecMeta(fmin=float(fmin_global), fmax=float(fmax_global))
+    ys_parts: List[np.ndarray] = []
+    offset = 0
     for label, freq, amp in specs:
         resamp = np.interp(grid, freq, amp, left=0.0, right=0.0)
         if smoothing:
             resamp = _konno_ohmachi_smooth(resamp, grid, smoothing_bandwidth)
         logamp = np.log10(resamp + 1e-20).astype("<f4")
-        tracks.append(
-            {
-                "label": label,
-                "offset": int(offset),
-                "count": int(nbins),
-                "ymin": float(logamp.min()),
-                "ymax": float(logamp.max()),
-            }
-        )
+        t = meta.tracks.add()
+        t.label = label
+        t.offset = int(offset)
+        t.count = int(nbins)
+        t.ymin = float(logamp.min())
+        t.ymax = float(logamp.max())
         ys_parts.append(logamp)
         offset += nbins
     ys = np.concatenate(ys_parts) if ys_parts else np.zeros(0, "<f4")
-    meta = {"fmin": float(fmin_global), "fmax": float(fmax_global), "tracks": tracks}
-    return {"meta": meta, "ys": np.ascontiguousarray(ys, dtype="<f4")}
+    return meta, np.ascontiguousarray(ys, dtype="<f4")
 
 
 def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
@@ -1110,7 +1045,7 @@ def _run_snuffling_result(name: str, p: Dict[str, Any]) -> Dict[str, Any]:
             _TRACES.extend(derived)
         if had_level_traces or show_level_traces:
             _mark_traces_changed()
-            scene = _scene_dict()
+            scene = _scene_meta()
         return {
             "show_window": False,
             "text": "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)"
@@ -1202,13 +1137,13 @@ def _dataselect_url(p: Dict[str, Any]) -> str:
     return "%s/fdsnws/dataselect/1/query?%s" % (base, q)
 
 
-def _load_waveform_path_scene(path: str) -> SceneMeta:
+def _load_waveform_path_scene(path: str) -> scene_pb2.SceneMeta:
     """Load staged FDSN MiniSEED bytes into the pile and return the scene."""
     if not path:
-        return SceneMeta(tmin=0.0, tmax=1.0, tracks=[])
+        return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
     traces = list(pio.load(path, format="mseed"))
     _set_traces(traces)
-    return _scene_dict()
+    return _scene_meta()
 
 
 def _event_url(p: Dict[str, Any]) -> str:
@@ -1897,16 +1832,16 @@ def _command_result(line: str) -> Dict[str, Any]:
             else:
                 glob = _command_glob(scope, pattern)
                 _HIDDEN = [h for h in _HIDDEN if h != glob]
-        return {"action": "scene", "scene": _scene_dict()}
+        return {"action": "scene", "scene": _scene_meta()}
 
     if cmd in ("n", "s", "l", "c"):
         _REDUCE = _command_glob(cmd, args[0] if args else "*")
-        return {"action": "scene", "scene": _scene_dict()}
+        return {"action": "scene", "scene": _scene_meta()}
 
     return {"action": "error", "message": "unknown command: %s" % cmd}
 
 
-def _rms_scene(p: Dict[str, Any]) -> SceneMeta:
+def _rms_scene(p: Dict[str, Any]) -> scene_pb2.SceneMeta:
     """Blockwise root-mean-square derived traces (pyrocko's RMS snuffling).
 
     For each visible trace, RMS is computed over fixed-length blocks across the
@@ -1934,7 +1869,7 @@ def _rms_scene(p: Dict[str, Any]) -> SceneMeta:
     ]
     if not src or block <= 0.0:
         _mark_traces_changed()
-        return _scene_dict()
+        return _scene_meta()
 
     tpad = 0.0
     for freq in (hp, lp):
@@ -1957,7 +1892,7 @@ def _rms_scene(p: Dict[str, Any]) -> SceneMeta:
     nwin = int(((tmax - eps) - tmin) / block) + 1
     if nwin <= 0:
         _mark_traces_changed()
-        return _scene_dict()
+        return _scene_meta()
 
     def complete_chop(tr: ptrace.Trace, wmin: float, wmax: float) -> Optional[ptrace.Trace]:
         try:
@@ -2026,7 +1961,7 @@ def _rms_scene(p: Dict[str, Any]) -> SceneMeta:
     _TRACES.extend(completed)
 
     _mark_traces_changed()
-    return _scene_dict()
+    return _scene_meta()
 
 
 def _raw_bytes(value: Any) -> bytes:
@@ -2051,28 +1986,6 @@ def _nslc_pb(value: Any) -> common_pb2.Nslc:
         msg.loc = str(value[2] if len(value) > 2 else "")
         msg.cha = str(value[3] if len(value) > 3 else "")
     return msg
-
-
-def _scene_msg(data: Mapping[str, Any]) -> scene_pb2.SceneMeta:
-    msg = scene_pb2.SceneMeta()
-    msg.tmin = float(data.get("tmin", 0.0) or 0.0)
-    msg.tmax = float(data.get("tmax", 1.0) or 1.0)
-    for tr in data.get("tracks", []):
-        item = msg.tracks.add()
-        item.net = str(tr.get("net", ""))
-        item.sta = str(tr.get("sta", ""))
-        item.loc = str(tr.get("loc", ""))
-        item.cha = str(tr.get("cha", ""))
-        item.label = str(tr.get("label", ""))
-        item.tmin = float(tr.get("tmin", 0.0) or 0.0)
-        item.tmax = float(tr.get("tmax", 0.0) or 0.0)
-        item.deltat = float(tr.get("deltat", 0.0) or 0.0)
-        item.nsamples = int(tr.get("nsamples", 0) or 0)
-    return msg
-
-
-def _scene_pb(data: Mapping[str, Any]) -> bytes:
-    return _scene_msg(data).SerializeToString()
 
 
 def _view_params_dict(msg: view_pb2.ViewParams) -> Dict[str, Any]:
@@ -2178,45 +2091,6 @@ def _snuffling_request_dict(msg: snuffling_pb2.SnufflingRequestParams) -> Dict[s
     return view
 
 
-def _view_meta_pb(data: Mapping[str, Any]) -> bytes:
-    msg = view_pb2.ViewMeta()
-    msg.view_tmin = float(data.get("view_tmin", 0.0) or 0.0)
-    msg.view_tmax = float(data.get("view_tmax", 0.0) or 0.0)
-    for tr in data.get("tracks", []):
-        item = msg.tracks.add()
-        item.net = str(tr.get("net", ""))
-        item.sta = str(tr.get("sta", ""))
-        item.loc = str(tr.get("loc", ""))
-        item.cha = str(tr.get("cha", ""))
-        item.label = str(tr.get("label", ""))
-        item.t0_rel = float(tr.get("t0_rel", 0.0) or 0.0)
-        item.dt = float(tr.get("dt", 0.0) or 0.0)
-        item.count = int(tr.get("count", 0) or 0)
-        item.offset = int(tr.get("offset", 0) or 0)
-        item.ymin = float(tr.get("ymin", 0.0) or 0.0)
-        item.ymax = float(tr.get("ymax", 0.0) or 0.0)
-        item.ymean = float(tr.get("ymean", 0.0) or 0.0)
-        item.yscale = float(tr.get("yscale", 0.0) or 0.0)
-        item.nf = int(tr.get("nf", 0) or 0)
-        item.nt = int(tr.get("nt", 0) or 0)
-        item.fmax = float(tr.get("fmax", 0.0) or 0.0)
-    return msg.SerializeToString()
-
-
-def _spec_meta_pb(data: Mapping[str, Any]) -> bytes:
-    msg = view_pb2.SpecMeta()
-    msg.fmin = float(data.get("fmin", 0.0) or 0.0)
-    msg.fmax = float(data.get("fmax", 0.0) or 0.0)
-    for tr in data.get("tracks", []):
-        item = msg.tracks.add()
-        item.label = str(tr.get("label", ""))
-        item.offset = int(tr.get("offset", 0) or 0)
-        item.count = int(tr.get("count", 0) or 0)
-        item.ymin = float(tr.get("ymin", 0.0) or 0.0)
-        item.ymax = float(tr.get("ymax", 0.0) or 0.0)
-    return msg.SerializeToString()
-
-
 def _marker_msg(data: Mapping[str, Any]) -> snuffling_pb2.SnufMarker:
     msg = snuffling_pb2.SnufMarker()
     msg.t = float(data.get("t", data.get("tmin", 0.0)) or 0.0)
@@ -2240,7 +2114,7 @@ def _snuffling_result_pb(data: Mapping[str, Any]) -> bytes:
     for marker in data.get("markers", []):
         msg.markers.add().CopyFrom(_marker_msg(marker))
     if data.get("scene") is not None:
-        msg.scene.CopyFrom(_scene_msg(data["scene"]))
+        msg.scene.CopyFrom(data["scene"])
     return msg.SerializeToString()
 
 
@@ -2250,7 +2124,7 @@ def _command_result_pb(data: Mapping[str, Any]) -> bytes:
     if data.get("t") is not None:
         msg.t = float(data["t"])
     if data.get("scene") is not None:
-        msg.scene.CopyFrom(_scene_msg(data["scene"]))
+        msg.scene.CopyFrom(data["scene"])
     if data.get("message") is not None:
         msg.message = str(data["message"])
     return msg.SerializeToString()
@@ -2332,34 +2206,22 @@ def _cake_plot_result_pb(data: Mapping[str, Any]) -> bytes:
 
 
 def make_example_pb() -> bytes:
-    return _scene_pb(_make_example_scene())
+    return _make_example_scene().SerializeToString()
 
 
 def load_staged_file_pb(request: Any, path: str) -> bytes:
     req = _parse_pb(data_pb2.LoadBytesRequest, request)
-    return _scene_pb(_load_path_scene(req.name, path, req.fmt, bool(req.append)))
+    return _load_path_scene(req.name, path, req.fmt, bool(req.append)).SerializeToString()
 
 
 def load_url_staged_pb(request: Any, path: str) -> bytes:
     req = _parse_pb(data_pb2.LoadUrlRequest, request)
     name = req.url.rsplit("/", 1)[-1] or "data"
-    return _scene_pb(_load_path_scene(name, path, req.fmt, False))
+    return _load_path_scene(name, path, req.fmt, False).SerializeToString()
 
 
 def empty_scene_pb() -> bytes:
-    return _scene_msg(SceneMeta(tmin=0.0, tmax=1.0, tracks=[])).SerializeToString()
-
-
-def get_view_pb(request: Any) -> Dict[str, Any]:
-    req = _parse_pb(view_pb2.ViewParams, request)
-    res = _get_view_data(_view_params_dict(req))
-    return {"meta": _view_meta_pb(res["meta"]), "ys": res["ys"]}
-
-
-def get_spectrum_pb(request: Any) -> Dict[str, Any]:
-    req = _parse_pb(snuffling_pb2.SnufflingRequestParams, request)
-    res = _get_spectrum_data(_snuffling_request_dict(req))
-    return {"meta": _spec_meta_pb(res["meta"]), "ys": res["ys"]}
+    return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0).SerializeToString()
 
 
 def run_snuffling_pb(request: Any) -> bytes:
@@ -2384,7 +2246,7 @@ def run_snuffling_pb(request: Any) -> bytes:
 
 def rms_pb(request: Any) -> bytes:
     req = _parse_pb(snuffling_pb2.SnufflingRequestParams, request)
-    return _scene_pb(_rms_scene(_snuffling_request_dict(req)))
+    return _rms_scene(_snuffling_request_dict(req)).SerializeToString()
 
 
 def cake_plot_pb(request: Any) -> bytes:
@@ -2412,7 +2274,7 @@ def dataselect_url_pb(request: Any) -> str:
 
 
 def load_waveform_path_pb(path: str) -> bytes:
-    return _scene_pb(_load_waveform_path_scene(path))
+    return _load_waveform_path_scene(path).SerializeToString()
 
 
 def event_url_pb(request: Any) -> str:
@@ -2561,13 +2423,13 @@ def _put_text(r: bridge_pb2.BridgeResult, m: bridge_pb2.StringValue) -> None:
 
 
 def _run_view(request: bytes, data: Any) -> Tuple[bytes, Any]:
-    res = get_view_pb(request)
-    return res["meta"], res["ys"]
+    meta, ys = _get_view_data(_parse_pb(view_pb2.ViewParams, request))
+    return meta.SerializeToString(), ys
 
 
 def _run_spectrum(request: bytes, data: Any) -> Tuple[bytes, Any]:
-    res = get_spectrum_pb(request)
-    return res["meta"], res["ys"]
+    meta, ys = _get_spectrum_data(_parse_pb(snuffling_pb2.SnufflingRequestParams, request))
+    return meta.SerializeToString(), ys
 
 
 def _text_bytes(value: str) -> bytes:
