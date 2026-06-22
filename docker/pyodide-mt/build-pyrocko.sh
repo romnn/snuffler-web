@@ -58,14 +58,45 @@ docker run --rm \
         export PATH="$HOME/.local/bin:$PATH"
         command -v pyodide >/dev/null 2>&1 || pip install -q -e ./pyodide-build
         # -fwasm-exceptions -> wasm-SJLJ, matching the main (the wasm-EH main
-        # cannot link emulated-SJLJ side modules). --install adds pyrocko (+ any
-        # deps) to dist-mt/pyodide-lock.json, which stage-web.sh reads to assemble
-        # the served py-mt/ — so the threaded lock includes pyrocko.
+        # cannot link emulated-SJLJ side modules). Install into a SEPARATE dir:
+        # build-recipes REWRITES <install-dir>/pyodide-lock.json with only the
+        # packages it processed (pyrocko + its one declared dep numpy + core), so
+        # installing into dist-mt would CLOBBER build-packages.sh full lock down to
+        # ~5 entries. We merge pyrocko into dist-mt afterwards (below) instead.
         pyodide build-recipes pyrocko \
-            --install --install-dir dist-mt \
+            --install --install-dir dist-pyrocko \
             --cflags="-pthread -sSHARED_MEMORY'"$simd"' -fwasm-exceptions -I'"$ompinc"'" \
             --ldflags="-pthread -sSHARED_MEMORY -fwasm-exceptions"
     '
+
+# Merge pyrocko into dist-mt WITHOUT clobbering build-packages.sh's full package set:
+# copy pyrocko's wheel in (cp -n keeps the existing builds of shared deps), then add
+# pyrocko's lock entry to dist-mt's lock. dist-mt thus = full set + pyrocko, which is
+# what stage-web.sh reads to assemble served py-mt/.
+[ -f "$build/dist-mt/pyodide-lock.json" ] || { echo "ERROR: $build/dist-mt/pyodide-lock.json missing — run build-packages.sh first." >&2; exit 1; }
+[ -f "$build/dist-pyrocko/pyodide-lock.json" ] || { echo "ERROR: pyrocko install ($build/dist-pyrocko) not produced." >&2; exit 1; }
+# Force-copy pyrocko's freshly built wheel: a local KEEP=1 re-run may already hold an
+# older pyrocko wheel whose bytes no longer match the new sha256 the merge records
+# below (the wheels aren't reproducible), which would trip loadPackage integrity.
+# Then add any other dist-pyrocko wheel only if absent, so shared-dep wheels (whose
+# sha256 dist-mt's lock already records) are never overwritten with a differing build.
+cp -f "$build/dist-pyrocko/"pyrocko-*.whl "$build/dist-mt/"
+cp -n "$build/dist-pyrocko/"*.whl "$build/dist-mt/"
+python3 - "$build/dist-mt/pyodide-lock.json" "$build/dist-pyrocko/pyodide-lock.json" <<'PY'
+import json, sys
+mt_path, sub_path = sys.argv[1], sys.argv[2]
+mt = json.load(open(mt_path))
+sub = json.load(open(sub_path))
+added = []
+for name, pkg in sub["packages"].items():
+    if name not in mt["packages"]:
+        mt["packages"][name] = pkg
+        added.append(name)
+mt["packages"]["pyrocko"] = sub["packages"]["pyrocko"]  # the freshly built wheel
+json.dump(mt, open(mt_path, "w"), indent=2)
+print(f"merged pyrocko -> dist-mt lock now has {len(mt['packages'])} packages"
+      + (f"; newly added: {sorted(added)}" if added else ""))
+PY
 
 echo "pyrocko wheel → $build/packages/pyrocko/dist/"
 ls "$build/packages/pyrocko/dist/"*.whl 2>/dev/null | sed 's#.*/##'

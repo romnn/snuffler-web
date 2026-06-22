@@ -52,4 +52,9 @@ echo "== [5/5] stage-web.sh (assemble served py-mt/) =="
 echo
 echo "build-all complete:"
 echo "  threaded runtime  -> $here/served/   (trunk stages to dist/py-mt/)"
-[ "${BUILD_CDN:-0}" = "1" ] && echo "  single-threaded   -> $(cd "$here/../.." && pwd)/dist-py/  (BUILD_CDN=1)"
+# An `if` (not `[ ... ] && echo`): as the script's LAST command the && form returns
+# the test's exit status, so with BUILD_CDN unset it would exit 1 and fail the build
+# under `set -e` even though everything succeeded.
+if [ "${BUILD_CDN:-0}" = "1" ]; then
+    echo "  single-threaded   -> $(cd "$here/../.." && pwd)/dist-py/  (BUILD_CDN=1)"
+fi
