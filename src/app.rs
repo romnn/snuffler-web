@@ -143,15 +143,15 @@ impl App {
             wf_abs: s.wf_abs,
             wf_integrate: s.wf_integrate,
             wf_color_scale: s.wf_color_scale.as_str().to_string(),
-            track_offset: s.track_offset,
-            track_count: s.ntracks_shown,
+            track_offset: s.track_offset as u64,
+            track_count: s.ntracks_shown as u64,
         }
     }
 
     fn current_snuffling_params(&self, npx: u32) -> SnufflingRequestParams {
         SnufflingRequestParams {
-            view: self.current_params(npx),
-            snufflings: self.state.snufflings.params(),
+            view: Some(self.current_params(npx)),
+            snufflings: Some(self.state.snufflings.params()),
         }
     }
 
@@ -679,7 +679,7 @@ impl eframe::App for App {
                 }
                 SnufflingAction::Run(name) => {
                     if name == "cake" {
-                        "run".clone_into(&mut params.snufflings.cake.cake_mode);
+                        crate::bridge::set_cake_mode(&mut params, "run");
                     }
                     self.bridge.run_snuffling(&ctx, name.into(), params);
                 }
@@ -722,7 +722,7 @@ impl eframe::App for App {
         // Cake Phase "Plot Model" window (P/S velocity vs depth).
         if self.state.snufflings.show_cake_model_plot() {
             let mut params = self.current_snuffling_params(800);
-            "plot_model".clone_into(&mut params.snufflings.cake.cake_mode);
+            crate::bridge::set_cake_mode(&mut params, "plot_model");
             if self.cake_model_key.as_ref() != Some(&params) {
                 self.bridge.cake_plot(&ctx, params.clone());
                 self.cake_model_key = Some(params);
@@ -744,7 +744,7 @@ impl eframe::App for App {
         // Cake Phase "Plot Rays" window (ray paths through the model).
         if self.state.snufflings.show_cake_rays_plot() {
             let mut params = self.current_snuffling_params(800);
-            "plot_rays".clone_into(&mut params.snufflings.cake.cake_mode);
+            crate::bridge::set_cake_mode(&mut params, "plot_rays");
             if self.cake_rays_key.as_ref() != Some(&params) {
                 self.bridge.cake_plot(&ctx, params.clone());
                 self.cake_rays_key = Some(params);
@@ -1030,11 +1030,18 @@ impl eframe::App for App {
                 let (mut ev_min, mut ev_max, mut any_ev) =
                     (f64::INFINITY, f64::NEG_INFINITY, false);
                 for m in &r.markers {
-                    let mut mk = Marker::new(m.t, m.tmax.unwrap_or(m.t), m.kind);
+                    let mut mk = Marker::new(
+                        m.t,
+                        m.tmax.unwrap_or(m.t),
+                        u8::try_from(m.kind).unwrap_or(0),
+                    );
                     mk.phase.clone_from(&m.phase);
                     mk.is_event = m.is_event;
-                    mk.nslc.clone_from(&m.nslc);
-                    mk.polarity = m.polarity;
+                    mk.nslc = m
+                        .nslc
+                        .as_ref()
+                        .map(|n| (n.net.clone(), n.sta.clone(), n.loc.clone(), n.cha.clone()));
+                    mk.polarity = m.polarity.and_then(|p| i8::try_from(p).ok());
                     if m.is_event {
                         any_ev = true;
                         ev_min = ev_min.min(m.t);

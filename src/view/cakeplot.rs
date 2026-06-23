@@ -23,9 +23,9 @@ fn bg(theme: Theme) -> Color32 {
     }
 }
 
-fn palette(color: u8) -> Color32 {
+fn palette(color: u32) -> Color32 {
     MARKER_COLORS
-        .get(usize::from(color) & 7)
+        .get(usize::try_from(color & 7).unwrap_or(0))
         .copied()
         .unwrap_or(DEFAULT_PHASE_COLOR)
 }
@@ -198,7 +198,7 @@ fn draw_ray_markers(
     painter: &egui::Painter,
     x_of: &dyn Fn(f32) -> f32,
     y_of: &dyn Fn(f32) -> f32,
-    source: &CakePoint,
+    source: CakePoint,
     receivers: &[CakePoint],
     theme: Theme,
 ) {
@@ -306,6 +306,7 @@ pub fn draw_rays_plot(ui: &mut egui::Ui, plot: Option<&CakeRaysPlot>) {
         let col = palette(ray.color);
         for seg in &ray.segs {
             let pts: Vec<Pos2> = seg
+                .values
                 .chunks_exact(2)
                 .filter_map(|p| {
                     let [x, z] = p else { return None };
@@ -318,7 +319,8 @@ pub fn draw_rays_plot(ui: &mut egui::Ui, plot: Option<&CakeRaysPlot>) {
         }
     }
 
-    draw_ray_markers(&painter, &x_of, &y_of, &plot.source, &plot.receivers, theme);
+    let source = plot.source.unwrap_or_default();
+    draw_ray_markers(&painter, &x_of, &y_of, source, &plot.receivers, theme);
     draw_ray_legend(&painter, rect, &plot.legend, theme);
 
     annotate(

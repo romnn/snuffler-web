@@ -125,8 +125,9 @@ pub fn draw_plot(ui: &mut egui::Ui, spec: Option<&SpectrumData>) {
             .get(ti % 8)
             .copied()
             .unwrap_or(Color32::from_rgb(204, 0, 0));
-        let end = (t.offset + t.count).min(spec.ys.len());
-        let Some(data) = spec.ys.get(t.offset.min(spec.ys.len())..end) else {
+        let off = t.offset as usize;
+        let end = (off + t.count as usize).min(spec.ys.len());
+        let Some(data) = spec.ys.get(off.min(spec.ys.len())..end) else {
             continue;
         };
         if data.len() < 2 {

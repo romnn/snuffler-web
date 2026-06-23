@@ -62,11 +62,11 @@ pub struct SnufflingState {
 impl SnufflingState {
     pub fn params(&self) -> SnufflingParams {
         SnufflingParams {
-            spectrum: self.spectrum.params(),
-            stalta: self.stalta.params(),
-            polarization: self.polarization.params(),
-            rms: self.rms.params(),
-            cake: self.cake.params(),
+            spectrum: Some(self.spectrum.params()),
+            stalta: Some(self.stalta.params()),
+            polarization: Some(self.polarization.params()),
+            rms: Some(self.rms.params()),
+            cake: Some(self.cake.params()),
         }
     }
 

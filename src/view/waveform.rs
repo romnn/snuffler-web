@@ -171,7 +171,7 @@ fn build_image(view: &ViewData, t: &ViewTrack, style: WfStyle) -> Option<ColorIm
     if t.nf == 0 || t.nt == 0 {
         return None;
     }
-    let (nf, nt) = (t.nf, t.nt);
+    let (nf, nt) = (t.nf as usize, t.nt as usize);
     let data = view.samples(t);
     if data.len() < nf * nt {
         return None;
@@ -376,8 +376,9 @@ fn track_time_bounds(view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
         ));
     }
     if track.dt == 0.0 && track.count > 0 {
-        let start = track.offset.min(view.ys.len());
-        let end = (track.offset + track.count.saturating_mul(2)).min(view.ys.len());
+        let start = (track.offset as usize).min(view.ys.len());
+        let end =
+            ((track.offset as usize) + (track.count as usize).saturating_mul(2)).min(view.ys.len());
         return view.ys.get(start..end).and_then(|points| {
             let mut chunks = points.chunks_exact(2);
             let [first_t, _] = chunks.next()? else {
@@ -696,8 +697,9 @@ fn paint(
                     );
                 }
             } else if t.dt == 0.0 {
-                let start = t.offset.min(view.ys.len());
-                let end = (t.offset + t.count.saturating_mul(2)).min(view.ys.len());
+                let start = (t.offset as usize).min(view.ys.len());
+                let end =
+                    ((t.offset as usize) + (t.count as usize).saturating_mul(2)).min(view.ys.len());
                 if let Some(points_data) = view.ys.get(start..end)
                     && points_data.len() >= 4
                 {
@@ -713,8 +715,9 @@ fn paint(
                     target.polyline(points, 1.0, trace_col);
                 }
             } else if t.dt < 0.0 {
-                let start = t.offset.min(view.ys.len());
-                let end = (t.offset + t.count.saturating_mul(3)).min(view.ys.len());
+                let start = (t.offset as usize).min(view.ys.len());
+                let end =
+                    ((t.offset as usize) + (t.count as usize).saturating_mul(3)).min(view.ys.len());
                 if let Some(envelope) = view.ys.get(start..end)
                     && envelope.len() >= 3
                 {

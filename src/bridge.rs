@@ -14,224 +14,39 @@ use std::rc::Rc;
 
 mod proto;
 
+// The decoded protobuf messages ARE the app-facing domain model — no parallel
+// hand-written structs, no conversion layer. prost generates these from
+// proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the UI.
 pub use proto::pb::{
-    CatalogRequest, MarkerFile, MarkerFileEntry, Nslc, StationRequest, WaveformDownloadRequest,
+    CakeDiscontinuity, CakeLayer, CakeLegendEntry, CakeModelPlot, CakePoint, CakeRaysPlot,
+    CakeSnufflingParams, CatalogRequest, MapData, MarkerFile, MarkerFileEntry, Nslc,
+    PolarizationSnufflingParams, RmsSnufflingParams, SceneMeta, SnufflingParams,
+    SnufflingRequestParams, SnufflingResult, SpecMeta, SpectrumSnufflingParams,
+    StaltaSnufflingParams, StationRequest, ViewMeta, ViewParams, ViewTrack,
+    WaveformDownloadRequest,
 };
 
-/// Metadata for the whole loaded set of traces (snuffler's "pile").
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct SceneMeta {
-    pub tmin: f64,
-    pub tmax: f64,
-    pub tracks: Vec<TraceMeta>,
+/// The deeply-nested cake mode in the prost request type, read ergonomically.
+/// Only the wasm bridge inspects the mode (to route the cake plot request).
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub fn cake_mode(p: &SnufflingRequestParams) -> &str {
+    p.snufflings
+        .as_ref()
+        .and_then(|s| s.cake.as_ref())
+        .map_or("", |c| c.cake_mode.as_str())
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
-#[allow(
-    dead_code,
-    reason = "deserialization wire contract mirroring bridge.py; not every field is read by the renderer"
-)]
-pub struct TraceMeta {
-    pub net: String,
-    pub sta: String,
-    pub loc: String,
-    pub cha: String,
-    pub label: String,
-    pub tmin: f64,
-    pub tmax: f64,
-    pub deltat: f64,
-    pub nsamples: usize,
+/// Set the deeply-nested cake mode in the prost request type (no-op if the
+/// snufflings/cake sub-messages are absent, which the UI builder never leaves).
+pub fn set_cake_mode(p: &mut SnufflingRequestParams, mode: &str) {
+    if let Some(c) = p.snufflings.as_mut().and_then(|s| s.cake.as_mut()) {
+        mode.clone_into(&mut c.cake_mode);
+    }
 }
 
-/// What the UI asks for: a time window, a target pixel width, and processing.
-/// Mirrors snuffler's processing flags so the bridge can reproduce its display.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct ViewParams {
-    pub tmin: f64,
-    pub tmax: f64,
-    pub npx: u32,
-    pub highpass: Option<f64>,
-    pub lowpass: Option<f64>,
-    pub sort: String,
-    pub subsort: String,
-    /// Rotation of horizontal components, degrees.
-    pub rotate: f64,
-    /// Deconvolve instrument response (inert without response metadata).
-    pub remove_response: bool,
-    /// "wiggle" or "waterfall".
-    pub mode: String,
-    /// Remove the per-trace mean before display (snuffler default on).
-    pub demean: bool,
-    /// Join traces across small gaps before processing.
-    pub degap: bool,
-    /// Allow decimation for fast drawing (off = send raw, capped).
-    pub allow_downsampling: bool,
-    /// Brick-wall FFT filtering instead of Butterworth.
-    pub fft_filtering: bool,
-    /// Apply a bandpass as separate low- + highpass passes.
-    pub bandpass_lphp: bool,
-    /// Use station depth in distance sorting (inert without coords).
-    pub distances_3d: bool,
-    /// Amplitude-range statistic: "minmax" | "robust" | "mean2" | "mean4".
-    pub scaling_base: String,
-    /// Amplitude grouping: "individual" | "common" | "`per_station`" |
-    /// "`per_station_location`" | "`per_component`" (pyrocko derives the per-track
-    /// display scale from this).
-    pub scaling_group: String,
-    /// Manual gain applied to pyrocko's scale range, matching snuffler's display projection.
-    pub gain: f64,
-    /// Keep previous scale ranges instead of recomputing from the current visible window.
-    pub fix_scale_ranges: bool,
-    /// Include formatted min/max labels on the right of each trace row.
-    pub show_scale_ranges: bool,
-    /// Include scale ticks on the right of each trace row.
-    pub show_scale_axes: bool,
-    /// Waterfall: show absolute/envelope amplitudes.
-    pub wf_abs: bool,
-    /// Waterfall: integrate amplitudes over time before coloring.
-    pub wf_integrate: bool,
-    /// Waterfall colour mapping: "log" | "sqrt" | "lin".
-    pub wf_color_scale: String,
-    /// First track for which sample payloads are requested.
-    pub track_offset: usize,
-    /// Number of tracks for which sample payloads are requested.
-    pub track_count: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct SnufflingRequestParams {
-    #[serde(flatten)]
-    pub view: ViewParams,
-    pub snufflings: SnufflingParams,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct SnufflingParams {
-    pub spectrum: SpectrumSnufflingParams,
-    pub stalta: StaltaSnufflingParams,
-    pub polarization: PolarizationSnufflingParams,
-    pub rms: RmsSnufflingParams,
-    pub cake: CakeSnufflingParams,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-pub struct SpectrumSnufflingParams {
-    pub spec_smoothing: bool,
-    pub spec_smoothing_bandwidth: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "field names mirror snuffler's STA/LTA parameter names in the bridge.py wire contract"
-)]
-pub struct StaltaSnufflingParams {
-    pub stalta_highpass: Option<f64>,
-    pub stalta_lowpass: Option<f64>,
-    pub stalta_swin: f64,
-    pub stalta_ratio: f64,
-    pub stalta_level: f64,
-    pub stalta_show_level_traces: bool,
-    pub stalta_variant: String,
-    pub stalta_scalingmethod: String,
-    pub stalta_apply_to_sum: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "field names mirror snuffler's polarization parameter names in the bridge.py wire contract"
-)]
-pub struct PolarizationSnufflingParams {
-    pub polarization_t_length: f64,
-    pub polarization_ft_offset: f64,
-    pub polarization_azimuth: f64,
-    pub polarization_highpass: Option<f64>,
-    pub polarization_lowpass: Option<f64>,
-    pub polarization_dot_position: f64,
-    pub polarization_rotate_to_rt: bool,
-    pub polarization_show_eigensystem_2d: bool,
-    pub polarization_show_eigensystem_3d: bool,
-    pub polarization_fix_scale: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "field names mirror snuffler's RMS parameter names in the bridge.py wire contract"
-)]
-pub struct RmsSnufflingParams {
-    pub rms_highpass: Option<f64>,
-    pub rms_lowpass: Option<f64>,
-    pub rms_block: f64,
-    pub rms_group: bool,
-    pub rms_log: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "the cake_* names mirror the protobuf/pyrocko bridge fields and Qt snuffling parameter names"
-)]
-pub struct CakeSnufflingParams {
-    /// Dropdown model name; bridge.py maps it to `/earthmodels/<name>.nd`.
-    pub cake_model: String,
-    /// Enabled phase names; a leading `~` is kept (it selects a raw `PhaseDef`).
-    pub cake_phases: Vec<String>,
-    pub cake_tshift: f64,
-    pub cake_use_station_depth: bool,
-    /// `"run"` | `"plot_model"` | `"plot_rays"`; set per-action by the app.
-    pub cake_mode: String,
-}
-
-/// What comes back: per-track polylines + amplitude stats. The actual values
-/// live in a single flat `ys` array; each track points into it via
-/// `offset`/`count`. For wiggles, `dt > 0` means raw uniform samples and
-/// `dt == 0` means interleaved explicit `(t_rel, y)` points.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct ViewMeta {
-    pub view_tmin: f64,
-    pub view_tmax: f64,
-    pub tracks: Vec<ViewTrack>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[allow(
-    dead_code,
-    reason = "deserialization wire contract; some NSLC/scale fields are kept for completeness"
-)]
-pub struct ViewTrack {
-    pub net: String,
-    pub sta: String,
-    pub loc: String,
-    pub cha: String,
-    pub label: String,
-    /// Time of the first drawn sample, relative to `view_tmin` (seconds).
-    pub t0_rel: f64,
-    /// Time between raw samples (seconds), or zero for explicit points.
-    pub dt: f64,
-    pub count: usize,
-    /// Index of this track's first value in the flat `ys` array.
-    pub offset: usize,
-    pub ymin: f32,
-    pub ymax: f32,
-    pub ymean: f32,
-    /// Gain-adjusted display half-range computed by pyrocko per the Scaling
-    /// group+base. Rust only applies the UI gain factor during projection.
-    #[serde(default)]
-    pub yscale: f32,
-    /// Waterfall raster dimensions (0 ⇒ plain wiggle). Qt-style waterfall uses
-    /// `nf=1`; older spectrogram-like payloads used more rows.
-    #[serde(default)]
-    pub nf: usize,
-    #[serde(default)]
-    pub nt: usize,
-    /// Max frequency when the payload is frequency-resolved; zero for Qt-style
-    /// amplitude waterfall strips.
-    #[serde(default)]
-    pub fmax: f64,
-}
-
+/// A view: prost metadata plus the out-of-band zero-copy `f32` sample buffer
+/// (`ys` rides alongside the proto, never inside it — see the worker transfer).
 #[derive(Clone, Debug, Default)]
 pub struct ViewData {
     pub meta: ViewMeta,
@@ -241,199 +56,17 @@ pub struct ViewData {
 impl ViewData {
     /// Raw uniform samples or waterfall cells for one track as a flat slice.
     pub fn samples<'a>(&'a self, t: &ViewTrack) -> &'a [f32] {
-        let end = (t.offset + t.count).min(self.ys.len());
-        self.ys.get(t.offset.min(self.ys.len())..end).unwrap_or(&[])
+        let off = usize::try_from(t.offset).unwrap_or(usize::MAX);
+        let cnt = usize::try_from(t.count).unwrap_or(usize::MAX);
+        let end = off.saturating_add(cnt).min(self.ys.len());
+        self.ys.get(off.min(self.ys.len())..end).unwrap_or(&[])
     }
-}
-
-/// Amplitude-spectrum snuffling result.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct SpecMeta {
-    pub fmin: f64,
-    pub fmax: f64,
-    pub tracks: Vec<SpecTrack>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[allow(
-    dead_code,
-    reason = "deserialization wire contract for the amplitude-spectrum payload"
-)]
-pub struct SpecTrack {
-    pub label: String,
-    pub offset: usize,
-    pub count: usize,
-    pub ymin: f32,
-    pub ymax: f32,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SpectrumData {
     pub meta: SpecMeta,
     pub ys: Vec<f32>,
-}
-
-/// A marker produced by a snuffling (e.g. an STA/LTA detection).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct SnufMarker {
-    pub t: f64,
-    /// End time for span markers; `None` ⇒ a point marker at `t`.
-    #[serde(default)]
-    pub tmax: Option<f64>,
-    #[serde(default)]
-    pub phase: Option<String>,
-    #[serde(default)]
-    pub kind: u8,
-    /// Drawn as an event triangle on the time axis (catalog events).
-    #[serde(default)]
-    pub is_event: bool,
-    /// Channel scope (net, sta, loc, cha) for loaded markers.
-    #[serde(default)]
-    pub nslc: Option<(String, String, String, String)>,
-    /// First-motion polarity of a phase pick (1/-1/0/None).
-    #[serde(default)]
-    pub polarity: Option<i8>,
-}
-
-/// Result of running a built-in snuffling: a text report and/or markers to add.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-#[allow(
-    dead_code,
-    reason = "deserialization wire contract mirroring bridge.py; the `scene` field is accepted but not yet consumed by the UI"
-)]
-pub struct SnufflingResult {
-    #[serde(default = "default_show_window")]
-    pub show_window: bool,
-    #[serde(default)]
-    pub text: String,
-    #[serde(default)]
-    pub markers: Vec<SnufMarker>,
-    #[serde(default)]
-    pub scene: Option<SceneMeta>,
-}
-
-fn default_show_window() -> bool {
-    true
-}
-
-/// A discontinuity in a cake model (e.g. moho, cmb, icb); depth in km.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakeDiscontinuity {
-    pub z_km: f32,
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-/// One layer of a cake model (a depth band in km) for background shading.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakeLayer {
-    pub ztop_km: f32,
-    pub zbot_km: f32,
-    pub water: bool,
-    pub gradient: bool,
-}
-
-/// Velocity-depth model for the Cake Phase "Plot Model" window. `vp`/`vs` are
-/// flat interleaved `(velocity_km_s, depth_km)` pairs.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakeModelPlot {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub vp: Vec<f32>,
-    #[serde(default)]
-    pub vs: Vec<f32>,
-    #[serde(default)]
-    pub discontinuities: Vec<CakeDiscontinuity>,
-    #[serde(default)]
-    pub layers: Vec<CakeLayer>,
-    pub vmax_km: f32,
-    pub zmax_km: f32,
-}
-
-/// One traced ray for the "Plot Rays" window. Each entry of `segs` is a polyline
-/// stored as a flat interleaved `(distance_km, depth_km)` array; `color` indexes
-/// the marker palette (assigned per phase in Python so it matches the legend).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakeRay {
-    pub color: u8,
-    #[serde(default)]
-    pub segs: Vec<Vec<f32>>,
-}
-
-/// A point in the ray-paths cross-section (distance/depth in km).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakePoint {
-    #[serde(default)]
-    pub x_km: f32,
-    pub z_km: f32,
-}
-
-/// A phase entry in the ray-paths legend (`color` matches its rays).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakeLegendEntry {
-    pub phase: String,
-    pub color: u8,
-}
-
-/// Ray-path cross-section for the Cake Phase "Plot Rays" window (all km).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CakeRaysPlot {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub rays: Vec<CakeRay>,
-    #[serde(default)]
-    pub discontinuities: Vec<CakeDiscontinuity>,
-    #[serde(default)]
-    pub layers: Vec<CakeLayer>,
-    #[serde(default)]
-    pub source: CakePoint,
-    #[serde(default)]
-    pub receivers: Vec<CakePoint>,
-    #[serde(default)]
-    pub legend: Vec<CakeLegendEntry>,
-    pub xmin_km: f32,
-    pub xmax_km: f32,
-    pub zmax_km: f32,
-}
-
-/// Outcome of a ':' command line. `action` is "goto" | "scene" | "error" | "none".
-/// Only the wasm bridge constructs/consumes this, so it is gated to that target.
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct CommandResult {
-    pub action: String,
-    #[serde(default)]
-    pub t: Option<f64>,
-    #[serde(default)]
-    pub scene: Option<SceneMeta>,
-    #[serde(default)]
-    pub message: Option<String>,
-}
-
-/// Station / event coordinates for the Map overlay (from the FDSN fetches).
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct MapStation {
-    pub label: String,
-    pub lat: f64,
-    pub lon: f64,
-}
-
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct MapEvent {
-    pub lat: f64,
-    pub lon: f64,
-    #[serde(default)]
-    pub mag: f64,
-}
-
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct MapData {
-    #[serde(default)]
-    pub stations: Vec<MapStation>,
-    #[serde(default)]
-    pub events: Vec<MapEvent>,
 }
 
 /// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
@@ -718,8 +351,12 @@ mod web {
         }
 
         let stride = if track.dt == 0.0 { 2 } else { 3 };
-        let start = track.offset.min(view.ys.len());
-        let end = (track.offset + track.count.saturating_mul(stride)).min(view.ys.len());
+        let off = usize::try_from(track.offset).unwrap_or(usize::MAX);
+        let cnt = usize::try_from(track.count).unwrap_or(usize::MAX);
+        let start = off.min(view.ys.len());
+        let end = off
+            .saturating_add(cnt.saturating_mul(stride))
+            .min(view.ys.len());
         let Some(payload) = view.ys.get(start..end) else {
             return ("missing", Vec::new());
         };
@@ -735,7 +372,7 @@ mod web {
                     .collect(),
             );
         }
-        let mut values = Vec::with_capacity(track.count.saturating_mul(2));
+        let mut values = Vec::with_capacity(cnt.saturating_mul(2));
         for triple in payload.chunks_exact(3) {
             let [_, ylo, yhi] = triple else {
                 continue;
@@ -787,14 +424,10 @@ mod web {
         if params.mode != "wiggle" {
             return;
         }
+        let toff = usize::try_from(params.track_offset).unwrap_or(usize::MAX);
+        let tcount = usize::try_from(params.track_count).unwrap_or(usize::MAX);
 
-        let rendered_tracks: Vec<_> = view
-            .meta
-            .tracks
-            .iter()
-            .skip(params.track_offset)
-            .take(params.track_count)
-            .collect();
+        let rendered_tracks: Vec<_> = view.meta.tracks.iter().skip(toff).take(tcount).collect();
         let raw_tracks = rendered_tracks
             .iter()
             .filter(|track| track.nf == 0 && track.count > 0 && track.dt > 0.0)
@@ -823,14 +456,7 @@ mod web {
             legacy_tracks,
         );
 
-        for (idx, track) in view
-            .meta
-            .tracks
-            .iter()
-            .enumerate()
-            .skip(params.track_offset)
-            .take(params.track_count)
-        {
+        for (idx, track) in view.meta.tracks.iter().enumerate().skip(toff).take(tcount) {
             let (mode, values) = view_track_values(view, track);
             let points_per_px = if params.npx == 0 {
                 0.0
@@ -971,7 +597,7 @@ mod web {
                 }
                 i.spectrum_in_flight = true;
             }
-            let request = proto::encode_message(&proto::snuffling_request_to_proto(&params));
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
@@ -1003,7 +629,7 @@ mod web {
             }
             let request = proto::encode_message(&pb::NamedSnufflingRequest {
                 name,
-                params: Some(proto::snuffling_request_to_proto(&params)),
+                params: Some(params),
             });
             let inner = self.inner.clone();
             let ctx = ctx.clone();
@@ -1065,7 +691,7 @@ mod web {
         /// Compute blockwise-RMS derived traces (pyrocko's RMS snuffling) and
         /// append them to the pile; the result replaces the scene.
         pub fn rms_traces(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
-            let request = proto::encode_message(&proto::snuffling_request_to_proto(&params));
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
@@ -1122,7 +748,7 @@ mod web {
         /// `cake_mode` (`plot_model` | `plot_rays`) selects which window's data
         /// is computed and stored; the App draws it (no matplotlib).
         pub fn cake_plot(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
-            let rays = params.snufflings.cake.cake_mode == "plot_rays";
+            let rays = cake_mode(&params) == "plot_rays";
             {
                 let mut i = self.inner.borrow_mut();
                 let busy = if rays {
@@ -1139,7 +765,7 @@ mod web {
                     i.cake_model_in_flight = true;
                 }
             }
-            let request = proto::encode_message(&proto::snuffling_request_to_proto(&params));
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
@@ -1153,10 +779,10 @@ mod web {
                     let mut i = inner.borrow_mut();
                     match parsed.and_then(|p| p.result) {
                         Some(pb::cake_plot_result::Result::Model(m)) => {
-                            i.cake_model_plot = Some(proto::cake_model_from_proto(m));
+                            i.cake_model_plot = Some(m);
                         }
                         Some(pb::cake_plot_result::Result::Rays(r)) => {
-                            i.cake_rays_plot = Some(proto::cake_rays_from_proto(r));
+                            i.cake_rays_plot = Some(r);
                         }
                         None => {}
                     }
@@ -1230,7 +856,7 @@ mod web {
                     Ok(v) => js_bytes(v, "command")
                         .and_then(|b| proto::command_from_bytes(&b, "command"))
                         .ok(),
-                    Err(e) => Some(CommandResult {
+                    Err(e) => Some(pb::CommandResult {
                         action: "error".into(),
                         message: Some(jsval_to_string(e)),
                         ..Default::default()
@@ -1384,12 +1010,7 @@ mod web {
                         .ok()
                         .filter(|bytes| !bytes.is_empty())
                         .and_then(|bytes| proto::markers_from_bytes(&bytes, "markers").ok())
-                        .map(|msg| {
-                            msg.markers
-                                .into_iter()
-                                .map(proto::marker_from_proto)
-                                .collect::<Vec<_>>()
-                        }),
+                        .map(|msg| msg.markers),
                     Err(_) => None,
                 };
                 if let Some(markers) = markers {
@@ -1499,7 +1120,7 @@ mod web {
             let Some(params) = self.inner.borrow().desired.clone() else {
                 return;
             };
-            let request = proto::encode_message(&proto::view_params_to_proto(&params));
+            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             let me = self.clone();
