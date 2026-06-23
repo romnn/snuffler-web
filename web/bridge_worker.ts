@@ -5,6 +5,13 @@
 // SharedArrayBuffer / wasm threads require. A separate, non-threaded build can be
 // produced later via the `threads` build-time feature and hosted on its own path
 // so the two never interfere; there is no runtime CDN fallback / ?threads toggle.
+import { fromBinary } from "@bufbuild/protobuf";
+import {
+  LoadBytesRequestSchema,
+  LoadUrlRequestSchema,
+} from "./proto/snuffler/bridge/v1/data_pb.js";
+import { NamedSnufflingRequestSchema } from "./proto/snuffler/bridge/v1/snuffling_pb.js";
+
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
 
 // TextDecoder.decode() throws "The provided ArrayBufferView value must not be
@@ -40,10 +47,12 @@ if (typeof SharedArrayBuffer !== "undefined") {
   };
 }
 
-let pyodideReadyPromise = null;
-let gfReadyPromise = null;
-let py = null;
-let bridge = null;
+// py / bridge are Pyodide handles (a runtime + the imported bridge.py module),
+// typed `any` — they are dynamic JsProxies with no static types available.
+let pyodideReadyPromise: Promise<any> | null = null;
+let gfReadyPromise: Promise<string> | null = null;
+let py: any = null;
+let bridge: any = null;
 let stagedFileCounter = 0;
 let gfStoreCounter = 0;
 let earthModelsStaged = false;
@@ -91,45 +100,6 @@ function pyBytes(value) {
   } finally {
     destroyMaybe(value);
   }
-}
-
-function readVarint(bytes, pos) {
-  let value = 0;
-  let shift = 0;
-  while (pos < bytes.length) {
-    const b = bytes[pos++];
-    value += (b & 0x7f) * 2 ** shift;
-    if ((b & 0x80) === 0) return [value, pos];
-    shift += 7;
-  }
-  throw new Error("truncated protobuf varint");
-}
-
-function decodeSimpleFields(bytes) {
-  const out = new Map();
-  const src = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
-  let pos = 0;
-  while (pos < src.length) {
-    let key;
-    [key, pos] = readVarint(src, pos);
-    const field = key >> 3;
-    const wire = key & 7;
-    if (wire === 0) {
-      let value;
-      [value, pos] = readVarint(src, pos);
-      out.set(field, value);
-    } else if (wire === 2) {
-      let len;
-      [len, pos] = readVarint(src, pos);
-      const end = pos + len;
-      if (end > src.length) throw new Error("truncated protobuf bytes field");
-      out.set(field, new TextDecoder().decode(src.subarray(pos, end)));
-      pos = end;
-    } else {
-      throw new Error(`unsupported protobuf wire type ${wire}`);
-    }
-  }
-  return out;
 }
 
 function safeName(name) {
@@ -320,10 +290,10 @@ async function ensureEarthModels() {
 function bridgeResult(res) {
   try {
     const result = pyBytes(res.get("result")); // pyBytes owns + destroys the inner proxy
-    const out = { result: result.buffer, transfer: [result.buffer] };
+    const out: Record<string, any> = { result: result.buffer, transfer: [result.buffer] };
     if (res.has("buffer")) {
       const ysProxy = res.get("buffer");
-      let buf = null;
+      let buf: any = null;
       try {
         buf = ysProxy.getBuffer();
         const d = buf.data;
@@ -368,14 +338,13 @@ async function handleRequest(msg) {
   const method = msg.method;
   if (method === "loadBytes") {
     await boot();
-    const fields = decodeSimpleFields(msg.request);
-    const path = writeStagedFile(fields.get(1) || "data", msg.data || new Uint8Array(0));
+    const name = fromBinary(LoadBytesRequestSchema, msg.request).name;
+    const path = writeStagedFile(name || "data", msg.data || new Uint8Array(0));
     return bridgeResult(bridge.call(SVC + "LoadBytes", msg.request, path));
   }
   if (method === SVC + "LoadUrl") {
     await boot();
-    const fields = decodeSimpleFields(msg.request);
-    const url = fields.get(1) || "";
+    const url = fromBinary(LoadUrlRequestSchema, msg.request).url || "";
     const name = url.split("/").pop() || "data";
     const buf = new Uint8Array(await (await fetchOk(resolveUrl(url))).arrayBuffer());
     const path = writeStagedFile(name, buf);
@@ -383,8 +352,8 @@ async function handleRequest(msg) {
   }
   if (method === SVC + "RunSnuffling") {
     await boot();
-    const fields = decodeSimpleFields(msg.request);
-    if ((fields.get(1) || "") === "cake") await ensureEarthModels();
+    const name = fromBinary(NamedSnufflingRequestSchema, msg.request).name;
+    if (name === "cake") await ensureEarthModels();
     return bridgeResult(bridge.call(method, msg.request));
   }
   if (method === "downloadWaveforms") {
@@ -479,7 +448,7 @@ async function handleRequest(msg) {
 self.onmessage = (event) => {
   const msg = event.data || {};
   handleRequest(msg)
-    .then((result) => {
+    .then((result: any) => {
       const transfer = result.transfer || [];
       const { transfer: _transfer, ...payload } = result;
       self.postMessage({ id: msg.id, ok: true, ...payload }, transfer);

@@ -2,9 +2,26 @@
 // wasm-bindgen; this module keeps DOM-only work on the main thread and sends
 // protobuf request bytes plus transferable buffers to web/bridge_worker.js.
 
-let worker = null;
+import { create, toBinary } from "@bufbuild/protobuf";
+import { LoadBytesRequestSchema } from "./proto/snuffler/bridge/v1/data_pb.js";
+
+// Cosmetic hooks + the File System Access API + the debug handle, set on window
+// by index.html / this module. Typed loosely — they are optional integration
+// points, not part of the typed proto boundary.
+declare global {
+  interface Window {
+    __snufflerProgress?: (frac: number, label: string) => void;
+    __snufflerRuntime?: (info: unknown) => void;
+    showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
+    snuffler?: Record<string, unknown>;
+  }
+}
+
+type Pending = { resolve: (msg: any) => void; reject: (err: Error) => void };
+
+let worker: Worker | null = null;
 let nextRequestId = 1;
-const pending = new Map();
+const pending = new Map<number, Pending>();
 
 function workerUrl() {
   return new URL("bridge_worker.js", document.baseURI).href;
@@ -72,8 +89,8 @@ function rpc(
   { request = null, data = null, text = null, name = null, handle = null } = {}
 ) {
   const id = nextRequestId++;
-  const payload = { id, method };
-  const transfer = [];
+  const payload: Record<string, any> = { id, method };
+  const transfer: Transferable[] = [];
 
   const req = copyBytes(request);
   if (req) {
@@ -91,7 +108,7 @@ function rpc(
   if (name != null) payload.name = String(name);
   if (handle != null) payload.handle = handle;
 
-  const promise = new Promise((resolve, reject) => {
+  const promise = new Promise<any>((resolve, reject) => {
     pending.set(id, { resolve, reject });
   });
   ensureWorker().postMessage(payload, transfer);
@@ -101,17 +118,17 @@ function rpc(
 // Both data helpers now carry the BridgeResult envelope bytes in `result`
 // (success variant OR BridgeError); Rust decodes the oneof. rpcBytes returns the
 // envelope bytes; rpcBufferResult additionally carries the zero-copy ys buffer.
-async function rpcBytes(method, args) {
+async function rpcBytes(method, args?) {
   const msg = await rpc(method, args);
   return new Uint8Array(msg.result || new ArrayBuffer(0));
 }
 
-async function rpcText(method, args) {
+async function rpcText(method, args?) {
   const msg = await rpc(method, args);
   return msg.text || "";
 }
 
-async function rpcBufferResult(method, args) {
+async function rpcBufferResult(method, args?) {
   const msg = await rpc(method, args);
   return {
     result: new Uint8Array(msg.result || new ArrayBuffer(0)),
@@ -127,37 +144,10 @@ async function rpcBufferResult(method, args) {
 export async function call(method, request, data) {
   const out = await rpcBufferResult(method, { request, data });
   // Complete the loading overlay once the first scene (the synthetic example,
-  // the first call after boot) is in; the boot sequence stops at 0.97.
-  if (method === "makeExample") prog(1.0, "Ready");
+  // the first call after boot) is in; the boot sequence stops at 0.97. The id is
+  // the canonical gRPC path, so match the method tail.
+  if (method.endsWith("/MakeExample")) prog(1.0, "Ready");
   return out;
-}
-
-function varint(value) {
-  let n = Number(value >>> 0);
-  const out = [];
-  while (n >= 0x80) {
-    out.push((n & 0x7f) | 0x80);
-    n = Math.floor(n / 128);
-  }
-  out.push(n);
-  return out;
-}
-
-function fieldKey(fieldNumber, wireType) {
-  return varint((fieldNumber << 3) | wireType);
-}
-
-function fieldString(fieldNumber, value) {
-  const bytes = new TextEncoder().encode(String(value || ""));
-  return [...fieldKey(fieldNumber, 2), ...varint(bytes.length), ...bytes];
-}
-
-function fieldBool(fieldNumber, value) {
-  return [...fieldKey(fieldNumber, 0), value ? 1 : 0];
-}
-
-function encodeLoadBytesRequest(name, fmt, append) {
-  return new Uint8Array([...fieldString(1, name), ...fieldString(2, fmt), ...fieldBool(3, append)]);
 }
 
 export async function makeExample() {
@@ -229,7 +219,7 @@ export async function addGfStore() {
   try {
     handle = await window.showDirectoryPicker({ mode: "read" });
   } catch (e) {
-    if (e && e.name === "AbortError") return "";
+    if (e instanceof DOMException && e.name === "AbortError") return "";
     throw e;
   }
   return rpcText("addGfStore", { handle });
@@ -243,14 +233,14 @@ export async function rmsTraces(request) {
   return rpcBytes("rmsTraces", { request });
 }
 
-function pickFiles(multiple) {
-  return new Promise((resolve) => {
+function pickFiles(multiple): Promise<File[]> {
+  return new Promise<File[]>((resolve) => {
     const inp = document.createElement("input");
     inp.type = "file";
     inp.multiple = !!multiple;
     inp.style.display = "none";
     let done = false;
-    const finish = (files) => {
+    const finish = (files: File[]) => {
       if (done) return;
       done = true;
       window.removeEventListener("focus", onFocus);
@@ -276,7 +266,10 @@ export async function openFiles() {
   let scene = new Uint8Array(0);
   for (const f of files) {
     const data = new Uint8Array(await f.arrayBuffer());
-    const request = encodeLoadBytesRequest(f.name, "detect", true);
+    const request = toBinary(
+      LoadBytesRequestSchema,
+      create(LoadBytesRequestSchema, { name: f.name, fmt: "detect", append: true })
+    );
     scene = await rpcBytes("loadBytes", { request, data });
   }
   return scene;
@@ -302,7 +295,7 @@ export function savePng(bytes, filename) {
   // SharedArrayBuffer on this threaded build; the Blob constructor rejects shared
   // views ("must not be shared"). copyBytes() lifts it into a private,
   // non-shared buffer first (same trick wasm-bindgen uses for strings).
-  const blob = new Blob([copyBytes(bytes)], { type: "image/png" });
+  const blob = new Blob([copyBytes(bytes) ?? new Uint8Array()], { type: "image/png" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename || "snuffler.png";
@@ -339,6 +332,7 @@ export async function fetchTile(url) {
   const bmp = await createImageBitmap(await r.blob());
   const cv = new OffscreenCanvas(bmp.width, bmp.height);
   const cx = cv.getContext("2d");
+  if (!cx) throw new Error("tile: 2d canvas context unavailable");
   cx.drawImage(bmp, 0, 0);
   const img = cx.getImageData(0, 0, bmp.width, bmp.height);
   if (bmp.close) bmp.close();

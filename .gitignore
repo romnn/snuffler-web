@@ -6,6 +6,8 @@
 # Rust + JS build artifacts
 /target
 /node_modules
+# bun-bundled TS bridge glue (web/*.ts -> web/gen/*.js), produced at build time
+/web/gen
 
 # pyrocko is NOT vendored — fetched on demand (pinned) into sources/ by
 # `mise run fetch-pyrocko`. Keep it out of git.

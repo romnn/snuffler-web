@@ -1,6 +1,12 @@
 {
   "compilerOptions": {
     "strict": true,
+    // The bridge glue is inherently dynamic at the plumbing level (Pyodide
+    // JsProxies, postMessage payloads, window globals, DOM), so we don't force an
+    // annotation on every such value. The TYPED safety that matters — the
+    // protobuf message boundary (@bufbuild/protobuf generated classes) and the
+    // Rust/Python sides — is fully checked; strictNullChecks etc. stay on.
+    "noImplicitAny": false,
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",

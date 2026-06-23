@@ -40,7 +40,7 @@
     <!-- runtime assets fetched by web/bridge.js (the py-mt Pyodide runtime +
          wheels are staged into py-mt/ by Trunk.toml's post_build hook) -->
     <link data-trunk rel="copy-file" href="web/bridge.py" />
-    <link data-trunk rel="copy-file" href="web/bridge_worker.js" />
+    <link data-trunk rel="copy-file" href="web/gen/bridge_worker.js" />
     <!-- cross-origin isolation shim (opt-in; see the script in <head>) -->
     <link data-trunk rel="copy-file" href="web/coi-serviceworker.js" />
     <link data-trunk rel="copy-dir" href="web/proto" data-target-path="proto" />

@@ -25,6 +25,20 @@ stage = "pre_build"
 command = "buf"
 command_arguments = ["generate"]
 
+# Bundle the TypeScript bridge glue with bun (already pinned in mise) into
+# self-contained ESM the browser/worker can load: web/bridge.ts ->
+# web/gen/bridge.js (the wasm-bindgen module) and web/bridge_worker.ts ->
+# web/gen/bridge_worker.js. Runs after `buf generate` (the glue imports the
+# generated *_pb.ts messages + @bufbuild/protobuf, all inlined here). Built
+# separately so each is fully self-contained (no shared chunks for the worker).
+[[hooks]]
+stage = "pre_build"
+command = "bash"
+command_arguments = [
+    "-c",
+    "set -eu; bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser; bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser",
+]
+
 # wasm-opt runs as a post-build hook rather than Trunk's built-in pass: the
 # edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory, sign-ext,
 # …) and wasm-opt must be told to accept them with `-all`, which Trunk's built-in

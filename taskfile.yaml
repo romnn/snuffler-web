@@ -116,7 +116,7 @@ tasks:
   format:js:
     desc: "format JavaScript bridge code"
     cmds:
-      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.js web/bridge_worker.js package.json {{.CLI_ARGS}}
+      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.ts web/bridge_worker.ts package.json {{.CLI_ARGS}}
 
   format:proto:
     desc: "format protobuf schemas"

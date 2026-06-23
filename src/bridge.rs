@@ -238,7 +238,7 @@ mod web {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
 
-    #[wasm_bindgen(module = "/web/bridge.js")]
+    #[wasm_bindgen(module = "/web/gen/bridge.js")]
     extern "C" {
         // The single transport seam for every unary proto RPC: (method, request
         // bytes, optional out-of-band data bytes) -> { result: BridgeResult bytes,
