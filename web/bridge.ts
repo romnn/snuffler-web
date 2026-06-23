@@ -5,15 +5,13 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import { LoadBytesRequestSchema } from "./proto/snuffler/bridge/v1/data_pb.js";
 
-// Cosmetic hooks + the File System Access API + the debug handle, set on window
-// by index.html / this module. Typed loosely — they are optional integration
-// points, not part of the typed proto boundary.
+// Cosmetic progress/runtime hooks (set by index.html) + the File System Access
+// API. Typed loosely — optional integration points, not the typed proto boundary.
 declare global {
   interface Window {
     __snufflerProgress?: (frac: number, label: string) => void;
     __snufflerRuntime?: (info: unknown) => void;
     showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
-    snuffler?: Record<string, unknown>;
   }
 }
 
@@ -150,56 +148,6 @@ export async function call(method, request, data) {
   return out;
 }
 
-export async function makeExample() {
-  const bytes = await rpcBytes("makeExample");
-  prog(1.0, "Ready");
-  return bytes;
-}
-
-export async function loadBytes(request, data) {
-  return rpcBytes("loadBytes", { request, data });
-}
-
-export async function loadUrl(request) {
-  return rpcBytes("loadUrl", { request });
-}
-
-export async function getView(request) {
-  return rpcBufferResult("getView", { request });
-}
-
-export async function getSpectrum(request) {
-  return rpcBufferResult("getSpectrum", { request });
-}
-
-export async function runSnuffling(request) {
-  return rpcBytes("runSnuffling", { request });
-}
-
-export async function downloadWaveforms(request) {
-  return rpcBytes("downloadWaveforms", { request });
-}
-
-export async function catalogSearch(request) {
-  return rpcBytes("catalogSearch", { request });
-}
-
-export async function fetchStations(request) {
-  return rpcBytes("fetchStations", { request });
-}
-
-export async function fetchResponses(request) {
-  return rpcBytes("fetchResponses", { request });
-}
-
-export async function mapData() {
-  return rpcBytes("mapData");
-}
-
-export async function cakePlot(request) {
-  return rpcBytes("cakePlot", { request });
-}
-
 export async function addCakeModel() {
   const files = await pickFiles(false);
   if (files.length === 0) return "";
@@ -223,14 +171,6 @@ export async function addGfStore() {
     throw e;
   }
   return rpcText("addGfStore", { handle });
-}
-
-export async function runCommand(request) {
-  return rpcBytes("runCommand", { request });
-}
-
-export async function rmsTraces(request) {
-  return rpcBytes("rmsTraces", { request });
 }
 
 function pickFiles(multiple): Promise<File[]> {
@@ -337,41 +277,4 @@ export async function fetchTile(url) {
   const img = cx.getImageData(0, 0, bmp.width, bmp.height);
   if (bmp.close) bmp.close();
   return { w: img.width, h: img.height, rgba: new Uint8Array(img.data.buffer) };
-}
-
-export async function pyExec(code) {
-  return rpcText("pyExec", { text: code });
-}
-
-export async function ensureGf() {
-  return rpcText("ensureGf");
-}
-
-if (typeof window !== "undefined") {
-  window.snuffler = {
-    makeExample,
-    loadBytes,
-    loadUrl,
-    getView,
-    getSpectrum,
-    runSnuffling,
-    downloadWaveforms,
-    catalogSearch,
-    fetchStations,
-    fetchResponses,
-    mapData,
-    fetchTile,
-    openFiles,
-    saveMarkers,
-    loadMarkers,
-    cakePlot,
-    addCakeModel,
-    addGfStore,
-    runCommand,
-    rmsTraces,
-    savePng,
-    saveSvg,
-    pyExec,
-    ensureGf,
-  };
 }

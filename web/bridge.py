@@ -30,12 +30,10 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
-    TypeVar,
     cast,
 )
 
 import numpy as np
-from google.protobuf.message import Message
 from pyrocko import io as pio
 from pyrocko import trace as ptrace
 from snuffler.bridge.v1 import (
@@ -49,7 +47,6 @@ from snuffler.bridge.v1 import (
 )
 
 NslcId = Tuple[str, str, str, str]
-MessageT = TypeVar("MessageT", bound=Message)
 TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
 
 

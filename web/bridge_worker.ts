@@ -50,7 +50,6 @@ if (typeof SharedArrayBuffer !== "undefined") {
 // py / bridge are Pyodide handles (a runtime + the imported bridge.py module),
 // typed `any` — they are dynamic JsProxies with no static types available.
 let pyodideReadyPromise: Promise<any> | null = null;
-let gfReadyPromise: Promise<string> | null = null;
 let py: any = null;
 let bridge: any = null;
 let stagedFileCounter = 0;
@@ -73,16 +72,6 @@ function prog(frac, label) {
 
 function destroyMaybe(value) {
   if (value && typeof value.destroy === "function") value.destroy();
-}
-
-function pyValueToString(value) {
-  if (typeof value === "string") return value;
-  try {
-    if (value && typeof value.toJs === "function") return value.toJs();
-    return String(value);
-  } finally {
-    destroyMaybe(value);
-  }
 }
 
 function ownedBytes(value) {
@@ -231,20 +220,6 @@ async function boot() {
     }
   })();
   return pyodideReadyPromise;
-}
-
-async function ensureGf() {
-  if (gfReadyPromise) return gfReadyPromise;
-  gfReadyPromise = (async () => {
-    await boot();
-    // requests + pyodide-http are preloaded at boot (they are in the py-mt lock).
-    await py.runPythonAsync(`
-import pyodide_http
-pyodide_http.patch_all()
-`);
-    return "";
-  })();
-  return gfReadyPromise;
 }
 
 const CAKE_MODELS = [
@@ -426,15 +401,6 @@ async function handleRequest(msg) {
   if (method === "loadMarkers") {
     await boot();
     return bridgeResult(bridge.call(SVC + "LoadMarkers", null, String(msg.text || "")));
-  }
-  if (method === "pyExec") {
-    await boot();
-    const value = await py.runPythonAsync(String(msg.text || ""));
-    return { text: pyValueToString(value) };
-  }
-  if (method === "ensureGf") {
-    await ensureGf();
-    return { text: "" };
   }
   // Pure passthrough: any unary rpc that needs no worker-side staging or
   // orchestration (makeExample, getView, getSpectrum, rmsTraces, mapData,
