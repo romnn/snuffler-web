@@ -290,10 +290,6 @@ mod web {
             .map(|arr| arr.to_vec())
     }
 
-    fn parse_scene(v: JsValue) -> Result<SceneMeta, String> {
-        proto::scene_from_bytes(&object_uint8(&v, "result")?, "scene")
-    }
-
     fn object_uint8(obj: &JsValue, key: &str) -> Result<Vec<u8>, String> {
         let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(jsval_to_string)?;
         js_bytes(val, key)
@@ -516,16 +512,14 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let request = proto::encode_message(&pb::LoadBytesRequest {
-                    name,
-                    fmt,
-                    append: false,
-                });
-                let res = js_call("loadBytes", request, data).await;
-                let parsed = match res {
-                    Ok(v) => parse_scene(v),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client()
+                    .load_bytes(pb::LoadBytesRequest {
+                        name,
+                        fmt,
+                        append: false,
+                        content: data,
+                    })
+                    .await;
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
@@ -633,14 +627,10 @@ mod web {
         /// replace the pile with the result (browser fetch; pyrocko parses).
         pub fn download_waveforms(&self, ctx: &egui::Context, params: WaveformDownloadRequest) {
             self.inner.borrow_mut().status = Status::Loading("Downloading waveforms…".into());
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("downloadWaveforms", request, Vec::new()).await {
-                    Ok(v) => parse_scene(v),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client().download_waveforms(params).await;
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
@@ -684,17 +674,14 @@ mod web {
 
         /// Search a CORS-enabled FDSN event service; results become event markers.
         pub fn catalog_search(&self, ctx: &egui::Context, params: CatalogRequest) {
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("catalogSearch", request, Vec::new()).await {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::snuffling_from_bytes(&b, "catalog"))
-                        .ok(),
+                let parsed = match client().catalog_search(params).await {
+                    Ok(r) => Some(r),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
-                        text: jsval_to_string(e),
+                        text: e,
                         markers: Vec::new(),
                         scene: None,
                     }),
@@ -843,17 +830,14 @@ mod web {
         /// Fetch station coordinates (FDSN station service) to enable distance /
         /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
         pub fn fetch_stations(&self, ctx: &egui::Context, params: StationRequest) {
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("fetchStations", request, Vec::new()).await {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::snuffling_from_bytes(&b, "stations"))
-                        .ok(),
+                let parsed = match client().fetch_stations(params).await {
+                    Ok(r) => Some(r),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
-                        text: jsval_to_string(e),
+                        text: e,
                         markers: Vec::new(),
                         scene: None,
                     }),
@@ -873,17 +857,14 @@ mod web {
         /// Fetch instrument responses (`StationXML`) so Deconvolution can run;
         /// forces a re-dispatch so the deconvolved view recomputes.
         pub fn fetch_responses(&self, ctx: &egui::Context, params: StationRequest) {
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("fetchResponses", request, Vec::new()).await {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::snuffling_from_bytes(&b, "responses"))
-                        .ok(),
+                let parsed = match client().fetch_responses(params).await {
+                    Ok(r) => Some(r),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
-                        text: jsval_to_string(e),
+                        text: e,
                         markers: Vec::new(),
                         scene: None,
                     }),

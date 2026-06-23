@@ -107,8 +107,8 @@ def _visible_traces() -> List[ptrace.Trace]:
 
 # Station coordinates (net, sta) -> (lat, lon, elevation) and the active event
 # (lat, lon, depth_m, time), populated by the FDSN fetch helpers below. Used for
-# distance/azimuth sorting. The browser does the actual fetch (CORS); all URL
-# building, parsing and geo math happen here in pyrocko/Python.
+# distance/azimuth sorting. The fetch itself runs here in Python (pyfetch over the
+# browser's network); URL building, parsing and geo math are all pyrocko/Python.
 _STATIONS: Dict[Tuple[str, str], Tuple[float, float, float]] = {}
 _ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
 # Instrument responses (a parsed FDSNStationXML), used by Deconvolution.
@@ -127,6 +127,52 @@ _FDSN = {
 
 def _fdsn_base(name: str, default: str = "geofon") -> str:
     return _FDSN.get(name, _FDSN[default])
+
+
+_STAGE_DIR = "/staged"
+_STAGE_COUNTER = 0
+
+
+def _stage_bytes(name: str, content: bytes) -> str:
+    """Write request bytes into the Pyodide FS and return the path. pyrocko's
+    ``io.load`` reads a file, so file-carrying rpcs stage here in Python — the
+    worker is a dumb relay and no longer touches the FS for loads."""
+    global _STAGE_COUNTER
+    os.makedirs(_STAGE_DIR, exist_ok=True)
+    _STAGE_COUNTER += 1
+    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in (name or "data"))[-96:]
+    path = "%s/%d-%s" % (_STAGE_DIR, _STAGE_COUNTER, safe or "data")
+    with open(path, "wb") as f:
+        f.write(content)
+    return path
+
+
+def _asset_url(path: str) -> str:
+    """Resolve a bundled-asset path against the worker's location, matching the
+    worker's ``new URL(path, self.location.href)``."""
+    import js
+
+    return str(js.URL.new(path, js.location.href).href)
+
+
+async def _fetch_bytes(url: str) -> bytes:
+    """GET raw bytes through the browser's fetch (pyodide-http), which is reachable
+    from Python inside the worker — so network rpcs need no JS orchestration."""
+    from pyodide.http import pyfetch
+
+    resp = await pyfetch(url)
+    if not resp.ok:
+        raise RuntimeError("fetch %s: HTTP %s" % (url, resp.status))
+    return bytes(await resp.bytes())
+
+
+async def _fetch_text_or_empty(url: str) -> str:
+    """GET text, returning '' on any non-2xx — an FDSN 'no data' reply parses to an
+    empty result rather than an error."""
+    from pyodide.http import pyfetch
+
+    resp = await pyfetch(url)
+    return str(await resp.string()) if resp.ok else ""
 
 
 def _trace_meta(msg: scene_pb2.TraceMeta, tr: ptrace.Trace) -> None:
@@ -1118,8 +1164,9 @@ def _run_snuffling_result(
 
 
 # --- FDSN web services (network) -------------------------------------------
-# The browser performs the actual fetch (it has CORS); these helpers only build
-# the request URLs and parse the responses, so all logic stays in Python.
+# These helpers build the FDSN request URLs and parse the responses. The fetch
+# runs in Python too (pyfetch, in the async servicer methods above), so the whole
+# workflow is one rpc and the worker stays a dumb relay.
 
 
 def _dataselect_url(req: data_pb2.WaveformDownloadRequest) -> str:
@@ -1473,11 +1520,51 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
     return result
 
 
-# Directory where bridge.js stages the cake earth models (tiny .nd text files
-# shipped as build assets and written into the Pyodide FS on first use; the
-# minimal wheel has no data dir, so cake.builtin_models() is empty and models
-# must be loaded by path). See ensureEarthModels in bridge.js.
+# Directory holding the cake earth models (tiny .nd text files shipped as build
+# assets and fetched into the Pyodide FS on first cake use; the minimal wheel has
+# no data dir, so cake.builtin_models() is empty and models must be loaded by
+# path). They are fetched here in Python (pyfetch) — see _ensure_earth_models.
 MODEL_DIR = "/earthmodels"
+
+# Builtin cake models served under earthmodels/<stem>.nd (matches the Cake Phase
+# dropdown). Fetched lazily on first cake run so the boot path stays light.
+_CAKE_MODELS = [
+    "ak135-f-average-no-ocean.f",
+    "ak135-f-average-no-ocean.l",
+    "ak135-f-average-no-ocean.m",
+    "ak135-f-average.f",
+    "ak135-f-average.l",
+    "ak135-f-average.m",
+    "ak135-f-average.vf",
+    "ak135-f-continental.f",
+    "ak135-f-continental.l",
+    "ak135-f-continental.m",
+    "prem-no-ocean.f",
+    "prem-no-ocean.l",
+    "prem-no-ocean.m",
+    "prem.f",
+    "prem.l",
+    "prem.m",
+]
+_EARTH_MODELS_STAGED = False
+
+
+async def _ensure_earth_models() -> None:
+    """Fetch the builtin cake models into the Pyodide FS once, before a cake run
+    that uses one. A model that fails to fetch is skipped (just not selectable)."""
+    global _EARTH_MODELS_STAGED
+    if _EARTH_MODELS_STAGED:
+        return
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    for stem in _CAKE_MODELS:
+        path = "%s/%s.nd" % (MODEL_DIR, stem)
+        if os.path.exists(path):
+            continue
+        text = await _fetch_text_or_empty(_asset_url("earthmodels/%s.nd" % stem))
+        if text:
+            with open(path, "w") as f:
+                f.write(text)
+    _EARTH_MODELS_STAGED = True
 
 
 def _cake_model_path(name: str) -> str:
@@ -1946,6 +2033,8 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
 
 
 def _raw_bytes(value: Any) -> bytes:
+    if value is None:
+        return b""
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value)
     if hasattr(value, "to_py"):
@@ -1978,14 +2067,13 @@ class _BridgeServicer:
         return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
 
     def load_bytes(self, request: data_pb2.LoadBytesRequest, data: Any) -> scene_pb2.SceneMeta:
-        return _load_path_scene(request.name, data, request.fmt, bool(request.append))
+        path = _stage_bytes(request.name, bytes(request.content))
+        return _load_path_scene(request.name, path, request.fmt, bool(request.append))
 
-    def load_url(self, request: data_pb2.LoadUrlRequest, data: Any) -> scene_pb2.SceneMeta:
+    async def load_url(self, request: data_pb2.LoadUrlRequest, data: Any) -> scene_pb2.SceneMeta:
         name = request.url.rsplit("/", 1)[-1] or "data"
-        return _load_path_scene(name, data, request.fmt, False)
-
-    def load_waveform_path(self, request: bridge_pb2.Empty, data: Any) -> scene_pb2.SceneMeta:
-        return _load_waveform_path_scene(data)
+        raw = await _fetch_bytes(_asset_url(request.url))
+        return _load_path_scene(name, _stage_bytes(name, raw), request.fmt, False)
 
     def get_view(
         self, request: view_pb2.ViewParams, data: Any
@@ -1997,12 +2085,16 @@ class _BridgeServicer:
     ) -> Tuple[view_pb2.SpecMeta, np.ndarray]:
         return _get_spectrum_data(request)
 
-    def run_snuffling(
+    async def run_snuffling(
         self, request: snuffling_pb2.NamedSnufflingRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
         # Snuffling errors (e.g. cake) surface in the result text — which the UI
         # shows — rather than as a BridgeError, so the user sees the traceback.
         try:
+            if request.name == "cake":
+                model = request.params.snufflings.cake.cake_model or ""
+                if not model.startswith(GF_STORE_PREFIX):
+                    await _ensure_earth_models()
             return _run_snuffling_result(request.name, request.params)
         except Exception as exc:  # noqa: BLE001 — surface, don't raise
             return snuffling_pb2.SnufflingResult(
@@ -2015,22 +2107,16 @@ class _BridgeServicer:
     ) -> scene_pb2.SceneMeta:
         return _rms_scene(request)
 
-    def cake_plot(
+    async def cake_plot(
         self, request: snuffling_pb2.SnufflingRequestParams, data: Any
     ) -> snuffling_pb2.CakePlotResult:
+        model = request.snufflings.cake.cake_model or ""
+        if not model.startswith(GF_STORE_PREFIX):
+            await _ensure_earth_models()
         return _cake_plot_result(request)
 
     def run_command(self, request: data_pb2.StringRequest, data: Any) -> data_pb2.CommandResult:
         return _command_result(request.value)
-
-    def parse_events(self, request: bridge_pb2.Empty, data: Any) -> snuffling_pb2.SnufflingResult:
-        return _parse_events_result(data or "")
-
-    def parse_stations(self, request: bridge_pb2.Empty, data: Any) -> snuffling_pb2.SnufflingResult:
-        return _parse_stations_result(data or "")
-
-    def load_responses(self, request: bridge_pb2.Empty, data: Any) -> snuffling_pb2.SnufflingResult:
-        return _load_responses_result(data or "")
 
     def map_data(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.MapData:
         return _map_data_result()
@@ -2038,22 +2124,50 @@ class _BridgeServicer:
     def markers_to_text(self, request: data_pb2.MarkerFile, data: Any) -> bridge_pb2.StringValue:
         return bridge_pb2.StringValue(value=_markers_to_text(request))
 
-    def load_markers(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.SnufMarkerList:
-        return _markers_from_text(data or "")
+    def load_markers(
+        self, request: data_pb2.LoadMarkersRequest, data: Any
+    ) -> data_pb2.SnufMarkerList:
+        return _markers_from_text(request.text)
 
-    def dataselect_url(
-        self, request: data_pb2.WaveformDownloadRequest, data: Any
+    def add_cake_model(
+        self, request: data_pb2.AddCakeModelRequest, data: Any
     ) -> bridge_pb2.StringValue:
-        return bridge_pb2.StringValue(value=_dataselect_url(request))
+        name = request.name[:-3] if request.name.lower().endswith(".nd") else request.name
+        name = name or "model"
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        with open(_cake_model_path(name), "wb") as f:
+            f.write(bytes(request.content))
+        return bridge_pb2.StringValue(value=name)
 
-    def event_url(self, request: data_pb2.CatalogRequest, data: Any) -> bridge_pb2.StringValue:
-        return bridge_pb2.StringValue(value=_event_url(request))
+    async def download_waveforms(
+        self, request: data_pb2.WaveformDownloadRequest, data: Any
+    ) -> scene_pb2.SceneMeta:
+        from pyodide.http import pyfetch
 
-    def station_url(self, request: data_pb2.StationRequest, data: Any) -> bridge_pb2.StringValue:
-        return bridge_pb2.StringValue(value=_station_url(request))
+        resp = await pyfetch(_dataselect_url(request))
+        if resp.status == 204:
+            return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
+        if not resp.ok:
+            raise RuntimeError("dataselect: HTTP %s" % resp.status)
+        raw = bytes(await resp.bytes())
+        if not raw:
+            return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
+        return _load_waveform_path_scene(_stage_bytes("fdsn.mseed", raw))
 
-    def response_url(self, request: data_pb2.StationRequest, data: Any) -> bridge_pb2.StringValue:
-        return bridge_pb2.StringValue(value=_response_url(request))
+    async def catalog_search(
+        self, request: data_pb2.CatalogRequest, data: Any
+    ) -> snuffling_pb2.SnufflingResult:
+        return _parse_events_result(await _fetch_text_or_empty(_event_url(request)))
+
+    async def fetch_stations(
+        self, request: data_pb2.StationRequest, data: Any
+    ) -> snuffling_pb2.SnufflingResult:
+        return _parse_stations_result(await _fetch_text_or_empty(_station_url(request)))
+
+    async def fetch_responses(
+        self, request: data_pb2.StationRequest, data: Any
+    ) -> snuffling_pb2.SnufflingResult:
+        return _load_responses_result(await _fetch_text_or_empty(_response_url(request)))
 
     def gf_store_label(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
         return bridge_pb2.StringValue(value=gf_store_label(data or ""))
@@ -2062,19 +2176,19 @@ class _BridgeServicer:
 _SERVICER = _BridgeServicer()
 
 
-def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
+async def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
     """Dispatch a bridge method through the generated typed servicer; always
-    return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Never raises —
-    any exception becomes a BridgeError (the request is decoded off a JS proxy
-    here, before the generated dispatch parses it)."""
-    return bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+    return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Async because some
+    rpcs do network I/O (pyfetch); never raises — any exception becomes a
+    BridgeError (the request is decoded off a JS proxy here, before dispatch)."""
+    return await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
 
 
-def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
-    """For two-step worker flows (URL builders, gfStoreLabel, markersToText) that
-    need the string back in the worker: dispatch, then unwrap the StringValue (or
-    the error). Never raises — see AGENTS.md."""
-    env = call(method, request, data)
+async def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
+    """For the worker's GF-store mount, which needs the gfStoreLabel string back:
+    dispatch, then unwrap the StringValue (or the error). Never raises — see
+    AGENTS.md."""
+    env = await call(method, request, data)
     result = bridge_pb2.BridgeResult()
     result.ParseFromString(env["result"])
     which = result.WhichOneof("result")

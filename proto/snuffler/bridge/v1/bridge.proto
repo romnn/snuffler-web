@@ -35,12 +35,12 @@ message BridgeResult {
     SceneMeta scene = 2; // makeExample, loadBytes, loadUrl, emptyScene, rms, loadWaveformPath
     ViewMeta view = 3; // getView (paired with the ys buffer)
     SpecMeta spectrum = 4; // getSpectrum (paired with the ys buffer)
-    SnufflingResult snuffling = 5; // runSnuffling, parseEvents, parseStations, loadResponses
+    SnufflingResult snuffling = 5; // runSnuffling, catalogSearch, fetchStations, fetchResponses
     CakePlotResult cake_plot = 6; // cakePlot
     MapData map_data = 7; // mapData
     CommandResult command = 8; // runCommand
     SnufMarkerList markers = 9; // loadMarkers
-    StringValue text = 10; // dataselect/event/station/response URLs, gf_store_label, markers_to_text
+    StringValue text = 10; // gfStoreLabel, markersToText, addCakeModel
   }
 }
 
@@ -49,39 +49,38 @@ message BridgeResult {
 // client + Python dispatcher are generated from this so a method can never be
 // wired to the wrong request or response type. Responses cross the wire wrapped
 // in BridgeResult (the matching oneof variant, or BridgeError); the generated
-// glue unwraps that. Two transport details ride ALONGSIDE these messages, never
-// inside them:
-//   - out-of-band input (file bytes/text/path) the worker stages before the call
-//     (LoadBytes/LoadUrl/LoadWaveformPath/ParseEvents/ParseStations/LoadResponses/
-//     LoadMarkers/GfStoreLabel) — modelled here as Empty when there is no other
-//     proto request;
-//   - the zero-copy float32 `ys` buffer returned with GetView/GetSpectrum.
+// glue unwraps that.
 //
-// Worker-orchestrated calls (downloadWaveforms, catalogSearch, fetchStations,
-// fetchResponses) are NOT rpcs: they are browser-side sequences that fetch over
-// CORS and then invoke the leaf rpcs below (DataselectUrl -> LoadWaveformPath,
-// EventUrl -> ParseEvents, etc.), so they stay hand-written in the worker.
+// The Pyodide worker is a DUMB RELAY: it forwards (method id, request bytes) to
+// bridge.py and ships the result back; it spells no method names of its own. Even
+// the network rpcs (DownloadWaveforms/CatalogSearch/FetchStations/FetchResponses,
+// LoadUrl) do their own HTTP in Python via pyodide-http's pyfetch — the browser's
+// fetch reachable from Python — so there are no hand-written worker orchestrations
+// left to drift. The one thing the worker still does itself is mount a live
+// directory handle for a GF store (a DOM object that can't ride a proto), then
+// relay GfStoreLabel.
+//
+// Two transport details ride ALONGSIDE these messages, never inside the oneof:
+// the zero-copy float32 `ys` buffer returned with GetView/GetSpectrum, and (for
+// GfStoreLabel) the mounted store's FS path passed as out-of-band `data`.
 service BridgeService {
   rpc MakeExample(Empty) returns (SceneMeta);
   rpc EmptyScene(Empty) returns (SceneMeta);
   rpc LoadBytes(LoadBytesRequest) returns (SceneMeta);
   rpc LoadUrl(LoadUrlRequest) returns (SceneMeta);
-  rpc LoadWaveformPath(Empty) returns (SceneMeta);
   rpc GetView(ViewParams) returns (ViewMeta); // + out-of-band ys buffer
   rpc GetSpectrum(SnufflingRequestParams) returns (SpecMeta); // + out-of-band ys buffer
   rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult);
   rpc RmsTraces(SnufflingRequestParams) returns (SceneMeta);
   rpc CakePlot(SnufflingRequestParams) returns (CakePlotResult);
   rpc RunCommand(StringRequest) returns (CommandResult);
-  rpc ParseEvents(Empty) returns (SnufflingResult);
-  rpc ParseStations(Empty) returns (SnufflingResult);
-  rpc LoadResponses(Empty) returns (SnufflingResult);
   rpc MapData(Empty) returns (snuffler.bridge.v1.MapData);
   rpc MarkersToText(MarkerFile) returns (StringValue);
-  rpc LoadMarkers(Empty) returns (SnufMarkerList);
-  rpc DataselectUrl(WaveformDownloadRequest) returns (StringValue);
-  rpc EventUrl(CatalogRequest) returns (StringValue);
-  rpc StationUrl(StationRequest) returns (StringValue);
-  rpc ResponseUrl(StationRequest) returns (StringValue);
+  rpc LoadMarkers(LoadMarkersRequest) returns (SnufMarkerList);
+  rpc AddCakeModel(AddCakeModelRequest) returns (StringValue);
+  rpc DownloadWaveforms(WaveformDownloadRequest) returns (SceneMeta);
+  rpc CatalogSearch(CatalogRequest) returns (SnufflingResult);
+  rpc FetchStations(StationRequest) returns (SnufflingResult);
+  rpc FetchResponses(StationRequest) returns (SnufflingResult);
   rpc GfStoreLabel(Empty) returns (StringValue);
 }

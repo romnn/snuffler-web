@@ -34,11 +34,23 @@ message LoadBytesRequest {
   string name = 1;
   string fmt = 2;
   bool append = 3;
+  bytes content = 4; // the file bytes themselves (Python stages them on the Pyodide FS)
 }
 
 message LoadUrlRequest {
   string url = 1;
   string fmt = 2;
+}
+
+// A pyrocko marker file's text, picked in the browser and parsed in Python.
+message LoadMarkersRequest {
+  string text = 1;
+}
+
+// A user-picked cake earth model (.nd text), written into the Pyodide FS.
+message AddCakeModelRequest {
+  string name = 1;
+  bytes content = 2;
 }
 
 message StringRequest {

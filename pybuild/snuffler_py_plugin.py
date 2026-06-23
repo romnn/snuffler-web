@@ -99,52 +99,58 @@ def main() -> None:
     out.append("# implements BridgeServicer; there is no hand-written dispatch table.")
     out.append("from __future__ import annotations")
     out.append("")
+    out.append("import inspect")
     out.append("import traceback")
-    out.append("from typing import Any, Dict, Protocol, Tuple")
+    out.append("from typing import Any, Awaitable, Dict, Protocol, Tuple, Union")
     out.append("")
     out.append(f"from {pkg} import {', '.join(sorted(used_modules))}")
     out.append("")
     out.append("")
     out.append("class BridgeServicer(Protocol):")
     out.append('    """One method per BridgeService rpc: typed proto request in, typed proto')
-    out.append("    response out. `data` is the worker-staged out-of-band input (a file path or")
-    out.append("    fetched text), or None; buffer methods also return the zero-copy ys array.")
+    out.append("    response out. A handler may be sync or async (network rpcs fetch via")
+    out.append("    pyfetch), so each return type is `T | Awaitable[T]`; dispatch awaits when")
+    out.append("    needed. `data` is optional out-of-band input (a mounted GF-store path), or")
+    out.append("    None.")
     out.append('    """')
     out.append("")
     for mm in methods:
-        ret = f"Tuple[{mm['resp']}, Any]" if mm["buffer"] else mm["resp"]
+        base = f"Tuple[{mm['resp']}, Any]" if mm["buffer"] else mm["resp"]
+        ret = f"Union[{base}, Awaitable[{base}]]"
         out.append(f"    def {mm['snake']}(self, request: {mm['req']}, data: Any) -> {ret}: ...")
     out.append("")
     out.append("")
-    out.append(
-        "def dispatch(servicer: BridgeServicer, method: str, request: bytes, "
-        "data: Any) -> Dict[str, Any]:"
-    )
-    out.append('    """Route a wire method name to its typed servicer handler, pack the')
-    out.append("    BridgeResult envelope, and turn ANY exception into a BridgeError — never")
-    out.append("    raised across the worker boundary (see AGENTS.md).")
+    out.append("async def dispatch(")
+    out.append("    servicer: BridgeServicer, method: str, request: bytes, data: Any")
+    out.append(") -> Dict[str, Any]:")
+    out.append('    """Route a wire method name to its typed servicer handler, await it when')
+    out.append("    the rpc did async work (a network fetch), pack the BridgeResult envelope,")
+    out.append("    and turn ANY exception into a BridgeError — never raised across the worker")
+    out.append("    boundary (see AGENTS.md).")
     out.append('    """')
     out.append("    result = bridge_pb2.BridgeResult()")
     out.append("    try:")
     for i, mm in enumerate(methods):
         kw = "if" if i == 0 else "elif"
         parse = f"{mm['req']}.FromString(request)"
+        # Distinct `<snake>_out` per method: a shared name would make mypy unify
+        # the (different) message types across the if/elif branches and reject it.
+        out_var = f"{mm['snake']}_out"
         out.append(f'        {kw} method == "{mm["wire"]}":')
+        out.append(f"            {out_var} = servicer.{mm['snake']}({parse}, data)")
+        out.append(f"            if inspect.isawaitable({out_var}):")
+        out.append(f"                {out_var} = await {out_var}")
         if mm["buffer"]:
-            # Distinct variable names per buffer method: a shared name would make
-            # mypy unify the message type across the if/elif branches (ViewMeta vs
-            # SpecMeta) and reject it.
+            # Distinct names per buffer method: a shared one would make mypy unify
+            # the (different) message types across the if/elif branches.
             msg_var, ys_var = f"{mm['snake']}_msg", f"{mm['snake']}_ys"
-            out.append(f"            {msg_var}, {ys_var} = servicer.{mm['snake']}({parse}, data)")
+            out.append(f"            {msg_var}, {ys_var} = {out_var}")
             out.append(f"            result.{mm['variant']}.CopyFrom({msg_var})")
             out.append(
                 f'            return {{"result": result.SerializeToString(), "buffer": {ys_var}}}'
             )
         else:
-            out.append(
-                f"            result.{mm['variant']}.CopyFrom("
-                f"servicer.{mm['snake']}({parse}, data))"
-            )
+            out.append(f"            result.{mm['variant']}.CopyFrom({out_var})")
             out.append('            return {"result": result.SerializeToString()}')
     out.append('        raise KeyError("unknown bridge method: " + method)')
     out.append("    except Exception as exc:  # noqa: BLE001 — the whole point is to catch all")

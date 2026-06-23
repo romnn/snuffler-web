@@ -5,12 +5,7 @@
 // SharedArrayBuffer / wasm threads require. A separate, non-threaded build can be
 // produced later via the `threads` build-time feature and hosted on its own path
 // so the two never interfere; there is no runtime CDN fallback / ?threads toggle.
-import { fromBinary } from "@bufbuild/protobuf";
-import {
-  LoadBytesRequestSchema,
-  LoadUrlRequestSchema,
-} from "./proto/snuffler/bridge/v1/data_pb.js";
-import { NamedSnufflingRequestSchema } from "./proto/snuffler/bridge/v1/snuffling_pb.js";
+import { rpc } from "./rpc.js";
 
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
 
@@ -52,9 +47,7 @@ if (typeof SharedArrayBuffer !== "undefined") {
 let pyodideReadyPromise: Promise<any> | null = null;
 let py: any = null;
 let bridge: any = null;
-let stagedFileCounter = 0;
 let gfStoreCounter = 0;
-let earthModelsStaged = false;
 
 function resolveUrl(path) {
   return new URL(path, self.location.href).href;
@@ -89,30 +82,6 @@ function pyBytes(value) {
   } finally {
     destroyMaybe(value);
   }
-}
-
-function safeName(name) {
-  return (
-    String(name || "data")
-      .replace(/[^A-Za-z0-9._-]+/g, "_")
-      .slice(-96) || "data"
-  );
-}
-
-function stagedDataPath(name) {
-  stagedFileCounter += 1;
-  return `/data/${stagedFileCounter}-${safeName(name)}`;
-}
-
-function writeStagedFile(name, data) {
-  try {
-    py.FS.mkdir("/data");
-  } catch (_e) {
-    // Already exists.
-  }
-  const path = stagedDataPath(name);
-  py.FS.writeFile(path, data);
-  return path;
 }
 
 async function boot() {
@@ -222,42 +191,6 @@ async function boot() {
   return pyodideReadyPromise;
 }
 
-const CAKE_MODELS = [
-  "ak135-f-average-no-ocean.f",
-  "ak135-f-average-no-ocean.l",
-  "ak135-f-average-no-ocean.m",
-  "ak135-f-average.f",
-  "ak135-f-average.l",
-  "ak135-f-average.m",
-  "ak135-f-average.vf",
-  "ak135-f-continental.f",
-  "ak135-f-continental.l",
-  "ak135-f-continental.m",
-  "prem-no-ocean.f",
-  "prem-no-ocean.l",
-  "prem-no-ocean.m",
-  "prem.f",
-  "prem.l",
-  "prem.m",
-];
-
-async function ensureEarthModels() {
-  if (earthModelsStaged) return;
-  await boot();
-  try {
-    py.FS.mkdir("/earthmodels");
-  } catch (_e) {
-    // Already exists.
-  }
-  await Promise.all(
-    CAKE_MODELS.map(async (stem) => {
-      const text = await (await fetchOk(resolveUrl(`earthmodels/${stem}.nd`))).text();
-      py.FS.writeFile(`/earthmodels/${stem}.nd`, text);
-    })
-  );
-  earthModelsStaged = true;
-}
-
 // Shape the {"result": BridgeResult bytes, "buffer"?: ndarray} dict that
 // bridge.call() returns into the worker's postMessage payload. The result bytes
 // (the proto envelope — success variant OR BridgeError) always flow through;
@@ -302,87 +235,18 @@ function callText(res) {
   }
 }
 
-// Canonical gRPC id prefix for a BridgeService rpc. The generated Rust client and
-// Python dispatch both key on /package.Service/Method, so the worker names the
-// leaf rpcs it invokes the same way. Pure-passthrough rpcs already arrive as this
-// id (relayed straight through, below); the category-B/C glue here, whose own
-// incoming ids are hand-written, translates to it when calling bridge.py.
-const SVC = "/snuffler.bridge.v1.BridgeService/";
-
+// The worker is a DUMB RELAY: it forwards the generated method id + request bytes
+// (+ optional out-of-band data) to bridge.py's async dispatch, which runs the rpc
+// — including its own network fetches (pyfetch) — and returns the BridgeResult
+// envelope (plus the zero-copy ys buffer for getView/getSpectrum). It spells no
+// method names of its own, so nothing here can drift from the .proto.
+//
+// The ONE exception is mounting a live directory handle for a GF store: that is a
+// DOM object that can't ride a proto, so the worker mounts it into the Pyodide FS
+// and then relays GfStoreLabel for the registered store's label.
 async function handleRequest(msg) {
-  const method = msg.method;
-  if (method === "loadBytes") {
-    await boot();
-    const name = fromBinary(LoadBytesRequestSchema, msg.request).name;
-    const path = writeStagedFile(name || "data", msg.data || new Uint8Array(0));
-    return bridgeResult(bridge.call(SVC + "LoadBytes", msg.request, path));
-  }
-  if (method === SVC + "LoadUrl") {
-    await boot();
-    const url = fromBinary(LoadUrlRequestSchema, msg.request).url || "";
-    const name = url.split("/").pop() || "data";
-    const buf = new Uint8Array(await (await fetchOk(resolveUrl(url))).arrayBuffer());
-    const path = writeStagedFile(name, buf);
-    return bridgeResult(bridge.call(method, msg.request, path));
-  }
-  if (method === SVC + "RunSnuffling") {
-    await boot();
-    const name = fromBinary(NamedSnufflingRequestSchema, msg.request).name;
-    if (name === "cake") await ensureEarthModels();
-    return bridgeResult(bridge.call(method, msg.request));
-  }
-  if (method === "downloadWaveforms") {
-    await boot();
-    const url = callText(bridge.call_text(SVC + "DataselectUrl", msg.request));
-    const r = await fetch(url);
-    if (!r.ok && r.status !== 204) {
-      throw new Error(`dataselect HTTP ${r.status} ${r.statusText}`);
-    }
-    const buf = new Uint8Array(await r.arrayBuffer());
-    if (buf.byteLength === 0) return bridgeResult(bridge.call(SVC + "EmptyScene"));
-    const path = writeStagedFile("fdsn.mseed", buf);
-    return bridgeResult(bridge.call(SVC + "LoadWaveformPath", null, path));
-  }
-  if (method === "catalogSearch") {
-    await boot();
-    const url = callText(bridge.call_text(SVC + "EventUrl", msg.request));
-    const r = await fetch(url);
-    const text = r.ok ? await r.text() : "";
-    return bridgeResult(bridge.call(SVC + "ParseEvents", null, text));
-  }
-  if (method === "fetchStations") {
-    await boot();
-    const url = callText(bridge.call_text(SVC + "StationUrl", msg.request));
-    const r = await fetch(url);
-    const text = r.ok ? await r.text() : "";
-    return bridgeResult(bridge.call(SVC + "ParseStations", null, text));
-  }
-  if (method === "fetchResponses") {
-    await boot();
-    const url = callText(bridge.call_text(SVC + "ResponseUrl", msg.request));
-    const r = await fetch(url);
-    const text = r.ok ? await r.text() : "";
-    return bridgeResult(bridge.call(SVC + "LoadResponses", null, text));
-  }
-  if (method === SVC + "CakePlot") {
-    await boot();
-    await ensureEarthModels();
-    return bridgeResult(bridge.call(method, msg.request));
-  }
-  if (method === "addCakeModel") {
-    await boot();
-    const name = String(msg.name || "model").replace(/\.nd$/i, "");
-    try {
-      py.FS.mkdir("/earthmodels");
-    } catch (_e) {
-      // Already exists.
-    }
-    py.FS.writeFile(`/earthmodels/${name}.nd`, msg.data || new Uint8Array(0));
-    earthModelsStaged = true;
-    return { text: name };
-  }
-  if (method === "addGfStore") {
-    await boot();
+  await boot();
+  if (msg.method === "addGfStore") {
     gfStoreCounter += 1;
     const mount = "/gfstores/" + gfStoreCounter;
     try {
@@ -392,23 +256,9 @@ async function handleRequest(msg) {
     }
     py.FS.mkdir(mount);
     await py.mountNativeFS(mount, msg.handle);
-    return { text: callText(bridge.call_text(SVC + "GfStoreLabel", null, mount)) };
+    return { text: callText(await bridge.call_text(rpc("gfStoreLabel"), null, mount)) };
   }
-  if (method === "saveMarkers") {
-    await boot();
-    return { text: callText(bridge.call_text(SVC + "MarkersToText", msg.request)) };
-  }
-  if (method === "loadMarkers") {
-    await boot();
-    return bridgeResult(bridge.call(SVC + "LoadMarkers", null, String(msg.text || "")));
-  }
-  // Pure passthrough: any unary rpc that needs no worker-side staging or
-  // orchestration (makeExample, getView, getSpectrum, rmsTraces, mapData,
-  // runCommand, and any future one). The worker just relays the generated method
-  // id + request bytes; bridge.py's dispatch validates and turns an unknown
-  // method into a BridgeError, so there is no per-method branch to drift here.
-  await boot();
-  return bridgeResult(bridge.call(method, msg.request));
+  return bridgeResult(await bridge.call(msg.method, msg.request, msg.data ?? null));
 }
 
 self.onmessage = (event) => {

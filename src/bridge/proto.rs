@@ -50,13 +50,6 @@ mod wasm {
         }
     }
 
-    pub fn snuffling_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufflingResult, String> {
-        match bridge_oneof(bytes, what)? {
-            pb::bridge_result::Result::Snuffling(m) => Ok(m),
-            _ => Err(unexpected(what)),
-        }
-    }
-
     pub fn markers_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufMarkerList, String> {
         match bridge_oneof(bytes, what)? {
             pb::bridge_result::Result::Markers(m) => Ok(m),

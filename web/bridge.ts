@@ -2,8 +2,14 @@
 // wasm-bindgen; this module keeps DOM-only work on the main thread and sends
 // protobuf request bytes plus transferable buffers to web/bridge_worker.js.
 
-import { create, toBinary } from "@bufbuild/protobuf";
-import { LoadBytesRequestSchema } from "./proto/snuffler/bridge/v1/data_pb.js";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { BridgeResultSchema } from "./proto/snuffler/bridge/v1/bridge_pb.js";
+import {
+  AddCakeModelRequestSchema,
+  LoadBytesRequestSchema,
+  LoadMarkersRequestSchema,
+} from "./proto/snuffler/bridge/v1/data_pb.js";
+import { rpc } from "./rpc.js";
 
 // Cosmetic progress/runtime hooks (set by index.html) + the File System Access
 // API. Typed loosely — optional integration points, not the typed proto boundary.
@@ -82,10 +88,9 @@ function copyBytes(value) {
   return out;
 }
 
-function rpc(
-  method,
-  { request = null, data = null, text = null, name = null, handle = null } = {}
-) {
+// Post one request to the worker and resolve when its reply with the same id
+// arrives. `rpc(name)` (imported) names the method; this just pipes bytes.
+function send(method, { request = null, data = null, handle = null } = {}) {
   const id = nextRequestId++;
   const payload: Record<string, any> = { id, method };
   const transfer: Transferable[] = [];
@@ -102,8 +107,6 @@ function rpc(
     transfer.push(bytes.buffer);
   }
 
-  if (text != null) payload.text = String(text);
-  if (name != null) payload.name = String(name);
   if (handle != null) payload.handle = handle;
 
   const promise = new Promise<any>((resolve, reject) => {
@@ -117,28 +120,40 @@ function rpc(
 // (success variant OR BridgeError); Rust decodes the oneof. rpcBytes returns the
 // envelope bytes; rpcBufferResult additionally carries the zero-copy ys buffer.
 async function rpcBytes(method, args?) {
-  const msg = await rpc(method, args);
+  const msg = await send(method, args);
   return new Uint8Array(msg.result || new ArrayBuffer(0));
 }
 
 async function rpcText(method, args?) {
-  const msg = await rpc(method, args);
+  const msg = await send(method, args);
   return msg.text || "";
 }
 
 async function rpcBufferResult(method, args?) {
-  const msg = await rpc(method, args);
+  const msg = await send(method, args);
   return {
     result: new Uint8Array(msg.result || new ArrayBuffer(0)),
     ys: new Uint8Array(msg.ys || new ArrayBuffer(0)),
   };
 }
 
-// The single transport seam Rust (src/bridge.rs) calls for every unary proto
-// RPC: forward (method, request, data) to the worker and return the BridgeResult
-// envelope bytes plus the optional out-of-band zero-copy ys buffer. The worker
-// owns all per-method logic (file staging, FDSN URL->fetch->parse, etc.); this
-// is a uniform pipe. Category-B/C browser glue keeps its own exports below.
+// Decode a BridgeResult envelope to its StringValue text, for the DOM glue that
+// needs a string back (marker export, cake model, GF store). Throws on the error
+// variant, mirroring how Rust surfaces a BridgeError.
+function resultText(env: Uint8Array): string {
+  const r = fromBinary(BridgeResultSchema, env);
+  if (r.result.case === "error") {
+    throw new Error(`${r.result.value.kind}: ${r.result.value.message}`);
+  }
+  if (r.result.case === "text") return r.result.value.value;
+  throw new Error(`unexpected bridge result: ${r.result.case}`);
+}
+
+// The single transport seam Rust (src/bridge.rs) calls for every unary proto rpc:
+// forward (method, request) to the worker and return the BridgeResult envelope
+// bytes plus the optional out-of-band zero-copy ys buffer. The worker is a dumb
+// relay; bridge.py runs the rpc. The DOM-only browser glue keeps its own exports
+// below.
 export async function call(method, request, data) {
   const out = await rpcBufferResult(method, { request, data });
   // Complete the loading overlay once the first scene (the synthetic example,
@@ -152,8 +167,12 @@ export async function addCakeModel() {
   const files = await pickFiles(false);
   if (files.length === 0) return "";
   const f = files[0];
-  const bytes = new Uint8Array(await f.arrayBuffer());
-  return rpcText("addCakeModel", { name: f.name, data: bytes });
+  const content = new Uint8Array(await f.arrayBuffer());
+  const request = toBinary(
+    AddCakeModelRequestSchema,
+    create(AddCakeModelRequestSchema, { name: f.name, content })
+  );
+  return resultText(await rpcBytes(rpc("addCakeModel"), { request }));
 }
 
 export async function addGfStore() {
@@ -208,15 +227,15 @@ export async function openFiles() {
     const data = new Uint8Array(await f.arrayBuffer());
     const request = toBinary(
       LoadBytesRequestSchema,
-      create(LoadBytesRequestSchema, { name: f.name, fmt: "detect", append: true })
+      create(LoadBytesRequestSchema, { name: f.name, fmt: "detect", append: true, content: data })
     );
-    scene = await rpcBytes("loadBytes", { request, data });
+    scene = await rpcBytes(rpc("loadBytes"), { request });
   }
   return scene;
 }
 
 export async function saveMarkers(request) {
-  const text = await rpcText("saveMarkers", { request });
+  const text = resultText(await rpcBytes(rpc("markersToText"), { request }));
   const blob = new Blob([text], { type: "text/plain" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -263,7 +282,11 @@ export function saveSvg(svg, filename) {
 export async function loadMarkers() {
   const files = await pickFiles(false);
   if (files.length === 0) return new Uint8Array(0);
-  return rpcBytes("loadMarkers", { text: await files[0].text() });
+  const request = toBinary(
+    LoadMarkersRequestSchema,
+    create(LoadMarkersRequestSchema, { text: await files[0].text() })
+  );
+  return rpcBytes(rpc("loadMarkers"), { request });
 }
 
 export async function fetchTile(url) {
