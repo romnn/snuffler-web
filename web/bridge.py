@@ -17,14 +17,12 @@ import math
 import os
 import traceback
 from collections import OrderedDict
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import import_module
 from typing import (
     Any,
     Callable,
     Dict,
-    Generic,
     Iterator,
     List,
     Mapping,
@@ -41,6 +39,7 @@ from google.protobuf.message import Message
 from pyrocko import io as pio
 from pyrocko import trace as ptrace
 from snuffler.bridge.v1 import (
+    bridge_dispatch,
     bridge_pb2,
     common_pb2,
     data_pb2,
@@ -1957,12 +1956,6 @@ def _raw_bytes(value: Any) -> bytes:
     return bytes(value)
 
 
-def _parse_pb(cls: type[MessageT], value: Any) -> MessageT:
-    msg = cls()
-    msg.ParseFromString(_raw_bytes(value))
-    return msg
-
-
 def _nslc_pb(value: Any) -> common_pb2.Nslc:
     msg = common_pb2.Nslc()
     if value:
@@ -1973,311 +1966,117 @@ def _nslc_pb(value: Any) -> common_pb2.Nslc:
     return msg
 
 
-def make_example_pb() -> bytes:
-    return _make_example_scene().SerializeToString()
-
-
-def load_staged_file_pb(request: Any, path: str) -> bytes:
-    req = _parse_pb(data_pb2.LoadBytesRequest, request)
-    return _load_path_scene(req.name, path, req.fmt, bool(req.append)).SerializeToString()
-
-
-def load_url_staged_pb(request: Any, path: str) -> bytes:
-    req = _parse_pb(data_pb2.LoadUrlRequest, request)
-    name = req.url.rsplit("/", 1)[-1] or "data"
-    return _load_path_scene(name, path, req.fmt, False).SerializeToString()
-
-
-def empty_scene_pb() -> bytes:
-    return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0).SerializeToString()
-
-
-def run_snuffling_pb(request: Any) -> bytes:
-    req = _parse_pb(snuffling_pb2.NamedSnufflingRequest, request)
-    # Errors travel as proto, never as a raised exception: a raised Python
-    # exception's traceback can't be converted to JS on the threaded
-    # (SharedArrayBuffer) build — pyodide's TextDecoder rejects the shared view
-    # ("ArrayBufferView must not be shared"), masking the real error. So surface
-    # it in SnufflingResult.text (which the UI already shows). See AGENTS.md.
-    try:
-        return _run_snuffling_result(req.name, req.params).SerializeToString()
-    except Exception as exc:
-        return snuffling_pb2.SnufflingResult(
-            show_window=True,
-            text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-        ).SerializeToString()
-
-
-def rms_pb(request: Any) -> bytes:
-    req = _parse_pb(snuffling_pb2.SnufflingRequestParams, request)
-    return _rms_scene(req).SerializeToString()
-
-
-def cake_plot_pb(request: Any) -> bytes:
-    req = _parse_pb(snuffling_pb2.SnufflingRequestParams, request)
-    return _cake_plot_result(req).SerializeToString()
-
-
-def command_pb(request: Any) -> bytes:
-    req = _parse_pb(data_pb2.StringRequest, request)
-    return _command_result(req.value).SerializeToString()
-
-
-def dataselect_url_pb(request: Any) -> str:
-    return _dataselect_url(_parse_pb(data_pb2.WaveformDownloadRequest, request))
-
-
-def load_waveform_path_pb(path: str) -> bytes:
-    return _load_waveform_path_scene(path).SerializeToString()
-
-
-def event_url_pb(request: Any) -> str:
-    return _event_url(_parse_pb(data_pb2.CatalogRequest, request))
-
-
-def parse_events_pb(text: str) -> bytes:
-    return _parse_events_result(text).SerializeToString()
-
-
-def station_url_pb(request: Any) -> str:
-    return _station_url(_parse_pb(data_pb2.StationRequest, request))
-
-
-def parse_stations_pb(text: str) -> bytes:
-    return _parse_stations_result(text).SerializeToString()
-
-
-def response_url_pb(request: Any) -> str:
-    return _response_url(_parse_pb(data_pb2.StationRequest, request))
-
-
-def load_responses_pb(text: str) -> bytes:
-    return _load_responses_result(text).SerializeToString()
-
-
-def map_data_pb() -> bytes:
-    return _map_data_result().SerializeToString()
-
-
-def markers_to_text_pb(request: Any) -> str:
-    return _markers_to_text(_parse_pb(data_pb2.MarkerFile, request))
-
-
-def markers_from_text_pb(text: str) -> bytes:
-    return _markers_from_text(text).SerializeToString()
-
-
-# --- Single dispatch + proto-error failsafe -------------------------------
-#
-# Every bridge call from the worker goes through call(): it runs the method's
-# handler, packs the concrete proto result into the BridgeResult oneof, and —
-# crucially — catches ANY exception and returns it as the BridgeError variant. No
-# bridge function may ever raise across the JS boundary: on the threaded
-# SharedArrayBuffer build a raised exception's traceback can't be converted to JS
-# (TextDecoder rejects the shared view). Errors travel as proto bytes like every
-# other DTO. See AGENTS.md.
-#
-# Type safety: each _Method[M] ties its success message type M to the `put` setter
-# that writes M into the matching BridgeResult oneof field, so mypy rejects a
-# method wired to the wrong field — the one binding the dynamic protobuf API can't
-# check on its own. The typed setters also make the field names mypy-checked via
-# the generated stubs.
-M = TypeVar("M", bound=Message)
-
-
-@dataclass(frozen=True)
-class _Method(Generic[M]):
-    # message: the concrete BridgeResult success variant this method produces.
-    # run: (request, data) -> (serialized message bytes, optional zero-copy ys buffer).
-    # put: copy the parsed message into its BridgeResult oneof field.
-    message: type[M]
-    run: Callable[[bytes, Any], Tuple[bytes, Any]]
-    put: Callable[[bridge_pb2.BridgeResult, M], None]
-
-
-def _put_scene(r: bridge_pb2.BridgeResult, m: scene_pb2.SceneMeta) -> None:
-    r.scene.CopyFrom(m)
-
-
-def _put_view(r: bridge_pb2.BridgeResult, m: view_pb2.ViewMeta) -> None:
-    r.view.CopyFrom(m)
-
-
-def _put_spectrum(r: bridge_pb2.BridgeResult, m: view_pb2.SpecMeta) -> None:
-    r.spectrum.CopyFrom(m)
-
-
-def _put_snuffling(r: bridge_pb2.BridgeResult, m: snuffling_pb2.SnufflingResult) -> None:
-    r.snuffling.CopyFrom(m)
-
-
-def _put_cake_plot(r: bridge_pb2.BridgeResult, m: snuffling_pb2.CakePlotResult) -> None:
-    r.cake_plot.CopyFrom(m)
-
-
-def _put_map_data(r: bridge_pb2.BridgeResult, m: data_pb2.MapData) -> None:
-    r.map_data.CopyFrom(m)
-
-
-def _put_command(r: bridge_pb2.BridgeResult, m: data_pb2.CommandResult) -> None:
-    r.command.CopyFrom(m)
-
-
-def _put_markers(r: bridge_pb2.BridgeResult, m: data_pb2.SnufMarkerList) -> None:
-    r.markers.CopyFrom(m)
-
-
-def _put_text(r: bridge_pb2.BridgeResult, m: bridge_pb2.StringValue) -> None:
-    r.text.CopyFrom(m)
-
-
-def _run_view(request: bytes, data: Any) -> Tuple[bytes, Any]:
-    meta, ys = _get_view_data(_parse_pb(view_pb2.ViewParams, request))
-    return meta.SerializeToString(), ys
-
-
-def _run_spectrum(request: bytes, data: Any) -> Tuple[bytes, Any]:
-    meta, ys = _get_spectrum_data(_parse_pb(snuffling_pb2.SnufflingRequestParams, request))
-    return meta.SerializeToString(), ys
-
-
-def _text_bytes(value: str) -> bytes:
-    return bridge_pb2.StringValue(value=value).SerializeToString()
-
-
-def _method(
-    message: type[M],
-    run: Callable[[bytes, Any], Tuple[bytes, Any]],
-    put: Callable[[bridge_pb2.BridgeResult, M], None],
-) -> _Method[Any]:
-    # The shared TypeVar M ties `message` to `put`, so mypy rejects a call whose
-    # setter's message type doesn't match the declared message class — even though
-    # the return is erased to _Method[Any] for the heterogeneous dispatch table
-    # (annotating the table _Method[Any] is what would otherwise skip the check).
-    return _Method(message, run, put)
-
-
-_DISPATCH: Dict[str, _Method[Any]] = {
-    "makeExample": _method(
-        scene_pb2.SceneMeta, lambda request, data: (make_example_pb(), None), _put_scene
-    ),
-    "loadBytes": _method(
-        scene_pb2.SceneMeta,
-        lambda request, data: (load_staged_file_pb(request, data), None),
-        _put_scene,
-    ),
-    "loadUrl": _method(
-        scene_pb2.SceneMeta,
-        lambda request, data: (load_url_staged_pb(request, data), None),
-        _put_scene,
-    ),
-    "emptyScene": _method(
-        scene_pb2.SceneMeta, lambda request, data: (empty_scene_pb(), None), _put_scene
-    ),
-    "loadWaveformPath": _method(
-        scene_pb2.SceneMeta, lambda request, data: (load_waveform_path_pb(data), None), _put_scene
-    ),
-    "getView": _method(view_pb2.ViewMeta, _run_view, _put_view),
-    "getSpectrum": _method(view_pb2.SpecMeta, _run_spectrum, _put_spectrum),
-    "runSnuffling": _method(
-        snuffling_pb2.SnufflingResult,
-        lambda request, data: (run_snuffling_pb(request), None),
-        _put_snuffling,
-    ),
-    "rmsTraces": _method(
-        scene_pb2.SceneMeta, lambda request, data: (rms_pb(request), None), _put_scene
-    ),
-    "cakePlot": _method(
-        snuffling_pb2.CakePlotResult,
-        lambda request, data: (cake_plot_pb(request), None),
-        _put_cake_plot,
-    ),
-    "runCommand": _method(
-        data_pb2.CommandResult, lambda request, data: (command_pb(request), None), _put_command
-    ),
-    "parseEvents": _method(
-        snuffling_pb2.SnufflingResult,
-        lambda request, data: (parse_events_pb(data), None),
-        _put_snuffling,
-    ),
-    "parseStations": _method(
-        snuffling_pb2.SnufflingResult,
-        lambda request, data: (parse_stations_pb(data), None),
-        _put_snuffling,
-    ),
-    "loadResponses": _method(
-        snuffling_pb2.SnufflingResult,
-        lambda request, data: (load_responses_pb(data), None),
-        _put_snuffling,
-    ),
-    "mapData": _method(
-        data_pb2.MapData, lambda request, data: (map_data_pb(), None), _put_map_data
-    ),
-    "markersToText": _method(
-        bridge_pb2.StringValue,
-        lambda request, data: (_text_bytes(markers_to_text_pb(request)), None),
-        _put_text,
-    ),
-    "loadMarkers": _method(
-        data_pb2.SnufMarkerList,
-        lambda request, data: (markers_from_text_pb(data or ""), None),
-        _put_markers,
-    ),
-    "dataselectUrl": _method(
-        bridge_pb2.StringValue,
-        lambda request, data: (_text_bytes(dataselect_url_pb(request)), None),
-        _put_text,
-    ),
-    "eventUrl": _method(
-        bridge_pb2.StringValue,
-        lambda request, data: (_text_bytes(event_url_pb(request)), None),
-        _put_text,
-    ),
-    "stationUrl": _method(
-        bridge_pb2.StringValue,
-        lambda request, data: (_text_bytes(station_url_pb(request)), None),
-        _put_text,
-    ),
-    "responseUrl": _method(
-        bridge_pb2.StringValue,
-        lambda request, data: (_text_bytes(response_url_pb(request)), None),
-        _put_text,
-    ),
-    "gfStoreLabel": _method(
-        bridge_pb2.StringValue,
-        lambda request, data: (_text_bytes(gf_store_label(data or "")), None),
-        _put_text,
-    ),
-}
+class _BridgeServicer:
+    """Implements the generated `BridgeServicer`: one typed method per rpc (proto
+    request in, proto response out), each delegating to the pyrocko-backed compute
+    functions above. The generated `dispatch()` parses the request, packs the
+    BridgeResult oneof, and converts any exception to a BridgeError — so there is
+    no hand-written dispatch table or per-method serialize/parse boilerplate.
+    mypy structurally checks these signatures against the generated Protocol."""
+
+    def make_example(self, request: bridge_pb2.Empty, data: Any) -> scene_pb2.SceneMeta:
+        return _make_example_scene()
+
+    def empty_scene(self, request: bridge_pb2.Empty, data: Any) -> scene_pb2.SceneMeta:
+        return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
+
+    def load_bytes(self, request: data_pb2.LoadBytesRequest, data: Any) -> scene_pb2.SceneMeta:
+        return _load_path_scene(request.name, data, request.fmt, bool(request.append))
+
+    def load_url(self, request: data_pb2.LoadUrlRequest, data: Any) -> scene_pb2.SceneMeta:
+        name = request.url.rsplit("/", 1)[-1] or "data"
+        return _load_path_scene(name, data, request.fmt, False)
+
+    def load_waveform_path(self, request: bridge_pb2.Empty, data: Any) -> scene_pb2.SceneMeta:
+        return _load_waveform_path_scene(data)
+
+    def get_view(
+        self, request: view_pb2.ViewParams, data: Any
+    ) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
+        return _get_view_data(request)
+
+    def get_spectrum(
+        self, request: snuffling_pb2.SnufflingRequestParams, data: Any
+    ) -> Tuple[view_pb2.SpecMeta, np.ndarray]:
+        return _get_spectrum_data(request)
+
+    def run_snuffling(
+        self, request: snuffling_pb2.NamedSnufflingRequest, data: Any
+    ) -> snuffling_pb2.SnufflingResult:
+        # Snuffling errors (e.g. cake) surface in the result text — which the UI
+        # shows — rather than as a BridgeError, so the user sees the traceback.
+        try:
+            return _run_snuffling_result(request.name, request.params)
+        except Exception as exc:  # noqa: BLE001 — surface, don't raise
+            return snuffling_pb2.SnufflingResult(
+                show_window=True,
+                text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+            )
+
+    def rms_traces(
+        self, request: snuffling_pb2.SnufflingRequestParams, data: Any
+    ) -> scene_pb2.SceneMeta:
+        return _rms_scene(request)
+
+    def cake_plot(
+        self, request: snuffling_pb2.SnufflingRequestParams, data: Any
+    ) -> snuffling_pb2.CakePlotResult:
+        return _cake_plot_result(request)
+
+    def run_command(self, request: data_pb2.StringRequest, data: Any) -> data_pb2.CommandResult:
+        return _command_result(request.value)
+
+    def parse_events(self, request: bridge_pb2.Empty, data: Any) -> snuffling_pb2.SnufflingResult:
+        return _parse_events_result(data or "")
+
+    def parse_stations(self, request: bridge_pb2.Empty, data: Any) -> snuffling_pb2.SnufflingResult:
+        return _parse_stations_result(data or "")
+
+    def load_responses(self, request: bridge_pb2.Empty, data: Any) -> snuffling_pb2.SnufflingResult:
+        return _load_responses_result(data or "")
+
+    def map_data(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.MapData:
+        return _map_data_result()
+
+    def markers_to_text(self, request: data_pb2.MarkerFile, data: Any) -> bridge_pb2.StringValue:
+        return bridge_pb2.StringValue(value=_markers_to_text(request))
+
+    def load_markers(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.SnufMarkerList:
+        return _markers_from_text(data or "")
+
+    def dataselect_url(
+        self, request: data_pb2.WaveformDownloadRequest, data: Any
+    ) -> bridge_pb2.StringValue:
+        return bridge_pb2.StringValue(value=_dataselect_url(request))
+
+    def event_url(self, request: data_pb2.CatalogRequest, data: Any) -> bridge_pb2.StringValue:
+        return bridge_pb2.StringValue(value=_event_url(request))
+
+    def station_url(self, request: data_pb2.StationRequest, data: Any) -> bridge_pb2.StringValue:
+        return bridge_pb2.StringValue(value=_station_url(request))
+
+    def response_url(self, request: data_pb2.StationRequest, data: Any) -> bridge_pb2.StringValue:
+        return bridge_pb2.StringValue(value=_response_url(request))
+
+    def gf_store_label(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
+        return bridge_pb2.StringValue(value=gf_store_label(data or ""))
+
+
+_SERVICER = _BridgeServicer()
 
 
 def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
-    """Dispatch a bridge method; always return {"result": <BridgeResult bytes>,
-    "buffer"?: ndarray}. Never raises — any exception becomes a BridgeError."""
-    result = bridge_pb2.BridgeResult()
-    try:
-        entry = _DISPATCH[method]
-        raw, buffer = entry.run(request, data)
-        msg = entry.message()
-        msg.MergeFromString(raw)
-        entry.put(result, msg)
-        env: Dict[str, Any] = {"result": result.SerializeToString()}
-        if buffer is not None:
-            env["buffer"] = buffer
-        return env
-    except Exception as exc:  # noqa: BLE001 — the whole point is to catch everything
-        err = bridge_pb2.BridgeResult()
-        err.error.kind = type(exc).__name__
-        err.error.message = str(exc)
-        err.error.traceback = traceback.format_exc()
-        return {"result": err.SerializeToString()}
+    """Dispatch a bridge method through the generated typed servicer; always
+    return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Never raises —
+    any exception becomes a BridgeError (the request is decoded off a JS proxy
+    here, before the generated dispatch parses it)."""
+    return bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
 
 
 def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
-    """For two-step worker flows (URL builders, gfStoreLabel, markersToText)
-    that need the string back in the worker. Returns {"text": str, "error": str}
-    — never raises (a raised exception over the threaded worker boundary would
-    hit the same TextDecoder issue call() guards against)."""
+    """For two-step worker flows (URL builders, gfStoreLabel, markersToText) that
+    need the string back in the worker: dispatch, then unwrap the StringValue (or
+    the error). Never raises — see AGENTS.md."""
     env = call(method, request, data)
     result = bridge_pb2.BridgeResult()
     result.ParseFromString(env["result"])

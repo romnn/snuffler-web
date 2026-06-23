@@ -246,7 +246,8 @@ mod web {
         // bridge.py and ships the zero-copy ys buffer alongside the proto. This is
         // the custom transport the typed service client rides on.
         #[wasm_bindgen(js_name = call, catch)]
-        async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>) -> Result<JsValue, JsValue>;
+        async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>)
+        -> Result<JsValue, JsValue>;
 
         // DOM-only calls keep bespoke externs: they drive browser APIs (file
         // pickers, downloads, the File System Access API, tile fetch+decode) that
@@ -810,7 +811,10 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = match client().run_command(pb::StringRequest { value: line }).await {
+                let res = match client()
+                    .run_command(pb::StringRequest { value: line })
+                    .await
+                {
                     Ok(r) => Some(r),
                     Err(e) => Some(pb::CommandResult {
                         action: "error".into(),

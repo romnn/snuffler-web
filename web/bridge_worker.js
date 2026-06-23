@@ -210,6 +210,9 @@ async function boot() {
         "snuffling_pb2.py",
         "data_pb2.py",
         "bridge_pb2.py",
+        // Generated typed servicer Protocol + dispatch (from BridgeService);
+        // bridge.py imports it, so it must be staged alongside the *_pb2 modules.
+        "bridge_dispatch.py",
       ]) {
         const src = await (await fetchOk(resolveUrl(`proto/snuffler/bridge/v1/${file}`))).text();
         py.FS.writeFile(`/snuffler/bridge/v1/${file}`, src);

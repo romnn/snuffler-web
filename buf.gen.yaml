@@ -15,3 +15,9 @@ plugins:
     include_imports: *include-imports
     include_wkt: *include-wkt
     out: *out
+  # Our own plugin: the typed BridgeServicer Protocol + dispatch (bridge_dispatch.py),
+  # generated from the BridgeService rpc set. No grpc runtime (imports in Pyodide).
+  - local: ./pybuild/protoc-gen-snuffler-py
+    include_imports: *include-imports
+    include_wkt: *include-wkt
+    out: *out

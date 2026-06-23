@@ -120,7 +120,10 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
             let (params, encode_expr) = if req == "Empty" {
                 (String::new(), "encode_msg(&Empty::default())".to_string())
             } else {
-                (format!(", request: {req}"), "encode_msg(&request)".to_string())
+                (
+                    format!(", request: {req}"),
+                    "encode_msg(&request)".to_string(),
+                )
             };
 
             if buffer {
