@@ -293,21 +293,39 @@ mod web {
         proto::scene_from_bytes(&object_uint8(&v, "result")?, "scene")
     }
 
-    fn parse_view(obj: JsValue) -> Result<ViewData, String> {
-        let result_bytes = object_uint8(&obj, "result")?;
-        let ys_bytes = object_uint8(&obj, "ys")?;
-        proto::view_data_from_parts(&result_bytes, &ys_bytes)
-    }
-
-    fn parse_spectrum(obj: JsValue) -> Result<SpectrumData, String> {
-        let result_bytes = object_uint8(&obj, "result")?;
-        let ys_bytes = object_uint8(&obj, "ys")?;
-        proto::spectrum_data_from_parts(&result_bytes, &ys_bytes)
-    }
-
     fn object_uint8(obj: &JsValue, key: &str) -> Result<Vec<u8>, String> {
         let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(jsval_to_string)?;
         js_bytes(val, key)
+    }
+
+    /// The frontend's `BridgeTransport`: the generated typed client marshals each
+    /// encoded request through `js_call` to the worker and reads back the
+    /// `BridgeResult` bytes (and the out-of-band `ys` for buffer methods). Unit
+    /// struct — the worker holds all session state.
+    struct WorkerTransport;
+
+    impl pb::BridgeTransport for WorkerTransport {
+        async fn unary(&self, method: &str, request: Vec<u8>) -> Result<Vec<u8>, String> {
+            let obj = js_call(method, request, Vec::new())
+                .await
+                .map_err(jsval_to_string)?;
+            object_uint8(&obj, "result")
+        }
+
+        async fn unary_with_buffer(
+            &self,
+            method: &str,
+            request: Vec<u8>,
+        ) -> Result<(Vec<u8>, Vec<u8>), String> {
+            let obj = js_call(method, request, Vec::new())
+                .await
+                .map_err(jsval_to_string)?;
+            Ok((object_uint8(&obj, "result")?, object_uint8(&obj, "ys")?))
+        }
+    }
+
+    fn client() -> pb::BridgeServiceClient<WorkerTransport> {
+        pb::BridgeServiceClient::new(WorkerTransport)
     }
 
     fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
@@ -474,11 +492,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_call("makeExample", Vec::new(), Vec::new()).await;
-                let parsed = match res {
-                    Ok(v) => parse_scene(v),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client().make_example().await;
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
@@ -533,12 +547,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let request = proto::encode_message(&pb::LoadUrlRequest { url, fmt });
-                let res = js_call("loadUrl", request, Vec::new()).await;
-                let parsed = match res {
-                    Ok(v) => parse_scene(v),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client().load_url(pb::LoadUrlRequest { url, fmt }).await;
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
@@ -565,15 +574,13 @@ mod web {
                 }
                 i.spectrum_in_flight = true;
             }
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_call("getSpectrum", request, Vec::new()).await;
-                let parsed = match res {
-                    Ok(o) => parse_spectrum(o),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client()
+                    .get_spectrum(params)
+                    .await
+                    .map(|(meta, ys)| SpectrumData { meta, ys });
                 {
                     let mut i = inner.borrow_mut();
                     if let Ok(sd) = parsed {
@@ -595,20 +602,14 @@ mod web {
             if !matches!(self.inner.borrow().status, Status::Ready) {
                 return;
             }
-            let request = proto::encode_message(&pb::NamedSnufflingRequest {
+            let request = pb::NamedSnufflingRequest {
                 name,
                 params: Some(params),
-            });
+            };
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_call("runSnuffling", request, Vec::new()).await;
-                let parsed = match res {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::snuffling_from_bytes(&b, "snuffling"))
-                        .ok(),
-                    Err(_) => None,
-                };
+                let parsed = client().run_snuffling(request).await.ok();
                 {
                     let mut i = inner.borrow_mut();
                     if let Some(mut r) = parsed {
@@ -659,14 +660,10 @@ mod web {
         /// Compute blockwise-RMS derived traces (pyrocko's RMS snuffling) and
         /// append them to the pile; the result replaces the scene.
         pub fn rms_traces(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("rmsTraces", request, Vec::new()).await {
-                    Ok(v) => parse_scene(v),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client().rms_traces(params).await;
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
@@ -733,16 +730,10 @@ mod web {
                     i.cake_model_in_flight = true;
                 }
             }
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("cakePlot", request, Vec::new()).await {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::cake_plot_from_bytes(&b, "cake plot"))
-                        .ok(),
-                    Err(_) => None,
-                };
+                let parsed = client().cake_plot(params).await.ok();
                 {
                     let mut i = inner.borrow_mut();
                     match parsed.and_then(|p| p.result) {
@@ -816,17 +807,14 @@ mod web {
         /// stores a pending time the App jumps to; a visibility change swaps the
         /// scene in place (no refit) and forces the view to re-dispatch.
         pub fn run_command(&self, ctx: &egui::Context, line: String) {
-            let request = proto::encode_string_request(line);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = match js_call("runCommand", request, Vec::new()).await {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::command_from_bytes(&b, "command"))
-                        .ok(),
+                let res = match client().run_command(pb::StringRequest { value: line }).await {
+                    Ok(r) => Some(r),
                     Err(e) => Some(pb::CommandResult {
                         action: "error".into(),
-                        message: Some(jsval_to_string(e)),
+                        message: Some(e),
                         ..Default::default()
                     }),
                 };
@@ -1001,12 +989,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_call("mapData", Vec::new(), Vec::new()).await {
-                    Ok(v) => object_uint8(&v, "result")
-                        .and_then(|b| proto::map_from_bytes(&b, "map"))
-                        .ok(),
-                    Err(_) => None,
-                };
+                let parsed = client().map_data().await.ok();
                 {
                     let mut i = inner.borrow_mut();
                     if let Some(m) = parsed {
@@ -1088,16 +1071,14 @@ mod web {
             let Some(params) = self.inner.borrow().desired.clone() else {
                 return;
             };
-            let request = proto::encode_message(&params);
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             let me = self.clone();
             spawn_local(async move {
-                let res = js_call("getView", request, Vec::new()).await;
-                let parsed = match res {
-                    Ok(obj) => parse_view(obj),
-                    Err(e) => Err(jsval_to_string(e)),
-                };
+                let parsed = client()
+                    .get_view(params.clone())
+                    .await
+                    .map(|(meta, ys)| ViewData { meta, ys });
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {

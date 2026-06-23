@@ -10,8 +10,6 @@ mod wasm {
     use super::pb;
     use snuffler_proto::prost::Message;
 
-    use crate::bridge::{SpectrumData, ViewData};
-
     pub fn encode_message<M: Message>(msg: &M) -> Vec<u8> {
         let mut out = Vec::with_capacity(msg.encoded_len());
         if msg.encode(&mut out).is_err() {
@@ -59,74 +57,11 @@ mod wasm {
         }
     }
 
-    pub fn command_from_bytes(bytes: &[u8], what: &str) -> Result<pb::CommandResult, String> {
-        match bridge_oneof(bytes, what)? {
-            pb::bridge_result::Result::Command(m) => Ok(m),
-            _ => Err(unexpected(what)),
-        }
-    }
-
-    pub fn map_from_bytes(bytes: &[u8], what: &str) -> Result<pb::MapData, String> {
-        match bridge_oneof(bytes, what)? {
-            pb::bridge_result::Result::MapData(m) => Ok(m),
-            _ => Err(unexpected(what)),
-        }
-    }
-
-    pub fn cake_plot_from_bytes(bytes: &[u8], what: &str) -> Result<pb::CakePlotResult, String> {
-        match bridge_oneof(bytes, what)? {
-            pb::bridge_result::Result::CakePlot(m) => Ok(m),
-            _ => Err(unexpected(what)),
-        }
-    }
-
     pub fn markers_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufMarkerList, String> {
         match bridge_oneof(bytes, what)? {
             pb::bridge_result::Result::Markers(m) => Ok(m),
             _ => Err(unexpected(what)),
         }
-    }
-
-    pub fn view_data_from_parts(result_bytes: &[u8], ys_bytes: &[u8]) -> Result<ViewData, String> {
-        match bridge_oneof(result_bytes, "view")? {
-            pb::bridge_result::Result::View(m) => Ok(ViewData {
-                meta: m,
-                ys: f32_vec_from_le_bytes(ys_bytes, "view.ys")?,
-            }),
-            _ => Err(unexpected("view")),
-        }
-    }
-
-    pub fn spectrum_data_from_parts(
-        result_bytes: &[u8],
-        ys_bytes: &[u8],
-    ) -> Result<SpectrumData, String> {
-        match bridge_oneof(result_bytes, "spectrum")? {
-            pb::bridge_result::Result::Spectrum(m) => Ok(SpectrumData {
-                meta: m,
-                ys: f32_vec_from_le_bytes(ys_bytes, "spectrum.ys")?,
-            }),
-            _ => Err(unexpected("spectrum")),
-        }
-    }
-
-    pub fn encode_string_request(value: String) -> Vec<u8> {
-        encode_message(&pb::StringRequest { value })
-    }
-
-    fn f32_vec_from_le_bytes(bytes: &[u8], what: &str) -> Result<Vec<f32>, String> {
-        let mut chunks = bytes.chunks_exact(4);
-        let mut out = Vec::with_capacity(bytes.len() / 4);
-        for chunk in &mut chunks {
-            let arr: [u8; 4] = chunk
-                .try_into()
-                .map_err(|_| format!("{what}: invalid f32 chunk"))?;
-            out.push(f32::from_le_bytes(arr));
-        }
-        if !chunks.remainder().is_empty() {
-            return Err(format!("{what}: byte length is not divisible by four"));
-        }
-        Ok(out)
     }
 }
 
