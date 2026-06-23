@@ -6,6 +6,7 @@
 // produced later via the `threads` build-time feature and hosted on its own path
 // so the two never interfere; there is no runtime CDN fallback / ?threads toggle.
 import { rpc } from "./rpc.js";
+import { WORKER_MOUNT_GF_STORE } from "./worker_command.js";
 
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
 
@@ -246,7 +247,7 @@ function callText(res) {
 // and then relays GfStoreLabel for the registered store's label.
 async function handleRequest(msg) {
   await boot();
-  if (msg.method === "addGfStore") {
+  if (msg.method === WORKER_MOUNT_GF_STORE) {
     gfStoreCounter += 1;
     const mount = "/gfstores/" + gfStoreCounter;
     try {

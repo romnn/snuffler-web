@@ -23,6 +23,11 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - cargo check --workspace --all-targets {{.CLI_ARGS}}
+      # The generated bridge client (and every client().rpc() call) is
+      # wasm32-only (#[cfg(target_arch = "wasm32")]), so the host check above
+      # never compiles it; check:threads is what flags a renamed/removed rpc on
+      # the Rust side. Without it `task check` would miss Rust bridge drift.
+      - task: check:threads
       - task: check:py
       - task: check:ts
 

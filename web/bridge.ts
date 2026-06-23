@@ -9,7 +9,12 @@ import {
   LoadBytesRequestSchema,
   LoadMarkersRequestSchema,
 } from "./proto/snuffler/bridge/v1/data_pb.js";
-import { rpc } from "./rpc.js";
+import { rpc, BridgeMethod, type BridgeMethodId } from "./rpc.js";
+import { WORKER_MOUNT_GF_STORE, type WorkerCommand } from "./worker_command.js";
+
+// What the worker accepts as a request `method`: any BridgeService rpc id, plus
+// the single worker-only command (the GF-store directory mount).
+type SeamMethod = BridgeMethodId | WorkerCommand;
 
 // Cosmetic progress/runtime hooks (set by index.html) + the File System Access
 // API. Typed loosely — optional integration points, not the typed proto boundary.
@@ -90,7 +95,7 @@ function copyBytes(value) {
 
 // Post one request to the worker and resolve when its reply with the same id
 // arrives. `rpc(name)` (imported) names the method; this just pipes bytes.
-function send(method, { request = null, data = null, handle = null } = {}) {
+function send(method: SeamMethod, { request = null, data = null, handle = null } = {}) {
   const id = nextRequestId++;
   const payload: Record<string, any> = { id, method };
   const transfer: Transferable[] = [];
@@ -119,17 +124,17 @@ function send(method, { request = null, data = null, handle = null } = {}) {
 // Both data helpers now carry the BridgeResult envelope bytes in `result`
 // (success variant OR BridgeError); Rust decodes the oneof. rpcBytes returns the
 // envelope bytes; rpcBufferResult additionally carries the zero-copy ys buffer.
-async function rpcBytes(method, args?) {
+async function rpcBytes(method: BridgeMethodId, args?) {
   const msg = await send(method, args);
   return new Uint8Array(msg.result || new ArrayBuffer(0));
 }
 
-async function rpcText(method, args?) {
+async function rpcText(method: SeamMethod, args?) {
   const msg = await send(method, args);
   return msg.text || "";
 }
 
-async function rpcBufferResult(method, args?) {
+async function rpcBufferResult(method: BridgeMethodId, args?) {
   const msg = await send(method, args);
   return {
     result: new Uint8Array(msg.result || new ArrayBuffer(0)),
@@ -154,12 +159,12 @@ function resultText(env: Uint8Array): string {
 // bytes plus the optional out-of-band zero-copy ys buffer. The worker is a dumb
 // relay; bridge.py runs the rpc. The DOM-only browser glue keeps its own exports
 // below.
-export async function call(method, request, data) {
+export async function call(method: BridgeMethodId, request, data) {
   const out = await rpcBufferResult(method, { request, data });
   // Complete the loading overlay once the first scene (the synthetic example,
-  // the first call after boot) is in; the boot sequence stops at 0.97. The id is
-  // the canonical gRPC path, so match the method tail.
-  if (method.endsWith("/MakeExample")) prog(1.0, "Ready");
+  // the first call after boot) is in; the boot sequence stops at 0.97. Typed
+  // compare against the generated id so a rename of MakeExample is a tsc error.
+  if (method === BridgeMethod.makeExample) prog(1.0, "Ready");
   return out;
 }
 
@@ -189,7 +194,7 @@ export async function addGfStore() {
     if (e instanceof DOMException && e.name === "AbortError") return "";
     throw e;
   }
-  return rpcText("addGfStore", { handle });
+  return rpcText(WORKER_MOUNT_GF_STORE, { handle });
 }
 
 function pickFiles(multiple): Promise<File[]> {

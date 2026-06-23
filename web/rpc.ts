@@ -1,10 +1,16 @@
-// The canonical gRPC method id (`/package.Service/Method`) for a BridgeService
-// rpc, derived from the generated service descriptor. Typed — a wrong rpc name is
-// a compile error — and drift-proof: the names come from the .proto via
-// protoc-gen-es, never hand-written. The worker and the browser glue use this
-// instead of re-spelling method-name strings.
-import { BridgeService } from "./proto/snuffler/bridge/v1/bridge_pb.js";
+// rpc("loadBytes") -> the canonical gRPC id
+// "/snuffler.bridge.v1.BridgeService/LoadBytes". Typed end to end: the argument is
+// a BridgeService localName and the result is a BridgeMethodId, so the bridge seam
+// (and the worker) can reject anything that is not a real rpc id at compile time.
+// Callers may equivalently pass BridgeMethod.loadBytes or the literal id directly.
+import {
+  BridgeMethod,
+  type BridgeMethodId,
+  type BridgeMethodName,
+} from "./proto/snuffler/bridge/v1/bridge_methods.js";
 
-export function rpc(name: keyof typeof BridgeService.method): string {
-  return `/${BridgeService.typeName}/${BridgeService.method[name].name}`;
+export { BridgeMethod, type BridgeMethodId, type BridgeMethodName };
+
+export function rpc(name: BridgeMethodName): BridgeMethodId {
+  return BridgeMethod[name];
 }
