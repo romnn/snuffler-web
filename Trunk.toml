@@ -20,6 +20,15 @@
 port = 17683
 headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "credentialless" }
 
+# The pre_build hooks below GENERATE code into the source tree (buf generate ->
+# web/proto, bun build -> web/gen). trunk watches the project for changes, so
+# without ignoring these, each build's own hook output is seen as a change and
+# retriggers the build — an endless rebuild loop that never lets the page finish
+# loading. Ignore only the generated output dirs; the .ts/.proto SOURCES
+# (web/bridge*.ts, proto/) stay watched, so real edits still rebuild + regenerate.
+[watch]
+ignore = ["web/gen", "web/proto"]
+
 [[hooks]]
 stage = "pre_build"
 command = "buf"
