@@ -21,6 +21,19 @@ jobs:
       # shells out to it to compile the bridge .proto schema during clippy.
       - uses: jdx/mise-action@v4
 
+      # The wasm bridge externs read /web/gen/bridge.js at compile time
+      # (#[wasm_bindgen(module = "/web/gen/bridge.js")] in src/bridge.rs). It is
+      # generated, not committed, so the wasm clippy below cannot read it unless we
+      # build it first. Install the JS deps, run `buf generate` (the TS proto
+      # messages bridge.ts imports), and bun-bundle the glue — the same artifacts
+      # Trunk produces via its pre_build hooks.
+      - name: Generate + bundle the bridge glue
+        run: |
+          bun install --frozen-lockfile
+          buf generate
+          bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser
+          bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser
+
       # rust-toolchain.toml pins the channel, the wasm32 target, and the
       # rustfmt/clippy components; rustup installs them on the first cargo call.
       # The wasm web_sys_unstable_apis cfg comes from .cargo/config.toml.

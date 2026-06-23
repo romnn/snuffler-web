@@ -127,6 +127,14 @@ jobs:
         if: steps.pyodide-out.outputs.cache-hit == 'true'
         run: docker/pyodide-mt/stage-web.sh
 
+      # Trunk's pre_build hooks run `buf generate` (whose protoc-gen-es plugin is
+      # `bunx protoc-gen-es`) and `bun build` (which imports @bufbuild/protobuf).
+      # Both resolve from node_modules, so install the committed JS deps first —
+      # otherwise bunx/bun reach for the npm registry and fail (protoc-gen-es 404 /
+      # "Could not resolve @bufbuild/protobuf").
+      - name: Install JS deps (bridge glue)
+        run: bun install --frozen-lockfile
+
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
       # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/.
       # Threaded build: the wasm atomics/link flags come from .cargo/config.toml;
