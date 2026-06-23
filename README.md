@@ -59,7 +59,7 @@ Everything is pinned in `mise.toml` + `rust-toolchain.toml`. With
 ```sh
 mise install                    # node, bun, uv, trunk, binaryen, protoc (all pinned)
 docker/pyodide-mt/build-all.sh  # build the custom Pyodide 314 (both wheels + py-mt)
-mise run serve                  # trunk serve  → http://127.0.0.1:8080
+mise run serve                  # trunk serve  → http://127.0.0.1:17683
 ```
 
 `rustup` reads `rust-toolchain.toml` and installs the pinned Rust toolchain plus
