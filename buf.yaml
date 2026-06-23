@@ -1,3 +1,17 @@
 version: v2
 modules:
   - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # BridgeService is an internal, in-process bridge (Rust client -> Pyodide
+    # Python server over a custom transport), not a public gRPC API. Its rpcs
+    # intentionally reuse the domain messages (SceneMeta, ViewParams, Empty, …)
+    # as request/response types instead of wrapping each in a dedicated
+    # FooRequest/FooResponse — those wrappers would be pure boilerplate, the very
+    # thing the service exists to remove. These three rules enforce that
+    # public-API convention, so we opt out of them.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE

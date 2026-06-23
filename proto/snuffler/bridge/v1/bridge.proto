@@ -21,6 +21,10 @@ message StringValue {
   string value = 1;
 }
 
+// Request for methods whose input is carried entirely out-of-band (a staged
+// file, fetched FDSN text) or that take no parameters at all.
+message Empty {}
+
 // The envelope every bridge response is wrapped in: exactly one of `error` or a
 // concrete success payload. bridge.py's single `call()` failsafe always returns
 // one of these; Rust decodes it into a Result. The zero-copy waveform buffer for
@@ -38,4 +42,46 @@ message BridgeResult {
     SnufMarkerList markers = 9; // loadMarkers
     StringValue text = 10; // dataselect/event/station/response URLs, gf_store_label, markers_to_text
   }
+}
+
+// The single source of truth for the bridge boundary: bridge.py implements one
+// handler per rpc (typed proto request -> typed proto response), and the Rust
+// client + Python dispatcher are generated from this so a method can never be
+// wired to the wrong request or response type. Responses cross the wire wrapped
+// in BridgeResult (the matching oneof variant, or BridgeError); the generated
+// glue unwraps that. Two transport details ride ALONGSIDE these messages, never
+// inside them:
+//   - out-of-band input (file bytes/text/path) the worker stages before the call
+//     (LoadBytes/LoadUrl/LoadWaveformPath/ParseEvents/ParseStations/LoadResponses/
+//     LoadMarkers/GfStoreLabel) — modelled here as Empty when there is no other
+//     proto request;
+//   - the zero-copy float32 `ys` buffer returned with GetView/GetSpectrum.
+//
+// Worker-orchestrated calls (downloadWaveforms, catalogSearch, fetchStations,
+// fetchResponses) are NOT rpcs: they are browser-side sequences that fetch over
+// CORS and then invoke the leaf rpcs below (DataselectUrl -> LoadWaveformPath,
+// EventUrl -> ParseEvents, etc.), so they stay hand-written in the worker.
+service BridgeService {
+  rpc MakeExample(Empty) returns (SceneMeta);
+  rpc EmptyScene(Empty) returns (SceneMeta);
+  rpc LoadBytes(LoadBytesRequest) returns (SceneMeta);
+  rpc LoadUrl(LoadUrlRequest) returns (SceneMeta);
+  rpc LoadWaveformPath(Empty) returns (SceneMeta);
+  rpc GetView(ViewParams) returns (ViewMeta); // + out-of-band ys buffer
+  rpc GetSpectrum(SnufflingRequestParams) returns (SpecMeta); // + out-of-band ys buffer
+  rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult);
+  rpc RmsTraces(SnufflingRequestParams) returns (SceneMeta);
+  rpc CakePlot(SnufflingRequestParams) returns (CakePlotResult);
+  rpc RunCommand(StringRequest) returns (CommandResult);
+  rpc ParseEvents(Empty) returns (SnufflingResult);
+  rpc ParseStations(Empty) returns (SnufflingResult);
+  rpc LoadResponses(Empty) returns (SnufflingResult);
+  rpc MapData(Empty) returns (snuffler.bridge.v1.MapData);
+  rpc MarkersToText(MarkerFile) returns (StringValue);
+  rpc LoadMarkers(Empty) returns (SnufMarkerList);
+  rpc DataselectUrl(WaveformDownloadRequest) returns (StringValue);
+  rpc EventUrl(CatalogRequest) returns (StringValue);
+  rpc StationUrl(StationRequest) returns (StringValue);
+  rpc ResponseUrl(StationRequest) returns (StringValue);
+  rpc GfStoreLabel(Empty) returns (StringValue);
 }
