@@ -357,66 +357,73 @@ function callText(res) {
   }
 }
 
+// Canonical gRPC id prefix for a BridgeService rpc. The generated Rust client and
+// Python dispatch both key on /package.Service/Method, so the worker names the
+// leaf rpcs it invokes the same way. Pure-passthrough rpcs already arrive as this
+// id (relayed straight through, below); the category-B/C glue here, whose own
+// incoming ids are hand-written, translates to it when calling bridge.py.
+const SVC = "/snuffler.bridge.v1.BridgeService/";
+
 async function handleRequest(msg) {
   const method = msg.method;
   if (method === "loadBytes") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
     const path = writeStagedFile(fields.get(1) || "data", msg.data || new Uint8Array(0));
-    return bridgeResult(bridge.call("loadBytes", msg.request, path));
+    return bridgeResult(bridge.call(SVC + "LoadBytes", msg.request, path));
   }
-  if (method === "loadUrl") {
+  if (method === SVC + "LoadUrl") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
     const url = fields.get(1) || "";
     const name = url.split("/").pop() || "data";
     const buf = new Uint8Array(await (await fetchOk(resolveUrl(url))).arrayBuffer());
     const path = writeStagedFile(name, buf);
-    return bridgeResult(bridge.call("loadUrl", msg.request, path));
+    return bridgeResult(bridge.call(method, msg.request, path));
   }
-  if (method === "runSnuffling") {
+  if (method === SVC + "RunSnuffling") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
     if ((fields.get(1) || "") === "cake") await ensureEarthModels();
-    return bridgeResult(bridge.call("runSnuffling", msg.request));
+    return bridgeResult(bridge.call(method, msg.request));
   }
   if (method === "downloadWaveforms") {
     await boot();
-    const url = callText(bridge.call_text("dataselectUrl", msg.request));
+    const url = callText(bridge.call_text(SVC + "DataselectUrl", msg.request));
     const r = await fetch(url);
     if (!r.ok && r.status !== 204) {
       throw new Error(`dataselect HTTP ${r.status} ${r.statusText}`);
     }
     const buf = new Uint8Array(await r.arrayBuffer());
-    if (buf.byteLength === 0) return bridgeResult(bridge.call("emptyScene"));
+    if (buf.byteLength === 0) return bridgeResult(bridge.call(SVC + "EmptyScene"));
     const path = writeStagedFile("fdsn.mseed", buf);
-    return bridgeResult(bridge.call("loadWaveformPath", null, path));
+    return bridgeResult(bridge.call(SVC + "LoadWaveformPath", null, path));
   }
   if (method === "catalogSearch") {
     await boot();
-    const url = callText(bridge.call_text("eventUrl", msg.request));
+    const url = callText(bridge.call_text(SVC + "EventUrl", msg.request));
     const r = await fetch(url);
     const text = r.ok ? await r.text() : "";
-    return bridgeResult(bridge.call("parseEvents", null, text));
+    return bridgeResult(bridge.call(SVC + "ParseEvents", null, text));
   }
   if (method === "fetchStations") {
     await boot();
-    const url = callText(bridge.call_text("stationUrl", msg.request));
+    const url = callText(bridge.call_text(SVC + "StationUrl", msg.request));
     const r = await fetch(url);
     const text = r.ok ? await r.text() : "";
-    return bridgeResult(bridge.call("parseStations", null, text));
+    return bridgeResult(bridge.call(SVC + "ParseStations", null, text));
   }
   if (method === "fetchResponses") {
     await boot();
-    const url = callText(bridge.call_text("responseUrl", msg.request));
+    const url = callText(bridge.call_text(SVC + "ResponseUrl", msg.request));
     const r = await fetch(url);
     const text = r.ok ? await r.text() : "";
-    return bridgeResult(bridge.call("loadResponses", null, text));
+    return bridgeResult(bridge.call(SVC + "LoadResponses", null, text));
   }
-  if (method === "cakePlot") {
+  if (method === SVC + "CakePlot") {
     await boot();
     await ensureEarthModels();
-    return bridgeResult(bridge.call("cakePlot", msg.request));
+    return bridgeResult(bridge.call(method, msg.request));
   }
   if (method === "addCakeModel") {
     await boot();
@@ -441,15 +448,15 @@ async function handleRequest(msg) {
     }
     py.FS.mkdir(mount);
     await py.mountNativeFS(mount, msg.handle);
-    return { text: callText(bridge.call_text("gfStoreLabel", null, mount)) };
+    return { text: callText(bridge.call_text(SVC + "GfStoreLabel", null, mount)) };
   }
   if (method === "saveMarkers") {
     await boot();
-    return { text: callText(bridge.call_text("markersToText", msg.request)) };
+    return { text: callText(bridge.call_text(SVC + "MarkersToText", msg.request)) };
   }
   if (method === "loadMarkers") {
     await boot();
-    return bridgeResult(bridge.call("loadMarkers", null, String(msg.text || "")));
+    return bridgeResult(bridge.call(SVC + "LoadMarkers", null, String(msg.text || "")));
   }
   if (method === "pyExec") {
     await boot();

@@ -30,19 +30,15 @@ fn last_segment(ty: &str) -> &str {
     ty.rsplit([':', '.']).next().unwrap_or(ty)
 }
 
-/// rpc `MakeExample` -> wire method name `makeExample` (matches the worker).
-fn wire_name(proto_name: &str) -> String {
-    let mut chars = proto_name.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_lowercase().collect::<String>() + chars.as_str()
-    })
-}
-
 #[derive(Default)]
 struct BridgeClientGen;
 
 impl prost_build::ServiceGenerator for BridgeClientGen {
     fn generate(&mut self, service: prost_build::Service, buf: &mut String) {
+        // The canonical gRPC method id: `/package.Service/Method`. The generated
+        // Python dispatch derives the same string from the descriptor, so the two
+        // generated ends agree by construction; the JS worker just relays it.
+        let svc = format!("{}.{}", service.package, service.proto_name);
         // Shared transport + envelope-unwrap helpers, emitted once.
         buf.push_str(
             r#"
@@ -112,7 +108,7 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
             let req = last_segment(&m.input_type).to_string();
             let out = last_segment(&m.output_type).to_string();
             let variant = variant_for(&out);
-            let wire = wire_name(&m.proto_name);
+            let wire = format!("/{svc}/{}", m.proto_name);
             let buffer = out == "ViewMeta" || out == "SpecMeta";
 
             // Empty-request methods take no parameter (the worker stages any

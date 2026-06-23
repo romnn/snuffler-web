@@ -28,10 +28,6 @@ def camel_to_snake(name: str) -> str:
     return "".join(out)
 
 
-def lower_first(name: str) -> str:
-    return name[:1].lower() + name[1:]
-
-
 def main() -> None:
     req = plugin_pb2.CodeGeneratorRequest.FromString(sys.stdin.buffer.read())
     resp = plugin_pb2.CodeGeneratorResponse()
@@ -86,7 +82,9 @@ def main() -> None:
         methods.append(
             {
                 "snake": camel_to_snake(m.name),
-                "wire": lower_first(m.name),
+                # Canonical gRPC method id /package.Service/Method — the same
+                # string the Rust client generates and the JS worker relays.
+                "wire": f"/{pkg}.{service.name}/{m.name}",
                 "req": f"{req_mod}.{req_cls}",
                 "resp": f"{resp_mod}.{resp_cls}",
                 "variant": variant,
