@@ -119,6 +119,19 @@ async function rpcBufferResult(method, args) {
   };
 }
 
+// The single transport seam Rust (src/bridge.rs) calls for every unary proto
+// RPC: forward (method, request, data) to the worker and return the BridgeResult
+// envelope bytes plus the optional out-of-band zero-copy ys buffer. The worker
+// owns all per-method logic (file staging, FDSN URL->fetch->parse, etc.); this
+// is a uniform pipe. Category-B/C browser glue keeps its own exports below.
+export async function call(method, request, data) {
+  const out = await rpcBufferResult(method, { request, data });
+  // Complete the loading overlay once the first scene (the synthetic example,
+  // the first call after boot) is in; the boot sequence stops at 0.97.
+  if (method === "makeExample") prog(1.0, "Ready");
+  return out;
+}
+
 function varint(value) {
   let n = Number(value >>> 0);
   const out = [];

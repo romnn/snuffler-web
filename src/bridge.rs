@@ -240,54 +240,23 @@ mod web {
 
     #[wasm_bindgen(module = "/web/bridge.js")]
     extern "C" {
-        #[wasm_bindgen(js_name = makeExample, catch)]
-        async fn js_make_example() -> Result<JsValue, JsValue>;
+        // The single transport seam for every unary proto RPC: (method, request
+        // bytes, optional out-of-band data bytes) -> { result: BridgeResult bytes,
+        // ys: Uint8Array }. bridge.js forwards it to the Pyodide worker, which runs
+        // bridge.py and ships the zero-copy ys buffer alongside the proto. This is
+        // the custom transport the typed service client rides on.
+        #[wasm_bindgen(js_name = call, catch)]
+        async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>) -> Result<JsValue, JsValue>;
 
-        #[wasm_bindgen(js_name = loadBytes, catch)]
-        async fn js_load_bytes(request: Vec<u8>, data: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = loadUrl, catch)]
-        async fn js_load_url(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = getView, catch)]
-        async fn js_get_view(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = getSpectrum, catch)]
-        async fn js_get_spectrum(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = runSnuffling, catch)]
-        async fn js_run_snuffling(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = downloadWaveforms, catch)]
-        async fn js_download_waveforms(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = catalogSearch, catch)]
-        async fn js_catalog_search(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = fetchStations, catch)]
-        async fn js_fetch_stations(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = fetchResponses, catch)]
-        async fn js_fetch_responses(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = mapData, catch)]
-        async fn js_map_data() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = cakePlot, catch)]
-        async fn js_cake_plot(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
+        // DOM-only calls keep bespoke externs: they drive browser APIs (file
+        // pickers, downloads, the File System Access API, tile fetch+decode) that
+        // can't be expressed as a uniform request->response RPC.
         #[wasm_bindgen(js_name = addCakeModel, catch)]
         async fn js_add_cake_model() -> Result<JsValue, JsValue>;
 
         #[cfg(feature = "gf")]
         #[wasm_bindgen(js_name = addGfStore, catch)]
         async fn js_add_gf_store() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = runCommand, catch)]
-        async fn js_run_command(request: Vec<u8>) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = rmsTraces, catch)]
-        async fn js_rms_traces(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = fetchTile, catch)]
         async fn js_fetch_tile(url: String) -> Result<JsValue, JsValue>;
@@ -321,8 +290,7 @@ mod web {
     }
 
     fn parse_scene(v: JsValue) -> Result<SceneMeta, String> {
-        let bytes = js_bytes(v, "scene")?;
-        proto::scene_from_bytes(&bytes, "scene")
+        proto::scene_from_bytes(&object_uint8(&v, "result")?, "scene")
     }
 
     fn parse_view(obj: JsValue) -> Result<ViewData, String> {
@@ -506,7 +474,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_make_example().await;
+                let res = js_call("makeExample", Vec::new(), Vec::new()).await;
                 let parsed = match res {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
@@ -538,7 +506,7 @@ mod web {
                     fmt,
                     append: false,
                 });
-                let res = js_load_bytes(request, data).await;
+                let res = js_call("loadBytes", request, data).await;
                 let parsed = match res {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
@@ -566,7 +534,7 @@ mod web {
             let ctx = ctx.clone();
             spawn_local(async move {
                 let request = proto::encode_message(&pb::LoadUrlRequest { url, fmt });
-                let res = js_load_url(request).await;
+                let res = js_call("loadUrl", request, Vec::new()).await;
                 let parsed = match res {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
@@ -601,7 +569,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_get_spectrum(request).await;
+                let res = js_call("getSpectrum", request, Vec::new()).await;
                 let parsed = match res {
                     Ok(o) => parse_spectrum(o),
                     Err(e) => Err(jsval_to_string(e)),
@@ -634,9 +602,9 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = js_run_snuffling(request).await;
+                let res = js_call("runSnuffling", request, Vec::new()).await;
                 let parsed = match res {
-                    Ok(v) => js_bytes(v, "snuffling")
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::snuffling_from_bytes(&b, "snuffling"))
                         .ok(),
                     Err(_) => None,
@@ -667,7 +635,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_download_waveforms(request).await {
+                let parsed = match js_call("downloadWaveforms", request, Vec::new()).await {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
                 };
@@ -695,7 +663,7 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_rms_traces(request).await {
+                let parsed = match js_call("rmsTraces", request, Vec::new()).await {
                     Ok(v) => parse_scene(v),
                     Err(e) => Err(jsval_to_string(e)),
                 };
@@ -722,8 +690,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_catalog_search(request).await {
-                    Ok(v) => js_bytes(v, "catalog")
+                let parsed = match js_call("catalogSearch", request, Vec::new()).await {
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::snuffling_from_bytes(&b, "catalog"))
                         .ok(),
                     Err(e) => Some(SnufflingResult {
@@ -769,8 +737,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_cake_plot(request).await {
-                    Ok(v) => js_bytes(v, "cake plot")
+                let parsed = match js_call("cakePlot", request, Vec::new()).await {
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::cake_plot_from_bytes(&b, "cake plot"))
                         .ok(),
                     Err(_) => None,
@@ -852,8 +820,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let res = match js_run_command(request).await {
-                    Ok(v) => js_bytes(v, "command")
+                let res = match js_call("runCommand", request, Vec::new()).await {
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::command_from_bytes(&b, "command"))
                         .ok(),
                     Err(e) => Some(pb::CommandResult {
@@ -887,8 +855,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_fetch_stations(request).await {
-                    Ok(v) => js_bytes(v, "stations")
+                let parsed = match js_call("fetchStations", request, Vec::new()).await {
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::snuffling_from_bytes(&b, "stations"))
                         .ok(),
                     Err(e) => Some(SnufflingResult {
@@ -917,8 +885,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_fetch_responses(request).await {
-                    Ok(v) => js_bytes(v, "responses")
+                let parsed = match js_call("fetchResponses", request, Vec::new()).await {
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::snuffling_from_bytes(&b, "responses"))
                         .ok(),
                     Err(e) => Some(SnufflingResult {
@@ -1033,8 +1001,8 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = match js_map_data().await {
-                    Ok(v) => js_bytes(v, "map")
+                let parsed = match js_call("mapData", Vec::new(), Vec::new()).await {
+                    Ok(v) => object_uint8(&v, "result")
                         .and_then(|b| proto::map_from_bytes(&b, "map"))
                         .ok(),
                     Err(_) => None,
@@ -1125,7 +1093,7 @@ mod web {
             let ctx = ctx.clone();
             let me = self.clone();
             spawn_local(async move {
-                let res = js_get_view(request).await;
+                let res = js_call("getView", request, Vec::new()).await;
                 let parsed = match res {
                     Ok(obj) => parse_view(obj),
                     Err(e) => Err(jsval_to_string(e)),
