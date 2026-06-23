@@ -359,10 +359,6 @@ function callText(res) {
 
 async function handleRequest(msg) {
   const method = msg.method;
-  if (method === "makeExample") {
-    await boot();
-    return bridgeResult(bridge.call("makeExample"));
-  }
   if (method === "loadBytes") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
@@ -378,23 +374,11 @@ async function handleRequest(msg) {
     const path = writeStagedFile(name, buf);
     return bridgeResult(bridge.call("loadUrl", msg.request, path));
   }
-  if (method === "getView") {
-    await boot();
-    return bridgeResult(bridge.call("getView", msg.request));
-  }
-  if (method === "getSpectrum") {
-    await boot();
-    return bridgeResult(bridge.call("getSpectrum", msg.request));
-  }
   if (method === "runSnuffling") {
     await boot();
     const fields = decodeSimpleFields(msg.request);
     if ((fields.get(1) || "") === "cake") await ensureEarthModels();
     return bridgeResult(bridge.call("runSnuffling", msg.request));
-  }
-  if (method === "rmsTraces") {
-    await boot();
-    return bridgeResult(bridge.call("rmsTraces", msg.request));
   }
   if (method === "downloadWaveforms") {
     await boot();
@@ -429,10 +413,6 @@ async function handleRequest(msg) {
     const text = r.ok ? await r.text() : "";
     return bridgeResult(bridge.call("loadResponses", null, text));
   }
-  if (method === "mapData") {
-    await boot();
-    return bridgeResult(bridge.call("mapData"));
-  }
   if (method === "cakePlot") {
     await boot();
     await ensureEarthModels();
@@ -463,10 +443,6 @@ async function handleRequest(msg) {
     await py.mountNativeFS(mount, msg.handle);
     return { text: callText(bridge.call_text("gfStoreLabel", null, mount)) };
   }
-  if (method === "runCommand") {
-    await boot();
-    return bridgeResult(bridge.call("runCommand", msg.request));
-  }
   if (method === "saveMarkers") {
     await boot();
     return { text: callText(bridge.call_text("markersToText", msg.request)) };
@@ -484,7 +460,13 @@ async function handleRequest(msg) {
     await ensureGf();
     return { text: "" };
   }
-  throw new Error(`unknown worker bridge method: ${method}`);
+  // Pure passthrough: any unary rpc that needs no worker-side staging or
+  // orchestration (makeExample, getView, getSpectrum, rmsTraces, mapData,
+  // runCommand, and any future one). The worker just relays the generated method
+  // id + request bytes; bridge.py's dispatch validates and turns an unknown
+  // method into a BridgeError, so there is no per-method branch to drift here.
+  await boot();
+  return bridgeResult(bridge.call(method, msg.request));
 }
 
 self.onmessage = (event) => {
