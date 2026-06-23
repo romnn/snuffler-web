@@ -19,11 +19,12 @@ tasks:
       - typos
 
   check:
-    desc: "check Rust and Python workspace"
+    desc: "check Rust, Python and TypeScript"
     dir: "{{.ROOT_DIR}}"
     cmds:
       - cargo check --workspace --all-targets {{.CLI_ARGS}}
       - task: check:py
+      - task: check:ts
 
   check:rust:
     desc: "check cargo workspace"
@@ -37,6 +38,13 @@ tasks:
     cmds:
       - buf generate
       - uvx --from mypy==1.18.2 --with protobuf==7.34.1 --with types-protobuf==7.34.1.20260518 --with numpy==2.4.3 mypy {{.CLI_ARGS}}
+
+  check:ts:
+    desc: "typecheck the TypeScript bridge glue (incl. generated protobuf messages)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - buf generate
+      - bunx tsc --noEmit -p tsconfig.json
 
   check:fc:
     desc: "check cargo workspace for all combinations of features"

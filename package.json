@@ -1,5 +1,10 @@
 {
   "dependencies": {
+    "@bufbuild/protobuf": "^2",
     "pyodide": "0.27.2"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2",
+    "typescript": "^6.0.3"
   }
 }

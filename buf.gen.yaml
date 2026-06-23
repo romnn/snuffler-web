@@ -21,3 +21,11 @@ plugins:
     include_imports: *include-imports
     include_wkt: *include-wkt
     out: *out
+  # Typed TypeScript message classes for the JS glue (@bufbuild/protobuf v2). The
+  # glue (web/*.ts) imports these instead of hand-rolling a protobuf varint codec;
+  # bun bundles it for the browser. Runnable offline via the bun-installed binary.
+  - local: ["bunx", "protoc-gen-es"]
+    opt:
+      - target=ts
+      - import_extension=.js
+    out: *out
