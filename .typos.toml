@@ -1,3 +1,7 @@
 # numpy's np.arange is not a misspelling of "arrange".
 [default.extend-words]
 arange = "arange"
+# `.nd` is pyrocko's named-discontinuity earth-model file extension, not "and".
+nd = "nd"
+# "Pn" is a seismic body-wave phase name (cake travel times), not "On".
+Pn = "Pn"
