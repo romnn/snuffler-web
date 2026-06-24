@@ -20,6 +20,7 @@ python = "3.12"          # host Python for the uvx-run tooling (ruff, mypy)
 node = "24"
 bun = "1.3.14"           # bunx prettier (JS/markdown formatting)
 uv = "0.11.21"           # uv + uvx; uvx runs ruff/mypy + the mypy-protobuf Buf plugin
+task = "3.51.1"          # go-task: the check:*/lint:* tasks in taskfile.yaml (CI runs them too)
 buf = "1.71.0"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
 protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
                          # the runtime on both paths; build.rs (prost) + buf generate use it

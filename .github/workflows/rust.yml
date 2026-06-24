@@ -45,3 +45,28 @@ jobs:
 
       - name: clippy (wasm32 — the real web target)
         run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+
+  # End-to-end type safety across the bridge boundary: tsc on the TS glue +
+  # generated proto messages, mypy on the Python bridge vs the generated dispatch,
+  # and ruff on the Python. These guard the typed method-id seam and the proto
+  # DTOs that clippy/the build don't check. No Rust toolchain needed.
+  types:
+    name: tsc + mypy + ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+
+      # check:ts/check:py run `buf generate` (whose protoc-gen-es is
+      # `bunx protoc-gen-es`) and `bunx tsc`; both resolve from node_modules.
+      - name: Install JS deps (bridge glue)
+        run: bun install --frozen-lockfile
+
+      # Run the exact pinned commands from taskfile.yaml (single source of truth):
+      # check:ts = buf generate + tsc; check:py = buf generate + mypy; lint:py = ruff.
+      - name: TypeScript types (tsc)
+        run: task check:ts
+      - name: Python types (mypy)
+        run: task check:py
+      - name: Python lint (ruff)
+        run: task lint:py
