@@ -29,23 +29,20 @@ headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder
 [watch]
 ignore = ["web/gen", "web/proto"]
 
-[[hooks]]
-stage = "pre_build"
-command = "buf"
-command_arguments = ["generate"]
-
-# Bundle the TypeScript bridge glue with bun (already pinned in mise) into
-# self-contained ESM the browser/worker can load: web/bridge.ts ->
+# Generate the protobuf code (web/proto) and bundle the TypeScript bridge glue
+# with bun (pinned in mise) into self-contained ESM: web/bridge.ts ->
 # web/gen/bridge.js (the wasm-bindgen module) and web/bridge_worker.ts ->
-# web/gen/bridge_worker.js. Runs after `buf generate` (the glue imports the
-# generated *_pb.ts messages + @bufbuild/protobuf, all inlined here). Built
-# separately so each is fully self-contained (no shared chunks for the worker).
+# web/gen/bridge_worker.js. ONE hook, run in order: trunk runs multiple same-stage
+# hooks CONCURRENTLY, and the bun build imports the generated *_pb.ts, so
+# `buf generate` MUST finish first — separate hooks race (bun build ran before
+# buf generate had written web/proto, failing CI). Each bundle is built separately
+# so it stays fully self-contained (no shared chunks for the worker).
 [[hooks]]
 stage = "pre_build"
 command = "bash"
 command_arguments = [
     "-c",
-    "set -eu; bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser; bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser",
+    "set -eu; buf generate; bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser; bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser",
 ]
 
 # wasm-opt runs as a post-build hook rather than Trunk's built-in pass: the
