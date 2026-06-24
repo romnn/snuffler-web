@@ -3,15 +3,21 @@
 //! A Rust/egui (wasm) frontend that drives real pyrocko + numpy + scipy via
 //! Pyodide. Rust renders; all computation happens in Python (see `web/bridge.py`).
 
+#[cfg(target_arch = "wasm32")]
 mod app;
+#[cfg(target_arch = "wasm32")]
 mod bridge;
 // Progress overlay shown while an off-thread job runs (threaded build).
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod job;
+#[cfg(target_arch = "wasm32")]
 mod snufflings;
+#[cfg(target_arch = "wasm32")]
 mod state;
+#[cfg(target_arch = "wasm32")]
 mod view;
 
+#[cfg(target_arch = "wasm32")]
 pub use app::App;
 
 // Off-main-thread work runs on a wasm-bindgen-rayon worker pool (the `threads`

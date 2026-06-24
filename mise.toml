@@ -12,9 +12,9 @@
 # emscripten 5.0.3, pthread + OpenMP + SIMD), built in docker (docker/pyodide-mt)
 # — NOT via a host emsdk or xbuildenv — and produced by build-all.sh. (A
 # single-threaded wheel for a future non-threaded build is opt-in: BUILD_CDN=1.)
-# So mise here pins only the *web* toolchain (trunk/binaryen for the wasm app,
-# node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — which the trunk
-# `buf generate` pre-build hook and build.rs (prost) use to compile the bridge .proto.
+# So mise here pins only the *web* tooling around Rust (trunk/binaryen for the
+# wasm app, node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — the
+# Rust toolchain itself is pinned by rust-toolchain.toml.
 [tools]
 python = "3.12"          # host Python for the uvx-run tooling (ruff, mypy)
 node = "24"
@@ -47,21 +47,16 @@ run = "./docker/pyodide-mt/build-all.sh"
 
 # The web app is built THREADED: the egui wasm runs the heavy resvg PNG export on
 # a wasm-bindgen-rayon worker pool (the `threads` feature) so a big export never
-# freezes the UI. The wasm atomics/link flags live in .cargo/config.toml (declared
-# once, inert for clippy/check). The only things that must be build-scoped — and so
-# live here, NOT in shared config — are nightly + `-Z build-std` (via env): the
-# precompiled wasm32 std is single-threaded, so std is rebuilt with atomics, and
-# build-std is global (it would otherwise rebuild the HOST std on every cargo
-# command). Plain `cargo`/clippy/the lint+test matrix stay on the pinned stable
-# toolchain (rust-toolchain.toml) and never rebuild std. The nightly needs rust-src
-# (rustup component add rust-src --toolchain nightly).
+# freezes the UI. The wasm atomics/link flags live in .cargo/config.toml. The only
+# knob that must stay build-scoped here is `-Z build-std`: the precompiled wasm32
+# std is single-threaded, so std is rebuilt with atomics, and build-std is global
+# enough that we do not want it on every host-native cargo command.
 # NO_SRI: the post_build hook rewrites wasm-bindgen-rayon's worker import (see
 # Trunk.toml), which would otherwise mismatch Trunk's subresource-integrity hash
 # for that snippet. SRI on a same-origin, self-hosted bundle adds little anyway.
 [tasks.serve]
 description = "Run the web app (trunk serve) — threaded (off-main-thread PNG export)"
 depends = ["fetch-pyrocko"]
-env.RUSTUP_TOOLCHAIN = "nightly"
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 run = "trunk serve --features threads"
@@ -69,7 +64,6 @@ run = "trunk serve --features threads"
 [tasks.build]
 description = "Build the web app for release — threaded (off-main-thread PNG export)"
 depends = ["fetch-pyrocko"]
-env.RUSTUP_TOOLCHAIN = "nightly"
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 run = "trunk build --release --features threads"

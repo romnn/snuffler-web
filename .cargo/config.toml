@@ -1,4 +1,4 @@
-# Flags for the wasm web target only (these never touch the native host build).
+# Flags for the wasm web target only.
 #
 # - web_sys_unstable_apis: the clipboard API is still unstable, so web-sys needs
 #   this for copy (Ctrl+C) in the browser.
@@ -11,16 +11,12 @@
 #   explicitly; __heap_base is the one extra vs the wasm-bindgen-rayon README,
 #   needed only because we strip. (See https://github.com/RReverser/wasm-bindgen-rayon.)
 #
-# These are declared here (not as env hacking) because they are wasm-only and
-# INERT for `cargo clippy`/`check`: there is no link step, so the link-args are
-# ignored and the unstable-atomics notice is a codegen warning, not a lint — the
-# stable host+wasm lint/test matrix is unaffected. The actual threaded LINK only
-# happens in the trunk build, which additionally selects nightly + `-Z build-std`
-# (rebuilding std with atomics); those two MUST stay build-scoped (build-std is
-# global and would otherwise rebuild the host std), so they live on the mise
-# `serve`/`build` tasks + CI, not here. Consequently a bare `cargo build`/`trunk
-# build` (no build-std) links against the single-threaded precompiled std and
-# fails — build the app with `mise run serve` / `mise run build`.
+# These stay in shared cargo config because they are wasm-only and inert for the
+# host `cargo check`/`clippy` passes: there is no link step, so the link-args are
+# ignored. The actual threaded LINK still needs `-Z build-std` so wasm std is
+# rebuilt with atomics; that remains build-scoped in the `mise run serve` /
+# `mise run build` tasks rather than in shared cargo config, so host-native test
+# runs do not rebuild std.
 [target.wasm32-unknown-unknown]
 rustflags = [
     "--cfg=web_sys_unstable_apis",
@@ -35,13 +31,11 @@ rustflags = [
     "-Clink-arg=--export=__heap_base",
 ]
 
-[env]
-CARGO_WORKSPACE_DIR = { value = "", relative = true }
-
 [alias]
-c = 'check --workspace --all-targets'
+c = "check"
 
-# linting
-l = "clippy --all-targets --no-deps"
-lint = "clippy --all-targets --no-deps"
-fixit = "clippy --fix --allow-dirty --allow-staged --all-targets --no-deps"
+# Keep aliases composable: only invariant flags belong here, so taskfile targets
+# can add `--workspace`, `--lib --tests`, `--target wasm32-unknown-unknown`, etc.
+l = "clippy --no-deps"
+lint = "clippy --no-deps"
+fixit = "clippy --fix --allow-dirty --allow-staged --no-deps"

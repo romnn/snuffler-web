@@ -179,7 +179,7 @@ fn build_image(view: &ViewData, t: &ViewTrack, style: WfStyle) -> Option<ColorIm
     let span = (t.ymax - t.ymin).max(1e-6);
     let (mut lo, mut hi) = (t.ymin + style.clip.0 * span, t.ymin + style.clip.1 * span);
     if style.symmetry {
-        let mid = 0.5 * (lo + hi);
+        let mid = f32::midpoint(lo, hi);
         let h = 0.5 * (hi - lo);
         lo = mid - h;
         hi = mid + h;
@@ -1566,7 +1566,7 @@ fn go_to_selection(state: &mut AppState, tight: bool, scene_range: Option<(f64, 
         state.tmin = tmin - pad;
         state.tmax = tmax + pad;
     } else {
-        let mid = 0.5 * (tmin + tmax);
+        let mid = f64::midpoint(tmin, tmax);
         state.tmin = mid - win * 0.5;
         state.tmax = mid + win * 0.5;
     }
@@ -1576,7 +1576,7 @@ fn go_to_selection(state: &mut AppState, tight: bool, scene_range: Option<(f64, 
 /// or `N`/`P` to step through event markers only).
 fn select_relative(state: &mut AppState, forward: bool, events_only: bool) {
     let win = (state.tmax - state.tmin).max(1e-9);
-    let center = 0.5 * (state.tmin + state.tmax);
+    let center = f64::midpoint(state.tmin, state.tmax);
     let reference = state
         .markers
         .iter()

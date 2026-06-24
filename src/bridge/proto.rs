@@ -5,7 +5,6 @@ pub use snuffler_proto::bridge::v1 as pb;
 // (2) unwrap the BridgeResult envelope (error variant -> Err(String), success
 // variant -> the contained pb message). The zero-copy `ys` buffer rides
 // out-of-band and is attached to ViewData/SpectrumData here, never in the proto.
-#[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::pb;
     use snuffler_proto::prost::Message;
@@ -58,5 +57,4 @@ mod wasm {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 pub use wasm::*;

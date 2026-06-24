@@ -1,35 +1,8 @@
-//! snuffler-web binary entry point: launches the egui app natively (dev shell)
-//! or mounts it on the page canvas under wasm (the real target).
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+//! snuffler-web binary entry point: browser-only, mounted on the page canvas.
 
-// When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result<()> {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+compile_error!("snuffler-web is browser-only. Run `mise run serve`.");
 
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1200.0, 800.0])
-        .with_min_inner_size([640.0, 400.0]);
-    // The icon is cosmetic; skip it rather than abort if it fails to decode.
-    if let Ok(icon) =
-        eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-    {
-        viewport = viewport.with_icon(icon);
-    }
-
-    let native_options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "snuffler",
-        native_options,
-        Box::new(|cc| Ok(Box::new(snuffler_web::App::new(cc)))),
-    )
-}
-
-// When compiling to web using trunk:
 #[cfg(target_arch = "wasm32")]
 fn main() {
     use wasm_bindgen::JsCast as _;

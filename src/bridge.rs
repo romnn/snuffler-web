@@ -1,10 +1,9 @@
-//! The bridge between the egui frontend and pyrocko.
+//! The bridge data model plus the wasm transport between the egui frontend and
+//! pyrocko.
 //!
 //! On the web, this calls into `web/bridge.js`, which forwards protobuf request
 //! bytes to a Pyodide Web Worker (`CPython` + numpy + scipy + pyrocko, all
-//! compiled to WASM) and returns protobuf metadata plus raw sample buffers. On
-//! native targets it falls back to a UI-only stub so layouts can be developed
-//! with `cargo run` (no browser/Pyodide).
+//! compiled to WASM) and returns protobuf metadata plus raw sample buffers.
 //!
 //! `proto/snuffler/bridge/v1/*.proto` is the boundary contract.
 //! The Rust structs below are the app-facing decoded representation.
@@ -28,7 +27,6 @@ pub use proto::pb::{
 
 /// The deeply-nested cake mode in the prost request type, read ergonomically.
 /// Only the wasm bridge inspects the mode (to route the cake plot request).
-#[cfg(target_arch = "wasm32")]
 #[must_use]
 pub fn cake_mode(p: &SnufflingRequestParams) -> &str {
     p.snufflings
@@ -71,10 +69,6 @@ pub struct SpectrumData {
 
 /// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
 /// turns them into a texture and caches it there).
-#[allow(
-    dead_code,
-    reason = "tile-cache states are only constructed on the wasm (web) target"
-)]
 enum TileState {
     InFlight,
     Ready(u32, u32, Vec<u8>),
@@ -83,10 +77,6 @@ enum TileState {
 }
 
 #[derive(Clone, Debug, Default)]
-#[allow(
-    dead_code,
-    reason = "Booting/Loading variants are only constructed on the wasm (web) target"
-)]
 pub enum Status {
     #[default]
     Booting,
@@ -96,10 +86,6 @@ pub enum Status {
 }
 
 #[derive(Default)]
-#[allow(
-    dead_code,
-    reason = "view-dispatch and tile-cache fields are only used on the wasm (web) target"
-)]
 struct Inner {
     status: Status,
     scene: Option<SceneMeta>,
@@ -223,7 +209,6 @@ impl Bridge {
 }
 
 // Web target: drive Pyodide through web/bridge.js.
-#[cfg(target_arch = "wasm32")]
 mod web {
     #![allow(
         clippy::wildcard_imports,
@@ -1099,88 +1084,5 @@ mod web {
                 self.dispatch_view(ctx);
             }
         }
-    }
-}
-
-// Native target: a UI-only shell. ALL data loading and signal processing happen
-// in pyrocko (Python) on the web build. The native build (`cargo run`) exists
-// only to lay out the egui UI and deliberately does NO computation of its own,
-// so there is no second implementation of pyrocko's math to drift from.
-#[cfg(not(target_arch = "wasm32"))]
-mod native {
-    #![allow(
-        clippy::unused_self,
-        reason = "these no-op stubs mirror the wasm Bridge API so the native UI shell compiles"
-    )]
-
-    use super::{
-        Bridge, CatalogRequest, MarkerFile, SnufflingRequestParams, StationRequest, Status,
-        ViewParams, WaveformDownloadRequest,
-    };
-
-    const MSG: &str = "Native build is UI-only — data loading, filtering, and all \
-         processing run in pyrocko (Python) in the browser. Use `mise run serve`.";
-
-    impl Bridge {
-        pub fn load_example(&self, _ctx: &egui::Context) {
-            self.inner.borrow_mut().status = Status::Error(MSG.into());
-        }
-
-        pub fn load_file(&self, _ctx: &egui::Context, _name: String, _data: Vec<u8>, _fmt: String) {
-            self.inner.borrow_mut().status = Status::Error(MSG.into());
-        }
-
-        pub fn load_url(&self, _ctx: &egui::Context, _url: String, _fmt: String) {
-            self.inner.borrow_mut().status = Status::Error(MSG.into());
-        }
-
-        pub fn fetch_spectrum(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
-
-        pub fn run_snuffling(
-            &self,
-            _ctx: &egui::Context,
-            _name: String,
-            _params: SnufflingRequestParams,
-        ) {
-        }
-
-        pub fn download_waveforms(&self, _ctx: &egui::Context, _params: WaveformDownloadRequest) {
-            self.inner.borrow_mut().status = Status::Error(MSG.into());
-        }
-
-        pub fn catalog_search(&self, _ctx: &egui::Context, _params: CatalogRequest) {}
-
-        pub fn cake_plot(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
-
-        pub fn add_cake_model(&self, _ctx: &egui::Context) {}
-
-        #[cfg(feature = "gf")]
-        pub fn add_gf_store(&self, _ctx: &egui::Context) {}
-
-        pub fn run_command(&self, _ctx: &egui::Context, _line: String) {}
-
-        pub fn rms_traces(&self, _ctx: &egui::Context, _params: SnufflingRequestParams) {}
-
-        pub fn fetch_stations(&self, _ctx: &egui::Context, _params: StationRequest) {}
-
-        pub fn fetch_responses(&self, _ctx: &egui::Context, _params: StationRequest) {}
-
-        pub fn fetch_map_data(&self, _ctx: &egui::Context) {}
-
-        pub fn request_tile(&self, _ctx: &egui::Context, _z: u8, _x: u32, _y: u32, _url: String) {}
-
-        pub fn open_files(&self, _ctx: &egui::Context) {
-            self.inner.borrow_mut().status = Status::Error(MSG.into());
-        }
-
-        pub fn save_markers(&self, _ctx: &egui::Context, _markers: MarkerFile) {}
-
-        pub fn save_image_png(&self, _bytes: Vec<u8>, _filename: String) {}
-
-        pub fn save_image_svg(&self, _svg: String, _filename: String) {}
-
-        pub fn load_markers(&self, _ctx: &egui::Context) {}
-
-        pub fn ensure_view(&self, _ctx: &egui::Context, _params: ViewParams) {}
     }
 }

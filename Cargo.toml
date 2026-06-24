@@ -9,17 +9,19 @@ authors = ["Roman Dahm <contact@romnn.com>"]
 edition = "2024"
 include = ["LICENSE", "**/*.rs", "Cargo.toml"]
 
+[[bin]]
+name = "snuffler-web"
+path = "src/main.rs"
+test = false
+
 [package.metadata.docs.rs]
 all-features = true
-targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+targets = ["wasm32-unknown-unknown"]
 
 [package.metadata.cargo-fc]
-# `threads` needs a nightly + atomics + build-std build (the precompiled wasm32
-# std is single-threaded), produced ONLY by trunk via the mise tasks. Exclude it
-# from the `cargo fc` matrix so lint:fc / check:fc / test:fc stay on stable + the
-# precompiled std and never try to compile rayon without atomics. The threaded
-# build is instead compile-checked on its own by `task check:threads` (wired into
-# lint:fc), which supplies that nightly + build-std env.
+# `threads` still needs a build-std wasm build (the precompiled wasm32 std is
+# single-threaded), so keep it out of the generic cargo-fc matrix and compile-
+# check that real threaded configuration explicitly in `task check:threads`.
 exclude_features = ["threads"]
 
 [profile.release]
@@ -78,31 +80,17 @@ threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]
 
 [dependencies]
 egui = "0.34"
+snuffler-proto = { path = "crates/snuffler-proto" }
+
+# web: the bridge to Pyodide lives in JS; we call it via wasm-bindgen.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 eframe = { version = "0.34", default-features = false, features = [
     # Embed the default egui fonts.
     "default_fonts",
     # WebGL2/OpenGL backend — most reliable across browsers (incl. headless).
     "glow",
-    # Native windowing backends (ignored on wasm; web uses winit's web backend).
-    "x11",
-    "wayland",
 ] }
 log = "0.4"
-snuffler-proto = { path = "crates/snuffler-proto" }
-# PNG encoder for the "Save image (PNG)" export (already in the lock transitively).
-png = "0.18"
-# Vector→raster for high-DPI PNG export (see the `svg-raster` feature). Text-only
-# features: no system-fonts/memmap (we embed the font), keeping it wasm-friendly.
-resvg = { version = "0.47", optional = true, default-features = false, features = [
-    "text",
-] }
-
-# native:
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-env_logger = "0.11"
-
-# web: the bridge to Pyodide lives in JS; we call it via wasm-bindgen.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -114,6 +102,13 @@ web-sys = { version = "0.3", features = [
     "Navigator",
 ] }
 console_error_panic_hook = "0.1"
+# PNG encoder for the "Save image (PNG)" export (already in the lock transitively).
+png = "0.18"
+# Vector→raster for high-DPI PNG export (see the `svg-raster` feature). Text-only
+# features: no system-fonts/memmap (we embed the font), keeping it wasm-friendly.
+resvg = { version = "0.47", optional = true, default-features = false, features = [
+    "text",
+] }
 # General-purpose rayon worker pool for the wasm frontend (the `threads` feature):
 # the app's OWN threads, separate from Pyodide. wasm-bindgen-rayon provides the
 # Web Worker glue + `init_thread_pool`. Built only under the nightly + atomics +

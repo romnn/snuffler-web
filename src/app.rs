@@ -47,7 +47,7 @@ pub struct App {
     /// In-flight off-thread PNG export: receives the encoded bytes from the rayon
     /// pool, paired with the download filename. Only the threaded build runs the
     /// export off-thread; otherwise it rasterizes synchronously (no receiver).
-    #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+    #[cfg(all(feature = "svg-raster", feature = "threads"))]
     export_rx: Option<(std::sync::mpsc::Receiver<Option<Vec<u8>>>, String)>,
 }
 
@@ -110,7 +110,7 @@ impl App {
             screenshot_awaiting: false,
             screenshot_crop: egui::Rect::ZERO,
             svg_request: false,
-            #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+            #[cfg(all(feature = "svg-raster", feature = "threads"))]
             export_rx: None,
         }
     }
@@ -158,8 +158,8 @@ impl App {
     /// Start a high-DPI PNG export of the current waveform view. The vector SVG is
     /// built here (it needs the egui `Context`), then rasterized: on the rayon
     /// worker pool when available — so a big export never freezes the UI — and
-    /// otherwise synchronously on the main thread (native, or no cross-origin
-    /// isolation). See `AGENTS.md`: never block the egui render loop.
+    /// otherwise synchronously on the main thread when the worker pool is not
+    /// available. See `AGENTS.md`: never block the egui render loop.
     #[cfg(feature = "svg-raster")]
     fn start_png_export(&mut self, ctx: &egui::Context) {
         let theme = ctx.theme();
@@ -170,7 +170,7 @@ impl App {
         let svg = waveform::render_svg(ctx, &self.state, &view, size, theme);
         drop(view);
 
-        #[cfg(all(target_arch = "wasm32", feature = "threads"))]
+        #[cfg(feature = "threads")]
         if crate::pool::ready() {
             let (tx, rx) = std::sync::mpsc::channel();
             let (w, h) = (size.x, size.y);
@@ -195,7 +195,7 @@ impl App {
 
     /// Deliver a finished off-thread PNG export, or keep the progress overlay up
     /// (and frames coming) while the rayon pool is still rasterizing.
-    #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+    #[cfg(all(feature = "svg-raster", feature = "threads"))]
     fn poll_png_export(&mut self, ctx: &egui::Context) {
         let status = self.export_rx.as_ref().map(|(rx, _)| rx.try_recv());
         match status {
@@ -301,7 +301,7 @@ impl App {
                 {
                     let max = vl.seconds();
                     if self.state.tmax - self.state.tmin > max {
-                        let c = 0.5 * (self.state.tmin + self.state.tmax);
+                        let c = f64::midpoint(self.state.tmin, self.state.tmax);
                         self.state.tmin = c - max / 2.0;
                         self.state.tmax = c + max / 2.0;
                     }
@@ -631,7 +631,7 @@ impl eframe::App for App {
                 self.screenshot_awaiting = true;
             }
         }
-        #[cfg(all(target_arch = "wasm32", feature = "svg-raster", feature = "threads"))]
+        #[cfg(all(feature = "svg-raster", feature = "threads"))]
         self.poll_png_export(&ctx);
         if self.screenshot_awaiting {
             let shot = ctx.input(|i| {
@@ -1007,7 +1007,7 @@ impl eframe::App for App {
                                     );
                                     if ui.small_button("⌖").on_hover_text("center view").clicked()
                                     {
-                                        center_t = Some(0.5 * (m.tmin + m.tmax));
+                                        center_t = Some(f64::midpoint(m.tmin, m.tmax));
                                     }
                                     ui.end_row();
                                 }
@@ -1078,7 +1078,6 @@ impl eframe::App for App {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(&mut *self)
     }

@@ -6,11 +6,11 @@ tasks:
       - task: run
 
   run:
-    desc: "run"
+    desc: "run the web app (delegates to `mise run serve`)"
     ignore_error: true
     interactive: true
     cmds:
-      - cargo run -- {{.CLI_ARGS}}
+      - mise run serve
 
   typos:
     desc: "check repository for typos"
@@ -22,11 +22,10 @@ tasks:
     desc: "check Rust, Python and TypeScript"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo check --workspace --all-targets {{.CLI_ARGS}}
-      # The generated bridge client (and every client().rpc() call) is
-      # wasm32-only (#[cfg(target_arch = "wasm32")]), so the host check above
-      # never compiles it; check:threads is what flags a renamed/removed rpc on
-      # the Rust side. Without it `task check` would miss Rust bridge drift.
+      # The desktop app is intentionally unsupported; the host pass keeps only
+      # the library + native tests buildable, while the wasm pass below checks
+      # the real browser entrypoint and bridge.
+      - cargo c --workspace --all-features --lib --tests {{.CLI_ARGS}}
       - task: check:threads
       - task: check:py
       - task: check:ts
@@ -35,7 +34,7 @@ tasks:
     desc: "check cargo workspace"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo check --workspace --all-targets {{.CLI_ARGS}}
+      - cargo c --workspace --all-features --lib --tests {{.CLI_ARGS}}
 
   check:py:
     desc: "typecheck Python bridge"
@@ -55,22 +54,18 @@ tasks:
     desc: "check cargo workspace for all combinations of features"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo fc check --workspace --all-targets {{.CLI_ARGS}}
+      - cargo fc check --workspace --lib --tests {{.CLI_ARGS}}
       - task: check:py
 
   check:threads:
     desc: "type-check the threaded wasm build (the `threads` feature, excluded from the fc matrix)"
     dir: "{{.ROOT_DIR}}"
-    # `threads` is wasm32-only and needs a nightly that rebuilds std with atomics
-    # (-Z build-std) — the precompiled wasm32 std is single-threaded — so the fc
-    # matrix (stable, no build-std) cannot compile it. This closes that gap. It is
-    # a compile-check, NOT clippy: nightly's lint set is stricter than our pinned
-    # stable toolchain, so clippy here would flag unrelated nightly-only lints.
+    # The actual threaded wasm build still needs build-std so std is rebuilt with
+    # atomics. This closes the gap left by the generic feature matrix.
     env:
-      RUSTUP_TOOLCHAIN: nightly
       CARGO_UNSTABLE_BUILD_STD: std,panic_abort
     cmds:
-      - cargo check --target wasm32-unknown-unknown --features threads {{.CLI_ARGS}}
+      - cargo c --target wasm32-unknown-unknown --features threads {{.CLI_ARGS}}
 
   clean:
     desc: "clean cargo workspace"
@@ -82,7 +77,7 @@ tasks:
     env:
       RUSTDOCFLAGS: "--cfg docsrs"
     cmds:
-      - cargo +nightly watchdoc --all-features {{.CLI_ARGS}}
+      - cargo watchdoc --all-features {{.CLI_ARGS}}
 
   outdated:
     desc: "check for outdated cargo workspace dependencies"
@@ -93,7 +88,7 @@ tasks:
     desc: "check for unused cargo workspace dependencies"
     aliases: [unused-dependencies]
     cmds:
-      - cargo +nightly udeps {{.CLI_ARGS}}
+      - cargo udeps {{.CLI_ARGS}}
 
   audit:
     desc: "audit cargo workspace dependencies"
@@ -131,12 +126,12 @@ tasks:
   test:
     desc: "test cargo workspace"
     cmds:
-      - cargo nextest run --workspace --all-targets --no-tests "warn" {{.CLI_ARGS}}
+      - cargo nextest run --workspace --all-features --lib --tests --no-tests "warn" {{.CLI_ARGS}}
 
   test:fc:
     desc: "test cargo workspace for all combinations of features"
     cmds:
-      - cargo fc nextest run --workspace --all-targets --no-tests "warn" {{.CLI_ARGS}}
+      - cargo fc nextest run --workspace --lib --tests --no-tests "warn" {{.CLI_ARGS}}
 
   test:doc:
     desc: "run doctests in cargo workspace"
@@ -157,22 +152,23 @@ tasks:
   lint:
     desc: "lint Rust (host + wasm32) and Python workspace"
     cmds:
-      - cargo lint --workspace --all-features {{.CLI_ARGS}}
-      # wasm32 is the real web target — much of src/bridge.rs is
-      # #[cfg(target_arch = "wasm32")] and is NOT compiled on the host.
-      - cargo lint --workspace --all-features --target wasm32-unknown-unknown {{.CLI_ARGS}}
+      # The host pass keeps the native-test surface clean without rebuilding the
+      # intentionally unsupported desktop binary.
+      - cargo lint --workspace --all-features --lib --tests {{.CLI_ARGS}}
+      # wasm32 is the real app target — the bridge/UI entrypoint live here.
+      - cargo lint --workspace --all-features --target wasm32-unknown-unknown --lib {{.CLI_ARGS}}
       - task: lint:ast-grep
       - task: lint:py
 
   lint:fc:
     desc: "lint Rust (all feature combinations, host + wasm32) and Python workspace"
     cmds:
-      - cargo fc lint {{.CLI_ARGS}}
-      # Same feature matrix on wasm32 — catches wasm-only code (the bridge) that
-      # the host pass never compiles.
-      - cargo fc lint --target wasm32-unknown-unknown {{.CLI_ARGS}}
-      # The fc matrix excludes `threads` (it needs nightly + build-std); compile-
-      # check that build separately so threaded-only code can't rot unnoticed.
+      - cargo fc clippy --workspace --lib --tests --no-deps {{.CLI_ARGS}}
+      # Same feature matrix on wasm32 — catches wasm-only code (the bridge/UI)
+      # that the host pass never compiles.
+      - cargo fc clippy --workspace --target wasm32-unknown-unknown --lib --no-deps {{.CLI_ARGS}}
+      # The fc matrix excludes `threads` (it still needs build-std); compile-
+      # check that build separately so the real threaded path cannot rot.
       - task: check:threads
       - task: lint:ast-grep
       - task: lint:py
@@ -181,7 +177,7 @@ tasks:
     desc: "lint and fix cargo workspace"
     aliases: [fix]
     cmds:
-      - cargo fixit --workspace --all-features {{.CLI_ARGS}}
+      - cargo fixit --workspace --all-features --lib --tests {{.CLI_ARGS}}
       - task: lint:ast-grep
 
   lint:actions:

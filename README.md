@@ -62,8 +62,8 @@ docker/pyodide-mt/build-all.sh  # build the custom Pyodide 314 (both wheels + py
 mise run serve                  # trunk serve  → http://127.0.0.1:17683
 ```
 
-`rustup` reads `rust-toolchain.toml` and installs the pinned Rust toolchain plus
-the `wasm32-unknown-unknown` target automatically on first build.
+`rustup` reads `rust-toolchain.toml` and installs the pinned nightly toolchain,
+`rust-src`, and the `wasm32-unknown-unknown` target automatically on first build.
 
 **pyrocko is not vendored.** `mise run fetch-pyrocko` clones it at a pinned,
 known-good commit (`PYROCKO_REF` in `mise.toml`) into the gitignored `sources/`
@@ -98,8 +98,8 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
   loads are cached. See `plan/load-time-reduction.md` for how to cut that.
 - matplotlib is loaded only because `pyrocko.orthodrome` imports
   `matplotlib.path` at module top; it isn't otherwise used.
-- The native build (`cargo run`) uses a small synthetic stub instead of Pyodide,
-  for fast UI iteration without a browser (waterfall/spectrum are web-only there).
+- The egui frontend is browser-only: run it with `mise run serve` / `trunk serve`,
+  not `cargo run`.
 - **Response deconvolution** (Options → Remove response) is wired through
   `trace.transfer` but is a no-op until response metadata (StationXML/RESP) is
   loaded — the demo data carries none.
