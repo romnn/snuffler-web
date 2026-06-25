@@ -11,6 +11,13 @@ const FILTER_MIN_HZ: f64 = 0.001;
 const FILTER_MAX_HZ: f64 = 25.0;
 const LABEL_W: f32 = 104.0;
 const VALUE_W: f32 = 96.0;
+const DEFAULT_GAIN: f32 = 1.0;
+const DEFAULT_ROTATE_DEG: f64 = 0.0;
+
+enum ParsedFilter {
+    Off,
+    Hz(f64),
+}
 
 fn format_compact(value: f64, digits: usize) -> String {
     let mut text = format!("{value:.digits$}");
@@ -27,6 +34,31 @@ fn format_hz(value: Option<f64>) -> String {
         Some(v) if v < 100.0 => format_compact(v, 2),
         Some(v) => format_compact(v, 1),
     }
+}
+
+fn parse_hz(text: &str) -> Option<ParsedFilter> {
+    let text = text.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("off") || text.eq_ignore_ascii_case("none") {
+        return Some(ParsedFilter::Off);
+    }
+    let hz = text.parse::<f64>().ok()?;
+    if !hz.is_finite() {
+        return None;
+    }
+    if hz <= 0.0 {
+        return Some(ParsedFilter::Off);
+    }
+    Some(ParsedFilter::Hz(hz.clamp(FILTER_MIN_HZ, FILTER_MAX_HZ)))
+}
+
+fn parse_gain(text: &str) -> Option<f32> {
+    let gain = text.trim().parse::<f32>().ok()?;
+    gain.is_finite().then_some(gain.clamp(0.001, 1000.0))
+}
+
+fn parse_rotate(text: &str) -> Option<f64> {
+    let rotate = text.trim().parse::<f64>().ok()?;
+    rotate.is_finite().then_some(rotate.clamp(-180.0, 180.0))
 }
 
 fn filter_to_unit(hz: f64) -> f64 {
@@ -66,11 +98,27 @@ fn pos_to_lowpass(pos: f64) -> Option<f64> {
     Some(unit_to_filter(pos))
 }
 
-fn control_row(ui: &mut egui::Ui, label: &str, mut value: String, add: impl FnOnce(&mut egui::Ui)) {
+struct ControlRowResponse {
+    label: egui::Response,
+    value: egui::Response,
+}
+
+fn control_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    display_value: String,
+    add: impl FnOnce(&mut egui::Ui),
+) -> ControlRowResponse {
     ui.horizontal(|ui| {
+        let value_id = ui.make_persistent_id(("control-value", label));
+        if !ui.memory(|m| m.has_focus(value_id)) {
+            *value = display_value;
+        }
+
         let row_h = ui.spacing().interact_size.y;
-        let (label_rect, _) =
-            ui.allocate_exact_size(egui::vec2(LABEL_W, row_h), egui::Sense::hover());
+        let (label_rect, label_resp) =
+            ui.allocate_exact_size(egui::vec2(LABEL_W, row_h), egui::Sense::click());
         ui.painter().text(
             label_rect.right_center(),
             egui::Align2::RIGHT_CENTER,
@@ -78,15 +126,27 @@ fn control_row(ui: &mut egui::Ui, label: &str, mut value: String, add: impl FnOn
             egui::TextStyle::Body.resolve(ui.style()),
             ui.visuals().text_color(),
         );
-        ui.add_sized(
+        let value_resp = ui.add_sized(
             [VALUE_W, row_h],
-            egui::TextEdit::singleline(&mut value)
+            egui::TextEdit::singleline(value)
+                .id(value_id)
                 .font(egui::TextStyle::Monospace)
-                .interactive(false),
+                .interactive(true),
         );
         ui.spacing_mut().slider_width = ui.available_width().max(160.0);
         add(ui);
-    });
+        ControlRowResponse {
+            label: label_resp,
+            value: value_resp,
+        }
+    })
+    .inner
+}
+
+fn value_committed(ui: &egui::Ui, response: &egui::Response) -> bool {
+    response.changed()
+        || response.lost_focus()
+        || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
 }
 
 #[allow(
@@ -97,21 +157,85 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
 
     let mut highpass_pos = highpass_to_pos(state.highpass);
-    control_row(ui, "Highpass [Hz]:", format_hz(state.highpass), |ui| {
-        ui.add(egui::Slider::new(&mut highpass_pos, 0.0..=1.0).show_value(false));
-    });
-    state.highpass = pos_to_highpass(highpass_pos);
-    if let Some(hz) = state.highpass {
-        state.highpass_hz = hz;
+    let mut highpass_slider_changed = false;
+    let highpass_row = control_row(
+        ui,
+        "Highpass [Hz]:",
+        &mut state.highpass_text,
+        format_hz(state.highpass),
+        |ui| {
+            highpass_slider_changed = ui
+                .add(egui::Slider::new(&mut highpass_pos, 0.0..=1.0).show_value(false))
+                .changed();
+        },
+    );
+    if highpass_row.label.double_clicked() {
+        state.highpass = None;
+        state.highpass_text = format_hz(state.highpass);
+    } else if highpass_slider_changed {
+        state.highpass = pos_to_highpass(highpass_pos);
+        if let Some(hz) = state.highpass {
+            state.highpass_hz = hz;
+        }
+        if !highpass_row.value.has_focus() {
+            state.highpass_text = format_hz(state.highpass);
+        }
+    } else if value_committed(ui, &highpass_row.value) {
+        if let Some(parsed) = parse_hz(&state.highpass_text) {
+            state.highpass = match parsed {
+                ParsedFilter::Off => None,
+                ParsedFilter::Hz(hz) => Some(hz),
+            };
+            if let Some(hz) = state.highpass {
+                state.highpass_hz = hz;
+            }
+            if highpass_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                state.highpass_text = format_hz(state.highpass);
+            }
+        } else if highpass_row.value.lost_focus() {
+            state.highpass_text = format_hz(state.highpass);
+        }
     }
 
     let mut lowpass_pos = lowpass_to_pos(state.lowpass);
-    control_row(ui, "Lowpass [Hz]:", format_hz(state.lowpass), |ui| {
-        ui.add(egui::Slider::new(&mut lowpass_pos, 0.0..=1.0).show_value(false));
-    });
-    state.lowpass = pos_to_lowpass(lowpass_pos);
-    if let Some(hz) = state.lowpass {
-        state.lowpass_hz = hz;
+    let mut lowpass_slider_changed = false;
+    let lowpass_row = control_row(
+        ui,
+        "Lowpass [Hz]:",
+        &mut state.lowpass_text,
+        format_hz(state.lowpass),
+        |ui| {
+            lowpass_slider_changed = ui
+                .add(egui::Slider::new(&mut lowpass_pos, 0.0..=1.0).show_value(false))
+                .changed();
+        },
+    );
+    if lowpass_row.label.double_clicked() {
+        state.lowpass = None;
+        state.lowpass_text = format_hz(state.lowpass);
+    } else if lowpass_slider_changed {
+        state.lowpass = pos_to_lowpass(lowpass_pos);
+        if let Some(hz) = state.lowpass {
+            state.lowpass_hz = hz;
+        }
+        if !lowpass_row.value.has_focus() {
+            state.lowpass_text = format_hz(state.lowpass);
+        }
+    } else if value_committed(ui, &lowpass_row.value) {
+        if let Some(parsed) = parse_hz(&state.lowpass_text) {
+            state.lowpass = match parsed {
+                ParsedFilter::Off => None,
+                ParsedFilter::Hz(hz) => Some(hz),
+            };
+            if let Some(hz) = state.lowpass {
+                state.lowpass_hz = hz;
+            }
+            if lowpass_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                state.lowpass_text = format_hz(state.lowpass);
+            }
+        } else if lowpass_row.value.lost_focus() {
+            state.lowpass_text = format_hz(state.lowpass);
+        }
     }
 
     // snuffler's passband_check: warn when highpass corner >= lowpass corner.
@@ -126,28 +250,74 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, ntracks_total: usize) {
 
     // Gain is meaningless for the waterfall, so snuffler hides it there.
     if !waterfall {
-        control_row(
+        let mut gain = state.gain;
+        let mut gain_slider_changed = false;
+        let gain_row = control_row(
             ui,
             "Gain:",
+            &mut state.gain_text,
             format_compact(f64::from(state.gain), 3),
             |ui| {
-                ui.add(
-                    egui::Slider::new(&mut state.gain, 0.001..=1000.0)
-                        .logarithmic(true)
-                        .show_value(false),
-                );
+                gain_slider_changed = ui
+                    .add(
+                        egui::Slider::new(&mut gain, 0.001..=1000.0)
+                            .logarithmic(true)
+                            .show_value(false),
+                    )
+                    .changed();
             },
         );
+        if gain_row.label.double_clicked() {
+            state.gain = DEFAULT_GAIN;
+            state.gain_text = format_compact(f64::from(state.gain), 3);
+        } else if gain_slider_changed {
+            state.gain = gain;
+            if !gain_row.value.has_focus() {
+                state.gain_text = format_compact(f64::from(state.gain), 3);
+            }
+        } else if value_committed(ui, &gain_row.value) {
+            if let Some(parsed) = parse_gain(&state.gain_text) {
+                state.gain = parsed;
+                if gain_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    state.gain_text = format_compact(f64::from(state.gain), 3);
+                }
+            } else if gain_row.value.lost_focus() {
+                state.gain_text = format_compact(f64::from(state.gain), 3);
+            }
+        }
     }
 
-    control_row(
+    let mut rotate = state.rotate_deg;
+    let mut rotate_slider_changed = false;
+    let rotate_row = control_row(
         ui,
         "Rotate [deg]:",
+        &mut state.rotate_text,
         format_compact(state.rotate_deg, 1),
         |ui| {
-            ui.add(egui::Slider::new(&mut state.rotate_deg, -180.0..=180.0).show_value(false));
+            rotate_slider_changed = ui
+                .add(egui::Slider::new(&mut rotate, -180.0..=180.0).show_value(false))
+                .changed();
         },
     );
+    if rotate_row.label.double_clicked() {
+        state.rotate_deg = DEFAULT_ROTATE_DEG;
+        state.rotate_text = format_compact(state.rotate_deg, 1);
+    } else if rotate_slider_changed {
+        state.rotate_deg = rotate;
+        if !rotate_row.value.has_focus() {
+            state.rotate_text = format_compact(state.rotate_deg, 1);
+        }
+    } else if value_committed(ui, &rotate_row.value) {
+        if let Some(parsed) = parse_rotate(&state.rotate_text) {
+            state.rotate_deg = parsed;
+            if rotate_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                state.rotate_text = format_compact(state.rotate_deg, 1);
+            }
+        } else if rotate_row.value.lost_focus() {
+            state.rotate_text = format_compact(state.rotate_deg, 1);
+        }
+    }
 
     ui.separator();
 

@@ -297,6 +297,10 @@ pub struct AppState {
     pub lowpass_hz: f64,
     pub gain: f32,
     pub rotate_deg: f64,
+    pub highpass_text: String,
+    pub lowpass_text: String,
+    pub gain_text: String,
+    pub rotate_text: String,
 
     // --- processing toggles (Options menu) -> ViewParams ---
     pub demean: bool,
@@ -405,6 +409,10 @@ impl Default for AppState {
             lowpass_hz: 10.0,
             gain: 1.0,
             rotate_deg: 0.0,
+            highpass_text: "off".to_owned(),
+            lowpass_text: "off".to_owned(),
+            gain_text: "1".to_owned(),
+            rotate_text: "0".to_owned(),
             // snuffler config.py defaults: demean/degap/downsample/lphp = on.
             demean: true,
             degap: true,
