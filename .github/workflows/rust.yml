@@ -38,13 +38,10 @@ jobs:
       # rustfmt/clippy components; rustup installs them on the first cargo call.
       # The wasm web_sys_unstable_apis cfg comes from .cargo/config.toml.
       - name: rustfmt
-        run: cargo fmt --all -- --check
+        run: task format:rust -- --check
 
-      - name: clippy (native stub)
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: clippy (wasm32 — the real web target)
-        run: cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings
+      - name: clippy (native library + wasm32 app)
+        run: task lint:fc
 
   # End-to-end type safety across the bridge boundary: tsc on the TS glue +
   # generated proto messages, mypy on the Python bridge vs the generated dispatch,
