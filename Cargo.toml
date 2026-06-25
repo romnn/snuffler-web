@@ -30,7 +30,8 @@ exclude_features = ["threads"]
 # Complementary to wasm-opt -Oz (Trunk.toml): rustc/LLVM shrinks the codegen,
 # wasm-opt does a further wasm-level size pass. Use "z" for an even smaller binary
 # if the UI still feels smooth.
-opt-level = "s"
+# opt-level = "s"
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true

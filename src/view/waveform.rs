@@ -10,6 +10,8 @@
               sample/track indices; these casts are inherent to the drawing math"
 )]
 
+use std::cell::Cell;
+
 use egui::{
     Align2, Color32, ColorImage, FontId, Key, Rect, Sense, Stroke, TextureHandle, TextureOptions,
     Theme,
@@ -26,6 +28,12 @@ const LABEL_PT: f32 = 12.5;
 const AXIS_PT: f32 = 12.5;
 /// Width of the vertical track scrollbar carved off the right edge.
 const SCROLLBAR_W: f32 = 12.0;
+const PAINT_PERF_LOG_INTERVAL_MS: f64 = 1_000.0;
+const PAINT_PERF_SLOW_MS: f64 = 8.0;
+
+thread_local! {
+    static LAST_PAINT_PERF_LOG_MS: Cell<f64> = const { Cell::new(0.0) };
+}
 
 struct Palette {
     bg: Color32,
@@ -362,17 +370,17 @@ fn theme_uses_colored_strokes(theme: WiggleTheme) -> bool {
     matches!(theme, WiggleTheme::ColorLines)
 }
 
-fn track_time_bounds(view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
+fn track_time_bounds(data_tmin: f64, view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
     if track.nf > 0 && track.nt > 0 {
         return Some((
-            track.t0_rel,
-            track.t0_rel + track.nt.saturating_sub(1) as f64 * track.dt,
+            data_tmin + track.t0_rel,
+            data_tmin + track.t0_rel + track.nt.saturating_sub(1) as f64 * track.dt,
         ));
     }
     if track.dt > 0.0 && track.count > 0 {
         return Some((
-            track.t0_rel,
-            track.t0_rel + track.count.saturating_sub(1) as f64 * track.dt,
+            data_tmin + track.t0_rel,
+            data_tmin + track.t0_rel + track.count.saturating_sub(1) as f64 * track.dt,
         ));
     }
     if track.dt == 0.0 && track.count > 0 {
@@ -392,10 +400,89 @@ fn track_time_bounds(view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
                 tmin = tmin.min(t);
                 tmax = tmax.max(t);
             }
-            Some((track.t0_rel + tmin, track.t0_rel + tmax))
+            Some((
+                data_tmin + track.t0_rel + tmin,
+                data_tmin + track.t0_rel + tmax,
+            ))
         });
     }
     None
+}
+
+fn paint_payload_points(visible: &[ViewTrack]) -> usize {
+    visible
+        .iter()
+        .filter(|track| track.nf == 0)
+        .map(|track| {
+            let count = usize::try_from(track.count).unwrap_or(usize::MAX);
+            if track.dt < 0.0 {
+                count.saturating_mul(2)
+            } else {
+                count
+            }
+        })
+        .sum::<usize>()
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "diagnostic counters are logged as f64 for compact timing output"
+)]
+fn maybe_log_paint_perf(
+    waterfall: bool,
+    total_ms: f64,
+    view: &ViewData,
+    visible: &[ViewTrack],
+    row_h: f32,
+    rect: Rect,
+) {
+    let now = js_sys::Date::now();
+    let should_log = total_ms >= PAINT_PERF_SLOW_MS
+        || LAST_PAINT_PERF_LOG_MS.with(|last| {
+            let elapsed = now - last.get();
+            if elapsed >= PAINT_PERF_LOG_INTERVAL_MS {
+                last.set(now);
+                true
+            } else {
+                false
+            }
+        });
+    if !should_log {
+        return;
+    }
+    let points = paint_payload_points(visible);
+    log::info!(
+        "[paint] mode={} total_ms={:.2} visible_tracks={} payload_points={} ys={} row_h={:.1} rect={:.0}x{:.0}",
+        if waterfall { "waterfall" } else { "wiggle" },
+        total_ms,
+        visible.len(),
+        points,
+        view.ys.len(),
+        row_h,
+        rect.width(),
+        rect.height(),
+    );
+}
+
+fn point_pair_bounds(points: &[f32], lo: f32, hi: f32) -> (usize, usize) {
+    let pairs = points.len() / 2;
+    let lower = |target: f32| {
+        let mut left = 0usize;
+        let mut right = pairs;
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let t = points.get(mid * 2).copied().unwrap_or(f32::INFINITY);
+            if t < target {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        left
+    };
+    let start = lower(lo).saturating_sub(1);
+    let end = lower(hi).saturating_add(1).min(pairs);
+    (start * 2, end * 2)
 }
 
 /// Geometry of one waveform frame, derived from the view + canvas rect. Shared by
@@ -403,7 +490,9 @@ fn track_time_bounds(view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
 struct Layout<'a> {
     rect: Rect,
     track_area: Rect,
+    data_tmin: f64,
     view_tmin: f64,
+    view_tmax: f64,
     window: f64,
     visible: &'a [ViewTrack],
     off: usize,
@@ -487,7 +576,7 @@ fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom {
 fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layout<'a> {
     let meta = &view.meta;
     let track_area = Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - AXIS_H));
-    let window = (meta.view_tmax - meta.view_tmin).max(1e-9);
+    let window = (state.tmax - state.tmin).max(1e-9);
     let total = meta.tracks.len();
     let g = track_geometry(state, total, track_area.height());
     let visible = meta
@@ -497,7 +586,9 @@ fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layou
     Layout {
         rect,
         track_area,
-        view_tmin: meta.view_tmin,
+        data_tmin: meta.view_tmin,
+        view_tmin: state.tmin,
+        view_tmax: state.tmax,
         window,
         visible,
         off: g.off,
@@ -525,20 +616,24 @@ fn paint(
 ) {
     let rect = lay.rect;
     let track_area = lay.track_area;
+    let data_tmin = lay.data_tmin;
     let view_tmin = lay.view_tmin;
+    let view_tmax = lay.view_tmax;
     let window = lay.window;
     let visible = lay.visible;
     let row_h = lay.row_h;
     let top0 = lay.top0;
-    let meta = &view.meta;
-    let x_of = |t_rel: f64| rect.left() + (t_rel / window) as f32 * rect.width();
+    let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
+    let point_margin = 4.0;
+    let time_margin = f64::from(point_margin / rect.width().max(1.0)) * window;
+    let in_x = |x: f32| x >= rect.left() - point_margin && x <= rect.right() + point_margin;
 
     target.fill_rect(rect, 0.0, pal.bg);
 
     if state.show_boxes && !waterfall && state.wiggle_theme == WiggleTheme::SnufflerQt {
         target.push_clip(track_area);
         for (k, t) in visible.iter().enumerate() {
-            let Some((t0, t1)) = track_time_bounds(view, t) else {
+            let Some((t0, t1)) = track_time_bounds(data_tmin, view, t) else {
                 continue;
             };
             let top = top0 + k as f32 * row_h + row_h * 0.05;
@@ -580,8 +675,8 @@ fn paint(
     let tick_label_y = axis_top + 4.0;
     let context_label_y = axis_top + 23.0;
     let axis_pad = 10.0;
-    for tick in timeaxis::ticks(view_tmin, meta.view_tmax, tinc) {
-        let x = x_of(tick - view_tmin);
+    for tick in timeaxis::ticks(view_tmin, view_tmax, tinc) {
+        let x = x_of(tick);
         target.line(
             egui::pos2(x, track_area.top()),
             egui::pos2(x, track_area.bottom()),
@@ -635,8 +730,9 @@ fn paint(
         }
 
         if waterfall && t.nf > 0 {
-            let x0 = x_of(t.t0_rel);
-            let x1 = x_of(t.t0_rel + t.nt as f64 * t.dt);
+            let t_abs = data_tmin + t.t0_rel;
+            let x0 = x_of(t_abs);
+            let x1 = x_of(t_abs + t.nt as f64 * t.dt);
             let r =
                 Rect::from_min_max(egui::pos2(x0, top + 1.0), egui::pos2(x1, top + row_h - 1.0));
             target.waterfall(r, lay.off + k);
@@ -675,20 +771,33 @@ fn paint(
             if t.dt > 0.0 {
                 let samples = view.samples(t);
                 if samples.len() >= 2 {
+                    let base_abs = data_tmin + t.t0_rel;
+                    let start_idx = ((view_tmin - time_margin - base_abs) / t.dt)
+                        .floor()
+                        .max(0.0) as usize;
+                    let end_idx = ((view_tmax + time_margin - base_abs) / t.dt)
+                        .ceil()
+                        .clamp(0.0, samples.len() as f64)
+                        as usize;
                     let points: Vec<_> = samples
+                        .get(start_idx..end_idx)
+                        .unwrap_or(&[])
                         .iter()
                         .enumerate()
-                        .map(|(i, &v)| {
-                            let t_rel = t.t0_rel + i as f64 * t.dt;
-                            egui::pos2(x_of(t_rel), y_of(v))
+                        .filter_map(|(i, &v)| {
+                            let t_abs = base_abs + (start_idx + i) as f64 * t.dt;
+                            let x = x_of(t_abs);
+                            in_x(x).then(|| egui::pos2(x, y_of(v)))
                         })
                         .collect();
-                    target.polyline(points, 1.0, trace_col);
+                    if points.len() >= 2 {
+                        target.polyline(points, 1.0, trace_col);
+                    }
                 } else if let Some(&v) = samples.first() {
-                    let t_rel = t.t0_rel;
+                    let t_abs = data_tmin + t.t0_rel;
                     let half = 0.5 * t.dt;
-                    let x0 = x_of(t_rel - half);
-                    let x1 = x_of(t_rel + half);
+                    let x0 = x_of(t_abs - half);
+                    let x1 = x_of(t_abs + half);
                     target.line(
                         egui::pos2(x0, y_of(v)),
                         egui::pos2(x1, y_of(v)),
@@ -703,16 +812,24 @@ fn paint(
                 if let Some(points_data) = view.ys.get(start..end)
                     && points_data.len() >= 4
                 {
+                    let lo_rel = (view_tmin - time_margin - data_tmin - t.t0_rel) as f32;
+                    let hi_rel = (view_tmax + time_margin - data_tmin - t.t0_rel) as f32;
+                    let (start_pair, end_pair) = point_pair_bounds(points_data, lo_rel, hi_rel);
                     let points: Vec<_> = points_data
+                        .get(start_pair..end_pair)
+                        .unwrap_or(&[])
                         .chunks_exact(2)
                         .filter_map(|pair| match pair {
                             [px, py] => {
-                                Some(egui::pos2(x_of(t.t0_rel + f64::from(*px)), y_of(*py)))
+                                let x = x_of(data_tmin + t.t0_rel + f64::from(*px));
+                                in_x(x).then(|| egui::pos2(x, y_of(*py)))
                             }
                             _ => None,
                         })
                         .collect();
-                    target.polyline(points, 1.0, trace_col);
+                    if points.len() >= 2 {
+                        target.polyline(points, 1.0, trace_col);
+                    }
                 }
             } else if t.dt < 0.0 {
                 let start = (t.offset as usize).min(view.ys.len());
@@ -725,7 +842,10 @@ fn paint(
                         let [t0, ylo, yhi] = triple else {
                             continue;
                         };
-                        let x = x_of(t.t0_rel + f64::from(*t0));
+                        let x = x_of(data_tmin + t.t0_rel + f64::from(*t0));
+                        if !in_x(x) {
+                            continue;
+                        }
                         target.line(
                             egui::pos2(x, y_of(*ylo)),
                             egui::pos2(x, y_of(*yhi)),
@@ -781,13 +901,11 @@ fn paint(
     target.pop_clip();
 
     target.push_clip(track_area);
-    draw_markers(
-        target, state, track_area, top0, visible, row_h, view_tmin, &x_of,
-    );
+    draw_markers(target, state, track_area, top0, visible, row_h, &x_of);
     if let Some((a, b)) = state.pending_span {
         let r = Rect::from_min_max(
-            egui::pos2(x_of(a - view_tmin), track_area.top()),
-            egui::pos2(x_of(b - view_tmin), track_area.bottom()),
+            egui::pos2(x_of(a), track_area.top()),
+            egui::pos2(x_of(b), track_area.bottom()),
         );
         target.fill_rect(r, 0.0, Color32::from_rgba_unmultiplied(52, 101, 164, 40));
     }
@@ -902,7 +1020,16 @@ pub fn show(
 
     let lay = compute_layout(state, view, wave_rect);
     let mut target = EguiTarget::new(painter.clone(), &wf.textures);
+    let paint_t0 = js_sys::Date::now();
     paint(&mut target, state, view, &pal, &lay, theme, waterfall);
+    maybe_log_paint_perf(
+        waterfall,
+        js_sys::Date::now() - paint_t0,
+        view,
+        lay.visible,
+        lay.row_h,
+        wave_rect,
+    );
 
     if overflow {
         let strip = Rect::from_min_max(
@@ -1108,12 +1235,11 @@ fn draw_markers(
     top0: f32,
     visible: &[ViewTrack],
     row_h: f32,
-    view_tmin: f64,
     x_of: &impl Fn(f64) -> f32,
 ) {
     for m in &state.markers {
         let col = m.color();
-        let x0 = x_of(m.tmin - view_tmin);
+        let x0 = x_of(m.tmin);
         if (x0 < area.left() - 2.0 || x0 > area.right() + 2.0) && !m.is_span() {
             continue;
         }
@@ -1127,7 +1253,7 @@ fn draw_markers(
         let w = if m.selected { 4.0 } else { 2.0 };
         for (ytop, ybot) in spans {
             if m.is_span() {
-                let x1 = x_of(m.tmax - view_tmin);
+                let x1 = x_of(m.tmax);
                 let r = Rect::from_min_max(egui::pos2(x0, ytop), egui::pos2(x1, ybot));
                 target.fill_rect(
                     r,

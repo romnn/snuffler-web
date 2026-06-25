@@ -15,6 +15,7 @@ import { WORKER_MOUNT_GF_STORE, type WorkerCommand } from "./worker_command.js";
 // What the worker accepts as a request `method`: any BridgeService rpc id, plus
 // the single worker-only command (the GF-store directory mount).
 type SeamMethod = BridgeMethodId | WorkerCommand;
+const BRIDGE_PERF_LOG = false;
 
 // Cosmetic progress/runtime hooks (set by index.html) + the File System Access
 // API. Typed loosely — optional integration points, not the typed proto boundary.
@@ -26,7 +27,14 @@ declare global {
   }
 }
 
-type Pending = { resolve: (msg: any) => void; reject: (err: Error) => void };
+type Pending = {
+  resolve: (msg: any) => void;
+  reject: (err: Error) => void;
+  method: SeamMethod;
+  requestBytes: number;
+  dataBytes: number;
+  sentMs: number;
+};
 
 let worker: Worker | null = null;
 let nextRequestId = 1;
@@ -43,6 +51,8 @@ function ensureWorker() {
   // 314 CDN build refuses a classic worker — so always use a module worker.
   worker = new Worker(workerUrl(), { type: "module" });
   worker.onmessage = (event) => {
+    const receivedMs = performance.now();
+    const receivedEpochMs = Date.now();
     const msg = event.data || {};
     if (msg.type === "progress") {
       prog(msg.frac, msg.label);
@@ -61,6 +71,24 @@ function ensureWorker() {
     const slot = pending.get(msg.id);
     if (!slot) return;
     pending.delete(msg.id);
+    if (BRIDGE_PERF_LOG && msg.perf && slot.method === BridgeMethod.getView) {
+      const workerToMainMs =
+        typeof msg.perf.worker_post_epoch_ms === "number"
+          ? receivedEpochMs - msg.perf.worker_post_epoch_ms
+          : NaN;
+      console.log(
+        "[bridge.js] " +
+          `method=getView total_ms=${(receivedMs - slot.sentMs).toFixed(2)} ` +
+          `worker_to_main_ms=${Number.isFinite(workerToMainMs) ? workerToMainMs.toFixed(2) : "n/a"} ` +
+          `py_call_ms=${(msg.perf.py_call_ms || 0).toFixed(2)} ` +
+          `shape_ms=${(msg.perf.shape_ms || 0).toFixed(2)} ` +
+          `result_copy_ms=${(msg.perf.result_copy_ms || 0).toFixed(2)} ` +
+          `buffer_view_ms=${(msg.perf.buffer_view_ms || 0).toFixed(2)} ` +
+          `ys_copy_ms=${(msg.perf.ys_copy_ms || 0).toFixed(2)} ` +
+          `request_bytes=${slot.requestBytes} result_bytes=${msg.perf.result_bytes || 0} ` +
+          `ys_bytes=${msg.perf.ys_bytes || 0}`
+      );
+    }
     if (msg.ok) {
       slot.resolve(msg);
     } else {
@@ -115,7 +143,14 @@ function send(method: SeamMethod, { request = null, data = null, handle = null }
   if (handle != null) payload.handle = handle;
 
   const promise = new Promise<any>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(id, {
+      resolve,
+      reject,
+      method,
+      requestBytes: req ? req.byteLength : 0,
+      dataBytes: bytes ? bytes.byteLength : 0,
+      sentMs: performance.now(),
+    });
   });
   ensureWorker().postMessage(payload, transfer);
   return promise;

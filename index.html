@@ -180,12 +180,12 @@
             right: 7px;
             z-index: 11;
             display: none;
-            padding: 0 2px;
-            font-size: 10px;
+            padding: 1px 3px;
+            font-size: 12px;
             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
             line-height: 1.4;
             color: var(--muted);
-            opacity: 0.55;
+            opacity: 0.72;
             white-space: nowrap;
             user-select: text;
             pointer-events: none;
@@ -233,12 +233,23 @@
             }
         };
 
-        // Called by web/bridge.js when the Pyodide worker reports its booted
-        // runtime. Shows a subtle debug readout of the versions; the lead token is
-        // "wasm+openmp+simd" once threading is confirmed (pthreads read back from
-        // the live interpreter, so libomp + SIMD are in play) — it should always
-        // be, on this MT-only build; a bare "wasm" would signal threading failed.
-        window.__snufflerRuntime = function (info) {
+        const snufflerBadgeState = {
+            runtime: null,
+            frameMs: null,
+            frameBadgeLastMs: 0,
+        };
+
+        function frameCapacityFps(ms) {
+            if (ms <= 0) return 60;
+            return Math.min(60, 1000 / ms);
+        }
+
+        function formatFps(ms) {
+            return Math.round(frameCapacityFps(ms)).toString().padStart(2, "0") + " fps";
+        }
+
+        function updateSnufflerRuntimeBadge() {
+            const info = snufflerBadgeState.runtime;
             if (!info) return;
             const badge = document.getElementById("runtime-badge");
             if (!badge) return;
@@ -247,8 +258,36 @@
             if (mt && info.cores) bits.push(info.cores + " cores");
             if (info.python) bits.push("py" + info.python);
             if (info.numpy) bits.push("np" + info.numpy);
+            if (info.pyrocko) bits.push("pyrocko " + info.pyrocko);
+            if (snufflerBadgeState.frameMs !== null) {
+                bits.push(formatFps(snufflerBadgeState.frameMs));
+            }
             badge.textContent = bits.join(" · ");
             badge.classList.add("show");
+        }
+
+        window.__snufflerFrameStats = function (frameMs) {
+            if (!Number.isFinite(frameMs) || frameMs < 0) return;
+            snufflerBadgeState.frameMs = frameMs;
+            const now = performance.now();
+            if (
+                snufflerBadgeState.frameBadgeLastMs === 0 ||
+                now - snufflerBadgeState.frameBadgeLastMs >= 250
+            ) {
+                snufflerBadgeState.frameBadgeLastMs = now;
+                updateSnufflerRuntimeBadge();
+            }
+        };
+
+        // Called by web/bridge.js when the Pyodide worker reports its booted
+        // runtime. Shows a subtle debug readout of the versions; the lead token is
+        // "wasm+openmp+simd" once threading is confirmed (pthreads read back from
+        // the live interpreter, so libomp + SIMD are in play) — it should always
+        // be, on this MT-only build; a bare "wasm" would signal threading failed.
+        window.__snufflerRuntime = function (info) {
+            if (!info) return;
+            snufflerBadgeState.runtime = info;
+            updateSnufflerRuntimeBadge();
         };
     </script>
 </body>

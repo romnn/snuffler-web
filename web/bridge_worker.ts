@@ -49,6 +49,9 @@ let pyodideReadyPromise: Promise<any> | null = null;
 let py: any = null;
 let bridge: any = null;
 let gfStoreCounter = 0;
+const GET_VIEW_METHOD = rpc("getView");
+const BRIDGE_PERF_LOG = false;
+type BridgePerf = Record<string, number>;
 
 function resolveUrl(path) {
   return new URL(path, self.location.href).href;
@@ -176,6 +179,7 @@ async function boot() {
           ),
           python: py.runPython("import sys; sys.version.split()[0]"),
           numpy: py.runPython("import numpy; numpy.__version__"),
+          pyrocko: py.runPython("import pyrocko; getattr(pyrocko, '__version__', 'unknown')"),
           cores: (self.navigator && self.navigator.hardwareConcurrency) || 0,
         });
       } catch (_e) {
@@ -196,25 +200,42 @@ async function boot() {
 // bridge.call() returns into the worker's postMessage payload. The result bytes
 // (the proto envelope — success variant OR BridgeError) always flow through;
 // the zero-copy ys buffer is transferred only when present (getView/getSpectrum).
-function bridgeResult(res) {
+function bridgeResult(res, perf: BridgePerf | null = null) {
   try {
+    const shapeT0 = performance.now();
+    const resultT0 = performance.now();
     const result = pyBytes(res.get("result")); // pyBytes owns + destroys the inner proxy
+    if (perf) {
+      perf.result_copy_ms = performance.now() - resultT0;
+      perf.result_bytes = result.byteLength;
+    }
     const out: Record<string, any> = { result: result.buffer, transfer: [result.buffer] };
     if (res.has("buffer")) {
       const ysProxy = res.get("buffer");
       let buf: any = null;
       try {
+        const viewT0 = performance.now();
         buf = ysProxy.getBuffer();
+        if (perf) perf.buffer_view_ms = performance.now() - viewT0;
         const d = buf.data;
+        const copyT0 = performance.now();
         const ys = ownedBytes(
           d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength)
         );
+        if (perf) {
+          perf.ys_copy_ms = performance.now() - copyT0;
+          perf.ys_bytes = ys.byteLength;
+        }
         out.ys = ys.buffer;
         out.transfer.push(ys.buffer);
       } finally {
         if (buf) buf.release();
         destroyMaybe(ysProxy);
       }
+    }
+    if (perf) {
+      perf.shape_ms = performance.now() - shapeT0;
+      out.perf = perf;
     }
     return out;
   } finally {
@@ -245,8 +266,16 @@ function callText(res) {
 // The ONE exception is mounting a live directory handle for a GF store: that is a
 // DOM object that can't ride a proto, so the worker mounts it into the Pyodide FS
 // and then relays GfStoreLabel for the registered store's label.
-async function handleRequest(msg) {
+async function handleRequest(msg, workerRecvMs: number) {
   await boot();
+  const tracePerf: BridgePerf | null =
+    BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
+      ? {
+          worker_recv_ms: workerRecvMs,
+          request_bytes: msg.request ? msg.request.byteLength || 0 : 0,
+          data_bytes: msg.data ? msg.data.byteLength || 0 : 0,
+        }
+      : null;
   if (msg.method === WORKER_MOUNT_GF_STORE) {
     gfStoreCounter += 1;
     const mount = "/gfstores/" + gfStoreCounter;
@@ -259,15 +288,20 @@ async function handleRequest(msg) {
     await py.mountNativeFS(mount, msg.handle);
     return { text: callText(await bridge.call_text(rpc("gfStoreLabel"), null, mount)) };
   }
-  return bridgeResult(await bridge.call(msg.method, msg.request, msg.data ?? null));
+  const pyCallT0 = performance.now();
+  const res = await bridge.call(msg.method, msg.request, msg.data ?? null);
+  if (tracePerf) tracePerf.py_call_ms = performance.now() - pyCallT0;
+  return bridgeResult(res, tracePerf);
 }
 
 self.onmessage = (event) => {
+  const workerRecvMs = performance.now();
   const msg = event.data || {};
-  handleRequest(msg)
+  handleRequest(msg, workerRecvMs)
     .then((result: any) => {
       const transfer = result.transfer || [];
       const { transfer: _transfer, ...payload } = result;
+      if (payload.perf) payload.perf.worker_post_epoch_ms = Date.now();
       self.postMessage({ id: msg.id, ok: true, ...payload }, transfer);
     })
     .catch((e) => {

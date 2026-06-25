@@ -30,6 +30,10 @@ message ViewParams {
   bool fix_scale_ranges = 25;
   bool show_scale_ranges = 26;
   bool show_scale_axes = 27;
+  optional double visible_tmin = 28;
+  optional double visible_tmax = 29;
+  optional double scale_tmin = 30;
+  optional double scale_tmax = 31;
 }
 
 message ViewTrack {

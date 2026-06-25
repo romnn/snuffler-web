@@ -3,8 +3,8 @@ pub use snuffler_proto::bridge::v1 as pb;
 // The decoded prost messages ARE the domain model, so there is no proto<->app
 // conversion layer here — only: (1) encode a request message to bytes, and
 // (2) unwrap the BridgeResult envelope (error variant -> Err(String), success
-// variant -> the contained pb message). The zero-copy `ys` buffer rides
-// out-of-band and is attached to ViewData/SpectrumData here, never in the proto.
+// variant -> the contained pb message). The `ys` buffer rides out-of-band and is
+// attached to ViewData/SpectrumData here, never in the proto.
 mod wasm {
     use super::pb;
     use snuffler_proto::prost::Message;

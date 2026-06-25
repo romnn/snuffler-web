@@ -44,7 +44,7 @@ impl prost_build::ServiceGenerator for BridgeClientGen {
             r#"
 /// Transport for the generated `BridgeServiceClient`: marshals an encoded
 /// request across the bridge boundary and returns the encoded `BridgeResult`
-/// (plus the out-of-band `ys` bytes for the two buffer-carrying methods). The
+/// (plus the out-of-band `ys` values for the two buffer-carrying methods). The
 /// frontend implements this over the wasm worker; native builds never call it.
 pub trait BridgeTransport {
     #[allow(async_fn_in_trait)]
@@ -54,7 +54,7 @@ pub trait BridgeTransport {
         &self,
         method: &str,
         request: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<u8>), String>;
+    ) -> Result<(Vec<u8>, Vec<f32>), String>;
 }
 
 fn encode_msg<M: ::prost::Message>(m: &M) -> Vec<u8> {
@@ -77,17 +77,6 @@ fn bridge_ok(bytes: &[u8], method: &str) -> Result<bridge_result::Result, String
         Some(other) => Ok(other),
         None => Err(format!("{method}: empty BridgeResult")),
     }
-}
-
-fn ys_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| {
-            let mut a = [0u8; 4];
-            a.copy_from_slice(c);
-            f32::from_le_bytes(a)
-        })
-        .collect()
 }
 
 /// Typed client for `BridgeService`, generated from the .proto. One method per
@@ -132,7 +121,7 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
             .unary_with_buffer("{wire}", {encode_expr})
             .await?;
         match bridge_ok(&bytes, "{wire}")? {{
-            bridge_result::Result::{variant}(m) => Ok((m, ys_f32(&ys))),
+            bridge_result::Result::{variant}(m) => Ok((m, ys)),
             _ => Err("{wire}: unexpected BridgeResult variant".to_owned()),
         }}
     }}

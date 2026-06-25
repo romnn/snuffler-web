@@ -12,10 +12,40 @@ use crate::view::markers::{MARKER_COLORS, Marker};
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = window, js_name = __snufflerFrameStats)]
+    fn js_snuffler_frame_stats(frame_ms: f64);
+}
+
+const FRAME_STATS_REPORT_INTERVAL_S: f64 = 0.25;
+const FRAME_STATS_EMA_ALPHA: f64 = 0.2;
+
 /// Supersampling factor for the resvg-backed PNG export: the output is this many
 /// times the on-screen point size per axis, giving a crisp print/retina image.
 #[cfg(feature = "svg-raster")]
 const PNG_EXPORT_SCALE: f32 = 2.0;
+
+// `npx` is a per-trace bin budget for Python's min/max envelope. The display-scale
+// bin budget keeps transport and renderer work bounded when zoomed far out.
+const MIN_VIEW_SAMPLE_BINS: f32 = 64.0;
+const MAX_VIEW_SAMPLE_BINS_PER_TRACE: f32 = 8192.0;
+const WIGGLE_BINS_PER_PHYSICAL_PIXEL: f32 = 1.0;
+const WATERFALL_BINS_PER_PHYSICAL_PIXEL: f32 = 1.0;
+const MAX_VISIBLE_WIGGLE_POINTS: f32 = 16_000.0;
+const MAX_VISIBLE_WATERFALL_CELLS: f32 = 400_000.0;
+const WIGGLE_POINTS_PER_BIN: f32 = 4.0;
+const WATERFALL_CELLS_PER_BIN: f32 = 2.0;
+const VIEW_TIME_OVERSCAN: f64 = 2.0;
+const VIEW_TIME_PAN_BUCKET_FRACTION: f64 = 0.5;
+
+fn bucketed_time_start(origin: f64, tmin: f64, bucket: f64) -> f64 {
+    if !bucket.is_finite() || bucket <= 0.0 {
+        return tmin;
+    }
+    origin + ((tmin - origin) / bucket).floor() * bucket
+}
 
 /// The egui application: UI state plus the bridge to pyrocko (via Pyodide).
 pub struct App {
@@ -49,7 +79,17 @@ pub struct App {
     /// export off-thread; otherwise it rasterizes synchronously (no receiver).
     #[cfg(all(feature = "svg-raster", feature = "threads"))]
     export_rx: Option<(std::sync::mpsc::Receiver<Option<Vec<u8>>>, String)>,
+    frame_stats_ms: Option<f64>,
+    frame_stats_last_report_s: f64,
 }
+
+#[cfg(target_arch = "wasm32")]
+fn report_frame_stats(frame_ms: f64) {
+    js_snuffler_frame_stats(frame_ms);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn report_frame_stats(_frame_ms: f64) {}
 
 fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
@@ -112,7 +152,33 @@ impl App {
             svg_request: false,
             #[cfg(all(feature = "svg-raster", feature = "threads"))]
             export_rx: None,
+            frame_stats_ms: None,
+            frame_stats_last_report_s: 0.0,
         }
+    }
+
+    fn update_frame_stats(&mut self, ui: &egui::Ui, frame: &eframe::Frame) {
+        let Some(cpu_usage) = frame.info().cpu_usage else {
+            return;
+        };
+        let frame_ms = f64::from(cpu_usage) * 1000.0;
+        if !frame_ms.is_finite() || frame_ms < 0.0 {
+            return;
+        }
+        let avg_ms = match self.frame_stats_ms {
+            Some(old) => old * (1.0 - FRAME_STATS_EMA_ALPHA) + frame_ms * FRAME_STATS_EMA_ALPHA,
+            None => frame_ms,
+        };
+        self.frame_stats_ms = Some(avg_ms);
+
+        let now_s = ui.input(|i| i.time);
+        if self.frame_stats_last_report_s > 0.0
+            && now_s - self.frame_stats_last_report_s < FRAME_STATS_REPORT_INTERVAL_S
+        {
+            return;
+        }
+        self.frame_stats_last_report_s = now_s;
+        report_frame_stats(avg_ms);
     }
 
     fn current_params(&self, npx: u32) -> ViewParams {
@@ -140,12 +206,83 @@ impl App {
             fix_scale_ranges: s.fix_scale_ranges,
             show_scale_ranges: s.show_scale_ranges,
             show_scale_axes: s.show_scale_axes,
+            visible_tmin: Some(s.tmin),
+            visible_tmax: Some(s.tmax),
+            scale_tmin: Some(s.tmin),
+            scale_tmax: Some(s.tmax),
             wf_abs: s.wf_abs,
             wf_integrate: s.wf_integrate,
             wf_color_scale: s.wf_color_scale.as_str().to_string(),
             track_offset: s.track_offset as u64,
             track_count: s.ntracks_shown as u64,
         }
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "overscan is a small constant multiple of an already-clamped render budget"
+    )]
+    fn current_view_params(&self, visible_npx: u32) -> ViewParams {
+        let mut params = self.current_params(visible_npx);
+        if self.state.view_mode != ViewMode::Wiggle {
+            return params;
+        }
+
+        let visible_tmin = self.state.tmin;
+        let visible_tmax = self.state.tmax;
+        let visible_window = (visible_tmax - visible_tmin).max(1e-9);
+        let data_window = visible_window * VIEW_TIME_OVERSCAN;
+        let origin = self.last_scene_bounds.map_or(0.0, |(tmin, _)| tmin);
+        let bucket = visible_window * VIEW_TIME_PAN_BUCKET_FRACTION;
+        let bucket_tmin = bucketed_time_start(origin, visible_tmin, bucket);
+
+        params.tmin = bucket_tmin - 0.5 * visible_window;
+        params.tmax = params.tmin + data_window;
+        params.npx = (f64::from(visible_npx) * VIEW_TIME_OVERSCAN).ceil() as u32;
+        if self.state.view_drag.is_some() {
+            // During pointer drags, keep the bridge key stable inside the
+            // overscanned bucket; autoscale still uses the exact visible window.
+            params.visible_tmin = Some(params.tmin);
+            params.visible_tmax = Some(params.tmax);
+        }
+        params
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "display dimensions and track counts are small positive UI values; the \
+                  rounded integer is a rendering budget, not domain data"
+    )]
+    fn view_sample_bins(&self, ui: &egui::Ui) -> u32 {
+        let ppp = ui.ctx().pixels_per_point();
+        let ppp = if ppp.is_finite() && ppp > 0.0 {
+            ppp
+        } else {
+            1.0
+        };
+        let visible_tracks = self.state.ntracks_shown.max(1) as f32;
+        let physical_width = ui.available_width().max(MIN_VIEW_SAMPLE_BINS) * ppp;
+        let (bins_per_pixel, emitted_per_bin, visible_cap) = match self.state.view_mode {
+            ViewMode::Wiggle => (
+                WIGGLE_BINS_PER_PHYSICAL_PIXEL,
+                WIGGLE_POINTS_PER_BIN,
+                MAX_VISIBLE_WIGGLE_POINTS,
+            ),
+            ViewMode::Waterfall => (
+                WATERFALL_BINS_PER_PHYSICAL_PIXEL,
+                WATERFALL_CELLS_PER_BIN,
+                MAX_VISIBLE_WATERFALL_CELLS,
+            ),
+        };
+        let per_trace_visible_cap = visible_cap / (visible_tracks * emitted_per_bin);
+        let bins = (physical_width * bins_per_pixel)
+            .min(MAX_VIEW_SAMPLE_BINS_PER_TRACE)
+            .min(per_trace_visible_cap.max(MIN_VIEW_SAMPLE_BINS))
+            .max(MIN_VIEW_SAMPLE_BINS);
+        bins.ceil() as u32
     }
 
     fn current_snuffling_params(&self, npx: u32) -> SnufflingRequestParams {
@@ -461,7 +598,8 @@ impl eframe::App for App {
         clippy::cast_precision_loss,
         reason = "pixel sizes are small non-negative values; truncation/precision loss is intended"
     )]
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.update_frame_stats(ui, frame);
         let ctx = ui.ctx().clone();
 
         // Fit the view window whenever a genuinely new scene is loaded.
@@ -588,19 +726,21 @@ impl eframe::App for App {
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                let npx = ui.available_width().max(64.0) as u32;
-                let params = self.current_params(npx);
-                self.bridge.ensure_view(&ctx, params);
+                let npx = self.view_sample_bins(ui);
                 let epoch = self.bridge.view_epoch();
-                let view = self.bridge.view();
-                waveform::show(
-                    ui,
-                    &mut self.state,
-                    view.as_deref(),
-                    &mut self.wf_cache,
-                    epoch,
-                    scene_range,
-                );
+                {
+                    let view = self.bridge.view();
+                    waveform::show(
+                        ui,
+                        &mut self.state,
+                        view.as_deref(),
+                        &mut self.wf_cache,
+                        epoch,
+                        scene_range,
+                    );
+                }
+                let params = self.current_view_params(npx);
+                self.bridge.ensure_view(&ctx, params);
             });
         self.last_waveform_rect = central.response.rect;
 

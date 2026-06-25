@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 import traceback
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -65,9 +66,14 @@ _REDUCE: Optional[str] = None
 _DATA_GEN = 0
 _RESPONSE_GEN = 0
 _VIEW_CACHE_LIMIT = 256
+_MIN_DECIMATION_BINS = 16
+_MAX_DECIMATION_BINS = 8192
+_VIEW_PERF_LOG_INTERVAL_S = 1.0
+_VIEW_PERF_SLOW_MS = 25.0
 _VIEW_CACHE: "OrderedDict[Tuple[Any, ...], Tuple[float, float, np.ndarray]]" = OrderedDict()
 _OLD_DATA_RANGES: Dict[Any, Tuple[float, float]] = {}
 _OLD_DATA_RANGE_CONTEXT: Optional[Tuple[Any, ...]] = None
+_LAST_VIEW_PERF_LOG_S = 0.0
 
 
 def _clear_view_cache() -> None:
@@ -245,7 +251,25 @@ def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> sc
     return _scene_meta()
 
 
-def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, float]:
+def _stable_decimation_stride(samples_per_bin: int) -> int:
+    """Choose a stable stride so tiny zoom changes do not constantly re-bin."""
+    stride = max(1, int(samples_per_bin))
+    if stride <= 1:
+        return 1
+    value = 1.0
+    step = 2.0**0.25
+    while value < stride:
+        value *= step
+    return max(1, int(math.ceil(value)))
+
+
+def _decimate(
+    y: np.ndarray,
+    deltat: float,
+    npx: int,
+    cap_bins: bool = True,
+    sample_offset: int = 0,
+) -> Tuple[np.ndarray, int, float]:
     """Return raw samples or a signal-preserving min/max envelope.
 
     ``dt > 0`` means the payload is raw uniformly-spaced samples. ``dt == 0``
@@ -255,36 +279,76 @@ def _decimate(y: np.ndarray, deltat: float, npx: int) -> Tuple[np.ndarray, int, 
     trace without smoothing over peaks.
     """
     n = len(y)
-    npx = max(npx, 16)
+    npx = max(npx, _MIN_DECIMATION_BINS)
+    if cap_bins:
+        npx = min(npx, _MAX_DECIMATION_BINS)
     if n <= npx * 4:
         return np.ascontiguousarray(y, dtype="<f4"), n, deltat
 
-    stride = max(1, int(math.ceil(n / npx)))
-    bins = int(math.ceil(n / stride))
-    out = np.empty(bins * 8, dtype="<f4")
-    pos = 0
-    for start in range(0, n, stride):
-        stop = min(n, start + stride)
-        block = y[start:stop]
-        if block.size == 0:
-            continue
-        candidates = [
-            start,
-            start + int(np.argmin(block)),
-            start + int(np.argmax(block)),
-            stop - 1,
-        ]
-        last_idx = -1
-        for idx in sorted(candidates):
-            if idx == last_idx:
-                continue
-            out[pos] = idx * deltat
-            out[pos + 1] = float(y[idx])
-            pos += 2
-            last_idx = idx
+    stride = _stable_decimation_stride(int(math.ceil(n / npx)))
+    pieces: List[np.ndarray] = []
+    sample_offset = max(0, int(sample_offset))
+    global_start = sample_offset
+    global_stop = sample_offset + n
+    first_bin = global_start // stride
+    last_bin = (global_stop + stride - 1) // stride
 
-    out = out[:pos]
-    return out, pos // 2, 0.0
+    def edge_indices(bin_idx: int) -> Optional[np.ndarray]:
+        bin_start = bin_idx * stride
+        start = max(0, bin_start - global_start)
+        stop = min(n, bin_start + stride - global_start)
+        if stop <= start:
+            return None
+        block = y[start:stop]
+        return np.unique(
+            np.array(
+                (
+                    start,
+                    start + int(np.argmin(block)),
+                    start + int(np.argmax(block)),
+                    stop - 1,
+                ),
+                dtype=np.int64,
+            )
+        )
+
+    full_first = first_bin + int(global_start > first_bin * stride)
+    full_last = last_bin - int(global_stop < last_bin * stride)
+
+    first_edge = edge_indices(first_bin) if first_bin < full_first else None
+    if first_edge is not None:
+        pieces.append(first_edge)
+
+    full_bins = max(0, full_last - full_first)
+    if full_bins:
+        local_start = full_first * stride - global_start
+        blocks = y[local_start : local_start + full_bins * stride].reshape(full_bins, stride)
+        starts = local_start + np.arange(full_bins, dtype=np.int64) * stride
+        idx4 = np.sort(
+            np.stack(
+                (
+                    starts,
+                    starts + np.argmin(blocks, axis=1),
+                    starts + np.argmax(blocks, axis=1),
+                    starts + stride - 1,
+                ),
+                axis=1,
+            ),
+            axis=1,
+        )
+        keep = np.ones(idx4.shape, dtype=bool)
+        keep[:, 1:] = idx4[:, 1:] != idx4[:, :-1]
+        pieces.append(idx4[keep])
+
+    last_edge = edge_indices(last_bin - 1) if full_last < last_bin else None
+    if last_edge is not None and (first_edge is None or last_bin - 1 != first_bin):
+        pieces.append(last_edge)
+
+    idx = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
+    out = np.empty(idx.size * 2, dtype="<f4")
+    out[0::2] = idx.astype(np.float64) * deltat
+    out[1::2] = y[idx].astype("<f4", copy=False)
+    return out, int(idx.size), 0.0
 
 
 def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace]:
@@ -601,14 +665,14 @@ def _slice_segment(
     tmin: float,
     tmax: float,
     sample_support: float = 0.0,
-) -> Optional[Tuple[np.ndarray, float, float]]:
+) -> Optional[Tuple[np.ndarray, float, float, int]]:
     seg_tmin, deltat, y = entry
     pad = max(0.0, float(sample_support)) * deltat
     start = max(0, int(math.floor((tmin - pad - seg_tmin) / deltat)))
     stop = min(len(y), int(math.ceil((tmax + pad - seg_tmin) / deltat)) + 1)
     if stop <= start:
         return None
-    return y[start:stop], seg_tmin + start * deltat, deltat
+    return y[start:stop], seg_tmin + start * deltat, deltat, start
 
 
 def _display_time_span(tr: ptrace.Trace) -> Tuple[float, float]:
@@ -649,6 +713,46 @@ def _waterfall_trace(
     return np.ascontiguousarray(data, dtype="<f4"), float(deltat) * float(step)
 
 
+def _maybe_log_view_perf(
+    mode: str,
+    tmin: float,
+    tmax: float,
+    npx: int,
+    track_offset: int,
+    track_count: int,
+    total_tracks: int,
+    wanted_tracks: int,
+    sample_tracks: int,
+    y_floats: int,
+    t0: float,
+    t_visible: float,
+    t_prepare: float,
+    t_loop: float,
+    t_scale: float,
+    t_concat: float,
+    t_done: float,
+) -> None:
+    global _LAST_VIEW_PERF_LOG_S
+    total_ms = (t_done - t0) * 1000.0
+    now = time.monotonic()
+    if total_ms < _VIEW_PERF_SLOW_MS and now - _LAST_VIEW_PERF_LOG_S < _VIEW_PERF_LOG_INTERVAL_S:
+        return
+    _LAST_VIEW_PERF_LOG_S = now
+    print(
+        "[py.view] "
+        f"mode={mode} window_s={tmax - tmin:.3f} npx={npx} "
+        f"track_page={track_offset}..{track_offset + track_count} "
+        f"total_tracks={total_tracks} wanted_tracks={wanted_tracks} "
+        f"sample_tracks={sample_tracks} ys_floats={y_floats} "
+        f"ys_mb={y_floats * 4.0 / 1_000_000.0:.3f} "
+        f"total_ms={total_ms:.2f} visible_ms={(t_visible - t0) * 1000.0:.2f} "
+        f"prep_ms={(t_prepare - t_visible) * 1000.0:.2f} "
+        f"loop_ms={(t_loop - t_prepare) * 1000.0:.2f} "
+        f"scale_ms={(t_scale - t_loop) * 1000.0:.2f} "
+        f"concat_ms={(t_concat - t_scale) * 1000.0:.2f}"
+    )
+
+
 def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
     """Compute the requested view (wiggle waveforms or a Qt-style waterfall).
 
@@ -657,8 +761,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     For the waterfall it holds per-track normalized amplitude strips for the
     requested track page.
     """
+    perf_t0 = time.monotonic()
     tmin = float(req.tmin)
     tmax = float(req.tmax)
+    visible_tmin = float(req.visible_tmin) if req.HasField("visible_tmin") else tmin
+    visible_tmax = float(req.visible_tmax) if req.HasField("visible_tmax") else tmax
+    scale_tmin = float(req.scale_tmin) if req.HasField("scale_tmin") else visible_tmin
+    scale_tmax = float(req.scale_tmax) if req.HasField("scale_tmax") else visible_tmax
     npx = int(req.npx)
     track_offset = max(0, int(req.track_offset))
     track_count = max(0, int(req.track_count))
@@ -681,6 +790,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     if gain <= 0.0 or not math.isfinite(gain):
         gain = 1.0
     fix_scale_ranges = bool(req.fix_scale_ranges)
+    if (
+        fix_scale_ranges
+        or scale_tmax <= scale_tmin
+        or not math.isfinite(scale_tmin)
+        or not math.isfinite(scale_tmax)
+    ):
+        scale_tmin, scale_tmax = visible_tmin, visible_tmax
     show_scale_ranges = bool(req.show_scale_ranges)
     show_scale_axes = bool(req.show_scale_axes)
     wf_abs = bool(req.wf_abs)
@@ -688,6 +804,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     scale_context = _scale_context(req)
 
     traces = list(_visible_traces())
+    perf_visible = time.monotonic()
     if degap:
         try:
             traces = ptrace.degapper(traces)
@@ -697,20 +814,28 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     work = [traces[i] for i in order]
     work = _apply_rotation(work, rotate)
     work = _remove_response(work, remove_response)
+    perf_prepare = time.monotonic()
 
     meta = view_pb2.ViewMeta(view_tmin=tmin, view_tmax=tmax)
     ys_parts: List[np.ndarray] = []
     range_traces: List[ptrace.Trace] = []
+    data_ranges: Dict[Any, Tuple[float, float]] = {}
+    fast_individual_minmax = base == "minmax" and scaling_group == "individual"
     offset = 0
     view_idx = 0
+    wanted_tracks = 0
+    sample_tracks = 0
     for tr_idx, tr in enumerate(work):
         display_tmin, display_tmax = _display_time_span(tr)
-        if display_tmax < tmin or display_tmin > tmax:
+        if display_tmax < visible_tmin or display_tmin > visible_tmax:
             continue
+        wanted_tracks += 1
 
         net, sta, loc, cha = tr.nslc_id
         label = ".".join(tr.nslc_id)
         want_samples = track_offset <= view_idx < track_end
+        if want_samples:
+            sample_tracks += 1
         view_idx += 1
         track_key = (
             tr_idx,
@@ -738,7 +863,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 else:
                     sliced = None
                 if sliced is not None:
-                    yview, ytmin, deltat = sliced
+                    yview, ytmin, deltat, _sample_offset = sliced
                     strip, dt = _waterfall_trace(yview, deltat, npx, wf_abs, wf_integrate)
                     if strip.size:
                         flat = strip
@@ -765,23 +890,42 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 ys_parts.append(np.ascontiguousarray(flat, dtype="<f4"))
                 offset += int(nf * nt)
         else:
-            entry = _processed_trace(tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
-            if entry is None:
-                continue
-            sliced = _slice_segment(entry, tmin, tmax, 4.0)
-            if sliced is None:
-                continue
-            yview, ytmin, deltat = sliced
-            range_traces.append(_range_trace(tr.nslc_id, ytmin, deltat, yview))
             count = 0
-            dt = deltat
-            t0_rel = ytmin - tmin
+            dt = float(tr.deltat)
+            t0_rel = max(display_tmin, tmin) - tmin
             payload_len = 0
-            if want_samples:
-                target = npx if allow_ds else len(yview)
-                y, count, dt = _decimate(yview, deltat, target)
-                ys_parts.append(np.ascontiguousarray(y, dtype="<f4"))
-                payload_len = int(y.size)
+            need_group_range = scaling_group != "individual"
+            if want_samples or need_group_range:
+                entry = _processed_trace(tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
+                if entry is None:
+                    if want_samples:
+                        continue
+                else:
+                    data_sliced = _slice_segment(entry, tmin, tmax, 4.0) if want_samples else None
+                    scale_sliced = (
+                        _slice_segment(entry, scale_tmin, scale_tmax, 0.0)
+                        if fast_individual_minmax or need_group_range
+                        else None
+                    )
+                    if data_sliced is None and want_samples:
+                        continue
+                    if scale_sliced is not None:
+                        yrange, yrmin, rdt, _range_offset = scale_sliced
+                        if fast_individual_minmax:
+                            data_ranges[tr.nslc_id] = (
+                                float(np.min(yrange)),
+                                float(np.max(yrange)),
+                            )
+                        else:
+                            range_traces.append(_range_trace(tr.nslc_id, yrmin, rdt, yrange))
+                    if data_sliced is not None:
+                        yview, ytmin, deltat, sample_offset = data_sliced
+                        dt = deltat
+                        t0_rel = ytmin - tmin
+                        target = npx if allow_ds else len(yview)
+                        y, count, dt = _decimate(yview, deltat, target, allow_ds, sample_offset)
+                        ys_parts.append(np.ascontiguousarray(y, dtype="<f4"))
+                        payload_len = int(y.size)
             t = meta.tracks.add()
             t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
             t.label = label
@@ -794,6 +938,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if want_samples:
                 offset += payload_len
 
+    perf_loop = time.monotonic()
     if mode == "waterfall":
         if wf_abs:
             lo = min((t.ymin for t in meta.tracks if t.nf), default=0.0)
@@ -804,23 +949,24 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 if t.nf:
                     t.ymin = lo
                     t.ymax = hi
-    elif range_traces:
+    elif range_traces or data_ranges:
         global _OLD_DATA_RANGE_CONTEXT
-        mode_param, outer_mode = _scaling_base_modes(base)
+        if range_traces:
+            mode_param, outer_mode = _scaling_base_modes(base)
 
-        def scaling_key(tr: ptrace.Trace) -> Any:
-            return _trace_scaling_key(tr, scaling_group)
+            def scaling_key(tr: ptrace.Trace) -> Any:
+                return _trace_scaling_key(tr, scaling_group)
 
-        trace_minmax = cast(TraceRangeFunc, getattr(ptrace, "minmax"))
-        raw_ranges = trace_minmax(
-            range_traces,
-            key=scaling_key,
-            mode=mode_param,
-            outer_mode=outer_mode,
-        )
-        data_ranges: Dict[Any, Tuple[float, float]] = {
-            key: (float(lo), float(hi)) for key, (lo, hi) in raw_ranges.items()
-        }
+            trace_minmax = cast(TraceRangeFunc, getattr(ptrace, "minmax"))
+            raw_ranges = trace_minmax(
+                range_traces,
+                key=scaling_key,
+                mode=mode_param,
+                outer_mode=outer_mode,
+            )
+            data_ranges.update(
+                {key: (float(lo), float(hi)) for key, (lo, hi) in raw_ranges.items()}
+            )
         if fix_scale_ranges and _OLD_DATA_RANGE_CONTEXT == scale_context:
             data_ranges.update(_OLD_DATA_RANGES)
         elif not fix_scale_ranges:
@@ -853,10 +999,31 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             t.ymean = 0.5 * (ymin + ymax)
             t.yscale = max(gain * half, 1e-12)
 
+    perf_scale = time.monotonic()
     ys = (
         np.ascontiguousarray(np.concatenate(ys_parts), dtype="<f4")
         if ys_parts
         else np.zeros(0, dtype="<f4")
+    )
+    perf_concat = time.monotonic()
+    _maybe_log_view_perf(
+        mode,
+        tmin,
+        tmax,
+        npx,
+        track_offset,
+        track_count,
+        len(work),
+        wanted_tracks,
+        sample_tracks,
+        int(ys.size),
+        perf_t0,
+        perf_visible,
+        perf_prepare,
+        perf_loop,
+        perf_scale,
+        perf_concat,
+        time.monotonic(),
     )
     return meta, ys
 

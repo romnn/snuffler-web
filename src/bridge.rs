@@ -43,8 +43,8 @@ pub fn set_cake_mode(p: &mut SnufflingRequestParams, mode: &str) {
     }
 }
 
-/// A view: prost metadata plus the out-of-band zero-copy `f32` sample buffer
-/// (`ys` rides alongside the proto, never inside it — see the worker transfer).
+/// A view: prost metadata plus the out-of-band `f32` sample buffer (`ys` rides
+/// alongside the proto, never inside it — see the worker transfer).
 #[derive(Clone, Debug, Default)]
 pub struct ViewData {
     pub meta: ViewMeta,
@@ -108,9 +108,10 @@ struct Inner {
     pending_cake_model: Option<String>,
     map: Option<MapData>,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
-    view_in_flight: bool,
+    view_in_flight: Option<ViewParams>,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
+    view_request_gen: u64,
     /// A pending `goto <time>` target the App should jump the view to.
     pending_goto: Option<f64>,
     /// Feedback from the last ':' command (an error or confirmation) to show.
@@ -228,7 +229,7 @@ mod web {
         // The single transport seam for every unary proto RPC: (method, request
         // bytes, optional out-of-band data bytes) -> { result: BridgeResult bytes,
         // ys: Uint8Array }. bridge.js forwards it to the Pyodide worker, which runs
-        // bridge.py and ships the zero-copy ys buffer alongside the proto. This is
+        // bridge.py and ships the out-of-band ys buffer alongside the proto. This is
         // the custom transport the typed service client rides on.
         #[wasm_bindgen(js_name = call, catch)]
         async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>)
@@ -280,11 +281,63 @@ mod web {
         js_bytes(val, key)
     }
 
+    fn object_f32(obj: &JsValue, key: &str) -> Result<Vec<f32>, String> {
+        use wasm_bindgen::JsCast;
+
+        let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(jsval_to_string)?;
+        let arr = val
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| format!("{key} is not a Uint8Array"))?;
+        if arr.byte_length() % 4 != 0 {
+            return Err(format!("{key} byte length is not divisible by 4"));
+        }
+        let values = arr.byte_length() / 4;
+        Ok(js_sys::Float32Array::new_with_byte_offset_and_length(
+            &arr.buffer(),
+            arr.byte_offset(),
+            values,
+        )
+        .to_vec())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::cast_precision_loss,
+        reason = "transport diagnostics convert byte counts to MB and keep separate phase timings"
+    )]
+    fn log_transport_perf(
+        method: &str,
+        request_bytes: usize,
+        result_bytes: usize,
+        ys_bytes: usize,
+        js_call_ms: f64,
+        result_copy_ms: f64,
+        ys_copy_ms: f64,
+        total_ms: f64,
+    ) {
+        if !method.ends_with("/GetView") {
+            return;
+        }
+        log::info!(
+            "[bridge.transport] method=getView request_bytes={} result_bytes={} ys_bytes={} ys_mb={:.3} js_call_ms={:.2} rust_result_copy_ms={:.2} rust_ys_copy_ms={:.2} total_ms={:.2}",
+            request_bytes,
+            result_bytes,
+            ys_bytes,
+            ys_bytes as f64 / 1_000_000.0,
+            js_call_ms,
+            result_copy_ms,
+            ys_copy_ms,
+            total_ms,
+        );
+    }
+
     /// The frontend's `BridgeTransport`: the generated typed client marshals each
     /// encoded request through `js_call` to the worker and reads back the
     /// `BridgeResult` bytes (and the out-of-band `ys` for buffer methods). Unit
     /// struct — the worker holds all session state.
     struct WorkerTransport;
+
+    const BRIDGE_TRANSPORT_PERF_LOG: bool = false;
 
     impl pb::BridgeTransport for WorkerTransport {
         async fn unary(&self, method: &str, request: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -298,16 +351,51 @@ mod web {
             &self,
             method: &str,
             request: Vec<u8>,
-        ) -> Result<(Vec<u8>, Vec<u8>), String> {
+        ) -> Result<(Vec<u8>, Vec<f32>), String> {
+            if !BRIDGE_TRANSPORT_PERF_LOG {
+                let obj = js_call(method, request, Vec::new())
+                    .await
+                    .map_err(jsval_to_string)?;
+                return Ok((object_uint8(&obj, "result")?, object_f32(&obj, "ys")?));
+            }
+            let t0 = js_sys::Date::now();
+            let request_bytes = request.len();
             let obj = js_call(method, request, Vec::new())
                 .await
                 .map_err(jsval_to_string)?;
-            Ok((object_uint8(&obj, "result")?, object_uint8(&obj, "ys")?))
+            let js_done = js_sys::Date::now();
+            let result = object_uint8(&obj, "result")?;
+            let result_done = js_sys::Date::now();
+            let ys = object_f32(&obj, "ys")?;
+            let done = js_sys::Date::now();
+            log_transport_perf(
+                method,
+                request_bytes,
+                result.len(),
+                ys.len() * 4,
+                js_done - t0,
+                result_done - js_done,
+                done - result_done,
+                done - t0,
+            );
+            Ok((result, ys))
         }
     }
 
     fn client() -> pb::BridgeServiceClient<WorkerTransport> {
         pb::BridgeServiceClient::new(WorkerTransport)
+    }
+
+    fn invalidate_view_request(i: &mut Inner) {
+        i.applied = None;
+        i.desired = None;
+        i.view_in_flight = None;
+        i.view_request_gen = i.view_request_gen.wrapping_add(1);
+    }
+
+    fn clear_view(i: &mut Inner) {
+        i.view = None;
+        invalidate_view_request(i);
     }
 
     fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
@@ -388,7 +476,7 @@ mod web {
         clippy::cast_precision_loss,
         reason = "sample/pixel counts to f64 for a diagnostic ratio; precision loss is irrelevant"
     )]
-    fn log_view_debug(params: &ViewParams, view: &ViewData) {
+    fn log_view_debug(params: &ViewParams, view: &ViewData, request_ms: f64) {
         if params.mode != "wiggle" {
             return;
         }
@@ -409,8 +497,14 @@ mod web {
             .filter(|track| track.nf == 0 && track.count > 0 && track.dt < 0.0)
             .count();
         let window = params.tmax - params.tmin;
+        let ys_mb = view.ys.len() as f64 * 4.0 / 1_000_000.0;
+        let throughput = if request_ms > 0.0 {
+            ys_mb / (request_ms / 1000.0)
+        } else {
+            0.0
+        };
         log::info!(
-            "[view] t=[{:.6},{:.6}] dt_window={:.3}s npx={} track_page={}..{} returned_tracks={} ys={} rendered_modes raw={} points={} legacy={}",
+            "[view] t=[{:.6},{:.6}] dt_window={:.3}s npx={} track_page={}..{} returned_tracks={} ys={} ys_mb={:.3} request_ms={:.2} effective_mb_s={:.1} rendered_modes raw={} points={} legacy={}",
             params.tmin,
             params.tmax,
             window,
@@ -419,6 +513,9 @@ mod web {
             params.track_offset + params.track_count,
             view.meta.tracks.len(),
             view.ys.len(),
+            ys_mb,
+            request_ms,
+            throughput,
             raw_tracks,
             point_tracks,
             legacy_tracks,
@@ -482,8 +579,7 @@ mod web {
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
-                            i.view = None;
-                            i.applied = None;
+                            clear_view(&mut i);
                         }
                         Err(e) => i.status = Status::Error(e),
                     }
@@ -512,8 +608,7 @@ mod web {
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
-                            i.view = None;
-                            i.applied = None;
+                            clear_view(&mut i);
                         }
                         Err(e) => i.status = Status::Error(e),
                     }
@@ -535,8 +630,7 @@ mod web {
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
-                            i.view = None;
-                            i.applied = None;
+                            clear_view(&mut i);
                         }
                         Err(e) => i.status = Status::Error(e),
                     }
@@ -596,8 +690,7 @@ mod web {
                         if let Some(scene) = r.scene.take() {
                             i.scene = Some(scene);
                             i.scene_gen += 1;
-                            i.view = None;
-                            i.applied = None;
+                            clear_view(&mut i);
                             i.status = Status::Ready;
                         }
                         i.snuffling = Some(r);
@@ -623,8 +716,7 @@ mod web {
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
-                            i.view = None;
-                            i.applied = None;
+                            clear_view(&mut i);
                         }
                         Err(e) => i.status = Status::Error(e),
                     }
@@ -647,8 +739,7 @@ mod web {
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
-                            i.view = None;
-                            i.applied = None;
+                            clear_view(&mut i);
                         }
                         Err(e) => i.status = Status::Error(e),
                     }
@@ -801,7 +892,7 @@ mod web {
                         "scene" => {
                             if let Some(scene) = r.scene {
                                 i.scene = Some(scene);
-                                i.applied = None; // re-dispatch without refitting time
+                                invalidate_view_request(&mut i); // re-dispatch without refitting time
                             }
                         }
                         "error" => i.command_msg = r.message,
@@ -833,7 +924,7 @@ mod web {
                         i.snuffling = Some(r);
                         i.snuffling_gen += 1;
                     }
-                    i.applied = None; // re-dispatch so distance/azimuth sort recomputes
+                    invalidate_view_request(&mut i); // re-dispatch so distance/azimuth sort recomputes
                 }
                 ctx.request_repaint();
             });
@@ -860,7 +951,7 @@ mod web {
                         i.snuffling = Some(r);
                         i.snuffling_gen += 1;
                     }
-                    i.applied = None; // re-dispatch so deconvolution applies
+                    invalidate_view_request(&mut i); // re-dispatch so deconvolution applies
                 }
                 ctx.request_repaint();
             });
@@ -883,8 +974,7 @@ mod web {
                                     i.scene = Some(scene);
                                     i.scene_gen += 1;
                                     i.status = Status::Ready;
-                                    i.view = None;
-                                    i.applied = None;
+                                    clear_view(&mut i);
                                 }
                                 Err(e) => i.status = Status::Error(e),
                             },
@@ -1028,39 +1118,78 @@ mod web {
                 if !matches!(i.status, Status::Ready) {
                     return;
                 }
-                i.desired = Some(params);
-                if i.view_in_flight || i.applied.as_ref() == i.desired.as_ref() {
+                if i.applied.as_ref() == Some(&params) {
+                    if i.view_in_flight.is_none() {
+                        i.desired = None;
+                    } else {
+                        i.desired = Some(params);
+                        ctx.request_repaint_after(std::time::Duration::from_millis(17));
+                    }
                     return;
                 }
-                i.view_in_flight = true;
+                if i.view_in_flight.as_ref() == Some(&params) {
+                    i.desired = None;
+                    ctx.request_repaint_after(std::time::Duration::from_millis(17));
+                    return;
+                }
+                i.desired = Some(params);
+                if i.view_in_flight.is_some() {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(17));
+                    return;
+                }
             }
             self.dispatch_view(ctx);
         }
 
         fn dispatch_view(&self, ctx: &egui::Context) {
-            let Some(params) = self.inner.borrow().desired.clone() else {
-                return;
+            let (params, request_gen) = {
+                let mut i = self.inner.borrow_mut();
+                if i.view_in_flight.is_some() {
+                    return;
+                }
+                let Some(params) = i.desired.take() else {
+                    return;
+                };
+                if i.applied.as_ref() == Some(&params) {
+                    return;
+                }
+                i.view_in_flight = Some(params.clone());
+                (params, i.view_request_gen)
             };
+            ctx.request_repaint_after(std::time::Duration::from_millis(17));
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             let me = self.clone();
             spawn_local(async move {
+                let t0 = js_sys::Date::now();
                 let parsed = client()
                     .get_view(params.clone())
                     .await
                     .map(|(meta, ys)| ViewData { meta, ys });
+                let request_ms = js_sys::Date::now() - t0;
                 {
                     let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(vd) => {
-                            log_view_debug(&params, &vd);
-                            i.view = Some(vd);
-                            i.view_epoch += 1;
-                            i.applied = Some(params);
+                    if i.view_request_gen == request_gen {
+                        match parsed {
+                            Ok(vd) => {
+                                log_view_debug(&params, &vd, request_ms);
+                                if i.desired.as_ref().is_none_or(|desired| desired == &params) {
+                                    i.view = Some(vd);
+                                    i.view_epoch += 1;
+                                    i.applied = Some(params.clone());
+                                    if i.desired.as_ref() == Some(&params) {
+                                        i.desired = None;
+                                    }
+                                }
+                            }
+                            Err(e) => i.status = Status::Error(e),
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        if i.view_in_flight.as_ref() == Some(&params) {
+                            i.view_in_flight = None;
+                        }
+                    } else if i.view_in_flight.as_ref() == Some(&params) {
+                        i.view_in_flight = None;
                     }
-                    i.view_in_flight = false;
                 }
                 ctx.request_repaint();
                 me.maybe_redispatch(&ctx);
@@ -1070,13 +1199,12 @@ mod web {
         fn maybe_redispatch(&self, ctx: &egui::Context) {
             let need = {
                 let mut i = self.inner.borrow_mut();
-                if !i.view_in_flight
-                    && i.desired.is_some()
-                    && i.applied.as_ref() != i.desired.as_ref()
-                {
-                    i.view_in_flight = true;
+                if i.view_in_flight.is_some() {
+                    false
+                } else if i.desired.is_some() && i.applied.as_ref() != i.desired.as_ref() {
                     true
                 } else {
+                    i.desired = None;
                     false
                 }
             };
