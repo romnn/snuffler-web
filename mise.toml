@@ -24,7 +24,8 @@ task = "3.51.1"          # go-task: the check:*/lint:* tasks in taskfile.yaml (C
 buf = "1.71.0"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
 protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
                          # the runtime on both paths; build.rs (prost) + buf generate use it
-"ubi:trunk-rs/trunk" = "0.21.14"
+"github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc" }  # provides `cargo fc`
+"github:trunk-rs/trunk" = "0.21.14"
 # binaryen/wasm-opt for the trunk post-build hook (see Trunk.toml). The
 # emsdk-bundled wasm-opt is too old for the post-MVP wasm features modern rustc
 # emits, so we pin a recent binaryen here for a reproducible build.
