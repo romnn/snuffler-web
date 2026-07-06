@@ -1,0 +1,130 @@
+{
+  "models": [
+    {
+      "batch_size": 256,
+      "blinding": [
+        250,
+        250
+      ],
+      "component_order": "ZNE",
+      "default_args": {
+        "P_threshold": 0.08639824281948567,
+        "S_threshold": 0.1194333034644735,
+        "blinding": [
+          250,
+          250
+        ]
+      },
+      "file": "phasenet_instance.onnx",
+      "filter_args": null,
+      "filter_kwargs": null,
+      "in_samples": 3001,
+      "labels": [
+        "P",
+        "S",
+        "N"
+      ],
+      "model": "PhaseNet",
+      "norm": "peak",
+      "norm_amp_per_comp": false,
+      "norm_detrend": false,
+      "output_layout": "channels_first",
+      "output_type": "array",
+      "overlap": 1500,
+      "pred_sample": [
+        0,
+        3001
+      ],
+      "sampling_rate": 100.0,
+      "stacking": "avg",
+      "stride": 1,
+      "weights": "instance",
+      "weights_version": "2"
+    },
+    {
+      "batch_size": 16,
+      "blinding": [
+        500,
+        500
+      ],
+      "component_order": "ZNE",
+      "default_args": {
+        "P_threshold": 0.1,
+        "S_threshold": 0.1,
+        "detection_threshold": 0.3
+      },
+      "file": "eqtransformer_original.onnx",
+      "filter_args": [
+        "bandpass"
+      ],
+      "filter_kwargs": {
+        "corners": 2,
+        "freqmax": 45,
+        "freqmin": 1,
+        "zerophase": true
+      },
+      "in_samples": 6000,
+      "labels": [
+        "Detection",
+        "P",
+        "S"
+      ],
+      "model": "EQTransformer",
+      "norm": "std",
+      "norm_amp_per_comp": false,
+      "norm_detrend": false,
+      "output_layout": "channels_first",
+      "output_type": "array",
+      "overlap": 3000,
+      "pred_sample": [
+        0,
+        6000
+      ],
+      "sampling_rate": 100.0,
+      "stacking": "max",
+      "stride": 1,
+      "weights": "original",
+      "weights_version": "3"
+    },
+    {
+      "batch_size": 512,
+      "blinding": [
+        0,
+        0
+      ],
+      "component_order": "ZNE",
+      "default_args": {
+        "P_threshold": 0.7404188555633764,
+        "S_threshold": 0.7535226138176656
+      },
+      "file": "gpd_stead.onnx",
+      "filter_args": [
+        "highpass"
+      ],
+      "filter_kwargs": {
+        "freq": 0.5
+      },
+      "in_samples": 400,
+      "labels": [
+        "P",
+        "S",
+        "N"
+      ],
+      "model": "GPD",
+      "norm": "",
+      "norm_amp_per_comp": false,
+      "norm_detrend": false,
+      "output_layout": "channels_first",
+      "output_type": "point",
+      "overlap": 0,
+      "pred_sample": 200,
+      "sampling_rate": 100.0,
+      "stacking": "avg",
+      "stride": 10,
+      "weights": "stead",
+      "weights_version": "1"
+    }
+  ],
+  "onnx_opset": 17,
+  "seisbench_version": "0.11.7"
+}
