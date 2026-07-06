@@ -48,9 +48,11 @@ class Trace:
     ) -> Trace: ...
     def transfer(
         self,
-        tfade: float,
-        freqlimits: tuple[float, float, float, float],
-        transfer_function: Any,
+        tfade: float = ...,
+        freqlimits: tuple[float, float, float, float] | None = ...,
+        transfer_function: Any = ...,
+        cut_off_fading: bool = ...,
+        demean: bool = ...,
         invert: bool = ...,
     ) -> Trace: ...
     def lowpass(
@@ -66,6 +68,8 @@ class Trace:
         nyquist_exception: bool = ...,
     ) -> None: ...
     def bandpass(self, order: int, low: float, high: float) -> None: ...
+    def resample(self, deltat: float) -> None: ...
+    def downsample_to(self, deltat: float) -> None: ...
     def sta_lta_right(
         self,
         tshort: float,
@@ -92,3 +96,9 @@ class Trace:
     def append(self, value: np.ndarray[Any, Any]) -> None: ...
 
 def degapper(traces: Sequence[Trace]) -> list[Trace]: ...
+def rotate(
+    traces: Sequence[Trace],
+    azimuth: float,
+    in_channels: Sequence[str],
+    out_channels: Sequence[str],
+) -> list[Trace]: ...

@@ -3,6 +3,7 @@ syntax = "proto3";
 package snuffler.bridge.v1;
 
 import "snuffler/bridge/v1/data.proto";
+import "snuffler/bridge/v1/figure.proto";
 import "snuffler/bridge/v1/scene.proto";
 import "snuffler/bridge/v1/snuffling.proto";
 import "snuffler/bridge/v1/view.proto";
@@ -21,6 +22,34 @@ message StringValue {
   string value = 1;
 }
 
+message BootProgress {
+  double fraction = 1;
+  string label = 2;
+}
+
+message SeisbenchProgress {
+  double fraction = 1;
+  string label = 2;
+}
+
+enum MlDevice {
+  ML_DEVICE_UNSPECIFIED = 0;
+  ML_DEVICE_WEBGPU = 1;
+  ML_DEVICE_WASM = 2;
+}
+
+message MlDeviceStatus {
+  MlDevice device = 1;
+}
+
+message WorkerEvent {
+  oneof event {
+    BootProgress boot = 1;
+    SeisbenchProgress seisbench = 2;
+    MlDeviceStatus ml_device = 3;
+  }
+}
+
 // Request for methods whose input is carried entirely out-of-band (a staged
 // file, fetched FDSN text) or that take no parameters at all.
 message Empty {}
@@ -28,19 +57,20 @@ message Empty {}
 // The envelope every bridge response is wrapped in: exactly one of `error` or a
 // concrete success payload. bridge.py's single `call()` failsafe always returns
 // one of these; Rust decodes it into a Result. The zero-copy waveform buffer for
-// `view`/`spectrum` ships out-of-band alongside this message (not in the oneof).
+// `view` ships out-of-band alongside this message (not in the oneof).
 message BridgeResult {
   oneof result {
     BridgeError error = 1;
     SceneMeta scene = 2; // makeExample, loadBytes, loadUrl, emptyScene, rms, loadWaveformPath
     ViewMeta view = 3; // getView (paired with the ys buffer)
-    SpecMeta spectrum = 4; // getSpectrum (paired with the ys buffer)
     SnufflingResult snuffling = 5; // runSnuffling, catalogSearch, fetchStations, fetchResponses
-    CakePlotResult cake_plot = 6; // cakePlot
     MapData map_data = 7; // mapData
     CommandResult command = 8; // runCommand
     SnufMarkerList markers = 9; // loadMarkers
     StringValue text = 10; // gfStoreLabel, markersToText, addCakeModel
+    FigureResult figure = 11; // renderFigure (a real pyrocko/matplotlib figure as PNG)
+    StationDistanceList station_distances = 12; // stationDistances
+    ActiveEventResult active_event = 13; // setActiveEvent
   }
 }
 
@@ -61,22 +91,28 @@ message BridgeResult {
 // relay GfStoreLabel.
 //
 // Two transport details ride ALONGSIDE these messages, never inside the oneof:
-// the zero-copy float32 `ys` buffer returned with GetView/GetSpectrum, and (for
+// the zero-copy float32 `ys` buffer returned with GetView, and (for
 // GfStoreLabel) the mounted store's FS path passed as out-of-band `data`.
 service BridgeService {
   rpc MakeExample(Empty) returns (SceneMeta);
   rpc EmptyScene(Empty) returns (SceneMeta);
   rpc LoadBytes(LoadBytesRequest) returns (SceneMeta);
   rpc LoadUrl(LoadUrlRequest) returns (SceneMeta);
+  rpc IngestMiniSeed(IngestMiniSeedRequest) returns (SceneMeta);
   rpc GetView(ViewParams) returns (ViewMeta); // + out-of-band ys buffer
-  rpc GetSpectrum(SnufflingRequestParams) returns (SpecMeta); // + out-of-band ys buffer
+  rpc RenderFigure(FigureRequest) returns (FigureResult); // a real pyrocko/matplotlib figure, PNG
   rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult);
   rpc RmsTraces(SnufflingRequestParams) returns (SceneMeta);
-  rpc CakePlot(SnufflingRequestParams) returns (CakePlotResult);
   rpc RunCommand(StringRequest) returns (CommandResult);
   rpc MapData(Empty) returns (snuffler.bridge.v1.MapData);
+  rpc StationDistances(Empty) returns (StationDistanceList);
+  rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult);
+  rpc LoadGfStoreUrl(StringRequest) returns (StringValue);
   rpc MarkersToText(MarkerFile) returns (StringValue);
   rpc LoadMarkers(LoadMarkersRequest) returns (SnufMarkerList);
+  rpc LoadStationXml(LoadStationXmlRequest) returns (SnufflingResult);
+  rpc LoadStations(LoadStationsRequest) returns (SnufflingResult);
+  rpc LoadEvents(LoadEventsRequest) returns (SnufflingResult);
   rpc AddCakeModel(AddCakeModelRequest) returns (StringValue);
   rpc DownloadWaveforms(WaveformDownloadRequest) returns (SceneMeta);
   rpc CatalogSearch(CatalogRequest) returns (SnufflingResult);

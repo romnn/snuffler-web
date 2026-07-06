@@ -1,8 +1,8 @@
 //! The snuffler waveform inspector UI (egui).
 
-pub mod cakeplot;
 pub mod controls;
 pub mod draw;
+pub mod figure;
 pub mod map;
 pub mod markers;
 /// Optional resvg-backed high-DPI PNG export; see the `svg-raster` feature.

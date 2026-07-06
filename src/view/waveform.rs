@@ -18,9 +18,9 @@ use egui::{
 };
 
 use crate::bridge::{ViewData, ViewTrack};
-use crate::state::{AppState, Colormap, Subsort, ViewDrag, ViewMode, WiggleTheme};
+use crate::state::{AppState, PickingState, Subsort, ViewDrag, ViewMode, WiggleTheme};
 use crate::view::draw::{DrawTarget, EguiTarget, SvgTarget};
-use crate::view::markers::{Marker, PHASE_KEYS};
+use crate::view::markers::{MARKER_COLORS, Marker, PHASE_KEYS};
 use crate::view::timeaxis;
 
 const AXIS_H: f32 = 52.0;
@@ -111,49 +111,29 @@ fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
     }
 }
 
-/// Style inputs that (with the data epoch) determine the waterfall textures, so
-/// we only rebuild when the data or the colorbar settings change.
-#[derive(Default, Clone, Copy, PartialEq)]
-struct WfStyle {
-    cmap: u8,
-    reverse: bool,
-    symmetry: bool,
-    clip: (f32, f32),
-}
-
-/// Per-frame cache of waterfall textures, rebuilt only when the view data or the
-/// colorbar style changes.
+/// Per-frame cache of waterfall textures, rebuilt only when the view data epoch
+/// changes. The pixels are coloured in Python (matplotlib) and packed into the
+/// `ys` buffer, so any colormap/clip change re-fetches the view (new epoch) — the
+/// frontend keeps no colormap state of its own.
 #[derive(Default)]
 pub struct WaterfallCache {
     epoch: u64,
-    style: WfStyle,
     textures: Vec<Option<TextureHandle>>,
 }
 
 impl WaterfallCache {
-    fn ensure(&mut self, ctx: &egui::Context, view: &ViewData, epoch: u64, style: WfStyle) {
-        if self.epoch == epoch && self.style == style && !self.textures.is_empty() {
+    fn ensure(&mut self, ctx: &egui::Context, view: &ViewData, epoch: u64) {
+        if self.epoch == epoch && !self.textures.is_empty() {
             return;
         }
         self.epoch = epoch;
-        self.style = style;
         self.textures = view
             .meta
             .tracks
             .iter()
             .enumerate()
-            .map(|(i, t)| build_texture(ctx, view, t, i, style))
+            .map(|(i, t)| build_texture(ctx, view, t, i))
             .collect();
-    }
-}
-
-fn cmap_index(c: Colormap) -> u8 {
-    match c {
-        Colormap::Viridis => 0,
-        Colormap::Magma => 1,
-        Colormap::Inferno => 2,
-        Colormap::Gray => 3,
-        Colormap::Rainbow => 4,
     }
 }
 
@@ -162,20 +142,22 @@ fn build_texture(
     view: &ViewData,
     t: &ViewTrack,
     idx: usize,
-    style: WfStyle,
 ) -> Option<TextureHandle> {
-    let img = build_image(view, t, style)?;
+    let img = build_image(view, t)?;
     Some(ctx.load_texture(format!("wf{idx}"), img, TextureOptions::NEAREST))
 }
 
-/// Rasterize one track's waterfall cells into an RGBA image (the texture source
-/// for the egui view, and the embedded PNG for SVG export).
+/// Blit one track's waterfall cells into an RGBA image (the texture source for the
+/// egui view, and the embedded PNG for SVG export). The colour is computed in
+/// Python (matplotlib colormap, normalisation, clip, symmetry, reverse) and packed
+/// one RGBA pixel per `ys` float32, so the frontend only reinterprets those 4
+/// little-endian bytes — no hand-ported LUT that could drift from the Qt snuffler.
 #[allow(
     clippy::indexing_slicing,
     reason = "index provably in bounds: data.len() >= nf*nt is checked above, and \
               c<nt, f<nf so c*nf+f < nf*nt; rgba is sized nt*nf*4 and p+3 < that bound"
 )]
-fn build_image(view: &ViewData, t: &ViewTrack, style: WfStyle) -> Option<ColorImage> {
+fn build_image(view: &ViewData, t: &ViewTrack) -> Option<ColorImage> {
     if t.nf == 0 || t.nt == 0 {
         return None;
     }
@@ -184,116 +166,20 @@ fn build_image(view: &ViewData, t: &ViewTrack, style: WfStyle) -> Option<ColorIm
     if data.len() < nf * nt {
         return None;
     }
-    let span = (t.ymax - t.ymin).max(1e-6);
-    let (mut lo, mut hi) = (t.ymin + style.clip.0 * span, t.ymin + style.clip.1 * span);
-    if style.symmetry {
-        let mid = f32::midpoint(lo, hi);
-        let h = 0.5 * (hi - lo);
-        lo = mid - h;
-        hi = mid + h;
-    }
-    let range = (hi - lo).max(1e-6);
     let mut rgba = vec![0u8; nt * nf * 4];
     for c in 0..nt {
         for r in 0..nf {
             let f = nf - 1 - r;
-            let v = data[c * nf + f];
-            let mut tn = ((v - lo) / range).clamp(0.0, 1.0);
-            if style.reverse {
-                tn = 1.0 - tn;
-            }
-            let [cr, cg, cb] = colormap(style.cmap, tn);
+            let px = data[c * nf + f].to_le_bytes();
             let p = (r * nt + c) * 4;
-            rgba[p] = cr;
-            rgba[p + 1] = cg;
-            rgba[p + 2] = cb;
-            rgba[p + 3] = 255;
+            rgba[p] = px[0];
+            rgba[p + 1] = px[1];
+            rgba[p + 2] = px[2];
+            rgba[p + 3] = px[3];
         }
     }
     Some(ColorImage::from_rgba_unmultiplied([nt, nf], &rgba))
 }
-
-fn colormap(cmap: u8, t: f32) -> [u8; 3] {
-    match cmap {
-        1 => lut(&MAGMA, t),
-        2 => lut(&INFERNO, t),
-        3 => {
-            let g = (t.clamp(0.0, 1.0) * 255.0) as u8;
-            [g, g, g]
-        }
-        4 => rainbow(t),
-        _ => lut(&VIRIDIS, t),
-    }
-}
-
-/// Round and clamp a colour value (already in 0..=255) to an 8-bit component.
-fn to_u8(value: f32) -> u8 {
-    value.round().clamp(0.0, 255.0) as u8
-}
-
-/// 9-anchor colormap lookup with linear interpolation.
-fn lut(anchors: &[[f32; 3]; 9], value: f32) -> [u8; 3] {
-    let scaled = (value.clamp(0.0, 1.0) * 8.0).clamp(0.0, 8.0);
-    let idx = (scaled as usize).min(7);
-    let frac = scaled - idx as f32;
-    let lo = anchors.get(idx).copied().unwrap_or([0.0; 3]);
-    let hi = anchors.get(idx + 1).copied().unwrap_or(lo);
-    let lerp = |a: f32, b: f32| to_u8(a + (b - a) * frac);
-    [lerp(lo[0], hi[0]), lerp(lo[1], hi[1]), lerp(lo[2], hi[2])]
-}
-
-/// Simple blue→red hue sweep.
-fn rainbow(value: f32) -> [u8; 3] {
-    let hue = (1.0 - value.clamp(0.0, 1.0)) * 240.0;
-    let sextant = hue / 60.0;
-    let side = 1.0 - (sextant % 2.0 - 1.0).abs();
-    let (red, green, blue) = match sextant as i32 {
-        0 => (1.0, side, 0.0),
-        1 => (side, 1.0, 0.0),
-        2 => (0.0, 1.0, side),
-        3 => (0.0, side, 1.0),
-        _ => (side, 0.0, 1.0),
-    };
-    [
-        to_u8(red * 255.0),
-        to_u8(green * 255.0),
-        to_u8(blue * 255.0),
-    ]
-}
-
-const VIRIDIS: [[f32; 3]; 9] = [
-    [68., 1., 84.],
-    [72., 40., 120.],
-    [62., 73., 137.],
-    [49., 104., 142.],
-    [38., 130., 142.],
-    [31., 158., 137.],
-    [53., 183., 121.],
-    [110., 206., 88.],
-    [253., 231., 37.],
-];
-const MAGMA: [[f32; 3]; 9] = [
-    [0., 0., 4.],
-    [28., 16., 68.],
-    [79., 18., 123.],
-    [129., 37., 129.],
-    [181., 54., 122.],
-    [229., 80., 100.],
-    [251., 135., 97.],
-    [254., 194., 135.],
-    [252., 253., 191.],
-];
-const INFERNO: [[f32; 3]; 9] = [
-    [0., 0., 4.],
-    [31., 12., 72.],
-    [85., 15., 109.],
-    [136., 34., 106.],
-    [186., 54., 85.],
-    [227., 89., 51.],
-    [249., 140., 10.],
-    [249., 201., 50.],
-    [252., 255., 164.],
-];
 
 /// Colour a trace by the NSLC element the current subsort colours by. Falls back
 /// to the full label when that element is empty (e.g. blank location codes), so
@@ -909,6 +795,36 @@ fn paint(
         );
         target.fill_rect(r, 0.0, Color32::from_rgba_unmultiplied(52, 101, 164, 40));
     }
+    // Floating pick in batch/interactive picking mode: a vertical line (instant)
+    // or span rect (drag), coloured by the pick's kind. The x-range guard skips
+    // the un-hovered initial state (tmin==0 maps far off-screen).
+    if let Some(pk) = &state.picking {
+        let x0 = x_of(pk.tmin);
+        if x0 >= track_area.left() - 2.0 && x0 <= track_area.right() + 2.0 {
+            let col = MARKER_COLORS
+                .get((pk.kind & 7) as usize)
+                .copied()
+                .unwrap_or(Color32::from_rgb(204, 0, 0));
+            if pk.tmax > pk.tmin {
+                let x1 = x_of(pk.tmax);
+                let r = Rect::from_min_max(
+                    egui::pos2(x0, track_area.top()),
+                    egui::pos2(x1, track_area.bottom()),
+                );
+                target.fill_rect(
+                    r,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 40),
+                );
+            }
+            target.line(
+                egui::pos2(x0, track_area.top()),
+                egui::pos2(x0, track_area.bottom()),
+                2.0,
+                col,
+            );
+        }
+    }
     target.pop_clip();
 }
 
@@ -927,19 +843,13 @@ pub fn render_svg(
     let lay = compute_layout(state, view, rect);
     let waterfall = state.view_mode == ViewMode::Waterfall;
     let images: Vec<Option<ColorImage>> = if waterfall {
-        let style = WfStyle {
-            cmap: cmap_index(state.wf_cmap),
-            reverse: state.wf_reverse,
-            symmetry: state.wf_symmetry,
-            clip: state.wf_clip,
-        };
         view.meta
             .tracks
             .iter()
             .enumerate()
             .map(|(i, t)| {
                 (i >= lay.off && i < lay.off + lay.n_shown)
-                    .then(|| build_image(view, t, style))
+                    .then(|| build_image(view, t))
                     .flatten()
             })
             .collect()
@@ -963,7 +873,7 @@ pub fn show(
     wf: &mut WaterfallCache,
     view_epoch: u64,
     scene_range: Option<(f64, f64)>,
-) {
+) -> egui::Response {
     let theme = ui.ctx().theme();
     let pal = palette(theme, state.wiggle_theme);
     ui.ctx()
@@ -984,18 +894,14 @@ pub fn show(
             pal.axis_text,
         );
         handle_keyboard(ui, state, 0, track_area_h, scene_range);
-        return;
+        // Still return a click-sensing response so an empty/loading canvas is
+        // right-clickable (Qt's context menu works with no data too).
+        return ui.interact(full_rect, bg.id.with("wave"), Sense::click_and_drag());
     };
 
     let waterfall = state.view_mode == ViewMode::Waterfall;
     if waterfall {
-        let style = WfStyle {
-            cmap: cmap_index(state.wf_cmap),
-            reverse: state.wf_reverse,
-            symmetry: state.wf_symmetry,
-            clip: state.wf_clip,
-        };
-        wf.ensure(ui.ctx(), view, view_epoch, style);
+        wf.ensure(ui.ctx(), view, view_epoch);
     }
 
     let total = view.meta.tracks.len();
@@ -1083,6 +989,7 @@ pub fn show(
         lay.track_area,
         &t_at_x,
     );
+    wave_resp
 }
 
 /// A vertical scrollbar for the track stack, drawn in the reserved right-hand
@@ -1203,6 +1110,9 @@ fn marker_hit_at(
     let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
     let tol = 7.0;
     for (idx, marker) in state.markers.iter().enumerate().rev() {
+        if !state.marker_kind_visible(marker.kind) {
+            continue;
+        }
         let row_hit = marker_row_spans(marker, area, top0, visible, row_h)
             .iter()
             .any(|(top, bot)| pos.y >= *top && pos.y <= *bot);
@@ -1238,6 +1148,9 @@ fn draw_markers(
     x_of: &impl Fn(f64) -> f32,
 ) {
     for m in &state.markers {
+        if !state.marker_kind_visible(m.kind) {
+            continue;
+        }
         let col = m.color();
         let x0 = x_of(m.tmin);
         if (x0 < area.left() - 2.0 || x0 > area.right() + 2.0) && !m.is_span() {
@@ -1250,7 +1163,13 @@ fn draw_markers(
             (None, sym) if !sym.is_empty() => sym.to_string(),
             (None, _) => String::new(),
         };
-        let w = if m.selected { 4.0 } else { 2.0 };
+        let w = if m.active {
+            5.0
+        } else if m.selected {
+            4.0
+        } else {
+            2.0
+        };
         for (ytop, ybot) in spans {
             if m.is_span() {
                 let x1 = x_of(m.tmax);
@@ -1260,6 +1179,25 @@ fn draw_markers(
                     0.0,
                     Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 30),
                 );
+            }
+            // Phase-pick uncertainty as translucent ± brackets under the line
+            // (snuffler marker.py three-box draw: side bands α50, middle α35).
+            if let Some(u) = m.uncertainty
+                && u > 0.0
+            {
+                let x1 = x_of(m.tmax);
+                let band = |a: f32, b: f32, alpha: u8| {
+                    (
+                        Rect::from_min_max(egui::pos2(a.min(b), ytop), egui::pos2(a.max(b), ybot)),
+                        Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha),
+                    )
+                };
+                let (rl, cl) = band(x_of(m.tmin - u), x0, 50);
+                target.fill_rect(rl, 0.0, cl);
+                let (rr, cr) = band(x1, x_of(m.tmax + u), 50);
+                target.fill_rect(rr, 0.0, cr);
+                let (rm, cm) = band(x0, x1, 35);
+                target.fill_rect(rm, 0.0, cm);
             }
             target.line(egui::pos2(x0, ytop), egui::pos2(x0, ybot), w, col);
             if m.is_event {
@@ -1272,6 +1210,18 @@ fn draw_markers(
                     ],
                     col,
                 );
+                // The active event marker gets an outlined label box on the axis
+                // (snuffler's outline_label) so the current reference stands out.
+                if m.active {
+                    let box_rect = Rect::from_min_max(
+                        egui::pos2(x0 - s - 2.0, ytop - 2.0),
+                        egui::pos2(x0 + s + 34.0, ytop + 15.0),
+                    );
+                    target.line(box_rect.left_top(), box_rect.right_top(), 1.5, col);
+                    target.line(box_rect.right_top(), box_rect.right_bottom(), 1.5, col);
+                    target.line(box_rect.right_bottom(), box_rect.left_bottom(), 1.5, col);
+                    target.line(box_rect.left_bottom(), box_rect.left_top(), 1.5, col);
+                }
             }
             if !label.is_empty() {
                 target.text(
@@ -1288,7 +1238,10 @@ fn draw_markers(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "interaction needs the full view + projection context to map pointer input to time"
+    clippy::too_many_lines,
+    reason = "cohesive pointer-interaction routine (pan/zoom, marker pick, shift-drag \
+              uncertainty) that needs the full view + projection context; splitting would \
+              obscure the control flow"
 )]
 fn handle_interaction(
     ui: &egui::Ui,
@@ -1336,6 +1289,84 @@ fn handle_interaction(
         }
     }
 
+    // Batch/interactive picking (Escape). A floating pick follows the cursor;
+    // press → (drag) → release commits a marker (instant if no drag), and batch
+    // mode re-arms a new pick inheriting kind/phase/polarity. The wheel-scroll
+    // block above stays live so the user can scroll stations mid-batch; pan/zoom,
+    // place-on-double-click and marker-select below are suppressed while picking.
+    if state.picking.is_some() {
+        let (pressed, released, ipos) = ui.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.pointer.interact_pos(),
+            )
+        });
+        let cursor = resp.hover_pos().or(ipos);
+        let track_nslc = |y: f32| -> Option<(String, String, String, String)> {
+            let rel = y - top0;
+            if rel < 0.0 || row_h <= 0.0 {
+                return None;
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "rel>=0 and row_h>0, so the row index is a non-negative whole number; \
+                          truncation to the containing row is the intended mapping"
+            )]
+            let idx = (rel / row_h) as usize;
+            visible
+                .get(idx)
+                .map(|t| (t.net.clone(), t.sta.clone(), t.loc.clone(), t.cha.clone()))
+        };
+        if let Some(pk) = state.picking.as_mut() {
+            if pressed && let Some(p) = ipos {
+                let t = t_at_x(p.x);
+                pk.down_t = Some(t);
+                pk.tmin = t;
+                pk.tmax = t;
+                pk.nslc = track_nslc(p.y);
+            } else if let Some(down) = pk.down_t {
+                if let Some(p) = cursor {
+                    let cur = t_at_x(p.x);
+                    pk.tmin = down.min(cur);
+                    pk.tmax = down.max(cur);
+                }
+            } else if let Some(p) = cursor {
+                let t = t_at_x(p.x);
+                pk.tmin = t;
+                pk.tmax = t;
+                pk.nslc = track_nslc(p.y);
+            }
+        }
+        if released
+            && let Some(pk) = state.picking.clone()
+            && pk.down_t.is_some()
+        {
+            let rel_nslc = cursor.and_then(|p| track_nslc(p.y)).or(pk.nslc.clone());
+            let mut m = Marker::new(pk.tmin, pk.tmax, pk.kind);
+            m.phase.clone_from(&pk.phase);
+            m.polarity = pk.polarity;
+            m.nslc = rel_nslc;
+            m.selected = true;
+            for existing in &mut state.markers {
+                existing.selected = false;
+            }
+            state.markers.push(m);
+            state.picking = pk.batch.then(|| PickingState {
+                batch: true,
+                down_t: None,
+                tmin: pk.tmin,
+                tmax: pk.tmin,
+                kind: pk.kind,
+                phase: pk.phase.clone(),
+                polarity: pk.polarity,
+                nslc: None,
+            });
+        }
+        return;
+    }
+
     if resp.drag_started_by(egui::PointerButton::Primary)
         && !modifiers.shift
         && let Some(p) = resp.interact_pointer_pos()
@@ -1349,8 +1380,40 @@ fn handle_interaction(
         });
     }
 
+    // Shift+drag adjusts the time uncertainty of selected phase markers, drawn as
+    // ± brackets (snuffler's set_uncertainty_y). Latched at press so it survives a
+    // mid-drag shift release; the horizontal seconds-per-pixel is deliberately
+    // applied to the vertical drag, exactly like pyrocko.
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && modifiers.shift
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        if let Some(hit) = marker_hit_at(
+            state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
+        ) && let Some(m) = state.markers.get_mut(hit)
+        {
+            m.selected = true;
+        }
+        state.uncertainty_drag_last_y = Some(p.y);
+    }
+
+    if let Some(last_y) = state.uncertainty_drag_last_y
+        && resp.dragged_by(egui::PointerButton::Primary)
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let sec_per_px = window / f64::from(rect.width().max(1.0));
+        let delta = f64::from(p.y - last_y) * sec_per_px;
+        for m in &mut state.markers {
+            if m.selected && m.phase.is_some() {
+                m.uncertainty = Some((m.uncertainty.unwrap_or(0.0) + delta).max(0.0));
+            }
+        }
+        state.uncertainty_drag_last_y = Some(p.y);
+    }
+
     if resp.dragged_by(egui::PointerButton::Primary)
         && !modifiers.shift
+        && state.uncertainty_drag_last_y.is_none()
         && let (Some(drag), Some(p)) = (state.view_drag, resp.interact_pointer_pos())
     {
         let width = rect.width().max(1.0);
@@ -1373,6 +1436,7 @@ fn handle_interaction(
 
     if resp.drag_stopped_by(egui::PointerButton::Primary) {
         state.view_drag = None;
+        state.uncertainty_drag_last_y = None;
     }
 
     if resp.double_clicked() {
@@ -1557,6 +1621,16 @@ fn handle_keyboard(
         if i.key_pressed(Key::C) {
             state.show_controls = !state.show_controls;
         }
+        // 'r' reloads modified files from disk; Shift+R reloads the Python snuffling
+        // code (bridge.py). The App consumes the flags since keyboard handlers may
+        // not touch the bridge.
+        if i.key_pressed(Key::R) {
+            if shift {
+                state.reload_snufflings_requested = true;
+            } else {
+                state.reload_requested = true;
+            }
+        }
         if i.key_pressed(Key::Questionmark) || (i.key_pressed(Key::Slash) && shift) {
             state.show_help = true;
         }
@@ -1564,15 +1638,67 @@ fn handle_keyboard(
             state.show_command = true;
         }
 
-        // e: convert selected markers to event markers; E (shift): back to plain
-        // markers (snuffler's "convert to event" / "deactivate event").
+        // 'e' sets the single selected marker as the ACTIVE event — the distance /
+        // Kagan / cake / seismosizer reference (snuffler set_active_event_marker):
+        // it converts to an event if needed, deactivates any other, associates the
+        // selected phase picks with it, and asks Python to recompute distances/Kagan
+        // from it. Several selected plain markers convert to events without
+        // activating. 'E' deactivates. The bridge call is deferred to the App.
         if i.key_pressed(Key::E) {
-            let to_event = !shift;
-            for m in &mut state.markers {
-                if m.selected {
-                    m.is_event = to_event;
-                    if to_event {
-                        m.phase = None; // an event marker is not a phase pick
+            if shift {
+                for m in &mut state.markers {
+                    m.active = false;
+                }
+                state.set_active_event_request = Some(crate::state::ActiveEventReq {
+                    deactivate: true,
+                    ..Default::default()
+                });
+            } else {
+                // Candidates for activation are selected markers that are already
+                // events (catalog events carry a magnitude label in `phase`) or
+                // plain markers that can convert — never a selected phase pick.
+                let candidates: Vec<usize> = state
+                    .markers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.selected && (m.is_event || m.phase.is_none()))
+                    .map(|(idx, _)| idx)
+                    .collect();
+                if let &[idx] = candidates.as_slice() {
+                    for m in &mut state.markers {
+                        m.active = false;
+                    }
+                    if let Some(m) = state.markers.get_mut(idx) {
+                        if !m.is_event {
+                            // Converting a plain marker to an event (not an already-
+                            // labelled catalog event, whose phase label must stay).
+                            m.is_event = true;
+                            m.phase = None;
+                            m.uncertainty = None;
+                        }
+                        m.active = true;
+                    }
+                    let (hash, t, nslc) = state.markers.get(idx).map_or((None, 0.0, None), |m| {
+                        (m.event_hash.clone(), m.tmin, m.nslc.clone())
+                    });
+                    for m in &mut state.markers {
+                        if m.selected && m.phase.is_some() {
+                            m.event_hash.clone_from(&hash);
+                        }
+                    }
+                    state.set_active_event_request = Some(crate::state::ActiveEventReq {
+                        deactivate: false,
+                        event_hash: hash,
+                        t,
+                        nslc,
+                    });
+                } else {
+                    for &idx in &candidates {
+                        if let Some(m) = state.markers.get_mut(idx) {
+                            m.is_event = true;
+                            m.phase = None;
+                            m.uncertainty = None;
+                        }
                     }
                 }
             }
@@ -1603,6 +1729,16 @@ fn handle_keyboard(
             }
         }
 
+        // Escape toggles batch picking (snuffler): enters batch mode, or aborts an
+        // in-progress pick / exits the mode — take() discards the floating pick.
+        if i.key_pressed(Key::Escape) && state.picking.take().is_none() {
+            state.picking = Some(PickingState {
+                batch: true,
+                kind: state.marker_kind,
+                ..Default::default()
+            });
+        }
+
         let num_keys = [
             Key::Num0,
             Key::Num1,
@@ -1615,10 +1751,18 @@ fn handle_keyboard(
         ];
         for (n, key) in num_keys.iter().enumerate() {
             if i.key_pressed(*key) {
-                state.marker_kind = n as u8;
-                for m in &mut state.markers {
-                    if m.selected {
-                        m.kind = n as u8;
+                let kind = n as u8;
+                state.marker_kind = kind;
+                // While picking, number/F keys retarget the floating pick so the
+                // choice carries into the next re-armed pick (snuffler's
+                // floating_or_selected_markers); otherwise they edit the selection.
+                if let Some(pk) = state.picking.as_mut() {
+                    pk.kind = kind;
+                } else {
+                    for m in &mut state.markers {
+                        if m.selected {
+                            m.kind = kind;
+                        }
                     }
                 }
             }
@@ -1638,18 +1782,28 @@ fn handle_keyboard(
         ];
         for (n, key) in f_keys.iter().enumerate() {
             if i.key_pressed(*key) && n == 9 {
-                for m in &mut state.markers {
-                    if m.selected {
-                        m.phase = None;
-                        m.polarity = None;
+                if let Some(pk) = state.picking.as_mut() {
+                    pk.phase = None;
+                    pk.polarity = None;
+                } else {
+                    for m in &mut state.markers {
+                        if m.selected {
+                            m.phase = None;
+                            m.polarity = None;
+                            m.uncertainty = None; // clearing the phase resets uncertainty
+                        }
                     }
                 }
             } else if i.key_pressed(*key)
                 && let Some(phase) = PHASE_KEYS.get(n)
             {
-                for m in &mut state.markers {
-                    if m.selected {
-                        m.phase = Some((*phase).to_string());
+                if let Some(pk) = state.picking.as_mut() {
+                    pk.phase = Some((*phase).to_string());
+                } else {
+                    for m in &mut state.markers {
+                        if m.selected {
+                            m.phase = Some((*phase).to_string());
+                        }
                     }
                 }
             }

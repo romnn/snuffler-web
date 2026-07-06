@@ -40,12 +40,19 @@
     <!-- runtime assets fetched by web/bridge.js (the py-mt Pyodide runtime +
          wheels are staged into py-mt/ by Trunk.toml's post_build hook) -->
     <link data-trunk rel="copy-file" href="web/bridge.py" />
+    <!-- SeisBench picker pre/post-processing; ONNX Runtime and model assets are
+         staged by Trunk.toml post_build hooks. -->
+    <link data-trunk rel="copy-file" href="web/seisbench_infer.py" />
     <link data-trunk rel="copy-file" href="web/gen/bridge_worker.js" />
+    <link data-trunk rel="copy-file" href="web/gen/ort_worker.js" />
     <!-- cross-origin isolation shim (opt-in; see the script in <head>) -->
     <link data-trunk rel="copy-file" href="web/coi-serviceworker.js" />
     <link data-trunk rel="copy-dir" href="web/proto" data-target-path="proto" />
     <!-- demo data from the on-demand pyrocko checkout (see mise run fetch-pyrocko) -->
     <link data-trunk rel="copy-file" href="sources/pyrocko/doc/source/static/test.mseed" />
+    <!-- Bird (2003) tectonic plate boundaries for the map overlay (pyrocko's own KML) -->
+    <link data-trunk rel="copy-file"
+        href="sources/pyrocko/src/gui/snuffler/snufflings/map/plates.kml" />
     <!-- cake earth models for theoretical arrivals (loaded by path, so no
          pyrocko data dir is needed in the minimal wheel); ~120 KB of .nd files
          staged into the Pyodide FS by ensureEarthModels in bridge.js -->
@@ -214,9 +221,14 @@
     </div>
 
     <script>
-        // Driven by web/bridge.js as Pyodide + pyrocko load.
+        let snufflerLoadingFraction = 0;
+
+        // Driven first by the patched Trunk loader, then by web/bridge.js as
+        // Python + pyrocko load.
         window.__snufflerProgress = function (frac, label) {
-            const f = Math.max(0, Math.min(1, frac));
+            const requested = Math.max(0, Math.min(1, frac));
+            snufflerLoadingFraction = Math.max(snufflerLoadingFraction, requested);
+            const f = snufflerLoadingFraction;
             const fill = document.getElementById("bar-fill");
             const pct = document.getElementById("pct");
             const stage = document.getElementById("stage");

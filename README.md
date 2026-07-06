@@ -59,7 +59,8 @@ Everything is pinned in `mise.toml` + `rust-toolchain.toml`. With
 ```sh
 mise install                    # node, bun, uv, trunk, binaryen, protoc (all pinned)
 docker/pyodide-mt/build-all.sh  # build the custom Pyodide 314 (both wheels + py-mt)
-mise run serve                  # trunk serve  → http://127.0.0.1:17683
+mise run serve                  # trunk serve → http://127.0.0.1:17683
+micromux                        # optional full local stack: proxy + trunk serve
 ```
 
 `rustup` reads `rust-toolchain.toml` and installs the pinned nightly toolchain,
@@ -100,6 +101,17 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
   `matplotlib.path` at module top; it isn't otherwise used.
 - The egui frontend is browser-only: run it with `mise run serve` / `trunk serve`,
   not `cargo run`.
+- For non-CORS FDSN endpoints or browser-accessible SeedLink/ringserver streams,
+  run `micromux` instead of plain `mise run serve`. It starts Trunk on
+  `127.0.0.1:17683` and `snuffler-proxy` on `127.0.0.1:17684`; local FDSN fetches
+  use `/cors` through that proxy when available, and the same process exposes
+  `/seedlink` and `/tcp` as WebSocket-to-raw-TCP tunnels.
+- `snuffler-proxy` is not an open proxy: `/cors` only forwards to the known FDSN
+  query endpoints used by the app, only permits `GET`/`HEAD`, and strips browser
+  credential headers. `/seedlink`/`/tcp` only connect to known SeedLink/ringserver
+  hosts on their allowed ports. A hosted deployment can add exact targets with
+  `--allow-http-target` / `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` and
+  `--allow-tcp-target` / `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`.
 - **Response deconvolution** (Options → Remove response) is wired through
   `trace.transfer` but is a no-op until response metadata (StationXML/RESP) is
   loaded — the demo data carries none.

@@ -284,6 +284,36 @@ pub struct ViewDrag {
     pub pan_only: bool,
 }
 
+/// State of an in-progress pick in batch/interactive picking mode (Escape).
+#[derive(Clone, Debug, Default)]
+pub struct PickingState {
+    /// Batch mode re-arms a new pick after each commit (Escape starts batch).
+    pub batch: bool,
+    /// Time of the pointer press that began the current pick; `None` while the
+    /// floating pick merely follows the cursor before a press.
+    pub down_t: Option<f64>,
+    /// Current floating pick span (epoch seconds); `tmin == tmax` is an instant.
+    pub tmin: f64,
+    pub tmax: f64,
+    /// Inherited marker attributes carried across re-armed picks.
+    pub kind: u8,
+    pub phase: Option<String>,
+    pub polarity: Option<i8>,
+    /// Channel under the cursor the pick is scoped to.
+    pub nslc: Option<(String, String, String, String)>,
+}
+
+/// A pending "set active event" request the App drains and sends to the bridge
+/// (keyboard handlers set it; they can't touch the bridge directly). The App
+/// converts it to a `SetActiveEventRequest` proto message.
+#[derive(Clone, Debug, Default)]
+pub struct ActiveEventReq {
+    pub deactivate: bool,
+    pub event_hash: Option<String>,
+    pub t: f64,
+    pub nslc: Option<(String, String, String, String)>,
+}
+
 pub struct AppState {
     /// Visible time window (epoch seconds).
     pub tmin: f64,
@@ -363,8 +393,33 @@ pub struct AppState {
     pub markers: Vec<Marker>,
     /// Next color group applied to new markers (snuffler number keys).
     pub marker_kind: u8,
+    /// Set by the `r` key; the App consumes it to trigger a bridge file reload
+    /// (keyboard handlers only touch `state`, not the bridge).
+    pub reload_requested: bool,
+    /// Set by Shift+R; the App consumes it to reload the Python snuffling code.
+    pub reload_snufflings_requested: bool,
+    /// Set by `e`/`E`; the App drains it to send a `SetActiveEvent` to the bridge.
+    pub set_active_event_request: Option<ActiveEventReq>,
+    /// Auto-reload opened files as they change on disk (snuffler's "Watch Files").
+    pub watch_files: bool,
+    /// Fetch a wider, grid-snapped time window so pan/zoom reuses already-fetched
+    /// data instead of re-requesting (snuffler's "Liberal Fetch Optimization").
+    pub liberal_fetch: bool,
+    /// Marker kinds (0..=7) currently drawn/selectable; set by the `:markers`
+    /// command (snuffler `pile_viewer.py` `markers` command). Compared against the
+    /// raw kind so kind>=8 hides under `markers all`, like pyrocko.
+    pub visible_marker_kinds: Vec<u8>,
     /// In-progress span-marker drag (start, current) in epoch seconds.
     pub pending_span: Option<(f64, f64)>,
+    /// Active batch/interactive picking mode (Escape toggles it); `None` when not
+    /// picking. Mirrors snuffler's picking mode: a floating pick follows the
+    /// cursor, press-drag-release commits a marker, and batch mode re-arms a new
+    /// pick inheriting kind/phase/polarity.
+    pub picking: Option<PickingState>,
+    /// Last pointer y during a shift-drag that adjusts phase-marker uncertainty
+    /// (`Some` = a latched uncertainty drag is active); mirrors pyrocko's
+    /// `set_uncertainty_y`/`_last_y`.
+    pub uncertainty_drag_last_y: Option<f32>,
     /// Active mouse drag used for snuffler-style pan/zoom interaction.
     pub view_drag: Option<ViewDrag>,
     /// Accumulates wheel motion into Qt-style 120-unit notches.
@@ -386,6 +441,7 @@ pub struct AppState {
     pub command_text: String,
     pub command_feedback: String,
     pub dl_datacenter: String,
+    pub dl_base_url: String,
     pub dl_net: String,
     pub dl_sta: String,
     pub dl_loc: String,
@@ -393,9 +449,19 @@ pub struct AppState {
     pub dl_start: String,
     pub dl_end: String,
     pub cat_datacenter: String,
+    pub cat_base_url: String,
     pub cat_minmag: f64,
     pub cat_start: String,
     pub cat_end: String,
+    /// Request full `QuakeML` with moment tensors (beachball + Kagan) on catalog
+    /// search, rather than the lightweight text summary.
+    pub cat_with_mt: bool,
+    pub show_live_seedlink: bool,
+    pub live_seedlink_host: String,
+    pub live_seedlink_port: String,
+    pub live_seedlink_net: String,
+    pub live_seedlink_sta: String,
+    pub live_seedlink_selectors: String,
 }
 
 impl Default for AppState {
@@ -455,7 +521,15 @@ impl Default for AppState {
             track_offset: 0,
             markers: Vec::new(),
             marker_kind: 0,
+            reload_requested: false,
+            reload_snufflings_requested: false,
+            set_active_event_request: None,
+            watch_files: false,
+            liberal_fetch: false,
+            visible_marker_kinds: (0u8..=7).collect(),
             pending_span: None,
+            picking: None,
+            uncertainty_drag_last_y: None,
             view_drag: None,
             wheel_pos: 60.0,
             show_controls: true,
@@ -471,6 +545,7 @@ impl Default for AppState {
             command_feedback: String::new(),
             // Pre-filled with a real example (2023-02-06 Turkey M7.8, GE.WLF).
             dl_datacenter: "geofon".into(),
+            dl_base_url: String::new(),
             dl_net: "GE".into(),
             dl_sta: "WLF".into(),
             dl_loc: "*".into(),
@@ -478,9 +553,38 @@ impl Default for AppState {
             dl_start: "2023-02-06T01:17:00".into(),
             dl_end: "2023-02-06T01:47:00".into(),
             cat_datacenter: "usgs".into(),
+            cat_base_url: String::new(),
             cat_minmag: 6.0,
             cat_start: "2023-02-06".into(),
             cat_end: "2023-02-07".into(),
+            cat_with_mt: true,
+            show_live_seedlink: false,
+            live_seedlink_host: "rtserve.iris.washington.edu".into(),
+            live_seedlink_port: "18000".into(),
+            live_seedlink_net: "IU".into(),
+            live_seedlink_sta: "ANMO".into(),
+            live_seedlink_selectors: "BH?".into(),
         }
+    }
+}
+
+impl AppState {
+    /// Whether markers of this kind are currently drawn/selectable (the
+    /// `:markers` command). Raw-kind comparison so kind>=8 hides under
+    /// `markers all`, matching pyrocko `pile_viewer.py`.
+    pub fn marker_kind_visible(&self, kind: u8) -> bool {
+        self.visible_marker_kinds.contains(&kind)
+    }
+
+    /// Set the visible marker kinds (from the `:markers` command). Deselects all
+    /// markers, mirroring snuffler's `markers` command which also clears the
+    /// selection.
+    pub fn set_visible_marker_kinds(&mut self, mut kinds: Vec<u8>) {
+        kinds.sort_unstable();
+        kinds.dedup();
+        for m in &mut self.markers {
+            m.selected = false;
+        }
+        self.visible_marker_kinds = kinds;
     }
 }

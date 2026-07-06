@@ -3,19 +3,32 @@
 // protobuf request bytes plus transferable buffers to web/bridge_worker.js.
 
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { BridgeResultSchema } from "./proto/snuffler/bridge/v1/bridge_pb.js";
+import {
+  BridgeResultSchema,
+  MlDevice as ProtoMlDevice,
+  WorkerEventSchema,
+  type SeisbenchProgress,
+} from "./proto/snuffler/bridge/v1/bridge_pb.js";
 import {
   AddCakeModelRequestSchema,
   LoadBytesRequestSchema,
+  LoadEventsRequestSchema,
   LoadMarkersRequestSchema,
+  LoadStationXmlRequestSchema,
+  LoadStationsRequestSchema,
 } from "./proto/snuffler/bridge/v1/data_pb.js";
 import { rpc, BridgeMethod, type BridgeMethodId } from "./rpc.js";
-import { WORKER_MOUNT_GF_STORE, type WorkerCommand } from "./worker_command.js";
+import {
+  WORKER_MOUNT_GF_STORE,
+  WORKER_RELOAD_SNUFFLINGS,
+  type WorkerCommand,
+} from "./worker_command.js";
 
 // What the worker accepts as a request `method`: any BridgeService rpc id, plus
 // the single worker-only command (the GF-store directory mount).
 type SeamMethod = BridgeMethodId | WorkerCommand;
 const BRIDGE_PERF_LOG = false;
+type WorkerEventMessage = { type: "workerEvent"; event: Uint8Array };
 
 // Cosmetic progress/runtime hooks (set by index.html) + the File System Access
 // API. Typed loosely — optional integration points, not the typed proto boundary.
@@ -24,8 +37,15 @@ declare global {
     __snufflerProgress?: (frac: number, label: string) => void;
     __snufflerRuntime?: (info: unknown) => void;
     showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
+    showOpenFilePicker?: (opts?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>;
   }
 }
+
+// Re-readable handles for files opened via the File System Access API, keyed by a
+// stable source id, so "reload modified files" can re-read them from disk.
+type OpenSource = { handle: FileSystemFileHandle; mtime: number };
+const _openSources = new Map<string, OpenSource>();
+let _sourceCounter = 0;
 
 type Pending = {
   resolve: (msg: any) => void;
@@ -39,6 +59,8 @@ type Pending = {
 let worker: Worker | null = null;
 let nextRequestId = 1;
 const pending = new Map<number, Pending>();
+let mlDevice = ProtoMlDevice.WASM;
+let latestSeisbenchProgress: SeisbenchProgress | null = null;
 
 function workerUrl() {
   return new URL("bridge_worker.js", document.baseURI).href;
@@ -54,8 +76,8 @@ function ensureWorker() {
     const receivedMs = performance.now();
     const receivedEpochMs = Date.now();
     const msg = event.data || {};
-    if (msg.type === "progress") {
-      prog(msg.frac, msg.label);
+    if (msg.type === "workerEvent") {
+      handleWorkerEvent(msg as WorkerEventMessage);
       return;
     }
     if (msg.type === "runtime") {
@@ -103,6 +125,21 @@ function ensureWorker() {
   return worker;
 }
 
+function handleWorkerEvent(msg: WorkerEventMessage) {
+  const event = fromBinary(WorkerEventSchema, msg.event).event;
+  switch (event.case) {
+    case "boot":
+      prog(event.value.fraction, event.value.label);
+      break;
+    case "seisbench":
+      latestSeisbenchProgress = event.value;
+      break;
+    case "mlDevice":
+      mlDevice = event.value.device;
+      break;
+  }
+}
+
 function prog(frac, label) {
   try {
     if (typeof window !== "undefined" && window.__snufflerProgress) {
@@ -119,6 +156,23 @@ function copyBytes(value) {
   const out = new Uint8Array(src.byteLength);
   out.set(src);
   return out;
+}
+
+export function seisbenchDevice() {
+  ensureWorker();
+  return mlDevice === ProtoMlDevice.WEBGPU ? "WebGPU" : "CPU (wasm)";
+}
+
+export function seisbenchProgressFraction() {
+  return latestSeisbenchProgress ? latestSeisbenchProgress.fraction : -1;
+}
+
+export function seisbenchProgressLabel() {
+  return latestSeisbenchProgress ? latestSeisbenchProgress.label : "";
+}
+
+export function clearSeisbenchProgress() {
+  latestSeisbenchProgress = null;
 }
 
 // Post one request to the worker and resolve when its reply with the same id
@@ -232,6 +286,12 @@ export async function addGfStore() {
   return rpcText(WORKER_MOUNT_GF_STORE, { handle });
 }
 
+// Reload the Python snuffling code (bridge.py) in the worker, preserving the
+// loaded pile (snuffler's Shift+R). Returns "ok".
+export async function reloadSnufflings() {
+  return rpcText(WORKER_RELOAD_SNUFFLINGS, {});
+}
+
 function pickFiles(multiple): Promise<File[]> {
   return new Promise<File[]>((resolve) => {
     const inp = document.createElement("input");
@@ -259,19 +319,102 @@ function pickFiles(multiple): Promise<File[]> {
   });
 }
 
+async function loadSource(name: string, data: Uint8Array, append: boolean, sourceId: string) {
+  const request = toBinary(
+    LoadBytesRequestSchema,
+    create(LoadBytesRequestSchema, { name, fmt: "detect", append, content: data, sourceId })
+  );
+  return rpcBytes(rpc("loadBytes"), { request });
+}
+
 export async function openFiles() {
+  // Prefer showOpenFilePicker (Chromium): it yields re-readable handles so the
+  // files can later be reloaded from disk. Fall back to a hidden <input> (File
+  // snapshots, no reload) on browsers without the File System Access API.
+  if (typeof window.showOpenFilePicker === "function") {
+    let handles: FileSystemFileHandle[];
+    try {
+      handles = await window.showOpenFilePicker({ multiple: true });
+    } catch {
+      return new Uint8Array(0); // user cancelled
+    }
+    let scene = new Uint8Array(0);
+    for (const handle of handles) {
+      const f = await handle.getFile();
+      const data = new Uint8Array(await f.arrayBuffer());
+      const sourceId = `src${_sourceCounter++}`;
+      _openSources.set(sourceId, { handle, mtime: f.lastModified });
+      scene = await loadSource(f.name, data, true, sourceId);
+    }
+    return scene;
+  }
   const files = await pickFiles(true);
   if (files.length === 0) return new Uint8Array(0);
   let scene = new Uint8Array(0);
   for (const f of files) {
     const data = new Uint8Array(await f.arrayBuffer());
-    const request = toBinary(
-      LoadBytesRequestSchema,
-      create(LoadBytesRequestSchema, { name: f.name, fmt: "detect", append: true, content: data })
-    );
-    scene = await rpcBytes(rpc("loadBytes"), { request });
+    scene = await loadSource(f.name, data, true, "");
   }
   return scene;
+}
+
+const WAVEFORM_EXT = /\.(mseed|msd|mss|seed|sac|gcf|datacube|kan|yaff|pyrocko)$/i;
+
+// Recursively load every waveform file under a picked directory (snuffler's
+// "Open waveform directory"). Chromium-only (showDirectoryPicker); handles are
+// retained so the loaded files also participate in reload.
+export async function openDirectory() {
+  const pick = (window as unknown as { showDirectoryPicker?: (o?: unknown) => Promise<any> })
+    .showDirectoryPicker;
+  if (typeof pick !== "function") return new Uint8Array(0);
+  let dir: any;
+  try {
+    dir = await pick({ mode: "read" });
+  } catch {
+    return new Uint8Array(0); // cancelled
+  }
+  async function* walk(d: any): AsyncGenerator<any> {
+    for await (const [, h] of d.entries()) {
+      if (h.kind === "file") yield h;
+      else if (h.kind === "directory") yield* walk(h);
+    }
+  }
+  let scene = new Uint8Array(0);
+  for await (const handle of walk(dir)) {
+    const f = await handle.getFile();
+    if (!WAVEFORM_EXT.test(f.name)) continue;
+    const data = new Uint8Array(await f.arrayBuffer());
+    const sourceId = `src${_sourceCounter++}`;
+    _openSources.set(sourceId, { handle, mtime: f.lastModified });
+    try {
+      scene = await loadSource(f.name, data, true, sourceId);
+    } catch {
+      _openSources.delete(sourceId); // unreadable / non-waveform slipped the filter
+    }
+  }
+  return scene;
+}
+
+// Re-read any opened files whose on-disk mtime changed and replace their traces
+// (snuffler's "r" reload). Only works for files opened via showOpenFilePicker;
+// returns an empty scene when nothing changed (or no re-readable handles).
+export async function reloadFiles() {
+  let scene = new Uint8Array(0);
+  let changed = false;
+  for (const [sourceId, src] of _openSources) {
+    let f: File;
+    try {
+      f = await src.handle.getFile();
+    } catch {
+      continue; // permission revoked or file gone
+    }
+    if (f.lastModified === src.mtime) continue;
+    src.mtime = f.lastModified;
+    const data = new Uint8Array(await f.arrayBuffer());
+    scene = await loadSource(f.name, data, true, sourceId);
+    changed = true;
+  }
+  return changed ? scene : new Uint8Array(0);
 }
 
 export async function saveMarkers(request) {
@@ -327,6 +470,36 @@ export async function loadMarkers() {
     create(LoadMarkersRequestSchema, { text: await files[0].text() })
   );
   return rpcBytes(rpc("loadMarkers"), { request });
+}
+
+export async function loadStationXml() {
+  const files = await pickFiles(false);
+  if (files.length === 0) return new Uint8Array(0);
+  const request = toBinary(
+    LoadStationXmlRequestSchema,
+    create(LoadStationXmlRequestSchema, { text: await files[0].text() })
+  );
+  return rpcBytes(rpc("loadStationXml"), { request });
+}
+
+export async function loadStations() {
+  const files = await pickFiles(false);
+  if (files.length === 0) return new Uint8Array(0);
+  const request = toBinary(
+    LoadStationsRequestSchema,
+    create(LoadStationsRequestSchema, { text: await files[0].text() })
+  );
+  return rpcBytes(rpc("loadStations"), { request });
+}
+
+export async function loadEvents() {
+  const files = await pickFiles(false);
+  if (files.length === 0) return new Uint8Array(0);
+  const request = toBinary(
+    LoadEventsRequestSchema,
+    create(LoadEventsRequestSchema, { text: await files[0].text() })
+  );
+  return rpcBytes(rpc("loadEvents"), { request });
 }
 
 export async function fetchTile(url) {

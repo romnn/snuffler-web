@@ -1,0 +1,6 @@
+from pyrocko.model import Event
+
+class QuakeML:
+    @classmethod
+    def load_xml(cls, string: str = ..., filename: str = ...) -> QuakeML: ...
+    def get_pyrocko_events(self) -> list[Event]: ...

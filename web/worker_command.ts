@@ -5,4 +5,7 @@
 // relays the real gfStoreLabel rpc. Hand-written, not generated: it is a
 // transport detail, not part of BridgeService.
 export const WORKER_MOUNT_GF_STORE = "gfStoreMount" as const;
-export type WorkerCommand = typeof WORKER_MOUNT_GF_STORE;
+// Re-fetch and reload bridge.py in the worker WITHOUT losing the loaded pile
+// (snuffler's Shift+R "reload snufflings" — the snuffling logic lives in bridge.py).
+export const WORKER_RELOAD_SNUFFLINGS = "reloadSnufflings" as const;
+export type WorkerCommand = typeof WORKER_MOUNT_GF_STORE | typeof WORKER_RELOAD_SNUFFLINGS;

@@ -14,10 +14,11 @@ fn variant_for(output: &str) -> &'static str {
     match output {
         "SceneMeta" => "Scene",
         "ViewMeta" => "View",
-        "SpecMeta" => "Spectrum",
+        "FigureResult" => "Figure",
         "SnufflingResult" => "Snuffling",
-        "CakePlotResult" => "CakePlot",
         "MapData" => "MapData",
+        "StationDistanceList" => "StationDistances",
+        "ActiveEventResult" => "ActiveEvent",
         "CommandResult" => "Command",
         "SnufMarkerList" => "Markers",
         "StringValue" => "Text",
@@ -98,7 +99,7 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
             let out = last_segment(&m.output_type).to_string();
             let variant = variant_for(&out);
             let wire = format!("/{svc}/{}", m.proto_name);
-            let buffer = out == "ViewMeta" || out == "SpecMeta";
+            let buffer = out == "ViewMeta";
 
             // Empty-request methods take no parameter (the worker stages any
             // out-of-band input); all others take the typed request message.
@@ -155,6 +156,7 @@ fn main() {
         "scene.proto",
         "view.proto",
         "snuffling.proto",
+        "figure.proto",
         "data.proto",
         "bridge.proto",
     ] {
@@ -168,6 +170,7 @@ fn main() {
                 "../../proto/snuffler/bridge/v1/scene.proto",
                 "../../proto/snuffler/bridge/v1/view.proto",
                 "../../proto/snuffler/bridge/v1/snuffling.proto",
+                "../../proto/snuffler/bridge/v1/figure.proto",
                 "../../proto/snuffler/bridge/v1/data.proto",
                 "../../proto/snuffler/bridge/v1/bridge.proto",
             ],

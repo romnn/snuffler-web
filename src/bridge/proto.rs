@@ -4,7 +4,7 @@ pub use snuffler_proto::bridge::v1 as pb;
 // conversion layer here — only: (1) encode a request message to bytes, and
 // (2) unwrap the BridgeResult envelope (error variant -> Err(String), success
 // variant -> the contained pb message). The `ys` buffer rides out-of-band and is
-// attached to ViewData/SpectrumData here, never in the proto.
+// attached to ViewData here, never in the proto.
 mod wasm {
     use super::pb;
     use snuffler_proto::prost::Message;
@@ -52,6 +52,13 @@ mod wasm {
     pub fn markers_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufMarkerList, String> {
         match bridge_oneof(bytes, what)? {
             pb::bridge_result::Result::Markers(m) => Ok(m),
+            _ => Err(unexpected(what)),
+        }
+    }
+
+    pub fn snuffling_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufflingResult, String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::Snuffling(m) => Ok(m),
             _ => Err(unexpected(what)),
         }
     }

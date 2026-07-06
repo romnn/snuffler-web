@@ -34,6 +34,14 @@ message ViewParams {
   optional double visible_tmax = 29;
   optional double scale_tmin = 30;
   optional double scale_tmax = 31;
+  // Waterfall colouring — applied in Python (matplotlib colormap) so the frontend
+  // only blits the RGBA (packed one pixel per ys float32); no hand-ported LUT.
+  // Empty colormap = viridis. These ride ViewParams so a change re-fetches.
+  string wf_colormap = 32;
+  double wf_clip_lo = 33;
+  double wf_clip_hi = 34;
+  bool wf_symmetry = 35;
+  bool wf_reverse = 36;
 }
 
 message ViewTrack {
@@ -59,18 +67,4 @@ message ViewMeta {
   double view_tmin = 1;
   double view_tmax = 2;
   repeated ViewTrack tracks = 3;
-}
-
-message SpecTrack {
-  string label = 1;
-  uint64 offset = 2;
-  uint64 count = 3;
-  float ymin = 4;
-  float ymax = 5;
-}
-
-message SpecMeta {
-  double fmin = 1;
-  double fmax = 2;
-  repeated SpecTrack tracks = 3;
 }

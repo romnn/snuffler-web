@@ -3,9 +3,10 @@ use egui::Align;
 use crate::bridge::PolarizationSnufflingParams;
 
 use super::Action;
-use super::widgets::{optional_freq_row, param_row, run_button};
+use super::widgets::{optional_freq_row, param_row};
 
 pub struct Config {
+    show_plot: bool,
     length: f64,
     offset: f64,
     azimuth: f64,
@@ -21,6 +22,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            show_plot: false,
             length: 1.0,
             offset: 0.0,
             azimuth: 0.0,
@@ -36,6 +38,18 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn show_plot(&self) -> bool {
+        self.show_plot
+    }
+
+    pub fn open_plot(&mut self) {
+        self.show_plot = true;
+    }
+
+    pub fn close_plot(&mut self) {
+        self.show_plot = false;
+    }
+
     pub fn params(&self) -> PolarizationSnufflingParams {
         PolarizationSnufflingParams {
             polarization_t_length: self.length,
@@ -91,7 +105,26 @@ pub fn panel(
             config.lowpass = main_lowpass;
         }
     });
-    run_button(ui).then_some(Action::Run("polarization"))
+    ui.add_space(8.0);
+    let mut action = None;
+    ui.horizontal(|ui| {
+        ui.add_space(160.0);
+        if ui
+            .button("Plot")
+            .on_hover_text("Per-station polarization figure: hodograms + eigensystem (pyrocko).")
+            .clicked()
+        {
+            action = Some(Action::Polarization);
+        }
+        if ui
+            .button("Run (text)")
+            .on_hover_text("Numeric azimuth / incidence / rectilinearity / planarity table.")
+            .clicked()
+        {
+            action = Some(Action::Run("polarization"));
+        }
+    });
+    action
 }
 
 fn checkbox_row(ui: &mut egui::Ui, value: &mut bool, label: &str) {

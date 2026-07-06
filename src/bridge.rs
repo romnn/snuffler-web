@@ -17,30 +17,27 @@ mod proto;
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the UI.
 pub use proto::pb::{
-    CakeDiscontinuity, CakeLayer, CakeLegendEntry, CakeModelPlot, CakePoint, CakeRaysPlot,
-    CakeSnufflingParams, CatalogRequest, MapData, MarkerFile, MarkerFileEntry, Nslc,
-    PolarizationSnufflingParams, RmsSnufflingParams, SceneMeta, SnufflingParams,
-    SnufflingRequestParams, SnufflingResult, SpecMeta, SpectrumSnufflingParams,
-    StaltaSnufflingParams, StationRequest, ViewMeta, ViewParams, ViewTrack,
-    WaveformDownloadRequest,
+    CakeSnufflingParams, CatalogRequest, FigureRequest, IngestMiniSeedRequest, MapData, MarkerFile,
+    MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams, RmsSnufflingParams,
+    SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest,
+    SnufflingParams, SnufflingRequestParams, SnufflingResult, SpectrogramSnufflingParams,
+    SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, ViewMeta, ViewParams,
+    ViewTrack, WaveformDownloadRequest,
 };
 
-/// The deeply-nested cake mode in the prost request type, read ergonomically.
-/// Only the wasm bridge inspects the mode (to route the cake plot request).
-#[must_use]
-pub fn cake_mode(p: &SnufflingRequestParams) -> &str {
-    p.snufflings
-        .as_ref()
-        .and_then(|s| s.cake.as_ref())
-        .map_or("", |c| c.cake_mode.as_str())
-}
+/// Visible live waveform window once enough samples have arrived.
+pub const LIVE_FOLLOW_SECONDS: f64 = 300.0;
+/// Amount of live data kept in the Pyodide trace pile before older samples are
+/// discarded.
+pub const LIVE_RETAIN_SECONDS: f64 = 1800.0;
 
-/// Set the deeply-nested cake mode in the prost request type (no-op if the
-/// snufflings/cake sub-messages are absent, which the UI builder never leaves).
-pub fn set_cake_mode(p: &mut SnufflingRequestParams, mode: &str) {
-    if let Some(c) = p.snufflings.as_mut().and_then(|s| s.cake.as_mut()) {
-        mode.clone_into(&mut c.cake_mode);
-    }
+/// Metadata for the currently active `SeedLink` acquisition session.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveSeedlinkSession {
+    /// Epoch time when the current live source was started by the user.
+    pub started_at: f64,
+    /// Width of the live-follow viewport, in seconds.
+    pub follow_seconds: f64,
 }
 
 /// A view: prost metadata plus the out-of-band `f32` sample buffer (`ys` rides
@@ -61,10 +58,33 @@ impl ViewData {
     }
 }
 
+/// A rendered pyrocko/matplotlib figure: PNG bytes, or a non-empty `error` string
+/// the window shows as text (a figure that fails never takes down the viewer —
+/// mirroring how snuffling errors surface). The frontend decodes the PNG into a
+/// texture once per `FigureSlot::generation`; the texture carries its own size.
 #[derive(Clone, Debug, Default)]
-pub struct SpectrumData {
-    pub meta: SpecMeta,
-    pub ys: Vec<f32>,
+pub struct FigureData {
+    pub png: Vec<u8>,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SeedlinkParams {
+    pub host: String,
+    pub port: String,
+    pub net: String,
+    pub sta: String,
+    pub selectors: String,
+}
+
+/// One figure window's latest render, keyed by figure kind in `Inner::figures`.
+/// `gen` bumps on every fresh render so the UI re-decodes the texture only then;
+/// `in_flight` de-dupes concurrent requests for the same kind.
+#[derive(Clone, Debug, Default)]
+struct FigureSlot {
+    data: FigureData,
+    generation: u64,
+    in_flight: bool,
 }
 
 /// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
@@ -85,6 +105,12 @@ pub enum Status {
     Error(String),
 }
 
+#[derive(Clone, Debug)]
+pub struct SeisbenchProgress {
+    pub fraction: f32,
+    pub label: String,
+}
+
 #[derive(Default)]
 struct Inner {
     status: Status,
@@ -95,27 +121,40 @@ struct Inner {
     view: Option<ViewData>,
     /// Incremented whenever new view data lands (for texture caching).
     view_epoch: u64,
-    spectrum: Option<SpectrumData>,
-    spectrum_in_flight: bool,
+    /// Latest render of each open figure window (amplitude spectrum, cake, …),
+    /// keyed by figure kind. See [`FigureSlot`].
+    figures: std::collections::HashMap<String, FigureSlot>,
     snuffling: Option<SnufflingResult>,
     snuffling_gen: u64,
-    cake_model_plot: Option<CakeModelPlot>,
-    cake_rays_plot: Option<CakeRaysPlot>,
-    cake_model_in_flight: bool,
-    cake_rays_in_flight: bool,
+    seisbench_in_flight: bool,
+    last_seisbench_progress: Option<SeisbenchProgress>,
+    next_seisbench_progress_poll_s: f64,
     /// A custom model name the user just uploaded ("Add Model"), for the App to
     /// add to the Cake Phase dropdown and select.
     pending_cake_model: Option<String>,
     map: Option<MapData>,
+    /// Great-circle distance (degrees) from the active event to each station,
+    /// keyed by (net, sta), for the marker editor's distance column. Refetched
+    /// when the snuffling generation it was computed for changes.
+    station_dists: std::collections::HashMap<(String, String), f64>,
+    station_dists_gen: Option<(u64, u64)>,
+    station_dists_in_flight: bool,
+    /// Bumped when the user changes the active event, so distances refetch and the
+    /// marker Kagan column updates without re-appending the marker set.
+    active_event_gen: u64,
+    /// Kagan angle (degrees) per event hash vs the active event (only events with a
+    /// computed angle are present; missing = no MT / no active event).
+    kagan_by_hash: std::collections::HashMap<String, f64>,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
     view_in_flight: Option<ViewParams>,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
     view_request_gen: u64,
     /// A pending `goto <time>` target the App should jump the view to.
-    pending_goto: Option<f64>,
+    pending_goto: Option<(f64, Option<f64>)>,
     /// Feedback from the last ':' command (an error or confirmation) to show.
     command_msg: Option<String>,
+    live_seedlink_started_at: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -134,6 +173,44 @@ impl Bridge {
         self.inner.borrow().status.clone()
     }
 
+    pub fn seisbench_runtime(&self) -> (String, Option<SeisbenchProgress>) {
+        let progress = self
+            .inner
+            .borrow()
+            .seisbench_in_flight
+            .then(web::seisbench_progress)
+            .flatten();
+        (web::seisbench_device(), progress)
+    }
+
+    pub fn refresh_seisbench_progress(&self, ctx: &egui::Context) {
+        let now = ctx.input(|input| input.time);
+        {
+            let mut i = self.inner.borrow_mut();
+            if !i.seisbench_in_flight {
+                return;
+            }
+            if now < i.next_seisbench_progress_poll_s {
+                ctx.request_repaint_after(std::time::Duration::from_millis(17));
+                return;
+            }
+            i.next_seisbench_progress_poll_s = now + 0.1;
+        }
+        if let Some(progress) = web::seisbench_progress() {
+            let pct = (progress.fraction * 100.0).round().clamp(0.0, 100.0);
+            let mut i = self.inner.borrow_mut();
+            let changed = i.last_seisbench_progress.as_ref().is_none_or(|last| {
+                (last.fraction - progress.fraction).abs() > f32::EPSILON
+                    || last.label != progress.label
+            });
+            if changed {
+                i.status = Status::Loading(format!("{} · {pct:.0}%", progress.label));
+                i.last_seisbench_progress = Some(progress);
+            }
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(17));
+    }
+
     pub fn scene(&self) -> Option<SceneMeta> {
         self.inner.borrow().scene.clone()
     }
@@ -143,8 +220,20 @@ impl Bridge {
         self.inner.borrow().scene_gen
     }
 
-    /// Take a pending `goto` time (set by a ':' command) for the App to apply.
-    pub fn take_goto(&self) -> Option<f64> {
+    /// Current `SeedLink` session metadata, if live acquisition is active.
+    pub fn live_seedlink_session(&self) -> Option<LiveSeedlinkSession> {
+        self.inner
+            .borrow()
+            .live_seedlink_started_at
+            .map(|started_at| LiveSeedlinkSession {
+                started_at,
+                follow_seconds: LIVE_FOLLOW_SECONDS,
+            })
+    }
+
+    /// Take a pending `goto` (time, optional window length) set by a ':' command
+    /// for the App to apply. A window length zooms to match the date specificity.
+    pub fn take_goto(&self) -> Option<(f64, Option<f64>)> {
         self.inner.borrow_mut().pending_goto.take()
     }
 
@@ -158,8 +247,23 @@ impl Bridge {
         self.inner.borrow().view_epoch
     }
 
-    pub fn spectrum(&self) -> Option<SpectrumData> {
-        self.inner.borrow().spectrum.clone()
+    /// Generation of the latest render for a figure kind (0 = never rendered), so
+    /// the UI decodes the PNG into a texture only when it actually changes.
+    pub fn figure_gen(&self, kind: &str) -> u64 {
+        self.inner
+            .borrow()
+            .figures
+            .get(kind)
+            .map_or(0, |slot| slot.generation)
+    }
+
+    /// The latest rendered figure for a kind (PNG bytes or an error string).
+    pub fn figure(&self, kind: &str) -> Option<FigureData> {
+        self.inner
+            .borrow()
+            .figures
+            .get(kind)
+            .map(|slot| slot.data.clone())
     }
 
     /// Generation counter for snuffling results (so the UI applies each once).
@@ -171,16 +275,6 @@ impl Bridge {
         self.inner.borrow().snuffling.clone()
     }
 
-    /// Latest Cake Phase "Plot Model" data (for the model-velocity window).
-    pub fn cake_model_plot(&self) -> Option<CakeModelPlot> {
-        self.inner.borrow().cake_model_plot.clone()
-    }
-
-    /// Latest Cake Phase "Plot Rays" data (for the ray-paths window).
-    pub fn cake_rays_plot(&self) -> Option<CakeRaysPlot> {
-        self.inner.borrow().cake_rays_plot.clone()
-    }
-
     /// Take a custom model name added via "Add Model" (for the App to register).
     pub fn take_pending_cake_model(&self) -> Option<String> {
         self.inner.borrow_mut().pending_cake_model.take()
@@ -188,6 +282,27 @@ impl Bridge {
 
     pub fn map_data(&self) -> Option<MapData> {
         self.inner.borrow().map.clone()
+    }
+
+    /// Great-circle distance (degrees) from the active event to a station, if
+    /// station coordinates + an active event are known (else `None`).
+    pub fn station_distance(&self, net: &str, sta: &str) -> Option<f64> {
+        self.inner
+            .borrow()
+            .station_dists
+            .get(&(net.to_owned(), sta.to_owned()))
+            .copied()
+    }
+
+    /// Generation counter bumped on each active-event change.
+    pub fn active_event_gen(&self) -> u64 {
+        self.inner.borrow().active_event_gen
+    }
+
+    /// Kagan angle (degrees) for an event hash vs the current active event, or
+    /// `None` when it has no computed angle (no MT, or no active event).
+    pub fn kagan_for(&self, hash: &str) -> Option<f64> {
+        self.inner.borrow().kagan_by_hash.get(hash).copied()
     }
 
     /// Hand the view a ready tile's RGBA exactly once (it caches the texture).
@@ -221,6 +336,8 @@ mod web {
 
     use super::proto::{self, pb};
     use super::*;
+    use std::cell::{Cell, RefCell as StdRefCell};
+    use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
 
@@ -234,6 +351,18 @@ mod web {
         #[wasm_bindgen(js_name = call, catch)]
         async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>)
         -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = seisbenchDevice)]
+        fn js_seisbench_device() -> String;
+
+        #[wasm_bindgen(js_name = seisbenchProgressFraction)]
+        fn js_seisbench_progress_fraction() -> f32;
+
+        #[wasm_bindgen(js_name = seisbenchProgressLabel)]
+        fn js_seisbench_progress_label() -> String;
+
+        #[wasm_bindgen(js_name = clearSeisbenchProgress)]
+        fn js_clear_seisbench_progress();
 
         // DOM-only calls keep bespoke externs: they drive browser APIs (file
         // pickers, downloads, the File System Access API, tile fetch+decode) that
@@ -251,11 +380,29 @@ mod web {
         #[wasm_bindgen(js_name = openFiles, catch)]
         async fn js_open_files() -> Result<JsValue, JsValue>;
 
+        #[wasm_bindgen(js_name = reloadFiles, catch)]
+        async fn js_reload_files() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = openDirectory, catch)]
+        async fn js_open_directory() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = reloadSnufflings, catch)]
+        async fn js_reload_snufflings() -> Result<JsValue, JsValue>;
+
         #[wasm_bindgen(js_name = saveMarkers, catch)]
         async fn js_save_markers(request: Vec<u8>) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = loadMarkers, catch)]
         async fn js_load_markers() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = loadStationXml, catch)]
+        async fn js_load_station_xml() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = loadStations, catch)]
+        async fn js_load_stations() -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = loadEvents, catch)]
+        async fn js_load_events() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = savePng)]
         fn js_save_png(bytes: &[u8], filename: &str);
@@ -266,6 +413,21 @@ mod web {
 
     fn jsval_to_string(v: JsValue) -> String {
         v.as_string().unwrap_or_else(|| format!("{v:?}"))
+    }
+
+    pub(super) fn seisbench_device() -> String {
+        js_seisbench_device()
+    }
+
+    pub(super) fn seisbench_progress() -> Option<SeisbenchProgress> {
+        let fraction = js_seisbench_progress_fraction();
+        if !(0.0..=1.0).contains(&fraction) {
+            return None;
+        }
+        Some(SeisbenchProgress {
+            fraction,
+            label: js_seisbench_progress_label(),
+        })
     }
 
     fn js_bytes(v: JsValue, what: &str) -> Result<Vec<u8>, String> {
@@ -384,6 +546,403 @@ mod web {
 
     fn client() -> pb::BridgeServiceClient<WorkerTransport> {
         pb::BridgeServiceClient::new(WorkerTransport)
+    }
+
+    thread_local! {
+        static LIVE_SEEDLINK: StdRefCell<Option<LiveSeedlinkHandle>> = const { StdRefCell::new(None) };
+    }
+
+    struct LiveSeedlinkHandle {
+        ws: web_sys::WebSocket,
+        on_open: Closure<dyn FnMut(web_sys::Event)>,
+        on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
+        on_error: Closure<dyn FnMut(web_sys::ErrorEvent)>,
+        on_close: Closure<dyn FnMut(web_sys::Event)>,
+    }
+
+    impl Drop for LiveSeedlinkHandle {
+        fn drop(&mut self) {
+            self.ws.set_onopen(None);
+            self.ws.set_onmessage(None);
+            self.ws.set_onerror(None);
+            self.ws.set_onclose(None);
+            let _ = self.ws.close();
+            let _ = (
+                &self.on_open,
+                &self.on_message,
+                &self.on_error,
+                &self.on_close,
+            );
+        }
+    }
+
+    impl LiveSeedlinkHandle {
+        fn connect(
+            inner: Rc<RefCell<Inner>>,
+            ctx: egui::Context,
+            params: SeedlinkParams,
+            started_at: f64,
+        ) -> Result<Self, String> {
+            let conn = seedlink_connection(&params)?;
+            let first_batch = Rc::new(Cell::new(true));
+            let on_open = seedlink_on_open(
+                conn.ws.clone(),
+                inner.clone(),
+                ctx.clone(),
+                conn.source.clone(),
+                conn.commands,
+            );
+            let on_message = seedlink_on_message(
+                inner.clone(),
+                ctx.clone(),
+                conn.source.clone(),
+                started_at,
+                first_batch,
+            );
+            let on_error = seedlink_on_error(inner.clone(), ctx.clone());
+            let on_close = seedlink_on_close(inner, ctx, conn.source);
+
+            conn.ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+            conn.ws
+                .set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+            conn.ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+            conn.ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+
+            Ok(Self {
+                ws: conn.ws,
+                on_open,
+                on_message,
+                on_error,
+                on_close,
+            })
+        }
+    }
+
+    struct SeedlinkConnection {
+        ws: web_sys::WebSocket,
+        source: String,
+        commands: Vec<String>,
+    }
+
+    fn seedlink_connection(params: &SeedlinkParams) -> Result<SeedlinkConnection, String> {
+        let port = params
+            .port
+            .trim()
+            .parse::<u16>()
+            .map_err(|err| format!("SeedLink port: {err}"))?;
+        let source = format!(
+            "{}:{} {}.{} {}",
+            params.host.trim(),
+            port,
+            params.net.trim(),
+            params.sta.trim(),
+            params.selectors.trim()
+        );
+        let ws = web_sys::WebSocket::new(&seedlink_proxy_url(params.host.trim(), port))
+            .map_err(jsval_to_string)?;
+        ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+        Ok(SeedlinkConnection {
+            ws,
+            source,
+            commands: seedlink_commands(params),
+        })
+    }
+
+    fn seedlink_on_open(
+        ws: web_sys::WebSocket,
+        inner: Rc<RefCell<Inner>>,
+        ctx: egui::Context,
+        source: String,
+        commands: Vec<String>,
+    ) -> Closure<dyn FnMut(web_sys::Event)> {
+        Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            for command in &commands {
+                if let Err(err) = ws.send_with_str(command) {
+                    set_bridge_error(&inner, format!("SeedLink send failed: {err:?}"));
+                    ctx.request_repaint();
+                    return;
+                }
+            }
+            set_snuffling_text(&inner, format!("SeedLink connected: {source}"), false);
+            inner.borrow_mut().status = Status::Ready;
+            ctx.request_repaint();
+        }) as Box<dyn FnMut(_)>)
+    }
+
+    fn seedlink_on_message(
+        inner: Rc<RefCell<Inner>>,
+        ctx: egui::Context,
+        source: String,
+        started_at: f64,
+        first_batch: Rc<Cell<bool>>,
+    ) -> Closure<dyn FnMut(web_sys::MessageEvent)> {
+        let buffer = Rc::new(RefCell::new(Vec::new()));
+        Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
+            let bytes = seedlink_event_bytes(&event);
+            if bytes.is_empty() {
+                return;
+            }
+            let records = {
+                let mut buf = buffer.borrow_mut();
+                buf.extend_from_slice(&bytes);
+                drain_seedlink_records(&mut buf)
+            };
+            if !records.is_empty() {
+                let reset = first_batch.replace(false);
+                ingest_live_mseed(
+                    inner.clone(),
+                    ctx.clone(),
+                    source.clone(),
+                    records,
+                    started_at,
+                    reset,
+                );
+            }
+        }) as Box<dyn FnMut(_)>)
+    }
+
+    fn seedlink_on_error(
+        inner: Rc<RefCell<Inner>>,
+        ctx: egui::Context,
+    ) -> Closure<dyn FnMut(web_sys::ErrorEvent)> {
+        Closure::wrap(Box::new(move |event: web_sys::ErrorEvent| {
+            let msg = event.message();
+            set_bridge_error(
+                &inner,
+                if msg.is_empty() {
+                    "SeedLink WebSocket error".to_owned()
+                } else {
+                    format!("SeedLink WebSocket error: {msg}")
+                },
+            );
+            ctx.request_repaint();
+        }) as Box<dyn FnMut(_)>)
+    }
+
+    fn seedlink_on_close(
+        inner: Rc<RefCell<Inner>>,
+        ctx: egui::Context,
+        source: String,
+    ) -> Closure<dyn FnMut(web_sys::Event)> {
+        Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            inner.borrow_mut().live_seedlink_started_at = None;
+            set_snuffling_text(&inner, format!("SeedLink disconnected: {source}"), false);
+            ctx.request_repaint();
+            spawn_local(async {
+                LIVE_SEEDLINK.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            });
+        }) as Box<dyn FnMut(_)>)
+    }
+
+    fn seedlink_event_bytes(event: &web_sys::MessageEvent) -> Vec<u8> {
+        let data = event.data();
+        if data.is_instance_of::<js_sys::ArrayBuffer>() {
+            js_sys::Uint8Array::new(&data).to_vec()
+        } else if let Some(text) = data.as_string() {
+            text.into_bytes()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: String) {
+        inner.borrow_mut().status = Status::Error(error);
+    }
+
+    fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
+        let mut i = inner.borrow_mut();
+        i.snuffling = Some(SnufflingResult {
+            show_window,
+            text,
+            markers: Vec::new(),
+            scene: None,
+        });
+        i.snuffling_gen += 1;
+    }
+
+    fn seedlink_proxy_url(host: &str, port: u16) -> String {
+        format!(
+            "ws://127.0.0.1:17684/seedlink?host={}&port={}",
+            encode_query_component(host),
+            port
+        )
+    }
+
+    fn encode_query_component(value: &str) -> String {
+        js_sys::encode_uri_component(value)
+            .as_string()
+            .unwrap_or_default()
+    }
+
+    fn seedlink_commands(params: &SeedlinkParams) -> Vec<String> {
+        let net = params.net.trim();
+        let sta = params.sta.trim();
+        let selectors = params.selectors.trim();
+        let mut commands = vec!["HELLO\r".to_owned(), "SLPROTO 4.0\r".to_owned()];
+        if !sta.is_empty() {
+            commands.push(if net.is_empty() {
+                format!("STATION {sta}\r")
+            } else {
+                format!("STATION {net}_{sta}\r")
+            });
+        }
+        if !selectors.is_empty() {
+            commands.push(format!("SELECT {}\r", seedlink_v4_selectors(selectors)));
+        }
+        commands.push("DATA\r".to_owned());
+        commands.push("END\r".to_owned());
+        commands
+    }
+
+    fn seedlink_v4_selectors(selectors: &str) -> String {
+        selectors
+            .split(|c: char| c == ',' || c.is_ascii_whitespace())
+            .filter(|part| !part.is_empty())
+            .map(seedlink_v4_selector)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn seedlink_v4_selector(selector: &str) -> String {
+        let selector = selector.trim();
+        if selector.contains('_') {
+            return selector.to_owned();
+        }
+        let channel = selector
+            .split_once('.')
+            .map_or(selector, |(channel, _format)| channel);
+        let mut chars = channel.chars();
+        let band = chars.next().unwrap_or('*');
+        let source = chars.next().unwrap_or('*');
+        let subsource = chars.next().unwrap_or('*');
+        format!("*_{band}_{source}_{subsource}.2D")
+    }
+
+    fn is_seedlink_header(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"SL")
+            && bytes
+                .get(2..8)
+                .is_some_and(|seq| seq.iter().all(u8::is_ascii_hexdigit))
+    }
+
+    fn is_seedlink4_header(bytes: &[u8]) -> bool {
+        bytes.len() >= 17
+            && bytes.first() == Some(&b'S')
+            && bytes.get(1) == Some(&b'E')
+            && bytes.get(2).is_some_and(u8::is_ascii_alphanumeric)
+            && bytes.get(3).is_some_and(u8::is_ascii_alphanumeric)
+    }
+
+    fn find_seedlink_header(bytes: &[u8]) -> Option<usize> {
+        let classic = bytes.windows(8).position(is_seedlink_header);
+        let current = bytes.windows(17).position(is_seedlink4_header);
+        match (classic, current) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    fn drain_seedlink_records(buffer: &mut Vec<u8>) -> Vec<u8> {
+        const SEEDLINK3_PACKET_BYTES: usize = 520;
+        const SEEDLINK3_RECORD_OFFSET: usize = 8;
+        const SEEDLINK4_FIXED_HEADER_BYTES: usize = 17;
+        let mut records = Vec::new();
+        loop {
+            let Some(pos) = find_seedlink_header(buffer) else {
+                let keep_from = buffer
+                    .len()
+                    .saturating_sub(SEEDLINK4_FIXED_HEADER_BYTES - 1);
+                buffer.drain(..keep_from);
+                break;
+            };
+            if pos > 0 {
+                buffer.drain(..pos);
+            }
+            if buffer.len() < 8 {
+                break;
+            }
+            if is_seedlink_header(buffer) {
+                if buffer.len() < SEEDLINK3_PACKET_BYTES {
+                    break;
+                }
+                if let Some(record) = buffer.get(SEEDLINK3_RECORD_OFFSET..SEEDLINK3_PACKET_BYTES) {
+                    records.extend_from_slice(record);
+                }
+                buffer.drain(..SEEDLINK3_PACKET_BYTES);
+            } else if is_seedlink4_header(buffer) {
+                if buffer.len() < SEEDLINK4_FIXED_HEADER_BYTES {
+                    break;
+                }
+                let Some(len_bytes) = buffer
+                    .get(4..8)
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                else {
+                    buffer.drain(..1);
+                    continue;
+                };
+                let Ok(payload_len) = usize::try_from(u32::from_le_bytes(len_bytes)) else {
+                    buffer.drain(..1);
+                    continue;
+                };
+                let Some(station_len) = buffer.get(16).copied().map(usize::from) else {
+                    break;
+                };
+                let packet_len = SEEDLINK4_FIXED_HEADER_BYTES
+                    .saturating_add(station_len)
+                    .saturating_add(payload_len);
+                if buffer.len() < packet_len {
+                    break;
+                }
+                if matches!(buffer.get(2), Some(b'2' | b'3')) && buffer.get(3) == Some(&b'D') {
+                    let payload_start = SEEDLINK4_FIXED_HEADER_BYTES + station_len;
+                    if let Some(payload) = buffer.get(payload_start..packet_len) {
+                        records.extend_from_slice(payload);
+                    }
+                }
+                buffer.drain(..packet_len);
+            } else {
+                buffer.drain(..1);
+            }
+        }
+        records
+    }
+
+    fn ingest_live_mseed(
+        inner: Rc<RefCell<Inner>>,
+        ctx: egui::Context,
+        source: String,
+        content: Vec<u8>,
+        start_time: f64,
+        reset: bool,
+    ) {
+        spawn_local(async move {
+            let parsed = client()
+                .ingest_mini_seed(IngestMiniSeedRequest {
+                    source,
+                    content,
+                    start_time,
+                    reset,
+                    retain_seconds: LIVE_RETAIN_SECONDS,
+                })
+                .await;
+            {
+                let mut i = inner.borrow_mut();
+                match parsed {
+                    Ok(scene) => {
+                        i.scene = Some(scene);
+                        i.scene_gen += 1;
+                        i.status = Status::Ready;
+                        clear_view(&mut i);
+                    }
+                    Err(e) => i.status = Status::Error(e),
+                }
+            }
+            ctx.request_repaint();
+        });
     }
 
     fn invalidate_view_request(i: &mut Inner) {
@@ -599,6 +1158,7 @@ mod web {
                         fmt,
                         append: false,
                         content: data,
+                        source_id: String::new(),
                     })
                     .await;
                 {
@@ -640,27 +1200,37 @@ mod web {
         }
 
         /// Fetch an amplitude spectrum for the current params (snuffling).
-        pub fn fetch_spectrum(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
+        /// Render a real pyrocko/matplotlib figure (amplitude spectrum, cake, …)
+        /// in Pyodide and store the resulting PNG for the matching figure window.
+        /// Keyed by `req.kind`, so several figure windows can be open at once.
+        pub fn render_figure(&self, ctx: &egui::Context, req: FigureRequest) {
+            let kind = req.kind.clone();
             {
                 let mut i = self.inner.borrow_mut();
-                if i.spectrum_in_flight || !matches!(i.status, Status::Ready) {
+                if !matches!(i.status, Status::Ready) {
                     return;
                 }
-                i.spectrum_in_flight = true;
+                let slot = i.figures.entry(kind.clone()).or_default();
+                if slot.in_flight {
+                    return;
+                }
+                slot.in_flight = true;
             }
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = client()
-                    .get_spectrum(params)
-                    .await
-                    .map(|(meta, ys)| SpectrumData { meta, ys });
+                let parsed = client().render_figure(req).await;
                 {
                     let mut i = inner.borrow_mut();
-                    if let Ok(sd) = parsed {
-                        i.spectrum = Some(sd);
+                    let slot = i.figures.entry(kind).or_default();
+                    slot.in_flight = false;
+                    if let Ok(fr) = parsed {
+                        slot.data = FigureData {
+                            png: fr.png,
+                            error: fr.error,
+                        };
+                        slot.generation = slot.generation.wrapping_add(1);
                     }
-                    i.spectrum_in_flight = false;
                 }
                 ctx.request_repaint();
             });
@@ -673,8 +1243,19 @@ mod web {
             name: String,
             params: SnufflingRequestParams,
         ) {
-            if !matches!(self.inner.borrow().status, Status::Ready) {
-                return;
+            let is_seisbench = name == "seisbench_picker";
+            {
+                let mut i = self.inner.borrow_mut();
+                if !matches!(i.status, Status::Ready) {
+                    return;
+                }
+                if is_seisbench {
+                    js_clear_seisbench_progress();
+                    i.seisbench_in_flight = true;
+                    i.last_seisbench_progress = None;
+                    i.next_seisbench_progress_poll_s = 0.0;
+                    i.status = Status::Loading("SeisBench picker · 0%".to_owned());
+                }
             }
             let request = pb::NamedSnufflingRequest {
                 name,
@@ -683,18 +1264,25 @@ mod web {
             let inner = self.inner.clone();
             let ctx = ctx.clone();
             spawn_local(async move {
-                let parsed = client().run_snuffling(request).await.ok();
+                let parsed = client().run_snuffling(request).await;
                 {
                     let mut i = inner.borrow_mut();
-                    if let Some(mut r) = parsed {
-                        if let Some(scene) = r.scene.take() {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            clear_view(&mut i);
+                    if is_seisbench {
+                        i.seisbench_in_flight = false;
+                        i.last_seisbench_progress = None;
+                    }
+                    match parsed {
+                        Ok(mut r) => {
+                            if let Some(scene) = r.scene.take() {
+                                i.scene = Some(scene);
+                                i.scene_gen += 1;
+                                clear_view(&mut i);
+                            }
                             i.status = Status::Ready;
+                            i.snuffling = Some(r);
+                            i.snuffling_gen += 1;
                         }
-                        i.snuffling = Some(r);
-                        i.snuffling_gen += 1;
+                        Err(e) => i.status = Status::Error(e),
                     }
                 }
                 ctx.request_repaint();
@@ -773,52 +1361,6 @@ mod web {
             });
         }
 
-        /// Fetch Cake Phase plot data (pyrocko.cake) for the current params. The
-        /// `cake_mode` (`plot_model` | `plot_rays`) selects which window's data
-        /// is computed and stored; the App draws it (no matplotlib).
-        pub fn cake_plot(&self, ctx: &egui::Context, params: SnufflingRequestParams) {
-            let rays = cake_mode(&params) == "plot_rays";
-            {
-                let mut i = self.inner.borrow_mut();
-                let busy = if rays {
-                    i.cake_rays_in_flight
-                } else {
-                    i.cake_model_in_flight
-                };
-                if busy || !matches!(i.status, Status::Ready) {
-                    return;
-                }
-                if rays {
-                    i.cake_rays_in_flight = true;
-                } else {
-                    i.cake_model_in_flight = true;
-                }
-            }
-            let inner = self.inner.clone();
-            let ctx = ctx.clone();
-            spawn_local(async move {
-                let parsed = client().cake_plot(params).await.ok();
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed.and_then(|p| p.result) {
-                        Some(pb::cake_plot_result::Result::Model(m)) => {
-                            i.cake_model_plot = Some(m);
-                        }
-                        Some(pb::cake_plot_result::Result::Rays(r)) => {
-                            i.cake_rays_plot = Some(r);
-                        }
-                        None => {}
-                    }
-                    if rays {
-                        i.cake_rays_in_flight = false;
-                    } else {
-                        i.cake_model_in_flight = false;
-                    }
-                }
-                ctx.request_repaint();
-            });
-        }
-
         /// Let the user pick a custom `.nd` model file ("Add Model"); the picked
         /// name is stored for the App to add to the Cake Phase dropdown.
         pub fn add_cake_model(&self, ctx: &egui::Context) {
@@ -830,6 +1372,39 @@ mod web {
                     && !name.is_empty()
                 {
                     inner.borrow_mut().pending_cake_model = Some(name);
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Mount a Green's-functions store by fetching its files from an HTTP base
+        /// URL into the Pyodide filesystem (no directory picker) and register it as
+        /// `GF Store: <id>`. Errors surface in the snuffling text window.
+        pub fn load_gf_store_url(&self, ctx: &egui::Context, url: String) {
+            if !matches!(self.inner.borrow().status, Status::Ready) {
+                return;
+            }
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                match client()
+                    .load_gf_store_url(pb::StringRequest { value: url })
+                    .await
+                {
+                    Ok(label) if !label.value.is_empty() => {
+                        inner.borrow_mut().pending_cake_model = Some(label.value);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let mut i = inner.borrow_mut();
+                        i.snuffling = Some(SnufflingResult {
+                            show_window: true,
+                            text: format!("Load GF store from URL failed: {e}"),
+                            markers: Vec::new(),
+                            scene: None,
+                        });
+                        i.snuffling_gen += 1;
+                    }
                 }
                 ctx.request_repaint();
             });
@@ -888,7 +1463,7 @@ mod web {
                 if let Some(r) = res {
                     let mut i = inner.borrow_mut();
                     match r.action.as_str() {
-                        "goto" => i.pending_goto = r.t,
+                        "goto" => i.pending_goto = r.t.map(|t| (t, r.tlen)),
                         "scene" => {
                             if let Some(scene) = r.scene {
                                 i.scene = Some(scene);
@@ -957,6 +1532,54 @@ mod web {
             });
         }
 
+        pub fn seedlink_active(&self) -> bool {
+            let _scene_gen = self.inner.borrow().scene_gen;
+            LIVE_SEEDLINK.with(|slot| slot.borrow().is_some())
+        }
+
+        pub fn start_seedlink(&self, ctx: &egui::Context, params: SeedlinkParams) {
+            LIVE_SEEDLINK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            let started_at = js_sys::Date::now() / 1000.0;
+            match LiveSeedlinkHandle::connect(self.inner.clone(), ctx.clone(), params, started_at) {
+                Ok(handle) => {
+                    LIVE_SEEDLINK.with(|slot| {
+                        *slot.borrow_mut() = Some(handle);
+                    });
+                    let mut i = self.inner.borrow_mut();
+                    i.live_seedlink_started_at = Some(started_at);
+                    i.scene = Some(SceneMeta {
+                        tmin: started_at,
+                        tmax: started_at + LIVE_FOLLOW_SECONDS,
+                        tracks: Vec::new(),
+                    });
+                    i.scene_gen += 1;
+                    i.status = Status::Loading("Connecting SeedLink…".to_owned());
+                    i.snuffling = None;
+                    i.kagan_by_hash.clear();
+                    i.station_dists.clear();
+                    i.station_dists_gen = None;
+                    i.active_event_gen = i.active_event_gen.wrapping_add(1);
+                    clear_view(&mut i);
+                }
+                Err(err) => {
+                    let mut i = self.inner.borrow_mut();
+                    i.live_seedlink_started_at = None;
+                    i.status = Status::Error(err);
+                }
+            }
+            ctx.request_repaint();
+        }
+
+        pub fn stop_seedlink(&self) {
+            LIVE_SEEDLINK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            self.inner.borrow_mut().live_seedlink_started_at = None;
+            set_snuffling_text(&self.inner, "SeedLink stopped".to_owned(), false);
+        }
+
         /// Open local waveform files via a browser picker and append them.
         pub fn open_files(&self, ctx: &egui::Context) {
             self.inner.borrow_mut().status = Status::Loading("Opening files…".into());
@@ -970,6 +1593,92 @@ mod web {
                         Ok(v) => match js_bytes(v, "open_files") {
                             Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
                             Ok(bytes) => match proto::scene_from_bytes(&bytes, "open_files") {
+                                Ok(scene) => {
+                                    i.scene = Some(scene);
+                                    i.scene_gen += 1;
+                                    i.status = Status::Ready;
+                                    clear_view(&mut i);
+                                }
+                                Err(e) => i.status = Status::Error(e),
+                            },
+                            Err(e) => i.status = Status::Error(e),
+                        },
+                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Recursively load every waveform file under a picked directory
+        /// (Chromium File System Access); appends them to the pile.
+        pub fn open_directory(&self, ctx: &egui::Context) {
+            self.inner.borrow_mut().status = Status::Loading("Loading directory…".into());
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = js_open_directory().await;
+                {
+                    let mut i = inner.borrow_mut();
+                    match res {
+                        Ok(v) => match js_bytes(v, "open_directory") {
+                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
+                            Ok(bytes) => match proto::scene_from_bytes(&bytes, "open_directory") {
+                                Ok(scene) => {
+                                    i.scene = Some(scene);
+                                    i.scene_gen += 1;
+                                    i.status = Status::Ready;
+                                    clear_view(&mut i);
+                                }
+                                Err(e) => i.status = Status::Error(e),
+                            },
+                            Err(e) => i.status = Status::Error(e),
+                        },
+                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Reload the Python snuffling code (bridge.py) in the worker, preserving
+        /// the loaded pile (snuffler's Shift+R). Forces a view re-fetch since the
+        /// reload resets Python's view cache; the scene (track list) is unchanged.
+        pub fn reload_snufflings(&self, ctx: &egui::Context) {
+            self.inner.borrow_mut().status = Status::Loading("Reloading snufflings…".into());
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = js_reload_snufflings().await;
+                {
+                    let mut i = inner.borrow_mut();
+                    match res {
+                        Ok(_) => {
+                            i.status = Status::Ready;
+                            invalidate_view_request(&mut i);
+                        }
+                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Re-read any opened files whose on-disk mtime changed and replace their
+        /// traces (snuffler's "r"). A no-op (stays Ready) when nothing changed or
+        /// the files were opened without a re-readable File System Access handle.
+        pub fn reload_files(&self, ctx: &egui::Context) {
+            self.inner.borrow_mut().status = Status::Loading("Reloading modified files…".into());
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = js_reload_files().await;
+                {
+                    let mut i = inner.borrow_mut();
+                    match res {
+                        Ok(v) => match js_bytes(v, "reload_files") {
+                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
+                            Ok(bytes) => match proto::scene_from_bytes(&bytes, "reload_files") {
                                 Ok(scene) => {
                                     i.scene = Some(scene);
                                     i.scene_gen += 1;
@@ -1044,6 +1753,73 @@ mod web {
             });
         }
 
+        /// Pick a local `StationXML` file and load it (instrument responses for
+        /// deconvolution + station coordinates for sorting) — the same parsing as
+        /// fetched `FDSN` responses, from a browser-picked file.
+        pub fn load_station_xml(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let result = match js_load_station_xml().await {
+                    Ok(v) => js_bytes(v, "stationxml")
+                        .ok()
+                        .filter(|bytes| !bytes.is_empty())
+                        .and_then(|bytes| proto::snuffling_from_bytes(&bytes, "stationxml").ok()),
+                    Err(_) => None,
+                };
+                if let Some(result) = result {
+                    let mut i = inner.borrow_mut();
+                    i.snuffling = Some(result);
+                    i.snuffling_gen += 1;
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Pick a local pyrocko station file and load its station coordinates
+        /// (distance/azimuth sorting, cake, map) via `model.load_stations`.
+        pub fn load_stations(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let result = match js_load_stations().await {
+                    Ok(v) => js_bytes(v, "stations")
+                        .ok()
+                        .filter(|bytes| !bytes.is_empty())
+                        .and_then(|bytes| proto::snuffling_from_bytes(&bytes, "stations").ok()),
+                    Err(_) => None,
+                };
+                if let Some(result) = result {
+                    let mut i = inner.borrow_mut();
+                    i.snuffling = Some(result);
+                    i.snuffling_gen += 1;
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Pick a local pyrocko event file and load it: event markers + the active
+        /// event (largest magnitude) for distance/azimuth sorting.
+        pub fn load_events(&self, ctx: &egui::Context) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let result = match js_load_events().await {
+                    Ok(v) => js_bytes(v, "events")
+                        .ok()
+                        .filter(|bytes| !bytes.is_empty())
+                        .and_then(|bytes| proto::snuffling_from_bytes(&bytes, "events").ok()),
+                    Err(_) => None,
+                };
+                if let Some(result) = result {
+                    let mut i = inner.borrow_mut();
+                    i.snuffling = Some(result);
+                    i.snuffling_gen += 1;
+                }
+                ctx.request_repaint();
+            });
+        }
+
         /// Fetch station + event coordinates for the Map overlay.
         pub fn fetch_map_data(&self, ctx: &egui::Context) {
             let inner = self.inner.clone();
@@ -1054,6 +1830,96 @@ mod web {
                     let mut i = inner.borrow_mut();
                     if let Some(m) = parsed {
                         i.map = Some(m);
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Ensure the per-station distances are current for the given snuffling
+        /// generation (the active event changes with each catalog/event load). A
+        /// no-op if already fetched for this generation or a fetch is in flight.
+        pub fn ensure_station_distances(&self, ctx: &egui::Context, snuffling_gen: u64) {
+            let token;
+            {
+                let mut i = self.inner.borrow_mut();
+                token = (snuffling_gen, i.active_event_gen);
+                if i.station_dists_in_flight
+                    || i.station_dists_gen == Some(token)
+                    || !matches!(i.status, Status::Ready)
+                {
+                    return;
+                }
+                i.station_dists_in_flight = true;
+            }
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let parsed = client().station_distances().await.ok();
+                {
+                    let mut i = inner.borrow_mut();
+                    i.station_dists_in_flight = false;
+                    i.station_dists_gen = Some(token);
+                    if let Some(list) = parsed {
+                        i.station_dists.clear();
+                        for s in list.stations {
+                            i.station_dists.insert((s.net, s.sta), s.distance_deg);
+                        }
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Silent variant of `reload_files` for the "Watch Files" poll: swaps in a
+        /// new scene only when a watched file actually changed, without flickering
+        /// the status line.
+        pub fn watch_poll(&self, ctx: &egui::Context) {
+            if !matches!(self.inner.borrow().status, Status::Ready) {
+                return;
+            }
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let Ok(v) = js_reload_files().await else {
+                    return;
+                };
+                let Ok(bytes) = js_bytes(v, "watch_poll") else {
+                    return;
+                };
+                if bytes.is_empty() {
+                    return;
+                }
+                let Ok(scene) = proto::scene_from_bytes(&bytes, "watch_poll") else {
+                    return;
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    i.scene = Some(scene);
+                    i.scene_gen += 1;
+                    clear_view(&mut i);
+                }
+                ctx.request_repaint();
+            });
+        }
+
+        /// Set (or clear) the active event in Python and pull back the recomputed
+        /// per-event Kagan angles; bumps `active_event_gen` so distances refetch.
+        pub fn set_active_event(&self, ctx: &egui::Context, req: SetActiveEventRequest) {
+            let inner = self.inner.clone();
+            let ctx = ctx.clone();
+            spawn_local(async move {
+                let res = client().set_active_event(req).await.ok();
+                {
+                    let mut i = inner.borrow_mut();
+                    i.active_event_gen += 1;
+                    if let Some(r) = res {
+                        i.kagan_by_hash.clear();
+                        for k in r.kagan {
+                            if let Some(v) = k.kagan_deg {
+                                i.kagan_by_hash.insert(k.event_hash, v);
+                            }
+                        }
                     }
                 }
                 ctx.request_repaint();

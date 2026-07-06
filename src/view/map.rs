@@ -51,6 +51,7 @@ pub struct MapState {
     last_poll: f64,
     fitted_counts: (usize, usize),
     scroll_acc: f32,
+    show_plates: bool,
     tex: HashMap<(u8, u32, u32), TextureHandle>,
 }
 
@@ -64,6 +65,7 @@ impl Default for MapState {
             last_poll: -1.0e9,
             fitted_counts: (usize::MAX, usize::MAX),
             scroll_acc: 0.0,
+            show_plates: true,
             tex: HashMap::new(),
         }
     }
@@ -116,6 +118,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
         if ui.button("Fit").clicked() {
             st.fitted_counts = (usize::MAX, usize::MAX);
         }
+        ui.checkbox(&mut st.show_plates, "Plate boundaries");
         ui.label(format!("zoom {}", st.zoom));
     });
 
@@ -185,17 +188,46 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
     }
 
     if let Some(d) = &data {
+        // Bird (2003) tectonic plate boundaries under the markers (the map
+        // snuffling's signature overlay). Polylines are split at antimeridian
+        // jumps so a wrap doesn't draw a line across the whole map.
+        if st.show_plates {
+            let stroke = Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(0xFF, 0xB0, 0x30, 200),
+            );
+            for pb in &d.plate_boundaries {
+                let mut seg: Vec<egui::Pos2> = Vec::new();
+                let mut prev_lon = f64::NAN;
+                for (lon, lat) in pb.lons.iter().zip(pb.lats.iter()) {
+                    if !prev_lon.is_nan() && (lon - prev_lon).abs() > 180.0 && seg.len() >= 2 {
+                        painter.add(Shape::line(std::mem::take(&mut seg), stroke));
+                    }
+                    if !prev_lon.is_nan() && (lon - prev_lon).abs() > 180.0 {
+                        seg.clear();
+                    }
+                    prev_lon = *lon;
+                    seg.push(to_screen(
+                        lon_to_x(*lon, z) * TILE,
+                        lat_to_y(*lat, z) * TILE,
+                    ));
+                }
+                if seg.len() >= 2 {
+                    painter.add(Shape::line(seg, stroke));
+                }
+            }
+        }
         for s in &d.stations {
             let p = to_screen(lon_to_x(s.lon, z) * TILE, lat_to_y(s.lat, z) * TILE);
             if rect.contains(p) {
                 painter.add(Shape::convex_polygon(
                     vec![
-                        egui::pos2(p.x, p.y - 6.0),
-                        egui::pos2(p.x - 5.5, p.y + 4.0),
-                        egui::pos2(p.x + 5.5, p.y + 4.0),
+                        egui::pos2(p.x, p.y - 7.0),
+                        egui::pos2(p.x - 6.0, p.y + 4.0),
+                        egui::pos2(p.x + 6.0, p.y + 4.0),
                     ],
-                    Color32::from_rgb(0x33, 0x99, 0xFF),
-                    Stroke::new(1.0_f32, Color32::BLACK),
+                    Color32::from_rgb(0xD0, 0x20, 0x20),
+                    Stroke::new(1.5_f32, Color32::BLACK),
                 ));
                 painter.text(
                     egui::pos2(p.x + 7.0, p.y),
@@ -206,16 +238,62 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
                 );
             }
         }
+        // Magnitude→radius and depth→colour, faithful to the Qt map snuffling's
+        // *rendered* values (magmin=0, depthmin=10 m, magshift=0 — how map_osm.html
+        // actually feeds map_util.js): radius = 2+exp(2·mag/magmax), depth ramps
+        // blue(shallow)→red(deep) over (depth−10)/(depthmax−10).
+        let magmax = d
+            .events
+            .iter()
+            .map(|e| e.mag.max(0.0))
+            .fold(0.0_f64, f64::max);
+        let depthmax = d.events.iter().map(|e| e.depth).fold(10.0_f64, f64::max);
+        let hover = resp.hover_pos();
         for e in &d.events {
             let p = to_screen(lon_to_x(e.lon, z) * TILE, lat_to_y(e.lat, z) * TILE);
-            if rect.contains(p) {
-                let r = 2.0 + e.mag.max(0.0) as f32 * 1.6;
-                painter.circle(
-                    p,
-                    r,
-                    Color32::from_rgba_unmultiplied(0xE0, 0x30, 0x30, 160),
-                    Stroke::new(1.0_f32, Color32::from_rgb(0x60, 0, 0)),
+            if !rect.contains(p) {
+                continue;
+            }
+            let radius = if magmax > 0.0 {
+                2.0 + (2.0 * e.mag.max(0.0) / magmax).exp()
+            } else {
+                8.0
+            } as f32;
+            let scale = if depthmax > 10.0 {
+                ((e.depth - 10.0) / (depthmax - 10.0)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let cr = (255.0 * scale) as u8;
+            let cb = (255.0 * (1.0 - scale)) as u8;
+            painter.circle(
+                p,
+                radius,
+                Color32::from_rgba_unmultiplied(cr, 0, cb, 128),
+                Stroke::new(1.0_f32, Color32::WHITE),
+            );
+            // Hover popup: name / magnitude / time / depth (km), like the ol popups.
+            if let Some(hp) = hover
+                && hp.distance(p) <= radius + 3.0
+            {
+                let name = if e.name.is_empty() {
+                    "(event)"
+                } else {
+                    &e.name
+                };
+                let txt = format!(
+                    "{name}  M{:.1}\n{}\ndepth {:.1} km",
+                    e.mag,
+                    e.time,
+                    e.depth / 1000.0,
                 );
+                let galley =
+                    painter.layout_no_wrap(txt, FontId::proportional(11.0), Color32::WHITE);
+                let pad = egui::vec2(6.0, 4.0);
+                let origin = p + egui::vec2(10.0, -galley.size().y * 0.5 - pad.y);
+                let box_rect = Rect::from_min_size(origin, galley.size() + pad * 2.0);
+                painter.rect_filled(box_rect, 3.0, Color32::from_rgba_unmultiplied(0, 0, 0, 220));
+                painter.galley(origin + pad, galley, Color32::WHITE);
             }
         }
     } else {

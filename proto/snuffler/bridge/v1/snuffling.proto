@@ -52,12 +52,49 @@ message CakeSnufflingParams {
   string cake_mode = 5;
 }
 
+message SpectrogramSnufflingParams {
+  double spectrogram_twin = 1;
+  double spectrogram_overlap = 2;
+  string spectrogram_taper = 3;
+  optional double spectrogram_fmin = 4;
+  optional double spectrogram_fmax = 5;
+  string spectrogram_color_scale = 6;
+  string spectrogram_color_table = 7;
+}
+
+// A double-couple point source for synthetic seismograms (pyrocko.gf.DCSource),
+// generated through a mounted Green's-functions store — snufflings/seismosizer.py.
+message SeismosizerSnufflingParams {
+  string seis_store = 1; // "GF Store: <id>" of a mounted store
+  string seis_waveform_type = 2; // Displacement/Velocity/Acceleration [m|nm ...]
+  double seis_time = 3; // time shift relative to the active event [s]
+  double seis_north_km = 4;
+  double seis_east_km = 5;
+  double seis_depth_km = 6;
+  double seis_magnitude = 7;
+  double seis_strike = 8;
+  double seis_dip = 9;
+  double seis_rake = 10;
+  double seis_stf_duration = 11; // half-sinusoid source-time-function duration [s]
+}
+
+message SeisbenchSnufflingParams {
+  string model = 1;
+  string weights = 2;
+  optional double p_threshold = 3;
+  optional double s_threshold = 4;
+  string model_base_url = 5;
+}
+
 message SnufflingParams {
   SpectrumSnufflingParams spectrum = 1;
   StaltaSnufflingParams stalta = 2;
   PolarizationSnufflingParams polarization = 3;
   RmsSnufflingParams rms = 4;
   CakeSnufflingParams cake = 5;
+  SpectrogramSnufflingParams spectrogram = 6;
+  SeismosizerSnufflingParams seismosizer = 7;
+  SeisbenchSnufflingParams seisbench = 8;
 }
 
 message SnufflingRequestParams {
@@ -73,6 +110,20 @@ message SnufMarker {
   bool is_event = 5;
   Nslc nslc = 6;
   optional int32 polarity = 7;
+  // Focal mechanism for an event marker sourced from a catalog moment tensor,
+  // plus the Kagan angle (degrees) to the active event and the event's catalog
+  // name/hash. Absent for markers without an MT.
+  optional MomentTensor moment_tensor = 8;
+  optional double kagan_deg = 9;
+  optional string event_hash = 10;
+  // Phase-pick time uncertainty (seconds) round-tripped from marker files.
+  optional double uncertainty = 11;
+  // Event-origin fields for the marker table's event columns (from the catalog
+  // Event); depth is metres, like model.Event.depth. Absent on non-event markers.
+  optional double magnitude = 12;
+  optional double depth = 13;
+  optional double lat = 14;
+  optional double lon = 15;
 }
 
 message SnufflingResult {
@@ -80,67 +131,6 @@ message SnufflingResult {
   string text = 2;
   repeated SnufMarker markers = 3;
   SceneMeta scene = 4;
-}
-
-message CakeDiscontinuity {
-  float z_km = 1;
-  optional string name = 2;
-}
-
-message CakeLayer {
-  float ztop_km = 1;
-  float zbot_km = 2;
-  bool water = 3;
-  bool gradient = 4;
-}
-
-message FloatSeries {
-  repeated float values = 1;
-}
-
-message CakeModelPlot {
-  string title = 1;
-  repeated float vp = 2;
-  repeated float vs = 3;
-  repeated CakeDiscontinuity discontinuities = 4;
-  repeated CakeLayer layers = 5;
-  float vmax_km = 6;
-  float zmax_km = 7;
-}
-
-message CakeRay {
-  uint32 color = 1;
-  repeated FloatSeries segs = 2;
-}
-
-message CakePoint {
-  float x_km = 1;
-  float z_km = 2;
-}
-
-message CakeLegendEntry {
-  string phase = 1;
-  uint32 color = 2;
-}
-
-message CakeRaysPlot {
-  string title = 1;
-  repeated CakeRay rays = 2;
-  repeated CakeDiscontinuity discontinuities = 3;
-  repeated CakeLayer layers = 4;
-  CakePoint source = 5;
-  repeated CakePoint receivers = 6;
-  repeated CakeLegendEntry legend = 7;
-  float xmin_km = 8;
-  float xmax_km = 9;
-  float zmax_km = 10;
-}
-
-message CakePlotResult {
-  oneof result {
-    CakeModelPlot model = 1;
-    CakeRaysPlot rays = 2;
-  }
 }
 
 message NamedSnufflingRequest {

@@ -1,7 +1,7 @@
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["web/bridge.py"]
+files = ["web/bridge.py", "web/seisbench_infer.py"]
 mypy_path = ["web/proto", "typings"]
 exclude = ["^web/proto/", "^pybuild/build/", "^sources/", "^target/"]
 
@@ -27,6 +27,35 @@ disallow_subclassing_any = false
 # this just lets the in-function imports resolve.
 [[tool.mypy.overrides]]
 module = ["pyodide.*", "js"]
+ignore_missing_imports = true
+
+# matplotlib has no stubs installed here; it is only used to render pyrocko's real
+# figures headlessly (Agg) inside figure-drawing helpers, and its types never
+# appear in a bridge signature (the figure is passed around as Any), so resolving
+# the in-function imports is all that's needed.
+[[tool.mypy.overrides]]
+module = ["matplotlib.*"]
+ignore_missing_imports = true
+
+# pyrocko.plot.cake_plot is pyrocko's own (untyped) matplotlib plotting module,
+# reused verbatim to render the Cake figures; like matplotlib it is only called
+# from figure helpers and never appears in a bridge signature.
+[[tool.mypy.overrides]]
+module = ["pyrocko.plot.*"]
+ignore_missing_imports = true
+
+# pyrocko.gf (Green's-functions engine: LocalEngine/DCSource/Target/Request) is used
+# only inside the seismosizer helper to build + process synthetics; its types never
+# appear in a bridge signature (everything is Any locals).
+[[tool.mypy.overrides]]
+module = ["pyrocko.gf", "pyrocko.gf.*"]
+ignore_missing_imports = true
+
+# pyrocko.moment_tensor (MomentTensor + kagan_angle) and pyrocko.io.quakeml (the
+# QuakeML reader) are used only inside the catalog/beachball helpers to ferry
+# focal mechanisms; their types never appear in a bridge signature (Any locals).
+[[tool.mypy.overrides]]
+module = ["pyrocko.moment_tensor", "pyrocko.io.quakeml"]
 ignore_missing_imports = true
 
 [tool.ruff]

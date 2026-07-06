@@ -25,26 +25,35 @@ headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder
 # without ignoring these, each build's own hook output is seen as a change and
 # retriggers the build — an endless rebuild loop that never lets the page finish
 # loading. Ignore only the generated output dirs; the .ts/.proto SOURCES
-# (web/bridge*.ts, proto/) stay watched, so real edits still rebuild + regenerate.
+# (web/bridge*.ts / web/ort_worker.ts, proto/) stay watched, so real edits still
+# rebuild + regenerate.
 [watch]
-ignore = ["web/gen", "web/proto"]
+ignore = ["web/gen", "web/proto", "scratchpad"]
 
 # Generate the protobuf code (web/proto) and bundle the TypeScript bridge glue
 # with bun (pinned in mise) into self-contained ESM: web/bridge.ts ->
-# web/gen/bridge.js (the wasm-bindgen module) and web/bridge_worker.ts ->
-# web/gen/bridge_worker.js. ONE hook, run in order: trunk runs multiple same-stage
-# hooks CONCURRENTLY, and the bun build imports the generated *_pb.ts, so
-# `buf generate` MUST finish first — separate hooks race (bun build ran before
-# buf generate had written web/proto, failing CI). Each bundle is built separately
-# so it stays fully self-contained (no shared chunks for the worker).
+# web/gen/bridge.js (the wasm-bindgen module), web/bridge_worker.ts ->
+# web/gen/bridge_worker.js, and web/ort_worker.ts -> web/gen/ort_worker.js. ONE
+# hook, run in order: trunk runs multiple same-stage hooks CONCURRENTLY, and the
+# bun build imports the generated *_pb.ts, so `buf generate` MUST finish first —
+# separate hooks race (bun build ran before buf generate had written web/proto,
+# failing CI). Each bundle is built separately so it stays fully self-contained
+# (no shared chunks for the workers).
 [[hooks]]
 stage = "pre_build"
 command = "bash"
 command_arguments = [
     "-c",
-    "set -eu; buf generate; bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser; bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser",
+    "set -eu; buf generate; bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser; bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser; bun build web/ort_worker.ts --outfile web/gen/ort_worker.js --format esm --target browser",
 ]
 
+# The post-build work is kept in one ordered hook because Trunk runs multiple
+# same-stage hooks concurrently. The script stages onnxruntime-web's WebGPU/JSEP
+# runtime and the tiny SeisBench manifest, conditionally stages model weights for
+# the default embed-data build, optimizes the fresh app wasm from the staging
+# directory, patches wasm-bindgen-rayon's worker import, and stages the optional
+# threaded Pyodide runtime.
+#
 # wasm-opt runs as a post-build hook rather than Trunk's built-in pass: the
 # edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory, sign-ext,
 # …) and wasm-opt must be told to accept them with `-all`, which Trunk's built-in
@@ -53,14 +62,7 @@ command_arguments = [
 # through `mise exec` because the emsdk-provided wasm-opt on PATH is far too old.
 # `-Oz` optimizes the wasm for size (download size matters more than CPU here —
 # all heavy computation runs in Pyodide).
-[[hooks]]
-stage = "post_build"
-command = "bash"
-command_arguments = [
-    "-c",
-    "set -eu; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; for f in \"$d\"/*_bg.wasm; do [ -f \"$f\" ] || continue; mise exec 'github:WebAssembly/binaryen' -- wasm-opt -Oz -all -o \"$f\" \"$f\"; done; done; exit 0",
-]
-
+#
 # Point wasm-bindgen-rayon's worker at the real (hashed) main JS module. Its
 # workerHelpers.js does `import('../../..')`, which assumes a wasm-pack `pkg/`
 # layout where that resolves to the package's main module; under Trunk's flat,
@@ -69,15 +71,8 @@ command_arguments = [
 # `snuffler-web-<hash>.js`. No-op on the non-threaded build (no workerHelpers).
 # The threaded build also passes --no-sri (see mise.toml) so this edit doesn't
 # trip Trunk's subresource-integrity hash for the snippet.
-[[hooks]]
-stage = "post_build"
-command = "bash"
-command_arguments = [
-    "-c",
-    "set -eu; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; main=$(basename \"$d\"/snuffler-web-*.js 2>/dev/null) || continue; for wh in \"$d\"/snippets/wasm-bindgen-rayon-*/src/workerHelpers.js; do [ -f \"$wh\" ] || continue; sed -i \"s#import('../../..')#import('../../../$main')#\" \"$wh\"; echo \"[rayon] patched worker module import -> $main\"; done; done; exit 0",
-]
-
-# Stage the threaded Pyodide 314 runtime + wheels into py-mt/ (loaded by
+#
+# The threaded Pyodide 314 runtime + wheels are staged into py-mt/ (loaded by
 # web/bridge_worker.js on the ?threads=1 / cross-origin-isolated path). This is a
 # post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a
 # gitignored build artifact (docker/pyodide-mt/stage-web.sh): absent on a fresh
@@ -88,5 +83,5 @@ stage = "post_build"
 command = "bash"
 command_arguments = [
     "-c",
-    "set -eu; src=\"$TRUNK_SOURCE_DIR/docker/pyodide-mt/served\"; [ -d \"$src\" ] || { echo '[py-mt] not staged (run docker/pyodide-mt/stage-web.sh) — single-threaded CDN only'; exit 0; }; for d in \"$TRUNK_STAGING_DIR\" \"$TRUNK_DIST_DIR\"; do [ -d \"$d\" ] || continue; mkdir -p \"$d/py-mt\"; cp -ru \"$src/.\" \"$d/py-mt/\"; done; echo '[py-mt] threaded runtime staged'; exit 0",
+    "bash \"$TRUNK_SOURCE_DIR/scripts/trunk-post-build.sh\"",
 ]

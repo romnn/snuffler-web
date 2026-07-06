@@ -16,11 +16,60 @@ message MapEvent {
   double lat = 1;
   double lon = 2;
   double mag = 3;
+  double depth = 4; // metres (like pyrocko's map snuffling; popup divides by 1000)
+  string name = 5;
+  string time = 6;
+}
+
+// One tectonic plate boundary as a polyline of lon/lat vertices, parsed from
+// pyrocko's shipped Bird (2003) plates.kml so the map can overlay them exactly
+// like the Qt map snuffling (geometry passthrough, no seismology in Rust).
+message PlateBoundary {
+  string name = 1;
+  repeated double lons = 2;
+  repeated double lats = 3;
 }
 
 message MapData {
   repeated MapStation stations = 1;
   repeated MapEvent events = 2;
+  repeated PlateBoundary plate_boundaries = 3;
+}
+
+// Great-circle geometry from the active event to each known station (degrees),
+// for the distance/azimuth columns snuffler shows in its marker/station tables.
+message StationDistance {
+  string net = 1;
+  string sta = 2;
+  double distance_deg = 3;
+  double azimuth_deg = 4;
+  double backazimuth_deg = 5;
+}
+
+message StationDistanceList {
+  repeated StationDistance stations = 1;
+  bool has_event = 2;
+}
+
+// Set (or clear) the user-chosen active event — the single reference the distance
+// and Kagan columns, cake/seismosizer origin and map centre are measured against
+// (snuffler's set_active_event_marker). Replaces the auto largest-magnitude pick.
+message SetActiveEventRequest {
+  bool deactivate = 1; // 'E' — clear the active event
+  optional string event_hash = 2; // identity of a loaded catalog/event marker
+  double t = 3; // marker time (identity fallback + hand-made-event origin time)
+  Nslc nslc = 4; // single-station marker → Python derives lat/lon from _STATIONS
+}
+
+message EventKagan {
+  string event_hash = 1;
+  optional double kagan_deg = 2; // absent when either event lacks a moment tensor
+}
+
+message ActiveEventResult {
+  bool has_event = 1;
+  optional string active_hash = 2;
+  repeated EventKagan kagan = 3; // recomputed for every registry event vs the new active
 }
 
 message CommandResult {
@@ -28,6 +77,9 @@ message CommandResult {
   optional double t = 2;
   SceneMeta scene = 3;
   optional string message = 4;
+  // For a `goto`, the window length (seconds) matching the date specificity typed
+  // (snuffler: ':goto 2023' opens a year, a full date a day, etc.). Absent = keep.
+  optional double tlen = 5;
 }
 
 message LoadBytesRequest {
@@ -35,6 +87,10 @@ message LoadBytesRequest {
   string fmt = 2;
   bool append = 3;
   bytes content = 4; // the file bytes themselves (Python stages them on the Pyodide FS)
+  // Stable identity of the on-disk source (File System Access handle) this load
+  // came from. When set, the load REPLACES that source's previous traces instead
+  // of appending — the basis for "reload modified files".
+  string source_id = 5;
 }
 
 message LoadUrlRequest {
@@ -42,8 +98,40 @@ message LoadUrlRequest {
   string fmt = 2;
 }
 
+message IngestMiniSeedRequest {
+  string source = 1;
+  bytes content = 2;
+  // Live-acquisition sessions trim incoming records before this epoch time.
+  // Zero means "do not trim".
+  double start_time = 3;
+  // True for the first packet of a new live source: replace the existing pile
+  // instead of appending to whatever was loaded before.
+  bool reset = 4;
+  // Rolling retention window in seconds for live acquisition. Zero keeps all
+  // data from start_time onward.
+  double retain_seconds = 5;
+}
+
 // A pyrocko marker file's text, picked in the browser and parsed in Python.
 message LoadMarkersRequest {
+  string text = 1;
+}
+
+// A StationXML file's text, picked in the browser and parsed in Python (station
+// coordinates for sorting + instrument responses for deconvolution).
+message LoadStationXmlRequest {
+  string text = 1;
+}
+
+// A pyrocko station file's text, picked in the browser and parsed in Python
+// (station coordinates for distance/azimuth sorting, cake, and the map).
+message LoadStationsRequest {
+  string text = 1;
+}
+
+// A pyrocko event file's text, picked in the browser and parsed in Python (event
+// markers + the active event for distance/azimuth sorting).
+message LoadEventsRequest {
   string text = 1;
 }
 
@@ -79,6 +167,10 @@ message CatalogRequest {
   string start = 2;
   string end = 3;
   double minmag = 4;
+  // Fetch full QuakeML with moment tensors (format=quakeml&includeallorigins)
+  // instead of the lightweight text summary, so event markers carry a focal
+  // mechanism (beachball + Kagan angle). Falls back to text when unset.
+  bool with_mt = 5;
 }
 
 message MarkerFileEntry {
@@ -88,6 +180,17 @@ message MarkerFileEntry {
   optional string phase = 4;
   Nslc nslc = 5;
   optional int32 polarity = 6;
+  // Phase-pick time uncertainty (seconds), drawn as ± brackets; set by shift-drag.
+  optional double uncertainty = 7;
+  // Event-marker fields so events save as real EventMarkers (with origin + focal
+  // mechanism) rather than being downgraded to plain markers. depth is metres.
+  bool is_event = 8;
+  optional double magnitude = 9;
+  optional double depth = 10;
+  optional double lat = 11;
+  optional double lon = 12;
+  optional string event_hash = 13;
+  optional MomentTensor moment_tensor = 14;
 }
 
 message MarkerFile {
