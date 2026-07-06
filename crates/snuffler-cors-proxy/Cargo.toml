@@ -1,0 +1,15 @@
+[package]
+name = "snuffler-cors-proxy"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+axum = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true, features = [
+    "http2",
+    "rustls",
+    "stream",
+] }
+url = { workspace = true }

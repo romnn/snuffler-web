@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://github.com/romnn/micromux/raw/main/micromux.schema.json
+version: "1"
+name: snuffler-web
+ui:
+  width: 34
+restart: unless-stopped
+healthcheck:
+  interval: "2s"
+  timeout: "2s"
+  retries: 30
+services:
+  proxy:
+    name: FDSN + SeedLink proxy
+    working_dir: ./
+    command:
+      - cargo
+      - run
+      - -p
+      - snuffler-proxy
+      - --bin
+      - snuffler-proxy
+      - --
+      - --bind
+      - 127.0.0.1:17684
+    ports:
+      - 17684
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17684/health"]
+
+  web:
+    name: Trunk dev server
+    working_dir: ./
+    command:
+      - mise
+      - run
+      - serve
+    ports:
+      - 17683
+    depends_on:
+      - name: proxy
+        condition: healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17683/"]
