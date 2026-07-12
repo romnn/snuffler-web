@@ -22,9 +22,7 @@ tasks:
     desc: "check Rust, Python and TypeScript"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      # Native Rust is limited to the proxy/proto support crates. The app itself
-      # is browser-only and is checked on wasm below.
-      - cargo c -p snuffler-proto -p snuffler-cors-proxy -p snuffler-tcp-ws-proxy -p snuffler-proxy --all-features --lib --tests {{.CLI_ARGS}}
+      - cargo c -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
       - task: check:threads
       - task: check:py
       - task: check:ts
@@ -33,7 +31,7 @@ tasks:
     desc: "check cargo workspace"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo c -p snuffler-proto -p snuffler-cors-proxy -p snuffler-tcp-ws-proxy -p snuffler-proxy --all-features --lib --tests {{.CLI_ARGS}}
+      - cargo c -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
       - task: check:threads
 
   check:py:
@@ -65,7 +63,7 @@ tasks:
     env:
       CARGO_UNSTABLE_BUILD_STD: std,panic_abort
     cmds:
-      - cargo c --target wasm32-unknown-unknown --features threads {{.CLI_ARGS}}
+      - cargo c -p snuffler-web-egui --target wasm32-unknown-unknown --features threads {{.CLI_ARGS}}
 
   clean:
     desc: "clean cargo workspace"
@@ -126,12 +124,12 @@ tasks:
   test:
     desc: "test cargo workspace"
     cmds:
-      - cargo nextest run -p snuffler-proto -p snuffler-cors-proxy -p snuffler-tcp-ws-proxy -p snuffler-proxy --all-features --lib --tests --no-tests "warn" {{.CLI_ARGS}}
+      - cargo nextest run -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests --no-tests "warn" {{.CLI_ARGS}}
 
   test:fc:
     desc: "test native support crates for all combinations of features"
     cmds:
-      - cargo fc --no-targets nextest run -p snuffler-proto -p snuffler-cors-proxy -p snuffler-tcp-ws-proxy -p snuffler-proxy --lib --tests --no-tests "warn" {{.CLI_ARGS}}
+      - cargo fc --no-targets nextest run -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --lib --tests --no-tests "warn" {{.CLI_ARGS}}
 
   test:doc:
     desc: "run doctests in cargo workspace"
@@ -142,6 +140,14 @@ tasks:
     desc: "lint with ast-grep rules"
     cmds: []
       # - sg scan
+
+  lint:boundaries:
+    desc: "keep shared Rust crates independent from egui, eframe, and epaint"
+    cmds:
+      # --target all: without it cargo tree resolves for the host only, which
+      # would miss a toolkit dependency added under a wasm32 cfg section.
+      - 'if cargo tree -p snuffler-web-core -e normal --target all | rg -q "(^| )(egui|eframe|epaint) v"; then exit 1; fi'
+      - 'if cargo tree -p snuffler-web-render -e normal --target all | rg -q "(^| )(egui|eframe|epaint) v"; then exit 1; fi'
 
   lint:py:
     desc: "lint Python bridge with ruff"
@@ -164,19 +170,20 @@ tasks:
   lint:
     desc: "lint Rust (host + wasm32) and Python workspace"
     cmds:
-      # Native Rust is limited to the proxy/proto support crates.
-      - cargo lint -p snuffler-proto -p snuffler-cors-proxy -p snuffler-tcp-ws-proxy -p snuffler-proxy --all-features --lib --tests {{.CLI_ARGS}}
+      - cargo lint -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
       # wasm32 is the app target — the bridge/UI entrypoint lives here.
-      - cargo lint -p snuffler-web --all-features --target wasm32-unknown-unknown --lib {{.CLI_ARGS}}
+      - cargo lint -p snuffler-web-egui --all-features --target wasm32-unknown-unknown --lib {{.CLI_ARGS}}
+      - task: lint:boundaries
       - task: lint:ast-grep
       - task: lint:py
 
   lint:fc:
     desc: "lint Rust (all feature combinations, host + wasm32) and Python workspace"
     cmds:
-      # cargo-fc reads per-package targets from Cargo.toml: snuffler-web is wasm
+      # cargo-fc reads per-package targets from Cargo.toml: snuffler-web-egui is wasm
       # only; proxy crates are checked on Linux, macOS, and Windows GNU.
       - cargo fc clippy --all-targets --no-deps {{.CLI_ARGS}}
+      - task: lint:boundaries
       # The fc matrix excludes `threads` (it still needs build-std); compile-
       # check that build separately so the real threaded path cannot rot.
       - task: check:threads
@@ -187,7 +194,7 @@ tasks:
     desc: "lint and fix cargo workspace"
     aliases: [fix]
     cmds:
-      - cargo fixit -p snuffler-proto -p snuffler-cors-proxy -p snuffler-tcp-ws-proxy -p snuffler-proxy --all-features --lib --tests {{.CLI_ARGS}}
+      - cargo fixit -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
       - task: lint:ast-grep
 
   lint:actions:

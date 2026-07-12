@@ -146,7 +146,7 @@ jobs:
           CARGO_UNSTABLE_BUILD_STD: "std,panic_abort"
           # Worker import is rewritten post-build (Trunk.toml); skip SRI for it.
           TRUNK_BUILD_NO_SRI: "true"
-        run: mise exec -- trunk build --release --features threads --public-url "/${{ github.event.repository.name }}/"
+        run: mise exec -- trunk build --config crates/snuffler-web-egui/Trunk.toml --release --features threads --public-url "/${{ github.event.repository.name }}/"
 
       # Final backstop: validate the lock in the ACTUAL artifact about to be
       # published (trunk copied served/ -> dist/py-mt). A truncated/stale lock —

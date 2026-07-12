@@ -35,9 +35,10 @@ separate commands and artifacts:
  │     └─ web/bridge.py  — strict-typed pyrocko shim
  ├─ web/bridge.js        — main-thread client, DOM I/O, worker RPC
  ├─ proto/               — protobuf bridge schema, generated for Rust/Python
- └─ egui app (Rust → wasm32, via Trunk/wasm-bindgen)             ← the UI
-      └─ src/bridge.rs   — async wasm-bindgen calls into bridge.js; protobuf bytes
-      └─ src/view/*      — stacked waveform canvas, time axis, controls, markers
+ └─ Rust frontend (wasm32, via Trunk/wasm-bindgen)               ← the UI
+      ├─ crates/snuffler-web-core/    — session state + async protobuf bridge (no egui)
+      ├─ crates/snuffler-web-render/  — waveform painting + SVG export (no egui)
+      └─ crates/snuffler-web-egui/    — egui widgets, input handling, Trunk entry point
 ```
 
 The egui frontend asks the bridge for a *view* (a time window + filters + a
@@ -81,12 +82,14 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
 
 | Path | What |
 |---|---|
-| `src/` | egui frontend (`app.rs`, `bridge.rs`, `view/*`, `state.rs`) |
 | `web/bridge.js` | main-thread JS client for the Pyodide worker |
 | `web/bridge_worker.js` | Pyodide boot, wheel install, protobuf RPC, buffer transfer |
 | `web/bridge.py` | type-checked pyrocko shim (`make_example`, `load_bytes`, `get_view`) |
 | `proto/` | protobuf schema for the Rust/Python bridge |
-| `crates/snuffler-proto/` | generated Rust protobuf crate |
+| `crates/snuffler-web-core/` | shared session state and Pyodide bridge |
+| `crates/snuffler-web-render/` | toolkit-neutral drawing and SVG backend |
+| `crates/snuffler-web-egui/` | egui frontend, Trunk entry point, and frontend assets |
+| `crates/snuffler-web-proto/` | generated Rust protobuf crate |
 | `pybuild/` | `setup.py` (the pyrocko wheel build def, used by `docker/pyodide-mt`) + `fetch-pyrocko.sh` + `protoc-gen-mypy` |
 | `docker/pyodide-mt/` | the custom Pyodide 314 build (runtime + both wheels): `build-all.sh` |
 | `dist-py/` | single-threaded CDN pyrocko wheel + `wheels.json` (served at `/py/`); gitignored, built by `build-all.sh` |
@@ -99,14 +102,15 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
   loads are cached. See `plan/load-time-reduction.md` for how to cut that.
 - matplotlib is loaded only because `pyrocko.orthodrome` imports
   `matplotlib.path` at module top; it isn't otherwise used.
-- The egui frontend is browser-only: run it with `mise run serve` / `trunk serve`,
+- The egui frontend is browser-only: run it with `mise run serve` or pass
+  `--config crates/snuffler-web-egui/Trunk.toml` to Trunk,
   not `cargo run`.
 - For non-CORS FDSN endpoints or browser-accessible SeedLink/ringserver streams,
   run `micromux` instead of plain `mise run serve`. It starts Trunk on
-  `127.0.0.1:17683` and `snuffler-proxy` on `127.0.0.1:17684`; local FDSN fetches
+  `127.0.0.1:17683` and `snuffler-web-proxy` on `127.0.0.1:17684`; local FDSN fetches
   use `/cors` through that proxy when available, and the same process exposes
   `/seedlink` and `/tcp` as WebSocket-to-raw-TCP tunnels.
-- `snuffler-proxy` is not an open proxy: `/cors` only forwards to the known FDSN
+- `snuffler-web-proxy` is not an open proxy: `/cors` only forwards to the known FDSN
   query endpoints used by the app, only permits `GET`/`HEAD`, and strips browser
   credential headers. `/seedlink`/`/tcp` only connect to known SeedLink/ringserver
   hosts on their allowed ports. A hosted deployment can add exact targets with

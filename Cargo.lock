@@ -3229,7 +3229,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "snuffler-cors-proxy"
+name = "snuffler-web-core"
+version = "0.1.0"
+dependencies = [
+ "ecolor",
+ "js-sys",
+ "log",
+ "snuffler-web-proto",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "snuffler-web-cors-proxy"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -3239,41 +3252,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "snuffler-proto"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
-]
-
-[[package]]
-name = "snuffler-proxy"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
- "reqwest",
- "snuffler-cors-proxy",
- "snuffler-tcp-ws-proxy",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "snuffler-tcp-ws-proxy"
-version = "0.1.0"
-dependencies = [
- "axum",
- "bytes",
- "futures-util",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "snuffler-web"
+name = "snuffler-web-egui"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
@@ -3284,11 +3263,56 @@ dependencies = [
  "png",
  "rayon",
  "resvg",
- "snuffler-proto",
+ "snuffler-web-core",
+ "snuffler-web-render",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-rayon",
  "web-sys",
+]
+
+[[package]]
+name = "snuffler-web-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+]
+
+[[package]]
+name = "snuffler-web-proxy"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "reqwest",
+ "snuffler-web-cors-proxy",
+ "snuffler-web-tcp-ws-proxy",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "snuffler-web-render"
+version = "0.1.0"
+dependencies = [
+ "ecolor",
+ "emath",
+ "png",
+ "snuffler-web-core",
+]
+
+[[package]]
+name = "snuffler-web-tcp-ws-proxy"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "futures-util",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

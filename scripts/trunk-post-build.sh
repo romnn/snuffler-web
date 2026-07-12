@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source_dir="${TRUNK_SOURCE_DIR:?}"
+repo_dir="$source_dir/../.."
 staging_dir="${TRUNK_STAGING_DIR:?}"
 dist_dir="${TRUNK_DIST_DIR:?}"
 
@@ -12,9 +13,25 @@ for dir in "$staging_dir" "$dist_dir"; do
     fi
 done
 
+# The core crate's wasm externs import bridge.js through a crate-escaping module
+# path (#[wasm_bindgen(module = "/../../web/gen/bridge.js")] in
+# crates/snuffler-web-core/src/bridge.rs). wasm-bindgen cannot embed a file from
+# outside the crate as a snippet, so the emitted import resolves to
+# web/gen/bridge.js under the site root — stage the bundle there.
+stage_bridge_module() {
+    local bridge="$repo_dir/web/gen/bridge.js"
+
+    for dir in "${build_dirs[@]}"; do
+        mkdir -p "$dir/web/gen"
+        cp -u "$bridge" "$dir/web/gen/bridge.js"
+    done
+
+    echo "[bridge] wasm-bindgen module staged"
+}
+
 stage_ort_runtime() {
-    local ort_dir="$source_dir/node_modules/onnxruntime-web/dist"
-    local manifest="$source_dir/web/assets/seisbench_models.json"
+    local ort_dir="$repo_dir/node_modules/onnxruntime-web/dist"
+    local manifest="$repo_dir/web/assets/seisbench_models.json"
 
     for dir in "${build_dirs[@]}"; do
         mkdir -p "$dir/ort" "$dir/assets"
@@ -35,7 +52,7 @@ stage_seisbench_models() {
         return
     fi
 
-    local src="$source_dir/web/assets/models"
+    local src="$repo_dir/web/assets/models"
     if [ ! -d "$src" ]; then
         echo "[seisbench] no exported model weights found"
         return
@@ -91,12 +108,12 @@ patch_trunk_loader_progress() {
     done
 
     if [ "${#indexes[@]}" -gt 0 ]; then
-        bun "$source_dir/scripts/patch-trunk-loader.mjs" "${indexes[@]}"
+        bun "$repo_dir/scripts/patch-trunk-loader.mjs" "${indexes[@]}"
     fi
 }
 
 stage_threaded_pyodide() {
-    local src="$source_dir/docker/pyodide-mt/served"
+    local src="$repo_dir/docker/pyodide-mt/served"
 
     if [ ! -d "$src" ]; then
         echo "[py-mt] not staged (run docker/pyodide-mt/stage-web.sh) - single-threaded CDN only"
@@ -111,6 +128,7 @@ stage_threaded_pyodide() {
     echo "[py-mt] threaded runtime staged"
 }
 
+stage_bridge_module
 stage_ort_runtime
 stage_seisbench_models
 optimize_app_wasm

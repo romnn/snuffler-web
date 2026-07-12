@@ -1,10 +1,12 @@
 [workspace]
 members = [
-    ".",
-    "crates/snuffler-cors-proxy",
-    "crates/snuffler-proto",
-    "crates/snuffler-proxy",
-    "crates/snuffler-tcp-ws-proxy",
+    "crates/snuffler-web-core",
+    "crates/snuffler-web-cors-proxy",
+    "crates/snuffler-web-egui",
+    "crates/snuffler-web-proto",
+    "crates/snuffler-web-proxy",
+    "crates/snuffler-web-render",
+    "crates/snuffler-web-tcp-ws-proxy",
 ]
 resolver = "3"
 
@@ -12,6 +14,9 @@ resolver = "3"
 axum = "0.8.9"
 bytes = "1"
 clap = "4.6.1"
+ecolor = "0.34"
+egui = "0.34"
+emath = "0.34"
 futures-util = "0.3"
 prost = "0.14"
 prost-build = "0.14"
@@ -20,18 +25,6 @@ tokio = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 url = "2"
-
-[package]
-name = "snuffler-web"
-version = "0.1.0"
-authors = ["Roman Dahm <contact@romnn.com>"]
-edition = "2024"
-include = ["LICENSE", "**/*.rs", "Cargo.toml"]
-
-[[bin]]
-name = "snuffler-web"
-path = "src/main.rs"
-test = false
 
 [workspace.metadata.cargo-fc]
 install_missing_targets = true
@@ -43,17 +36,10 @@ targets = [
     "x86_64-pc-windows-gnu",
 ]
 
-[package.metadata.cargo-fc]
-# `threads` still needs a build-std wasm build (the precompiled wasm32 std is
-# single-threaded), so keep it out of the generic cargo-fc matrix and compile-
-# check that real threaded configuration explicitly in `task check:threads`.
-exclude_features = ["threads"]
-targets = ["wasm32-unknown-unknown"]
-
 [profile.release]
 # Optimize for size: this is a render-only wasm frontend — all heavy computation
 # runs in Pyodide — so a smaller download matters more than peak CPU throughput.
-# Complementary to wasm-opt -Oz (Trunk.toml): rustc/LLVM shrinks the codegen,
+# Complementary to wasm-opt -Oz (the egui frontend's Trunk.toml): rustc/LLVM shrinks the codegen,
 # wasm-opt does a further wasm-level size pass. Use "z" for an even smaller binary
 # if the UI still feels smooth.
 # opt-level = "s"
@@ -62,14 +48,14 @@ lto = true
 codegen-units = 1
 strip = true
 
-[lints.rust]
+[workspace.lints.rust]
 warnings = { level = "warn", priority = -1 }
 unsafe_code = "deny"
 unused_must_use = "deny"
 # Warn-only: keep iteration fast during development; CI/review still adds the docs.
 missing_docs = "warn"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 unwrap_used = "deny"
@@ -83,70 +69,3 @@ indexing_slicing = "deny"
 allow_attributes_without_reason = "deny"
 
 struct_excessive_bools = "allow"
-
-[features]
-default = ["svg-raster", "gf", "embed-data"]
-# Rasterize the export SVG to a crisp high-DPI PNG via resvg (pure Rust, compiles
-# to wasm). Adds ~1 MB to the bundle; disable it for a smaller download — the PNG
-# export then falls back to capturing the egui framebuffer at screen resolution.
-svg-raster = ["dep:resvg"]
-# Green's-functions stores: the Cake Phase "Add GF Store…" button (mount a store
-# directory via the File System Access API → Pyodide NativeFS) and its embedded
-# 1D earth model as a `GF Store: <id>` dropdown entry. Frontend toggle only; the
-# pyrocko C extensions that read stores are selected at wheel-build time
-# (PYROCKO_EXTS, see pybuild/setup.py).
-gf = []
-# Bundle exported SeisBench ONNX weights into dist/assets/models. Disable this
-# for a lean build that resolves model URLs through the configured remote base.
-embed-data = []
-# A general-purpose rayon worker pool for the wasm frontend (the app's OWN
-# threads, separate from Pyodide), via wasm-bindgen-rayon — currently runs the
-# resvg PNG export off the egui main thread, and is available for any future
-# compute-heavy loop. Requires a nightly + atomics + build-std + cross-origin
-# -isolated build, produced only by trunk (mise run serve / build, and CI); see
-# the `cargo-fc` metadata above + mise.toml. Without it, parallel paths fall back
-# to running on the main thread.
-threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]
-
-[dependencies]
-egui = "0.34"
-snuffler-proto = { path = "crates/snuffler-proto" }
-
-# web: the bridge to Pyodide lives in JS; we call it via wasm-bindgen.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-eframe = { version = "0.34", default-features = false, features = [
-    # Embed the default egui fonts.
-    "default_fonts",
-    # WebGL2/OpenGL backend — most reliable across browsers (incl. headless).
-    "glow",
-] }
-log = "0.4"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Document",
-    "HtmlCanvasElement",
-    "BinaryType",
-    "ErrorEvent",
-    "Event",
-    # navigator.hardwareConcurrency sizes the rayon pool (see the `threads` feature).
-    "MessageEvent",
-    "Navigator",
-    "WebSocket",
-] }
-console_error_panic_hook = "0.1"
-# PNG encoder for the "Save image (PNG)" export (already in the lock transitively).
-png = "0.18"
-# Vector→raster for high-DPI PNG export (see the `svg-raster` feature). Text-only
-# features: no system-fonts/memmap (we embed the font), keeping it wasm-friendly.
-resvg = { version = "0.47", optional = true, default-features = false, features = [
-    "text",
-] }
-# General-purpose rayon worker pool for the wasm frontend (the `threads` feature):
-# the app's OWN threads, separate from Pyodide. wasm-bindgen-rayon provides the
-# Web Worker glue + `init_thread_pool`. Built only under the nightly + atomics +
-# build-std trunk build; see the `threads` feature + mise.toml.
-rayon = { version = "1", optional = true }
-wasm-bindgen-rayon = { version = "1", optional = true }

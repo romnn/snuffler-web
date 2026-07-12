@@ -1,0 +1,14 @@
+[package]
+name = "snuffler-web-render"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ecolor = { workspace = true }
+emath = { workspace = true }
+png = "0.18"
+snuffler-web-core = { path = "../snuffler-web-core", default-features = false }

@@ -1,0 +1,30 @@
+[package]
+name = "snuffler-web-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["gf", "embed-data"]
+embed-data = []
+gf = []
+
+[dependencies]
+ecolor = { workspace = true }
+snuffler-web-proto = { path = "../snuffler-web-proto" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+log = "0.4"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "ErrorEvent",
+    "Event",
+    "MessageEvent",
+    "WebSocket",
+] }

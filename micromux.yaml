@@ -16,9 +16,9 @@ services:
       - cargo
       - run
       - -p
-      - snuffler-proxy
+      - snuffler-web-proxy
       - --bin
-      - snuffler-proxy
+      - snuffler-web-proxy
       - --
       - --bind
       - 127.0.0.1:17684

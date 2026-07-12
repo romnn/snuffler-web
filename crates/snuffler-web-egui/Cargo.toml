@@ -1,0 +1,61 @@
+[package]
+name = "snuffler-web-egui"
+version = "0.1.0"
+authors = ["Roman Dahm <contact@romnn.com>"]
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "snuffler-web"
+path = "src/main.rs"
+test = false
+
+[package.metadata.cargo-fc]
+# `threads` still needs a build-std wasm build (the precompiled wasm32 std is
+# single-threaded), so keep it out of the generic cargo-fc matrix and compile-
+# check that real threaded configuration explicitly in `task check:threads`.
+exclude_features = ["threads"]
+targets = ["wasm32-unknown-unknown"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["svg-raster", "gf", "embed-data"]
+svg-raster = ["dep:resvg"]
+gf = ["snuffler-web-core/gf"]
+embed-data = ["snuffler-web-core/embed-data"]
+threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]
+
+[dependencies]
+egui = { workspace = true }
+snuffler-web-core = { path = "../snuffler-web-core", default-features = false }
+snuffler-web-render = { path = "../snuffler-web-render" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+log = "0.4"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    "BinaryType",
+    "ErrorEvent",
+    "Event",
+    "MessageEvent",
+    "Navigator",
+    "WebSocket",
+] }
+console_error_panic_hook = "0.1"
+png = "0.18"
+resvg = { version = "0.47", optional = true, default-features = false, features = [
+    "text",
+] }
+rayon = { version = "1", optional = true }
+wasm-bindgen-rayon = { version = "1", optional = true }

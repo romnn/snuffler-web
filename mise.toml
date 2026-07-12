@@ -62,7 +62,8 @@ depends = ["fetch-pyrocko"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 env.SNUFFLER_EMBED_DATA = "1"
-run = "trunk serve --features threads"
+env.NO_COLOR = "true"
+run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --features threads"
 
 [tasks.build]
 description = "Build the web app for release — threaded (off-main-thread PNG export)"
@@ -70,7 +71,8 @@ depends = ["fetch-pyrocko"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 env.SNUFFLER_EMBED_DATA = "1"
-run = "trunk build --release --features threads"
+env.NO_COLOR = "true"
+run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --features threads"
 
 # Lean builds do not bundle `web/assets/models/*.onnx`; set
 # SNUFFLER_ONNX_MODEL_BASE_URL at build time to an HTTP directory containing the
@@ -81,14 +83,16 @@ description = "Run the web app without bundled SeisBench model weights; requires
 depends = ["fetch-pyrocko"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
-run = "trunk serve --no-default-features --features svg-raster,gf,threads"
+env.NO_COLOR = "true"
+run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features svg-raster,gf,threads"
 
 [tasks.build-lean]
 description = "Build the web app without bundled SeisBench model weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
 depends = ["fetch-pyrocko"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
-run = "trunk build --release --no-default-features --features svg-raster,gf,threads"
+env.NO_COLOR = "true"
+run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features svg-raster,gf,threads"
 
 # --- Qt frontend track: the ORIGINAL PyQt5 snuffler, streamed to the browser ---
 # Fully independent of the egui frontend (own Docker image + port). Needs Docker.

@@ -1,0 +1,16 @@
+[package]
+name = "snuffler-web-tcp-ws-proxy"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["ws"] }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "time"] }
+tracing = { workspace = true }
+url = { workspace = true }
