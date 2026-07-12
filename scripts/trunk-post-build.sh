@@ -73,7 +73,7 @@ optimize_app_wasm() {
         [ -f "$wasm" ] || continue
 
         local tmp="${wasm}.opt"
-        mise exec 'github:WebAssembly/binaryen' -- wasm-opt -Oz -all -o "$tmp" "$wasm"
+        mise exec 'aqua:WebAssembly/binaryen' -- wasm-opt -Oz -all -o "$tmp" "$wasm"
         mv "$tmp" "$wasm"
         optimized+=("$(basename "$wasm")")
     done

@@ -59,7 +59,7 @@ command_arguments = [
 # edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory, sign-ext,
 # …) and wasm-opt must be told to accept them with `-all`, which Trunk's built-in
 # invocation does not pass. binaryen is pinned via mise
-# (github:WebAssembly/binaryen in mise.toml) for reproducibility, and invoked
+# (aqua:WebAssembly/binaryen in mise.toml) for reproducibility, and invoked
 # through `mise exec` because the emsdk-provided wasm-opt on PATH is far too old.
 # `-Oz` optimizes the wasm for size (download size matters more than CPU here —
 # all heavy computation runs in Pyodide).

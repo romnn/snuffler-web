@@ -33,6 +33,9 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  MISE_GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -46,11 +49,16 @@ jobs:
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
 
-      # Provision the pinned toolchain (node, bun, uv, trunk, binaryen, protoc —
+      # Provision the pinned toolchain (Python, Bun, uv, Trunk, Binaryen, protoc —
       # protoc + buf compile the bridge .proto during the trunk build). emsdk is
       # NOT needed here: the Pyodide wheels build inside the pyodide-env docker
       # image (build-all.sh), not via the host emsdk.
       - uses: jdx/mise-action@v4
+        with:
+          install: false
+          cache: true
+      - name: Install web build tools
+        run: mise install python bun uv buf protoc aqua:WebAssembly/binaryen github:trunk-rs/trunk
 
       # The egui app is built THREADED (off-main-thread PNG export via
       # wasm-bindgen-rayon), which needs a nightly + rust-src to rebuild std with

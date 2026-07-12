@@ -2,6 +2,9 @@ name: CI
 
 on: [push, pull_request, workflow_dispatch]
 
+env:
+  MISE_GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   check:
     name: fmt + clippy (native & wasm)
@@ -20,6 +23,11 @@ jobs:
       # Puts the pinned protoc on PATH — snuffler-web-proto's build.rs (prost-build)
       # shells out to it to compile the bridge .proto schema during clippy.
       - uses: jdx/mise-action@v4
+        with:
+          install: false
+          cache: true
+      - name: Install lint tools
+        run: mise install task python bun uv zig buf protoc github:rust-cross/cargo-zigbuild github:romnn/cargo-feature-combinations
 
       # The wasm bridge externs read /web/gen/bridge.js at compile time
       # (the wasm-bindgen module in snuffler-web-core/src/bridge.rs). It is
@@ -53,6 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
+        with:
+          install: false
+          cache: true
+      - name: Install type-checking tools
+        run: mise install task python bun uv buf protoc
 
       # check:ts/check:py run `buf generate` (whose protoc-gen-es is
       # `bunx protoc-gen-es`) and `bunx tsc`; both resolve from node_modules.

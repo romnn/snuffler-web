@@ -16,6 +16,20 @@ url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_
 url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/384924893"
 provenance = "github-attestations"
 
+[[tools."aqua:WebAssembly/binaryen"]]
+version = "130"
+backend = "aqua:WebAssembly/binaryen"
+
+[tools."aqua:WebAssembly/binaryen"."platforms.linux-x64"]
+checksum = "sha256:0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz"
+url_api = "https://api.github.com/repos/WebAssembly/binaryen/releases/assets/435610959"
+
+[tools."aqua:WebAssembly/binaryen"."platforms.macos-arm64"]
+checksum = "sha256:79d3ab9f417d9e215f15f598f523d001a7d9ac1e59367e5c869fbdabd1cba72e"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-arm64-macos.tar.gz"
+url_api = "https://api.github.com/repos/WebAssembly/binaryen/releases/assets/435599321"
+
 [[tools."aqua:nextest-rs/nextest/cargo-nextest"]]
 version = "0.9.140"
 backend = "aqua:nextest-rs/nextest/cargo-nextest"
@@ -84,27 +98,33 @@ url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x6
 checksum = "sha256:d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620"
 url = "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-aarch64.zip"
 
-[[tools."cargo:cargo-outdated"]]
-version = "0.19.0"
-backend = "cargo:cargo-outdated"
-
-[[tools."cargo:cargo-udeps"]]
+[[tools."github:est31/cargo-udeps"]]
 version = "0.1.61"
-backend = "cargo:cargo-udeps"
+backend = "github:est31/cargo-udeps"
 
-[[tools."github:WebAssembly/binaryen"]]
-version = "ersion_130"
-backend = "github:WebAssembly/binaryen"
+[tools."github:est31/cargo-udeps"."platforms.linux-x64"]
+checksum = "sha256:458419d47f48bc177e9b895b06abdccb08613f8a2d1b6eaf1729e968c041e03b"
+url = "https://github.com/est31/cargo-udeps/releases/download/v0.1.61/cargo-udeps-v0.1.61-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/est31/cargo-udeps/releases/assets/407801002"
 
-[tools."github:WebAssembly/binaryen"."platforms.linux-x64"]
-checksum = "sha256:0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc"
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz"
-url_api = "https://api.github.com/repos/WebAssembly/binaryen/releases/assets/435610959"
+[tools."github:est31/cargo-udeps"."platforms.macos-arm64"]
+checksum = "sha256:0ca49f226c268ff3f7d65e82dd471900b962e4dcb3e75793558e5f4287be2011"
+url = "https://github.com/est31/cargo-udeps/releases/download/v0.1.61/cargo-udeps-v0.1.61-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/est31/cargo-udeps/releases/assets/407800985"
 
-[tools."github:WebAssembly/binaryen"."platforms.macos-arm64"]
-checksum = "sha256:79d3ab9f417d9e215f15f598f523d001a7d9ac1e59367e5c869fbdabd1cba72e"
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-arm64-macos.tar.gz"
-url_api = "https://api.github.com/repos/WebAssembly/binaryen/releases/assets/435599321"
+[[tools."github:kbknapp/cargo-outdated"]]
+version = "0.19.0"
+backend = "github:kbknapp/cargo-outdated"
+
+[tools."github:kbknapp/cargo-outdated"."platforms.linux-x64"]
+checksum = "sha256:648021f279e737e11f4be0f5967ae2a01d4d66f7a2e462a0b24ccd6dd5e6b372"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434764"
+
+[tools."github:kbknapp/cargo-outdated"."platforms.macos-arm64"]
+checksum = "sha256:c3a3ca56a748d94fdaa1f208c641685d996ee1c4954cd4fbe358b7c06a2186a5"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434761"
 
 [[tools."github:romnn/cargo-feature-combinations"]]
 version = "0.3.0"

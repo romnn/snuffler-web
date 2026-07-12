@@ -31,14 +31,14 @@ protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, mat
 # binaryen/wasm-opt for the trunk post-build hook (see Trunk.toml). The
 # emsdk-bundled wasm-opt is too old for the post-MVP wasm features modern rustc
 # emits, so we pin a recent binaryen here for a reproducible build.
-"github:WebAssembly/binaryen" = "version_130"
+"aqua:WebAssembly/binaryen" = "130"
 
 # cargo plugins
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"
 "github:rust-cross/cargo-zigbuild" = "latest"
 "aqua:rustsec/rustsec/cargo-audit" = "latest"
-"cargo:cargo-udeps" = "latest"
-"cargo:cargo-outdated" = "latest"
+"github:est31/cargo-udeps" = "latest"
+"github:kbknapp/cargo-outdated" = "latest"
 "github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc", minimum_release_age = "0" }  # provides `cargo fc`
 "github:romnn/cargo-watchdoc" = { version = "latest", minimum_release_age = "0" }
 "github:trunk-rs/trunk" = "0.21.14"
