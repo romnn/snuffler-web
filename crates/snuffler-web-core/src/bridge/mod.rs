@@ -171,6 +171,10 @@ struct Inner {
     /// computed angle are present; missing = no MT / no active event).
     kagan_by_hash: std::collections::HashMap<String, f64>,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
+    /// Bumped by [`Bridge::clear_tiles`]. Tiles are keyed by `(z, x, y)` alone, so
+    /// a fetch still in flight when the basemap changes would otherwise land in
+    /// the cleared map under the same key as its replacement.
+    tile_epoch: u64,
     view_in_flight: Option<ViewParams>,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
@@ -405,6 +409,17 @@ impl Bridge {
             return Some((w, h, rgba));
         }
         None
+    }
+
+    /// Discard every cached, in-flight, and failed tile so later requests refetch.
+    ///
+    /// The frontend calls this when the basemap provider changes: tile keys carry
+    /// no provider, so without a reset the already-fetched tiles would keep
+    /// showing the previous basemap while only new keys use the new one.
+    pub fn clear_tiles(&self) {
+        let mut i = self.inner.borrow_mut();
+        i.tiles.clear();
+        i.tile_epoch = i.tile_epoch.wrapping_add(1);
     }
 
     /// Borrow the current view (decimated waveforms) for drawing.
@@ -1948,13 +1963,14 @@ mod web {
         /// Fetch one map tile (browser fetch + decode); idempotent per (z,x,y).
         pub fn request_tile(&self, z: u8, x: u32, y: u32, url: String) {
             let repaint = self.repaint.clone();
-            {
+            let epoch = {
                 let mut i = self.inner.borrow_mut();
                 if i.tiles.contains_key(&(z, x, y)) {
                     return;
                 }
                 i.tiles.insert((z, x, y), TileState::InFlight);
-            }
+                i.tile_epoch
+            };
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
@@ -1991,7 +2007,15 @@ mod web {
                     }
                     Err(_) => TileState::Failed,
                 };
-                inner.borrow_mut().tiles.insert((z, x, y), state);
+                {
+                    let mut i = inner.borrow_mut();
+                    // The basemap changed while this tile was in flight; it now
+                    // holds the wrong provider's imagery for its key.
+                    if i.tile_epoch != epoch {
+                        return;
+                    }
+                    i.tiles.insert((z, x, y), state);
+                }
                 repaint.request_repaint();
             });
         }

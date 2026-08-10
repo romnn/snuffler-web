@@ -118,6 +118,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
     // Zoom: accumulate raw wheel scroll and step one zoom level per notch, so a
     // wheel flick doesn't blow through several levels at once.
     const ZOOM_NOTCH: f32 = 50.0;
+    let previous_source = st.source;
     ui.horizontal(|ui| {
         egui::ComboBox::from_label("Basemap")
             .selected_text(SOURCES.get(st.source).map_or("", |s| s.0))
@@ -135,6 +136,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
         ui.checkbox(&mut st.show_plates, "Plate boundaries");
         ui.label(format!("zoom {}", st.zoom));
     });
+
+    // Both tile caches are keyed by (z, x, y) with no provider, so a new basemap
+    // only reaches keys that were never fetched. Drop both to refetch every
+    // visible tile from the provider now selected.
+    if st.source != previous_source {
+        st.tex.clear();
+        bridge.clear_tiles();
+    }
 
     // While the window is open, refresh the station/event coords periodically so
     // the map keeps up with Download/Catalog fetches without a manual refresh.
