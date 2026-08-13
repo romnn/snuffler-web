@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // The tests run under bun and drive a browser through playwright, so they
+    // get node globals (`process`, `node:fs`) — which the browser-side bridge
+    // code checked by the root tsconfig must not see.
+    "types": ["node"],
+    // The root config relaxes this for the bridge glue's dynamic Pyodide
+    // plumbing; the tests have no such layer and are held to full strictness.
+    "noImplicitAny": true
+  },
+  "include": ["./**/*.ts"]
+}

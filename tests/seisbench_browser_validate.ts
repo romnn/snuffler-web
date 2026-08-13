@@ -1,20 +1,71 @@
+// Validate SeisBench ONNX inference end to end in the served wasm app: every model
+// in the manifest is run against the synthetic example scene, on WebGPU where the
+// browser offers it and again on the CPU (wasm) fallback.
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { readFileSync } from "node:fs";
 
-import { BridgeResultSchema, EmptySchema } from "../web/proto/snuffler/bridge/v1/bridge_pb.ts";
+import {
+  BridgeResultSchema,
+  EmptySchema,
+  type BridgeResult,
+} from "../web/proto/snuffler/bridge/v1/bridge_pb.js";
 import {
   NamedSnufflingRequestSchema,
   SeisbenchSnufflingParamsSchema,
   SnufflingParamsSchema,
   SnufflingRequestParamsSchema,
-} from "../web/proto/snuffler/bridge/v1/snuffling_pb.ts";
-import { ViewParamsSchema } from "../web/proto/snuffler/bridge/v1/view_pb.ts";
+} from "../web/proto/snuffler/bridge/v1/snuffling_pb.js";
+import { ViewParamsSchema } from "../web/proto/snuffler/bridge/v1/view_pb.js";
+
+// The oneof cases of `BridgeResult.result`, and the payload each one carries —
+// derived from the generated protobuf types so a schema change fails the
+// typecheck here rather than surfacing as an undefined field at runtime.
+type ResultCase = NonNullable<BridgeResult["result"]["case"]>;
+type ResultValue<C extends ResultCase> = Extract<BridgeResult["result"], { case: C }>["value"];
+type Scene = ResultValue<"scene">;
+
+interface ModelSpec {
+  model: string;
+  weights: string;
+}
+
+// What the bundled bridge module (web/bridge.ts -> web/gen/bridge.js) exposes of
+// itself to this harness.
+interface BridgeModule {
+  call(method: string, request: Uint8Array, ys: Uint8Array): Promise<{ result: Uint8Array }>;
+  clearSeisbenchProgress(): void;
+  seisbenchDevice(): string;
+  seisbenchProgressFraction(): number;
+  seisbenchProgressLabel(): string;
+}
+
+interface CallReply {
+  result: number[];
+  device: string;
+  progress: number;
+  progressLabel: string;
+}
+
+interface ModelResult {
+  model: string;
+  markers: number;
+  phases: Record<string, number>;
+  text: string;
+  device: string;
+  progressLabel: string;
+}
+
+interface RunResult {
+  hasWebgpu: boolean;
+  consoleEntries: string[];
+  results: ModelResult[];
+}
 
 const ROOT = new URL("..", import.meta.url);
 const manifest = JSON.parse(
   readFileSync(new URL("web/assets/seisbench_models.json", ROOT), "utf8")
-);
+) as { models: ModelSpec[] };
 
 const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
 const MODEL_BASE_URL = process.env.SNUFFLER_ONNX_MODEL_BASE_URL || "assets/models/";
@@ -27,23 +78,29 @@ const METHODS = {
   runSnuffling: "/snuffler.bridge.v1.BridgeService/RunSnuffling",
 };
 
-function bridgePayload(bytes) {
+function bridgePayload(bytes: Uint8Array): number[] {
   return Array.from(bytes);
 }
 
-function bridgeResult(bytes, label, expectedCase) {
+function bridgeResult<C extends ResultCase>(
+  bytes: number[],
+  label: string,
+  expectedCase: C
+): ResultValue<C> {
   const env = fromBinary(BridgeResultSchema, new Uint8Array(bytes));
   if (env.result.case === "error") {
     const error = env.result.value;
     throw new Error(`${label}: ${error.kind}: ${error.message}\n${error.traceback}`);
   }
   if (env.result.case !== expectedCase) {
-    throw new Error(`${label}: expected ${expectedCase}, got ${env.result.case || "empty"}`);
+    throw new Error(`${label}: expected ${expectedCase}, got ${env.result.case ?? "empty"}`);
   }
-  return env.result.value;
+  // The guard above proves the case matches; TypeScript cannot narrow a union by
+  // comparison against a generic parameter, so the cast carries the proof.
+  return env.result.value as ResultValue<C>;
 }
 
-function requestFor(scene, spec) {
+function requestFor(scene: Scene, spec: ModelSpec) {
   const centerTmin = scene.tmin + 145.0;
   const centerTmax = scene.tmin + 345.0;
   const view = create(ViewParamsSchema, {
@@ -67,34 +124,55 @@ function requestFor(scene, spec) {
   });
 }
 
-function browserArgs(disableWebgpu) {
+function browserArgs(disableWebgpu: boolean): string[] {
   const args = [
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-search-engine-choice-screen",
+  ];
+  if (disableWebgpu) {
+    // WebGPU is stable in current Chromium, so the interface itself can no
+    // longer be removed (--disable-webgpu / --disable-features=WebGPU are
+    // retired and silently ignored). What the app actually branches on is
+    // `requestAdapter()` handing back an adapter, so deny the adapter instead:
+    // with the GPU process disabled it resolves null — in workers too, where
+    // the bridge makes its device choice — and the CPU (wasm) provider wins.
+    args.push("--disable-gpu");
+    return args;
+  }
+  args.push(
     "--enable-unsafe-webgpu",
     "--enable-features=WebGPUDeveloperFeatures",
     "--ignore-gpu-blocklist",
-    "--use-angle=gl",
-  ];
-  if (disableWebgpu) {
-    args.push("--disable-webgpu", "--disable-features=WebGPU,WebGPUDeveloperFeatures");
-  }
+    "--use-angle=gl"
+  );
   return args;
 }
 
-async function bridgeModuleUrl(page) {
+async function bridgeModuleUrl(page: Page): Promise<string> {
   return await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('link[rel="modulepreload"]'));
+    // Prefer whatever the page itself preloads, but the plain path is a stable
+    // contract on its own: the wasm externs import the bundle by exactly this
+    // URL (see the module path notes in scripts/trunk-post-build.sh), so it is
+    // always staged there — while trunk only sometimes emits a modulepreload
+    // for it, depending on how it treats the snippet import.
+    const links = Array.from(
+      document.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')
+    );
     const href = links
       .map((link) => link.href)
       .find((value) => value.includes("/web/gen/bridge.js"));
-    if (!href) throw new Error("could not find bundled bridge.js modulepreload");
-    return href;
+    return href ?? new URL("web/gen/bridge.js", document.baseURI).href;
   });
 }
 
-async function callBridge(page, moduleUrl, method, requestBytes, clearProgress = false) {
+async function callBridge(
+  page: Page,
+  moduleUrl: string,
+  method: string,
+  requestBytes: Uint8Array,
+  clearProgress = false
+): Promise<CallReply> {
   const payload = {
     moduleUrl,
     method,
@@ -105,7 +183,7 @@ async function callBridge(page, moduleUrl, method, requestBytes, clearProgress =
     try {
       return await page.evaluate(
         async ({ moduleUrl: href, method: rpcMethod, request, clearProgress: shouldClear }) => {
-          const bridge = await import(href);
+          const bridge = (await import(href)) as BridgeModule;
           if (shouldClear) bridge.clearSeisbenchProgress();
           const out = await bridge.call(rpcMethod, new Uint8Array(request), new Uint8Array());
           return {
@@ -126,25 +204,32 @@ async function callBridge(page, moduleUrl, method, requestBytes, clearProgress =
   throw new Error("unreachable bridge call retry state");
 }
 
-async function webgpuAvailable(page) {
+async function webgpuAvailable(page: Page): Promise<boolean> {
   return await page.evaluate(async () => {
     try {
-      if (!navigator.gpu) return false;
-      return Boolean(await navigator.gpu.requestAdapter());
-    } catch (_e) {
+      const nav = navigator as { gpu?: { requestAdapter(): Promise<unknown> } };
+      if (!nav.gpu) return false;
+      return Boolean(await nav.gpu.requestAdapter());
+    } catch {
       return false;
     }
   });
 }
 
-async function runBrowserPass({ disableWebgpu, models }) {
+async function runBrowserPass({
+  disableWebgpu,
+  models,
+}: {
+  disableWebgpu: boolean;
+  models: ModelSpec[];
+}): Promise<RunResult> {
   const browser = await chromium.launch({
     headless: HEADLESS,
     args: browserArgs(disableWebgpu),
   });
-  const consoleEntries = [];
-  const consoleErrors = [];
-  const results = [];
+  const consoleEntries: string[] = [];
+  const consoleErrors: string[] = [];
+  const results: ModelResult[] = [];
   let hasWebgpu = false;
 
   try {
@@ -210,7 +295,7 @@ async function runBrowserPass({ disableWebgpu, models }) {
         if (syntheticShouldProduceMarkers && result.markers.length === 0) {
           throw new Error(`${spec.model}/${spec.weights}: no browser markers produced`);
         }
-        const phases = result.markers.reduce((acc, marker) => {
+        const phases = result.markers.reduce<Record<string, number>>((acc, marker) => {
           const phase = marker.phase || "?";
           acc[phase] = (acc[phase] || 0) + 1;
           return acc;
@@ -238,12 +323,12 @@ async function runBrowserPass({ disableWebgpu, models }) {
   }
 }
 
-function requireProviderEvidence(run, providerText) {
+function requireProviderEvidence(run: RunResult, providerText: string): void {
   if (run.consoleEntries.some((entry) => entry.includes(providerText))) return;
   throw new Error(`missing ORT provider evidence: ${providerText}`);
 }
 
-function printResults(title, run) {
+function printResults(title: string, run: RunResult): void {
   console.log(title);
   console.log(`  webgpu_available=${run.hasWebgpu}`);
   for (const result of run.results) {

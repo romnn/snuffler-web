@@ -6,6 +6,7 @@
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2",
+    "@types/node": "^26.2.0",
     "playwright": "^1.61.1",
     "typescript": "^6.0.3"
   }
