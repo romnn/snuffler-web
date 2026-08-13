@@ -102,7 +102,9 @@ command_arguments = [
 # (aqua:WebAssembly/binaryen in mise.toml) for reproducibility, and invoked
 # through `mise exec` because the emsdk-provided wasm-opt on PATH is far too old.
 # `-Oz` optimizes the wasm for size (download size matters more than CPU here —
-# all heavy computation runs in Pyodide).
+# all heavy computation runs in Pyodide). It runs for release builds only; the
+# script skips it otherwise, since it is ~60s of pure latency in the serve watch
+# loop for a size win nobody downloads over localhost.
 #
 # Point wasm-bindgen-rayon's worker at the real (hashed) main JS module. Its
 # workerHelpers.js does `import('../../..')`, which assumes a wasm-pack `pkg/`

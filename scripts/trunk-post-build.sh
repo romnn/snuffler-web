@@ -90,8 +90,19 @@ stage_seisbench_models() {
     echo "[seisbench] model weights staged"
 }
 
+# `-Oz` only buys download size, which no one is paying for over localhost, and it
+# is the single most expensive step of a rebuild (~60s on the app wasm) — it runs
+# on every save in trunk's watch loop, where it is pure latency. So it is skipped
+# for anything but a release build; `mise run serve` builds with the `serve` cargo
+# profile and TRUNK_PROFILE is `debug` there, while `mise run build` (and CI/Pages)
+# passes --release and still gets the fully optimized wasm.
 optimize_app_wasm() {
     local optimized=()
+
+    if [ "${TRUNK_PROFILE:-debug}" != "release" ]; then
+        echo "[wasm-opt] skipped (TRUNK_PROFILE=${TRUNK_PROFILE:-unset}; release builds only)"
+        return
+    fi
 
     for wasm in "$staging_dir"/*_bg.wasm; do
         [ -f "$wasm" ] || continue
