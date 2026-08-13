@@ -39,18 +39,41 @@ fn profile() -> &'static str {
     }
 }
 
-/// The projects the browser build is made of, linked from the acknowledgement.
-/// Not a complete dependency list — the ones a reader would recognise.
+/// What this is made of: the projects that end up in the shipped bundle, and the
+/// toolchains that produce it. Ordered by role — languages, the wasm toolchain,
+/// the scientific stack, the UI, the pickers, the plumbing, the typefaces — so
+/// the list reads as something more than an alphabet.
+///
+/// pyrocko is deliberately absent: it is the project this one serves, and it has
+/// its own link above. Pure orchestration (mise, Task, micromux) is absent too —
+/// it never touches the artifact.
 const ACKNOWLEDGED: &[(&str, &str)] = &[
-    ("pyrocko", "https://pyrocko.org"),
+    ("Rust", "https://www.rust-lang.org"),
+    ("CPython", "https://www.python.org"),
+    ("TypeScript", "https://www.typescriptlang.org"),
     ("Pyodide", "https://pyodide.org"),
+    ("Emscripten", "https://emscripten.org"),
+    ("LLVM", "https://llvm.org"),
+    ("Binaryen", "https://github.com/WebAssembly/binaryen"),
+    ("Trunk", "https://trunkrs.dev"),
+    ("wasm-bindgen", "https://github.com/rustwasm/wasm-bindgen"),
+    ("Bun", "https://bun.sh"),
     ("NumPy", "https://numpy.org"),
     ("SciPy", "https://scipy.org"),
+    ("Matplotlib", "https://matplotlib.org"),
     ("egui", "https://github.com/emilk/egui"),
     ("AccessKit", "https://accesskit.dev"),
+    ("resvg", "https://github.com/linebender/resvg"),
     ("SeisBench", "https://github.com/seisbench/seisbench"),
     ("ONNX Runtime", "https://onnxruntime.ai"),
+    ("Protocol Buffers", "https://protobuf.dev"),
+    ("prost", "https://github.com/tokio-rs/prost"),
+    ("Rayon", "https://github.com/rayon-rs/rayon"),
     ("OpenStreetMap", "https://www.openstreetmap.org/copyright"),
+    ("JetBrains Mono", "https://www.jetbrains.com/lp/mono/"),
+    // Not bare "Ubuntu": in a list of projects that reads as the distribution.
+    // This is the Dalton Maag typeface the bundled Ubuntu-Regular.ttf comes from.
+    ("Ubuntu Typeface", "https://design.ubuntu.com/font"),
 ];
 
 /// Draws the About window when the shared state asks for it.
@@ -65,7 +88,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, runtime: Option<&RuntimeI
         // what makes a taller-than-expected layout (a bigger font, a longer status
         // of the Python runtime, a window dragged smaller) reachable rather than
         // cut off, so this only has to be close, not exact.
-        .default_size([500.0, 505.0])
+        .default_size([500.0, 555.0])
         .show(ctx, |ui| {
             // One scroll area over the whole window, so nothing inside it scrolls
             // on its own. `auto_shrink` off keeps the window at the size above
@@ -82,8 +105,13 @@ fn contents(ui: &mut egui::Ui, runtime: Option<&RuntimeInfo>) {
     ui.label(weak("pyrocko's snuffler, running natively in the browser."));
     ui.add_space(8.0);
     ui.label(
-        "pyrocko, NumPy and SciPy run right here as WebAssembly (WASM). Nothing you \
-         open leaves your machine.",
+        "pyrocko runs unmodified. What is compiled to WebAssembly (WASM) is CPython \
+         and the native extensions: NumPy, SciPy and pyrocko's own C modules.",
+    );
+    ui.add_space(8.0);
+    ui.label(
+        "Only the frontend is new: a web frontend instead of the Qt interface. There \
+         is no backend, and the files you open are never uploaded.",
     );
 
     section(ui, "Build");
