@@ -13,6 +13,20 @@
   (the same messages generate Rust structs + Python classes). Do not introduce
   `str`/JSON return values across the bridge.
 
+- **The protobuf schema is internal — never keep wire compatibility.** `proto/`
+  is a private boundary between parts of one artifact: the Rust/wasm client,
+  `web/*.ts`, and `web/bridge.py` all generate from the same schema in the same
+  build and ship together in a single deploy step. No third party speaks this
+  schema, and protobuf bytes are never persisted (no localStorage/IndexedDB, no
+  session files, no `eframe` state) — they only ever live in flight between the
+  wasm module, the worker, and Pyodide. So a schema edit is a *source* change,
+  not a wire change: freely rename, renumber, retype, or delete fields, and fix
+  every generated call site in the same commit. Never add `reserved` ranges,
+  `[deprecated = true]`, "kept for older bundles" fields, or a scalar field left
+  beside its `repeated` successor — and never write compat shims in `bridge.py`
+  that fall back from a new field to an old one. Reusing a retired field number
+  is fine. There is no `buf breaking` check here, by design.
+
 - **Errors are protobuf too — never raise across the JS boundary.** Every bridge
   response is wrapped in a `oneof { success | error }` envelope. `bridge.py`
   catches exceptions and returns the **error variant**; it must never let a
