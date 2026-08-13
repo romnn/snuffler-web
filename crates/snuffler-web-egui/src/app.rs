@@ -735,8 +735,11 @@ impl App {
         let Some(position) = ctx.pointer_hover_pos() else {
             return;
         };
+        // The whole rect, not just its horizontal span: the controls sit directly
+        // below the traces and share their x range, so testing x alone made the
+        // clock blink in and out while the pointer was on a slider down there.
         let rect = self.last_waveform_rect;
-        if !rect.is_positive() || position.x < rect.left() || position.x > rect.right() {
+        if !rect.is_positive() || !rect.contains(position) {
             return;
         }
         let fraction = f64::from(((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
