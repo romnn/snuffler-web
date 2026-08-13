@@ -1,0 +1,36 @@
+[package]
+name = "egui-a11y"
+version = "0.1.0"
+authors = ["Roman Dahm <contact@romnn.com>"]
+edition = "2024"
+description = "Web accessibility for egui: wires an egui app to the accesskit-dom projection"
+# Deliberately independent of eframe: the only web-runner API the layer needs is
+# "hand me each pass's AccessKit update", and that wiring line stays in the app
+# (today against a patched eframe, later against whatever hook lands upstream).
+# Flip `publish` once the crate name and license are settled.
+publish = false
+
+[package.metadata.cargo-fc]
+# `keys` (DOM key names -> egui events) and the live-region helpers are
+# target-independent and unit-tested on the host; only `web` is wasm-only.
+targets = [
+    "wasm32-unknown-unknown",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+metrics = ["accesskit-dom/metrics"]
+tree-json = ["accesskit-dom/tree-json"]
+
+[dependencies]
+accesskit-dom = { path = "../accesskit-dom" }
+egui = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }

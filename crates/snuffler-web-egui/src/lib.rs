@@ -3,6 +3,11 @@
 //! A Rust/egui (wasm) frontend that drives real pyrocko + numpy + scipy via
 //! Pyodide. Rust renders; all computation happens in Python (see `web/bridge.py`).
 
+// Web accessibility layer: app policy over the workspace's generic `accesskit-dom`
+// and `egui-a11y` crates; needs the patched eframe (see the `[patch.crates-io]`
+// block in the workspace manifest).
+#[cfg(target_arch = "wasm32")]
+mod a11y;
 #[cfg(target_arch = "wasm32")]
 mod app;
 // Progress overlay shown while an off-thread job runs (threaded build).
@@ -13,6 +18,8 @@ mod snufflings;
 #[cfg(target_arch = "wasm32")]
 mod view;
 
+#[cfg(target_arch = "wasm32")]
+pub use a11y::snuffler_a11y_action;
 #[cfg(target_arch = "wasm32")]
 pub use app::App;
 

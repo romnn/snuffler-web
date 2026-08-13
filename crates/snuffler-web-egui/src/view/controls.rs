@@ -126,6 +126,12 @@ fn control_row(
             egui::TextStyle::Body.resolve(ui.style()),
             ui.visuals().text_color(),
         );
+        // Painting straight to the canvas leaves egui with an interactive area and
+        // no idea what is in it, so the accessibility tree gets an unnamed control
+        // and the text field and slider beside it have no label to borrow either.
+        label_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), label)
+        });
         let value_resp = ui.add_sized(
             [VALUE_W, row_h],
             egui::TextEdit::singleline(value)

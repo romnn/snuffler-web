@@ -113,6 +113,7 @@ impl App {
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_look(&cc.egui_ctx);
+        crate::a11y::install(&cc.egui_ctx);
         let repaint_now = cc.egui_ctx.clone();
         let repaint_after = cc.egui_ctx.clone();
         let session = Session::new(Repaint::new(
@@ -650,22 +651,31 @@ impl App {
             ui.horizontal(|ui| {
                 self.main_menus(ui);
                 ui.separator();
-                match self.session.bridge.status() {
+                // The status line is the one place the app tells you that something
+                // finished, failed, or is still running, and none of it is tied to a
+                // widget you would be focused on — so it is announced as it changes.
+                let (status, urgency) = match self.session.bridge.status() {
                     Status::Booting => {
                         ui.spinner();
-                        ui.label("Starting Python (Pyodide)…");
+                        (
+                            ui.label("Starting Python (Pyodide)…"),
+                            crate::a11y::Urgency::Polite,
+                        )
                     }
                     Status::Loading(message) => {
                         ui.spinner();
-                        ui.label(message);
+                        (ui.label(message), crate::a11y::Urgency::Polite)
                     }
-                    Status::Ready => {
-                        ui.label(format!("Ready · {total_tracks} traces"));
-                    }
-                    Status::Error(error) => {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
-                    }
-                }
+                    Status::Ready => (
+                        ui.label(format!("Ready · {total_tracks} traces")),
+                        crate::a11y::Urgency::Polite,
+                    ),
+                    Status::Error(error) => (
+                        ui.colored_label(egui::Color32::RED, format!("Error: {error}")),
+                        crate::a11y::Urgency::Urgent,
+                    ),
+                };
+                crate::a11y::announce_changes(ctx, &status, urgency);
                 if self.session.state.picking.is_some() {
                     ui.separator();
                     ui.colored_label(
@@ -713,7 +723,7 @@ impl App {
                         ),
                 );
                 response.request_focus();
-                if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                     let line = std::mem::take(&mut self.session.state.command_text);
                     if !line.trim().is_empty() {
                         self.session.state.command_feedback.clear();
@@ -975,6 +985,10 @@ fn guess_fmt(name: &str) -> String {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::a11y::drain(raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.update_frame_stats(ui, frame);
         let ctx = ui.ctx().clone();
