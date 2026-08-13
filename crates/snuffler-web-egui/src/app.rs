@@ -92,6 +92,27 @@ fn configure_look(ctx: &egui::Context) {
         .entry(Proportional)
         .or_default()
         .insert(0, "ubuntu_regular".to_owned());
+    // egui's bundled monospace face is Hack, which carries no arrows — and the ':'
+    // command line spells its history keys as ↑/↓, which would draw as tofu.
+    // JetBrains Mono covers the arrows (and ± for marker polarities).
+    fonts.font_data.insert(
+        "jetbrains_mono".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/JetBrainsMono-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(Monospace)
+        .or_default()
+        .insert(0, "jetbrains_mono".to_owned());
+    // Also the last proportional fallback: Ubuntu has no arrows either, so this is
+    // what keeps a ↑ from turning into tofu in any label that happens to use one.
+    fonts
+        .families
+        .entry(Proportional)
+        .or_default()
+        .push("jetbrains_mono".to_owned());
     ctx.set_fonts(fonts);
 
     let mut style = (*ctx.global_style()).clone();
