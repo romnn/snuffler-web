@@ -37,6 +37,24 @@ lto = true
 codegen-units = 1
 strip = true
 
+# The profile `mise run serve` (and so micromux's "web" service) builds with: an
+# unoptimized wasm frontend renders at 10-20 fps, while the released Pages build is
+# smooth, so the dev server needs release-grade codegen too. It cannot just use
+# `--release`: fat LTO in a single codegen unit costs minutes per relink, which the
+# watch loop pays on every save, and `strip` throws away the symbols that make a
+# panic in the browser console readable. Keep the optimization, drop the two
+# release settings that only pay off for a shipped artifact.
+[profile.serve]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = "none"
+debug = "line-tables-only"
+# The dev build had these on, and they catch far more than they cost at opt-level 3.
+debug-assertions = true
+overflow-checks = true
+
 [workspace.lints.rust]
 warnings = { level = "warn", priority = -1 }
 unsafe_code = "deny"

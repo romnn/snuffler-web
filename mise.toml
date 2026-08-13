@@ -84,14 +84,18 @@ run = "./docker/pyodide-mt/build-all.sh"
 # NO_SRI: the post_build hook rewrites wasm-bindgen-rayon's worker import (see
 # Trunk.toml), which would otherwise mismatch Trunk's subresource-integrity hash
 # for that snippet. SRI on a same-origin, self-hosted bundle adds little anyway.
+#
+# The `serve` cargo profile (see Cargo.toml) is release-grade codegen without the
+# ship-only settings: the unoptimized wasm only managed 10-20 fps, but plain
+# `--release` would relink the whole thing under fat LTO on every save.
 [tasks.serve]
-description = "Run the web app (trunk serve) — threaded (off-main-thread PNG export)"
+description = "Run the web app (trunk serve) — optimized, threaded (off-main-thread PNG export)"
 depends = ["fetch-pyrocko", "dev-dirs"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 env.SNUFFLER_EMBED_DATA = "1"
 env.NO_COLOR = "true"
-run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --features threads"
+run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --cargo-profile serve --features threads"
 
 [tasks.build]
 description = "Build the web app for release — threaded (off-main-thread PNG export)"

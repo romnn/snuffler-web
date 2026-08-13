@@ -67,6 +67,13 @@ micromux                        # optional full local stack: proxy + trunk serve
 `rustup` reads `rust-toolchain.toml` and installs the pinned nightly toolchain,
 `rust-src`, and the `wasm32-unknown-unknown` target automatically on first build.
 
+**`serve` builds optimized.** An unoptimized wasm frontend renders at 10-20 fps,
+so `mise run serve` uses the `serve` cargo profile (`Cargo.toml`): release-grade
+codegen, but without the fat LTO and `strip` that would make every rebuild in the
+watch loop slow and every browser panic unreadable. The first build after
+switching profiles recompiles the whole dependency graph (including `std`, which
+`-Z build-std` rebuilds for wasm atomics); after that, rebuilds are incremental.
+
 **pyrocko is not vendored.** `mise run fetch-pyrocko` clones it at a pinned,
 known-good commit (`PYROCKO_REF` in `mise.toml`) into the gitignored `sources/`
 (`build-all.sh` and `serve` depend on it, so it is pulled on demand).
