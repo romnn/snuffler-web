@@ -57,3 +57,30 @@
     The pool needs cross-origin isolation; when it is absent (`pool::ready()` is
     false) fall back to chunking across frames or running inline. Never call a
     multi-hundred-millisecond synchronous routine straight from `update()`.
+
+- **End a borrow with a scope, never with `drop(guard)`.** The bridge's state is a
+  `RefCell` behind an `Rc`, so a `borrow()`/`borrow_mut()` guard held one line too
+  long is not a warning — it is a panic at runtime, on whichever async result
+  happens to land in that window. Write the region the borrow is allowed to live
+  in and let it end there:
+
+  ```rust
+  {
+      let mut i = inner.borrow_mut();
+      i.scene = Some(scene);
+  }                       // the borrow ends here, visibly
+  repaint.request_repaint();
+
+  let svg = {             // or: bind the value the borrow produced
+      let Some(view) = bridge.view() else { return };
+      render_svg(&view)
+  };
+  ```
+
+  `drop(i)` does the same thing today and silently stops doing it tomorrow: it is
+  one statement among many, so a later edit that adds a line after it — or moves
+  the call inside a branch — extends the borrow with nothing to say so. A block
+  makes the lifetime structural, the compiler enforces it, and a reader sees the
+  extent without tracing statements. This applies to every guard, not just
+  `RefCell`: `MutexGuard`, `Ref`/`RefMut`, and anything else whose whole job is to
+  be released.

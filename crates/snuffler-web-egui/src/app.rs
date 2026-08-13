@@ -234,11 +234,17 @@ impl App {
     fn start_png_export(&mut self, ctx: &egui::Context) {
         let theme = ctx.theme();
         let size = self.last_waveform_rect.size();
-        let Some(view) = self.session.bridge.view() else {
-            return;
+        // Scoped so the `Ref` into the bridge ends the moment the SVG exists: what
+        // follows either rasterizes inline for as long as that takes, or hands the
+        // work to the rayon pool and returns while it runs. Either way pyrocko
+        // results keep landing and taking `borrow_mut()` on the same `RefCell`, so
+        // holding a read guard across that point is a panic waiting for the timing.
+        let svg = {
+            let Some(view) = self.session.bridge.view() else {
+                return;
+            };
+            waveform::render_svg(ctx, &self.session.state, &view, size, theme)
         };
-        let svg = waveform::render_svg(ctx, &self.session.state, &view, size, theme);
-        drop(view);
 
         #[cfg(feature = "threads")]
         if crate::pool::ready() {
