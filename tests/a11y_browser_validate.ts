@@ -34,6 +34,7 @@ interface ProbeData {
   controls: number;
   unnamed: number;
   occluded: string[];
+  hitTestable: string[];
   maxDepth: number;
   liveRegions: number;
   rangedSliders: number;
@@ -88,15 +89,20 @@ function geometryProbe(): ProbeData {
   const all = [...root.querySelectorAll("*")];
   const bad: string[] = [];
   const strayed: string[] = [];
+  const hitTestable: string[] = [];
   const SLACK = 2;
 
   for (const el of all) {
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
-    if (getComputedStyle(el).pointerEvents === "none") continue;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     const name = el.getAttribute("aria-label") || el.getAttribute("role") || el.tagName;
+    // Where a proxy sits is checked for every one of them; whether it is the
+    // topmost element there is only a question for the ones that hit-test, and
+    // only `?a11y=pointer` produces any of those.
+    const takesPointer = getComputedStyle(el).pointerEvents !== "none";
+    if (takesPointer) hitTestable.push(name);
 
     if (
       cx < c.left - SLACK ||
@@ -109,6 +115,7 @@ function geometryProbe(): ProbeData {
       if (cx < c.left - c.width || cy < c.top - c.height) strayed.push(name);
       continue;
     }
+    if (!takesPointer) continue;
     const hit = document.elementFromPoint(cx, cy);
     if (hit !== el && !el.contains(hit)) bad.push(name);
   }
@@ -130,6 +137,7 @@ function geometryProbe(): ProbeData {
     controls: controls.length,
     unnamed: controls.filter((el) => !nameOf(el)).length,
     occluded: bad,
+    hitTestable,
     maxDepth: Math.max(
       ...all.map((el) => {
         let depth = 0;
@@ -168,7 +176,15 @@ async function main(): Promise<void> {
     check("the tree is nested, not flat", base.maxDepth >= 3, `depth ${base.maxDepth}`);
     check("controls are keyboard reachable", base.controls > 20, `${base.controls} tabbable`);
     check("every control has a name", base.unnamed === 0, `${base.unnamed} unnamed`);
-    check("no control is occluded", base.occluded.length === 0, base.occluded.join(", "));
+    // The layer is on for a plain visit, so it has to be invisible to the mouse:
+    // a proxy that hit-tests is handed the press meant for the canvas, and since
+    // it can only report a click, the drag that a slider or a sweep is made of
+    // never reaches egui at all.
+    check(
+      "no proxy takes pointer input by default",
+      base.hitTestable.length === 0,
+      base.hitTestable.slice(0, 8).join(", ")
+    );
     check(
       "sliders publish their range",
       base.rangedSliders === base.sliders,
@@ -193,7 +209,21 @@ async function main(): Promise<void> {
       named.join(" | ")
     );
 
-    console.log("\npointer");
+    // Everything from here on drives the app the way an agent does — by resolving
+    // an element and clicking it — which needs the proxies to be the hit target.
+    console.log("\npointer (?a11y=pointer)");
+    await boot(page, { a11y: "pointer" });
+    const pointerMode = await page.evaluate(geometryProbe);
+    check(
+      "?a11y=pointer makes controls the hit target",
+      pointerMode.hitTestable.length > 0,
+      `${pointerMode.hitTestable.length} hit-testable`
+    );
+    check(
+      "no control is occluded",
+      pointerMode.occluded.length === 0,
+      pointerMode.occluded.join(", ")
+    );
     await page.getByRole("button", { name: "Options" }).click();
     await page.waitForTimeout(400);
     const boxes = await page.$$eval(`${OVERLAY} [role=checkbox]`, (els) =>

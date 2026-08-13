@@ -493,9 +493,12 @@ fn place(element: &HtmlElement, item: &Plan<'_>, viewport: &Viewport) {
     // `position: fixed` rather than absolute, so nesting proxies for semantics never
     // changes where any of them land. Invisible via `opacity`, which — unlike
     // `display` or `visibility` — keeps them in the accessibility tree.
+    //
     const BASE: &str = "position:fixed;margin:0;padding:0;border:0;background:transparent;\
                         color:transparent;font:inherit;overflow:hidden;white-space:nowrap;opacity:0;";
 
+    // Whether this proxy is the browser's hit target, or lets the press through to
+    // the canvas underneath; see [`Options::pointer_proxies`].
     let pointer = if item.proxy.hit_testable {
         "pointer-events:auto;"
     } else {

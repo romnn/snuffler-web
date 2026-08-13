@@ -13,6 +13,9 @@
 //! to a handler instead.
 //!
 //! The layer is on by default and can be turned off with `?a11y=0`; see [`enabled`].
+//! It never competes with the canvas for pointer input unless `?a11y=pointer` asks
+//! it to, which is what lets browser automation drive the app; see
+//! [`pointer_proxies`] and `.agents/skills/qa/SKILL.md`.
 
 use std::cell::RefCell;
 
@@ -51,6 +54,18 @@ fn flag() -> Option<String> {
 
 fn enabled() -> bool {
     !matches!(flag().as_deref(), Some("0" | "false" | "off"))
+}
+
+/// Whether the proxies take pointer input, i.e. `?a11y=pointer`.
+///
+/// Off for everyone else, and that is the point: a proxy that hit-tests is handed
+/// the press that was meant for the canvas, and since it can only report a `click`,
+/// every drag over it dies there — sliders stop pulling, selections stop sweeping.
+/// Screen readers do not need it (they go through focus, keys, and synthetic
+/// clicks); tools that resolve an element and then check it is the topmost one at
+/// its centre — `WebDriver`, Playwright, the agents built on them — do.
+fn pointer_proxies() -> bool {
+    matches!(flag().as_deref(), Some("pointer"))
 }
 
 /// Whether to also publish the tree as JSON on `window.__snufflerA11y`.
@@ -94,6 +109,7 @@ pub fn install(ctx: &egui::Context) {
         // Below the boot overlay (`#loading`, z-index 10), which must keep covering
         // the app — proxies included — until Pyodide is up.
         z_index: 5,
+        pointer_proxies: pointer_proxies(),
         tree_json_global: debug_json().then(|| "__snufflerA11y".to_owned()),
         ..accesskit_dom::Options::default()
     };

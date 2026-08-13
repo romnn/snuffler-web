@@ -121,21 +121,27 @@ pub(crate) fn plan<'a>(
         return Vec::new();
     };
 
-    let region_area_points = canvas_area_points * options.region_area_fraction;
+    let policy = Policy {
+        region_area_points: canvas_area_points * options.region_area_fraction,
+        pointer_proxies: options.pointer_proxies,
+    };
     let mut out = Vec::with_capacity(update.nodes.len());
     let mut visited = FxHashSet::default();
     visited.insert(root);
     // The root stands for the overlay itself, so its children start at the top.
-    walk_children(
-        root_node,
-        None,
-        &index,
-        &mut visited,
-        region_area_points,
-        &mut out,
-    );
+    walk_children(root_node, None, &index, &mut visited, &policy, &mut out);
     borrow_labels(&mut out, options.label_gap);
     out
+}
+
+/// What the projection does with a node, resolved once from [`Options`] so the
+/// walk carries decisions rather than the settings they came from.
+pub(crate) struct Policy {
+    /// Area (in tree coordinates) at which a clickable node becomes a region.
+    pub region_area_points: f64,
+    /// Whether a control proxy is the browser's hit target; see
+    /// [`Options::pointer_proxies`](crate::Options::pointer_proxies).
+    pub pointer_proxies: bool,
 }
 
 fn walk_children<'a>(
@@ -143,7 +149,7 @@ fn walk_children<'a>(
     projected_parent: Option<u64>,
     index: &FxHashMap<u64, &'a Node>,
     visited: &mut FxHashSet<u64>,
-    region_area_points: f64,
+    policy: &Policy,
     out: &mut Vec<Plan<'a>>,
 ) {
     for child in parent_node.children() {
@@ -154,7 +160,7 @@ fn walk_children<'a>(
         let Some(node) = index.get(&id).copied() else {
             continue;
         };
-        let proxy = Proxy::for_node(node, index, region_area_points);
+        let proxy = Proxy::for_node(node, index, policy);
         let next_parent = match proxy {
             Some(proxy) => {
                 out.push(Plan {
@@ -169,7 +175,7 @@ fn walk_children<'a>(
             // hoisted to the nearest ancestor that does have an element.
             None => projected_parent,
         };
-        walk_children(node, next_parent, index, visited, region_area_points, out);
+        walk_children(node, next_parent, index, visited, policy, out);
     }
 }
 
@@ -189,11 +195,8 @@ pub(crate) struct Proxy<'a> {
 }
 
 impl<'a> Proxy<'a> {
-    fn for_node(
-        node: &'a Node,
-        index: &FxHashMap<u64, &'a Node>,
-        region_area_points: f64,
-    ) -> Option<Self> {
+    fn for_node(node: &'a Node, index: &FxHashMap<u64, &'a Node>, policy: &Policy) -> Option<Self> {
+        let region_area_points = policy.region_area_points;
         if node.is_hidden() {
             return None;
         }
@@ -270,7 +273,10 @@ impl<'a> Proxy<'a> {
             // double-clicked — is promoted to a button above, and still owns its text:
             // it is what a neighbouring control has to borrow to get a name at all.
             text_content: matches!(kind, Kind::Text) || node.role() == Role::Label,
-            hit_testable: interactive,
+            // A control only becomes the browser's hit target where something drives
+            // the page by element rather than by coordinate; otherwise the press
+            // belongs to the canvas, which is the only thing that can follow a drag.
+            hit_testable: interactive && policy.pointer_proxies,
             labelled_by: None,
         })
     }
@@ -427,6 +433,37 @@ mod tests {
 
     /// A nameless control is linked to the text immediately to its left on the same
     /// row, the way a sighted user pairs them.
+    /// The projection only competes with the canvas for presses where it was asked
+    /// to: a control that hit-tests takes the drag the toolkit needs to see.
+    #[test]
+    fn a_control_hit_tests_only_where_pointer_proxies_are_asked_for() {
+        let root = with_children(Role::Window, &[1]);
+        let mut slider = Node::new(Role::Slider);
+        slider.set_label("Gain");
+        slider.set_bounds(Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 120.0,
+            y1: 18.0,
+        });
+        let update = update_of(vec![(0, root), (1, slider)], 0);
+
+        let plans = plan(&update, CANVAS_AREA, &Options::default());
+        let proxy = &find(&plans, 1).unwrap().proxy;
+        assert!(proxy.interactive, "it is still focusable and activatable");
+        assert!(!proxy.hit_testable, "but the press belongs to the canvas");
+
+        let plans = plan(
+            &update,
+            CANVAS_AREA,
+            &Options {
+                pointer_proxies: true,
+                ..Options::default()
+            },
+        );
+        assert!(find(&plans, 1).unwrap().proxy.hit_testable);
+    }
+
     #[test]
     fn borrows_the_label_beside_a_control() {
         let root = with_children(Role::Window, &[1, 2]);
@@ -547,6 +584,13 @@ mod tests {
         let region = find(&plans, 1).unwrap();
         assert!(!region.proxy.hit_testable);
         assert!(!region.proxy.interactive);
+        // Even where proxies are allowed to hit-test, a region never does.
+        let opened = Options {
+            pointer_proxies: true,
+            ..Options::default()
+        };
+        let plans = plan(&update, CANVAS_AREA, &opened);
+        assert!(!find(&plans, 1).unwrap().proxy.hit_testable);
         // Demotion also swaps the element type: a `<button>` would stay focusable
         // and clickable no matter which ARIA attributes are written on it.
         assert_eq!(region.proxy.role, Some("group"));

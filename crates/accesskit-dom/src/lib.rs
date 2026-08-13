@@ -82,6 +82,23 @@ pub struct Options {
     /// nodes are published for reading but never take pointer input.
     pub region_area_fraction: f64,
 
+    /// Whether control proxies are the browser's hit target for pointer input.
+    ///
+    /// A proxy that hit-tests receives the pointer stream that would otherwise reach
+    /// the canvas. It can turn a `click` into an [`accesskit::Action::Click`], but a
+    /// press-move-release is not a click: the toolkit underneath never sees the drag,
+    /// so a slider cannot be pulled, a selection cannot be swept, and nothing hovers.
+    /// That is why this is **off** by default — a person driving the canvas with a
+    /// mouse must never be competing with the projection of it.
+    ///
+    /// Turn it on for automation. Tools that address elements rather than coordinates
+    /// (`WebDriver`, Playwright, and agents built on them) check that the element they
+    /// resolved is the topmost one at its own centre before dispatching, so they can
+    /// only drive an overlay whose proxies hit-test. Assistive technology needs this
+    /// off either way: screen readers activate through focus, keys, and synthetic
+    /// clicks, none of which depend on hit-testing.
+    pub pointer_proxies: bool,
+
     /// How far left of a control its label may sit, in tree coordinates.
     ///
     /// Used when linking a nameless control to the text beside it; see the projection
@@ -103,6 +120,7 @@ impl Default for Options {
             overlay_id: "accesskit-dom".to_owned(),
             z_index: 5,
             region_area_fraction: 0.25,
+            pointer_proxies: false,
             label_gap: 16.0,
             #[cfg(feature = "tree-json")]
             tree_json_global: None,
