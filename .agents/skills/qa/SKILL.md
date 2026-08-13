@@ -117,9 +117,18 @@ not work, or a font that still renders as tofu. Use
 `wait_for_log(service="web", grep="applying new distribution")`, and if in doubt
 check `ls -laT dist/*.wasm` against your edit time.
 
-A wasm build here takes ~15 s to over a minute, and `trunk serve` reads
-`index.html` at build *start*, so an edit made mid-compile lands one build later
-(the watcher does pick it up — just wait for the second swap).
+**Take the cursor before you edit, not after.** `wait_for_log` starts at the
+*current* end of the log, so a swap that already happened is invisible to it and
+the call burns its whole timeout. Read `next_seq` (from `get_logs` or
+`log_cursors`) *before* saving the file, then wait with `after_seq=<that>` — the
+call then returns the moment the swap lands, whether it landed before or after
+you started waiting. A rebuild is ~10 s here (`serve` profile, `wasm-opt` skipped
+outside release); if a wait takes a minute, that is the missed cursor, not the
+build.
+
+`trunk serve` reads `index.html` at build *start*, so an edit made mid-compile
+lands one build later (the watcher does pick it up — just wait for the second
+swap).
 
 ## Traps
 
