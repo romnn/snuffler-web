@@ -669,8 +669,26 @@ impl App {
 
     fn show_status_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, total_tracks: usize) {
         egui::Panel::top("menu").show_inside(ui, |ui| {
+            // This row has to stay exactly one line tall whatever it ends up
+            // holding: a wrapped label would make the panel taller and push every
+            // panel below it down, and since the row grows and shrinks on its own
+            // (the cursor clock is hover-only, the PICK badge comes and goes, the
+            // status text is a message of any length), a height that followed its
+            // contents would move the traces out from under the pointer that just
+            // changed them. Truncating pins the height for any font, any message,
+            // and any window width, and degrades to an ellipsis on a narrow screen
+            // instead of spilling widgets past the panel edge.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             ui.horizontal(|ui| {
                 self.main_menus(ui);
+                // snuffler's menu-bar ':' button, which toggles the command line.
+                if ui
+                    .button(egui::RichText::new(":").monospace().strong())
+                    .on_hover_text("Show command line.")
+                    .clicked()
+                {
+                    self.session.state.command.toggle();
+                }
                 ui.separator();
                 // The status line is the one place the app tells you that something
                 // finished, failed, or is still running, and none of it is tied to a
@@ -729,41 +747,9 @@ impl App {
     }
 
     fn show_command_panel(&mut self, ui: &mut egui::Ui) {
-        if !self.session.state.show_command {
-            return;
+        if crate::view::command::show(ui, &mut self.session.state) {
+            self.session.submit_command();
         }
-        egui::Panel::bottom("cmdline").show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(":");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.session.state.command_text)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(
-                            "goto <time> · hide [n|s|l|c] <pat> · unhide · n|s|l|c <pat> · \
-                             markers [all|<digits>] · scaling [n.s.l.c] vmin vmax",
-                        ),
-                );
-                response.request_focus();
-                if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    let line = std::mem::take(&mut self.session.state.command_text);
-                    if !line.trim().is_empty() {
-                        self.session.state.command_feedback.clear();
-                        self.session.run_command(line);
-                    }
-                    self.session.state.show_command = false;
-                }
-                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                    self.session.state.command_text.clear();
-                    self.session.state.show_command = false;
-                }
-            });
-            if !self.session.state.command_feedback.is_empty() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(0xC0, 0x60, 0x40),
-                    &self.session.state.command_feedback,
-                );
-            }
-        });
     }
 
     fn show_waveform_panel(

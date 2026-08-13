@@ -3,6 +3,7 @@
 //! Field/enum names and defaults mirror pyrocko's snuffler (`pile_viewer.py` +
 //! `config.py`) so every frontend exposes the same settings.
 
+use crate::command::CommandLine;
 use crate::markers::Marker;
 
 /// Number of tracks the auto-fit track height targets on first load, and the
@@ -568,12 +569,8 @@ pub struct AppState {
     pub show_map: bool,
     /// Whether the marker table is open.
     pub show_marker_editor: bool,
-    /// The ':' command line: visible flag, current input, and last feedback.
-    pub show_command: bool,
-    /// Current command-line input.
-    pub command_text: String,
-    /// Last command response shown below the input.
-    pub command_feedback: String,
+    /// The ':' command line — visibility, input, history, and last error.
+    pub command: CommandLine,
     /// Selected FDSN waveform data-center preset.
     pub dl_datacenter: String,
     /// Optional custom FDSN waveform endpoint overriding the preset.
@@ -692,9 +689,7 @@ impl Default for AppState {
             show_catalog: false,
             show_map: false,
             show_marker_editor: false,
-            show_command: false,
-            command_text: String::new(),
-            command_feedback: String::new(),
+            command: CommandLine::default(),
             // Pre-filled with a real example (2023-02-06 Turkey M7.8, GE.WLF).
             dl_datacenter: "geofon".into(),
             dl_base_url: String::new(),

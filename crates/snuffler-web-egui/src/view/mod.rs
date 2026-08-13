@@ -1,5 +1,6 @@
 //! The snuffler waveform inspector UI (egui).
 
+pub mod command;
 pub mod controls;
 pub mod draw;
 pub mod figure;

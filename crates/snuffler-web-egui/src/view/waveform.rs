@@ -814,8 +814,10 @@ fn handle_keyboard(
         if i.key_pressed(Key::Questionmark) || (i.key_pressed(Key::Slash) && shift) {
             state.show_help = true;
         }
+        // ':' is Shift+Semicolon on most layouts; egui reports either depending on
+        // whether the browser gave it a logical or a physical key.
         if i.key_pressed(Key::Colon) || (i.key_pressed(Key::Semicolon) && shift) {
-            state.show_command = true;
+            state.command.show();
         }
 
         // 'e' sets the single selected marker as the ACTIVE event — the distance /

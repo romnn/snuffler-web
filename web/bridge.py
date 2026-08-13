@@ -20,7 +20,7 @@ import re
 import time
 import traceback
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import (
     Any,
@@ -65,11 +65,13 @@ _TRACES: List[ptrace.Trace] = []
 # handle id), so "reload modified files" can swap just that source's traces.
 _SOURCE_TRACES: "OrderedDict[str, List[ptrace.Trace]]" = OrderedDict()
 
-# Trace visibility driven by the ':' command line. `_HIDDEN` is a list of NSLC
-# globs to hide; `_REDUCE`, when set, keeps only traces matching it. Matching is
-# fnmatch over the "net.sta.loc.cha" string. Data is never dropped, only hidden.
+# Trace visibility driven by the ':' command line, mirroring snuffler's two
+# independent filters: `_HIDDEN` is the blacklist `hide`/`unhide` maintain, and
+# `_REDUCE` is the quick filter the `n|s|l|c` commands set (when not None, only
+# traces matching one of its globs are kept). Matching is fnmatch over the
+# "net.sta.loc.cha" string. Data is never dropped, only hidden.
 _HIDDEN: List[str] = []
-_REDUCE: Optional[str] = None
+_REDUCE: Optional[List[str]] = None
 # Per-pattern amplitude scaling overrides from the ':scaling' command
 # (snuffler's scaling hooks). Keyed by n.s.l.c pattern; the '_' key is the global
 # (no-pattern) rule. Each value is (vmin, vmax) where None leaves that bound auto.
@@ -3469,9 +3471,82 @@ def _command_glob(scope: Optional[str], pattern: str) -> str:
     return pattern if "." in pattern else "*%s*" % pattern
 
 
+def _visibility_patterns(args: List[str]) -> List[str]:
+    """The globs a ``hide``/``unhide`` line addresses, following snuffler's
+    ``inputline_finished``: a lone argument is the pattern itself, while a leading
+    ``n|s|l|c`` scopes every argument after it (``hide n GE GR`` hides two
+    networks). Anything else addresses nothing."""
+    match args:
+        case [pattern]:
+            return [_command_glob(None, pattern)]
+        case [("n" | "s" | "l" | "c") as scope, *rest] if rest:
+            return [_command_glob(scope, tok) for tok in rest]
+        case _:
+            return []
+
+
+def _set_hidden(hide: bool, globs: List[str]) -> data_pb2.CommandResult:
+    """Add the globs to the blacklist, or take them off it. Unhiding a pattern
+    that is not blacklisted is an error, as it is in snuffler
+    (``remove_blacklist_pattern``)."""
+    global _HIDDEN
+    for glob in globs:
+        if hide:
+            _hide_pattern(glob)
+        elif glob in _HIDDEN:
+            _HIDDEN = [h for h in _HIDDEN if h != glob]
+        else:
+            # Whatever came off the blacklist before the unknown pattern stays
+            # off it, so the partially-updated scene rides along with the error.
+            return _command_error("Pattern not found in blacklist.", with_scene=True)
+    return _command_scene()
+
+
+def _set_scaling(pattern: Optional[str], vmin_tok: str, vmax_tok: str) -> data_pb2.CommandResult:
+    """Pin the amplitude range of the tracks matching ``pattern`` (every track
+    when it is None), the ':scaling' command's rule. Bounds are read with the same
+    ``float_or_none`` snuffler uses, so 'nan' leaves that bound automatic."""
+    from pyrocko.model import float_or_none
+
+    try:
+        vmin, vmax = float_or_none(vmin_tok), float_or_none(vmax_tok)
+    except ValueError:
+        return _command_error("scaling: vmin/vmax must be numbers or 'nan'")
+    _SCALING_HOOKS["_" if pattern is None else pattern] = (vmin, vmax)
+    return _command_scene()
+
+
+def _empty_channel_patterns(tmin: float, tmax: float) -> List[str]:
+    """The exact "n.s.l.c" globs of channels with no data in the visible window,
+    for snuffler's ``hide empty`` (``add_blacklist_pattern('empty')``)."""
+    have_data = set()
+    for tr in _TRACES:
+        if tr.tmax >= tmin and tr.tmin <= tmax:
+            have_data.add(tr.nslc_id)
+    empty = {tr.nslc_id for tr in _TRACES} - have_data
+    return sorted(".".join(nslc) for nslc in empty)
+
+
+def _hide_pattern(glob: str) -> None:
+    """Blacklist a glob, moving an already-listed one to the end (snuffler's
+    ``add_blacklist_pattern``)."""
+    global _HIDDEN
+    _HIDDEN = [h for h in _HIDDEN if h != glob]
+    _HIDDEN.append(glob)
+
+
 def _command_scene() -> data_pb2.CommandResult:
     result = data_pb2.CommandResult(action="scene")
     result.scene.CopyFrom(_scene_meta())
+    return result
+
+
+def _command_error(message: str, with_scene: bool = False) -> data_pb2.CommandResult:
+    """A rejected command. ``with_scene`` carries the scene along for a command
+    that changed what is shown before it failed."""
+    result = data_pb2.CommandResult(action="error", message=message)
+    if with_scene:
+        result.scene.CopyFrom(_scene_meta())
     return result
 
 
@@ -3518,115 +3593,106 @@ def _goto_window_len(spec: str) -> Optional[float]:
     return None
 
 
-def _command_result(line: str) -> data_pb2.CommandResult:
+def _goto_result(args: List[str], tmin: float, tmax: float) -> data_pb2.CommandResult:
+    """Snuffler's ``goto`` arm: a date, a bare time of day (taken on the date at
+    the centre of the visible window), or the name of a loaded event."""
+    if not args:
+        return _command_error("usage: goto <time>")
+    spec = " ".join(args).strip()
+    from pyrocko import util
+
+    # A bare "HH:MM[:SS[.XXX]]" means that time on the day being looked at.
+    if re.fullmatch(r"\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?", spec):
+        day = util.time_to_str((tmin + tmax) * 0.5, format="%Y-%m-%d")
+        try:
+            return data_pb2.CommandResult(
+                action="goto", t=float(util.str_to_time_fillup("%s %s" % (day, spec)))
+            )
+        except Exception:
+            return _command_error("goto: cannot read time: %s" % spec)
+
+    try:
+        result = data_pb2.CommandResult(action="goto", t=float(util.str_to_time_fillup(spec)))
+    except Exception:
+        pass
+    else:
+        tlen = _goto_window_len(spec)
+        if tlen is not None:
+            result.tlen = tlen
+        elif spec.lower() in ("today", "yesterday", "tomorrow"):
+            result.tlen = 24 * 3600.0
+        return result
+
+    # Not a time — fall back to a loaded event by name (snuffler
+    # go_to_event_by_name): jump the view to that event's origin time.
+    target = spec.lower()
+    for h, ev in _EVENT_REGISTRY.items():
+        names = {
+            (ev.name or "").lower(),
+            _short_event_name(ev.name).lower(),
+            h.lower(),
+        }
+        if target in names:
+            return data_pb2.CommandResult(action="goto", t=float(ev.time))
+    return _command_error("no event or time matching: %s" % spec)
+
+
+def _command_result(request: data_pb2.CommandRequest) -> data_pb2.CommandResult:
     """Execute a snuffler ':' command line into a CommandResult whose ``action``
     is ``goto`` (with ``t``), ``scene`` (with ``scene``), ``error`` (with
     ``message``), or ``none``.
 
-    Supported: ``goto <time>`` (also ``goto now|today|yesterday``);
-    ``hide [n|s|l|c] <pattern>``; ``unhide [[n|s|l|c] <pattern>]``;
-    ``n|s|l|c <pattern>`` (reduce to matching).
+    Supported, matching snuffler's ``inputline_finished``: ``n|s|l|c [<pattern>...]``
+    (quick filter); ``hide <pattern>`` / ``hide n|s|l|c <tok>...`` (also
+    ``hide empty``); ``unhide [<pattern>]``; ``scaling [<pattern>] <vmin> <vmax>``;
+    ``goto <time>|<eventname>``. ``markers`` never reaches Python — marker
+    visibility is Rust-owned state, handled there.
     """
     global _HIDDEN, _REDUCE
-    parts = line.split()
+    parts = request.line.split()
     if not parts:
         return data_pb2.CommandResult(action="none")
-    cmd, args = parts[0], parts[1:]
+    cmd, args = parts[0].lower(), parts[1:]
 
-    if cmd == "goto":
-        if not args:
-            return data_pb2.CommandResult(action="error", message="usage: goto <time>")
-        spec = " ".join(args).strip().lower()
-        if spec in ("now", "today", "yesterday"):
-            when = datetime.now(timezone.utc)
-            if spec == "yesterday":
-                when = when - timedelta(days=1)
-            if spec in ("today", "yesterday"):
-                when = when.replace(hour=0, minute=0, second=0, microsecond=0)
-            return data_pb2.CommandResult(action="goto", t=when.timestamp())
-        from pyrocko import util
+    match cmd, args:
+        case "goto", spec:
+            return _goto_result(spec, request.visible_tmin, request.visible_tmax)
 
-        try:
-            joined = " ".join(args)
-            t = float(util.str_to_time_fillup(joined))
-            res = data_pb2.CommandResult(action="goto", t=t)
-            tlen = _goto_window_len(joined)
-            if tlen is not None:
-                res.tlen = tlen
-            return res
-        except Exception:
-            pass
-        # Not a time — fall back to a loaded event by name (snuffler
-        # go_to_event_by_name): jump the view to that event's origin time.
-        target = " ".join(args).strip().lower()
-        for h, ev in _EVENT_REGISTRY.items():
-            names = {
-                (ev.name or "").lower(),
-                _short_event_name(ev.name).lower(),
-                h.lower(),
-            }
-            if target in names:
-                return data_pb2.CommandResult(action="goto", t=float(ev.time))
-        return data_pb2.CommandResult(
-            action="error", message="no event or time matching: %s" % " ".join(args)
-        )
+        # The quick filter: several patterns are OR'd ("c HH? BH?"), and a command
+        # with no pattern at all turns the filter off again.
+        case ("n" | "s" | "l" | "c") as scope, patterns:
+            _REDUCE = [_command_glob(scope, pat) for pat in patterns] if patterns else None
+            return _command_scene()
 
-    if cmd in ("hide", "unhide"):
-        scope, rest = None, args
-        if args and args[0] in ("n", "s", "l", "c"):
-            scope, rest = args[0], args[1:]
-        pattern = rest[0] if rest else None
-        if cmd == "hide":
-            if pattern is None:
-                return data_pb2.CommandResult(
-                    action="error", message="usage: hide [n|s|l|c] <pattern>"
-                )
-            glob = _command_glob(scope, pattern)
-            if glob not in _HIDDEN:
-                _HIDDEN.append(glob)
-        else:  # unhide (no args clears everything)
-            if pattern is None:
-                _HIDDEN = []
-                _REDUCE = None
-            else:
-                glob = _command_glob(scope, pattern)
-                _HIDDEN = [h for h in _HIDDEN if h != glob]
-        return _command_scene()
+        case "unhide", []:
+            _HIDDEN = []
+            return _command_scene()
 
-    if cmd in ("n", "s", "l", "c"):
-        _REDUCE = _command_glob(cmd, args[0] if args else "*")
-        return _command_scene()
+        case "hide", ["empty"]:
+            for empty in _empty_channel_patterns(request.visible_tmin, request.visible_tmax):
+                _hide_pattern(empty)
+            return _command_scene()
 
-    if cmd == "scaling":
-        # snuffler pile_viewer.py 'scaling' arm: no args clears all hooks; one arg
-        # is a usage error; 2 args set the global rule; 3 args set a per-pattern
-        # rule; 4+ args are a silent no-op. 'nan' leaves that bound auto (None).
-        if len(args) == 0:
+        case ("hide" | "unhide") as verb, _:
+            return _set_hidden(verb == "hide", _visibility_patterns(args))
+
+        # snuffler's 'scaling' arms, by argument count: none clears every rule,
+        # one is a usage error, two set the global rule, three set a per-pattern
+        # rule, and more are silently ignored.
+        case "scaling", []:
             _SCALING_HOOKS.clear()
             return _command_scene()
-        if len(args) == 1:
-            return data_pb2.CommandResult(
-                action="error", message="usage: scaling [n.s.l.c] vmin vmax"
-            )
-        if len(args) in (2, 3):
+        case "scaling", [_]:
+            return _command_error("usage: scaling [n.s.l.c] vmin vmax")
+        case "scaling", [vmin, vmax]:
+            return _set_scaling(None, vmin, vmax)
+        case "scaling", [pattern, vmin, vmax]:
+            return _set_scaling(pattern, vmin, vmax)
+        case "scaling", _:
+            return _command_scene()
 
-            def _bound(tok: str) -> Optional[float]:
-                return None if tok.lower() == "nan" else float(tok)
-
-            try:
-                vmin, vmax = _bound(args[-2]), _bound(args[-1])
-            except ValueError:
-                return data_pb2.CommandResult(
-                    action="error",
-                    message="scaling: vmin/vmax must be numbers or 'nan'",
-                )
-            if len(args) == 2:
-                _SCALING_HOOKS["_"] = (vmin, vmax)
-            else:
-                _SCALING_HOOKS[args[0]] = (vmin, vmax)
-        return _command_scene()
-
-    return data_pb2.CommandResult(action="error", message="unknown command: %s" % cmd)
+        case _:
+            return _command_error("No such command: %s" % cmd)
 
 
 def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
@@ -3838,8 +3904,8 @@ class _BridgeServicer:
     ) -> scene_pb2.SceneMeta:
         return _rms_scene(request)
 
-    def run_command(self, request: data_pb2.StringRequest, data: Any) -> data_pb2.CommandResult:
-        return _command_result(request.value)
+    def run_command(self, request: data_pb2.CommandRequest, data: Any) -> data_pb2.CommandResult:
+        return _command_result(request)
 
     async def map_data(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.MapData:
         return _map_data_result(await _plate_boundaries())

@@ -27,4 +27,8 @@ web-sys = { version = "0.3", features = [
     "Event",
     "MessageEvent",
     "WebSocket",
+    # The ':' command line keeps its history in localStorage, the browser's
+    # counterpart to snuffler's `$HOME/.pyrocko/.snuffler_history`.
+    "Storage",
+    "Window",
 ] }

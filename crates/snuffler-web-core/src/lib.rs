@@ -1,6 +1,7 @@
 //! Toolkit-neutral session state and transport for snuffler-web frontends.
 
 pub mod bridge;
+pub mod command;
 pub mod markers;
 pub mod seedlink;
 pub mod session;

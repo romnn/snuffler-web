@@ -72,6 +72,17 @@ message ActiveEventResult {
   repeated EventKagan kagan = 3; // recomputed for every registry event vs the new active
 }
 
+// A ':' command line, plus the viewer context snuffler's command handlers read
+// straight off the viewer: `goto HH:MM` resolves the time of day on the date at
+// the centre of the window, and `hide empty` blacklists the channels with no
+// data in it. Both mean the window on screen, so these are `visible_*` in the
+// sense ViewParams gives the word — never its overscanned fetch range.
+message CommandRequest {
+  string line = 1;
+  double visible_tmin = 2;
+  double visible_tmax = 3;
+}
+
 message CommandResult {
   string action = 1;
   optional double t = 2;

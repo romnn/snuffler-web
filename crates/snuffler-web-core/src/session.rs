@@ -9,7 +9,7 @@
 
 use crate::bridge::{Bridge, Repaint, SnufflingRequestParams, ViewParams};
 #[cfg(target_arch = "wasm32")]
-use crate::bridge::{Nslc, SeedlinkParams, SetActiveEventRequest};
+use crate::bridge::{CommandOutcome, CommandRequest, Nslc, SeedlinkParams, SetActiveEventRequest};
 #[cfg(target_arch = "wasm32")]
 use crate::markers::{Marker, MarkersCommand, parse_markers_command};
 use crate::snufflings::SnufflingConfigs;
@@ -49,13 +49,47 @@ impl Session {
         }
     }
 
-    /// Handles a command locally when it targets Rust-owned markers, or dispatches it to pyrocko.
+    /// Runs the line in the ':' command line (the frontend's Return binding).
+    ///
+    /// A command over Rust-owned markers is answered on the spot; everything else
+    /// goes to pyrocko and the input stays open until [`Session::sync`] picks up
+    /// the answer. The visible time window rides along, because that is what
+    /// snuffler's `goto HH:MM` and `hide empty` read off the viewer.
     #[cfg(target_arch = "wasm32")]
-    pub fn run_command(&mut self, line: String) {
+    pub fn submit_command(&mut self) {
+        let Some(line) = self.state.command.submit() else {
+            return;
+        };
         match parse_markers_command(&line) {
-            Some(MarkersCommand::Set(kinds)) => self.state.set_visible_marker_kinds(kinds),
-            Some(MarkersCommand::NoChange) => {}
-            None => self.bridge.run_command(line),
+            Some(MarkersCommand::Set(kinds)) => {
+                self.state.set_visible_marker_kinds(kinds);
+                self.state.command.resolve(None);
+            }
+            Some(MarkersCommand::NoChange) => self.state.command.resolve(None),
+            None => self.bridge.run_command(CommandRequest {
+                line,
+                visible_tmin: self.state.tmin,
+                visible_tmax: self.state.tmax,
+            }),
+        }
+    }
+
+    /// Moves the view to `time`, spanning `length` seconds when the command said
+    /// how much to show (snuffler's `go_to_time`).
+    ///
+    /// A `goto` that names a date opens the window *at* it — `goto 2023-02-06`
+    /// shows that day from midnight, not half of the day before it — with
+    /// snuffler's 10% margin on either side. Without a length the window keeps
+    /// its width and centres on the time instead.
+    pub fn go_to_time(&mut self, time: f64, length: Option<f64>) {
+        if let Some(length) = length {
+            let margin = length * 0.1;
+            self.state.tmin = time - margin;
+            self.state.tmax = time + length + margin;
+        } else {
+            let width = (self.state.tmax - self.state.tmin).max(1.0);
+            self.state.tmin = time - width * 0.5;
+            self.state.tmax = time + width * 0.5;
         }
     }
 
@@ -88,12 +122,13 @@ impl Session {
         self.apply_snuffling_result();
 
         if let Some((time, length)) = self.bridge.take_goto() {
-            let width = length.unwrap_or_else(|| (self.state.tmax - self.state.tmin).max(1.0));
-            self.state.tmin = time - width * 0.5;
-            self.state.tmax = time + width * 0.5;
+            self.go_to_time(time, length);
         }
-        if let Some(message) = self.bridge.take_command_msg() {
-            self.state.command_feedback = message;
+        if let Some(outcome) = self.bridge.take_command_outcome() {
+            self.state.command.resolve(match outcome {
+                CommandOutcome::Succeeded => None,
+                CommandOutcome::Failed(message) => Some(message),
+            });
         }
 
         if std::mem::take(&mut self.state.reload_requested) {

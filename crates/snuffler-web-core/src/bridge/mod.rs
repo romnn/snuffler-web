@@ -23,12 +23,12 @@ mod proto;
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    CakeSnufflingParams, CatalogRequest, FigureRequest, IngestMiniSeedRequest, MapData, MarkerFile,
-    MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams, RmsSnufflingParams,
-    SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest,
-    SnufflingParams, SnufflingRequestParams, SnufflingResult, SpectrogramSnufflingParams,
-    SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, ViewMeta, ViewParams,
-    ViewTrack, WaveformDownloadRequest,
+    CakeSnufflingParams, CatalogRequest, CommandRequest, FigureRequest, IngestMiniSeedRequest,
+    MapData, MarkerFile, MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams,
+    RmsSnufflingParams, SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams,
+    SetActiveEventRequest, SnufflingParams, SnufflingRequestParams, SnufflingResult,
+    SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest,
+    ViewMeta, ViewParams, ViewTrack, WaveformDownloadRequest,
 };
 
 /// Visible live waveform window once enough samples have arrived.
@@ -127,6 +127,15 @@ pub enum Status {
     Error(String),
 }
 
+/// How a ':' command line executed by pyrocko turned out.
+#[derive(Clone, Debug)]
+pub enum CommandOutcome {
+    /// The command ran; any view change it asked for has been applied.
+    Succeeded,
+    /// The command was rejected, with the message to show under the input.
+    Failed(String),
+}
+
 /// Progress reported by the in-browser `SeisBench` runtime.
 #[derive(Clone, Debug)]
 pub struct SeisbenchProgress {
@@ -181,8 +190,9 @@ struct Inner {
     view_request_gen: u64,
     /// A pending `goto <time>` target the session should jump the view to.
     pending_goto: Option<(f64, Option<f64>)>,
-    /// Feedback from the last ':' command (an error or confirmation) to show.
-    command_msg: Option<String>,
+    /// How the last ':' command dispatched to pyrocko went, for the command line
+    /// to close itself or show the error.
+    command_outcome: Option<CommandOutcome>,
     live_seedlink_started_at: Option<f64>,
 }
 
@@ -317,10 +327,10 @@ impl Bridge {
         self.inner.borrow_mut().pending_goto.take()
     }
 
-    /// Take the last ':' command's feedback message (error / confirmation).
+    /// Take how the last ':' command dispatched to pyrocko turned out.
     #[must_use]
-    pub fn take_command_msg(&self) -> Option<String> {
-        self.inner.borrow_mut().command_msg.take()
+    pub fn take_command_outcome(&self) -> Option<CommandOutcome> {
+        self.inner.borrow_mut().command_outcome.take()
     }
 
     /// Counter that increments whenever new view data is available.
@@ -1455,38 +1465,45 @@ mod web {
             });
         }
 
-        /// Execute a ':' command line (goto / hide / unhide / reduce). A goto
-        /// stores a pending time the session jumps to; a visibility change swaps the
-        /// scene in place (no refit) and forces the view to re-dispatch.
-        pub fn run_command(&self, line: String) {
+        /// Execute a ':' command line (goto / hide / unhide / reduce / scaling). A
+        /// goto stores a pending time the session jumps to; a visibility change swaps
+        /// the scene in place (no refit) and forces the view to re-dispatch. Either
+        /// way the outcome lands in `command_outcome` for the command line to act on.
+        pub fn run_command(&self, request: CommandRequest) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
-                let res = match client()
-                    .run_command(pb::StringRequest { value: line })
-                    .await
-                {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(pb::CommandResult {
+                let result = match client().run_command(request).await {
+                    Ok(r) => r,
+                    Err(e) => pb::CommandResult {
                         action: "error".into(),
                         message: Some(e),
                         ..Default::default()
-                    }),
+                    },
                 };
-                if let Some(r) = res {
+                // Scoped so the borrow ends before `request_repaint()`: `Inner` is
+                // the same `RefCell` the render loop reads through its own `Rc`, and
+                // this is an async block, so a guard still alive at the repaint — or
+                // at any `.await` a later edit puts below — is a `BorrowMutError`
+                // panic on whichever frame or bridge result lands next.
+                {
                     let mut i = inner.borrow_mut();
-                    match r.action.as_str() {
-                        "goto" => i.pending_goto = r.t.map(|t| (t, r.tlen)),
+                    match result.action.as_str() {
+                        "goto" => i.pending_goto = result.t.map(|t| (t, result.tlen)),
                         "scene" => {
-                            if let Some(scene) = r.scene {
+                            if let Some(scene) = result.scene {
                                 i.scene = Some(scene);
                                 invalidate_view_request(&mut i); // re-dispatch without refitting time
                             }
                         }
-                        "error" => i.command_msg = r.message,
                         _ => {}
                     }
+                    i.command_outcome = Some(match (result.action.as_str(), result.message) {
+                        ("error", Some(message)) => CommandOutcome::Failed(message),
+                        ("error", None) => CommandOutcome::Failed("command failed".to_owned()),
+                        _ => CommandOutcome::Succeeded,
+                    });
                 }
                 repaint.request_repaint();
             });

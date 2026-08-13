@@ -16,6 +16,10 @@ const HELP_KEY_ROWS: &[(&str, &str)] = &[
     ("m", "Toggle marker sidebar"),
     ("c", "Toggle main controls"),
     (":", "Enter command"),
+    (
+        "<up>, <down> (command line)",
+        "Step through the command history",
+    ),
     ("<space>", "Forward one page in time"),
     ("b", "Backward one page in time"),
     ("<pagedown>", "Scroll tracks one page down"),
@@ -75,27 +79,29 @@ const HELP_MOUSE_ROWS: &[(&str, &str)] = &[
 
 const HELP_COMMAND_ROWS: &[(&str, &str)] = &[
     (
-        "n|s|l|c [ <pattern> ]",
-        "Reduce traces to those matching a given pattern.",
+        "n|s|l|c [ <pattern>... ]",
+        "Reduce traces to those matching the given patterns; without one, show all again.",
     ),
     (
-        "hide <pattern>\nhide n|s|l|c <pattern>",
-        "Hide traces whose network, station, location, and channel IDs match a pattern.",
+        "hide <pattern>\nhide n|s|l|c <pattern>...\nhide empty",
+        "Hide traces whose network, station, location, and channel IDs match a pattern. \
+         'hide empty' hides the channels with no data in the visible window.",
     ),
     (
-        "unhide <pattern>\nunhide n|s|l|c <pattern>",
-        "Unhide traces previously hidden with the hide command.",
+        "unhide <pattern>\nunhide n|s|l|c <pattern>...\nunhide",
+        "Unhide traces previously hidden with the hide command; bare 'unhide' clears all.",
     ),
     (
-        "goto YYYY-MM[-DD[ HH[:MM[:SS[.XXX]]]]]\ngoto HH:MM[:SS[.XXX]]",
-        "Jump to a given time.",
+        "goto YYYY-MM[-DD[ HH[:MM[:SS[.XXX]]]]]\ngoto HH:MM[:SS[.XXX]]\ngoto <eventname>",
+        "Jump to a given time or event. A bare time of day is taken on the day in view, \
+         and 'today', 'yesterday' and 'now' work too.",
     ),
     (
         "markers [ all | <digits> ]",
         "Show only markers of the given colour kinds (0..7); bare 'markers' hides all.",
     ),
     (
-        "scaling [ n.s.l.c ] vmin vmax",
+        "scaling [ n.s.l.c ] vmin vmax\nscaling",
         "Pin amplitude scale range(s); 'nan' leaves a bound auto; 'scaling' alone clears.",
     ),
 ];

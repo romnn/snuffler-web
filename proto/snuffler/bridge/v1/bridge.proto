@@ -103,7 +103,7 @@ service BridgeService {
   rpc RenderFigure(FigureRequest) returns (FigureResult); // a real pyrocko/matplotlib figure, PNG
   rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult);
   rpc RmsTraces(SnufflingRequestParams) returns (SceneMeta);
-  rpc RunCommand(StringRequest) returns (CommandResult);
+  rpc RunCommand(CommandRequest) returns (CommandResult);
   rpc MapData(Empty) returns (snuffler.bridge.v1.MapData);
   rpc StationDistances(Empty) returns (StationDistanceList);
   rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult);
