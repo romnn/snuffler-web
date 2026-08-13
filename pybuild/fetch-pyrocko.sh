@@ -27,9 +27,9 @@ git -C "$DEST" init -q
 git -C "$DEST" remote add origin "$REPO" 2>/dev/null \
   || git -C "$DEST" remote set-url origin "$REPO"
 
-# The pyrocko gitea server allows fetching an unadvertised commit shallowly
-# (allowAnySHA1InWant), so we grab just that one commit (~27 MB) instead of the
-# full history. Fall back to a full main fetch if a future server disables it.
+# GitHub allows fetching an unadvertised commit shallowly (allowAnySHA1InWant),
+# so we grab just that one commit (~27 MB) instead of the full history. Fall back
+# to a full main fetch for a host that does not permit it.
 if git -C "$DEST" fetch -q --depth 1 origin "$REF"; then
   git -C "$DEST" checkout -q --force "$REF"
 else

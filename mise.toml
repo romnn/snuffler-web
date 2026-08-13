@@ -53,7 +53,7 @@ lockfile_platforms = [
 [env]
 # pyrocko source pin (not vendored — fetched on demand into gitignored sources/).
 # Known-good commit on main: v2026.06.02-24-g64ae99fb (2026-06-12).
-PYROCKO_REPO = "https://git.pyrocko.org/pyrocko/pyrocko.git"
+PYROCKO_REPO = "https://github.com/pyrocko/pyrocko.git"
 PYROCKO_REF = "64ae99fb2c65fbd32836d83d00de05cf405a4ff9"
 
 [tasks.fetch-pyrocko]
