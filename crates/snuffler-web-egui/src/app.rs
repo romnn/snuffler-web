@@ -20,6 +20,14 @@ const FRAME_STATS_EMA_ALPHA: f64 = 0.2;
 /// width that does not change as the number does.
 const FRAME_STATS_WIDEST: &str = "60 fps";
 
+/// How much of the right-hand readout the menu row can afford this frame.
+struct RightReadout {
+    /// Width to keep clear at the right of the row; zero shows nothing at all.
+    width: f32,
+    /// Whether the build stamp fits beside the frame rate.
+    with_stamp: bool,
+}
+
 /// Supersampling factor for the resvg-backed PNG export: the output is this many
 /// times the on-screen point size per axis, giving a crisp print/retina image.
 #[cfg(feature = "svg-raster")]
@@ -704,18 +712,20 @@ impl App {
                 // Hand the right edge to the build stamp and frame rate before the
                 // status message is laid out: a message of any length then truncates
                 // within what is left, instead of pushing the readout off the row.
-                let right = Self::right_readout_width(ui);
-                let left = (ui.available_width() - right).max(0.0);
+                let readout = Self::right_readout(ui);
+                let left = (ui.available_width() - readout.width).max(0.0);
                 ui.allocate_ui_with_layout(
                     egui::vec2(left, ui.available_height()),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| self.show_activity(ui, ctx, total_tracks),
                 );
-                if right > 0.0 {
+                if readout.width > 0.0 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         self.show_frame_stats(ui);
-                        ui.separator();
-                        self.show_build_stamp(ui);
+                        if readout.with_stamp {
+                            ui.separator();
+                            self.show_build_stamp(ui);
+                        }
                     });
                 }
             });
@@ -764,14 +774,15 @@ impl App {
         self.show_cursor_time(ui, ctx);
     }
 
-    /// Width to reserve at the right of the menu row for the build stamp and the
-    /// frame rate, or zero when the row is too narrow to spare it.
+    /// How much of the build stamp and frame rate the right of the menu row can
+    /// take without crowding out what is to their left.
     ///
     /// Measured rather than assumed. Everything here moves — the menus are as wide
-    /// as the font makes them, the stamp is a date or `dev`, the window is any
-    /// size — so a fixed threshold (what the HTML badge this replaces used, as a
-    /// hardcoded `max-width` media query) is wrong for some combination of them.
-    fn right_readout_width(ui: &egui::Ui) -> f32 {
+    /// as the font makes them, the stamp is a timestamp with a zone or just
+    /// `dev build`, the window is any size — so a fixed threshold (what the HTML
+    /// badge this replaces used, as a hardcoded `max-width` media query) is wrong
+    /// for some combination of them.
+    fn right_readout(ui: &egui::Ui) -> RightReadout {
         let font = egui::TextStyle::Monospace.resolve(ui.style());
         let text_width = |text: String| {
             ui.painter()
@@ -783,21 +794,35 @@ impl App {
         // Reserved for the widest rate rather than the current one, so the status
         // beside it does not resize when the first measurement lands or the number
         // gains a digit. `6.0` is the width egui gives a vertical separator.
-        let width = text_width(crate::view::about::build_stamp().to_owned())
-            + text_width(FRAME_STATS_WIDEST.to_owned())
-            + 6.0
-            + gap * 4.0;
-        // Below this the menus and the status own the row: the readout is the part
-        // worth dropping, and dropping it is what keeps it from painting over them.
+        let rate = text_width(FRAME_STATS_WIDEST.to_owned()) + gap * 2.0;
+        let stamp = text_width(crate::view::about::build_stamp()) + 6.0 + gap * 2.0;
+        // What the menus and the status keep no matter what: below it the readout
+        // is the part worth dropping, and dropping it is what keeps it from
+        // painting over them.
         let status_min = ui.text_style_height(&egui::TextStyle::Body) * 8.0;
-        if ui.available_width() < width + status_min {
-            return 0.0;
+        let spare = ui.available_width() - status_min;
+        if spare >= rate + stamp {
+            RightReadout {
+                width: rate + stamp,
+                with_stamp: true,
+            }
+        } else if spare >= rate {
+            // The stamp is by far the longer of the two and never changes within a
+            // build; the rate is short and is the one worth watching.
+            RightReadout {
+                width: rate,
+                with_stamp: false,
+            }
+        } else {
+            RightReadout {
+                width: 0.0,
+                with_stamp: false,
+            }
         }
-        width
     }
 
-    /// The date of the published build (or `dev`), and the way into the About
-    /// window it is a one-line summary of.
+    /// When the published build was built, and the way into the About window it
+    /// is a one-line summary of.
     fn show_build_stamp(&mut self, ui: &mut egui::Ui) {
         let stamp = egui::RichText::new(crate::view::about::build_stamp())
             .monospace()

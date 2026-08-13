@@ -148,9 +148,16 @@ jobs:
       # builds leave it unset and never recompile for it: a build-time-aware build
       # script would have to re-run — and so relink the wasm — on every edit.
       # Published builds are the ones anyone needs to identify.
+      #
+      # Berlin time, not the runner's UTC: this is a "which build am I looking
+      # at" stamp, compared against the wall clock of whoever cut it. `%Z` bakes
+      # in the abbreviation the date was actually produced under, so the summer
+      # and winter halves of the year stay distinguishable (CEST vs CET); the
+      # zone name beside it says which city that abbreviation belongs to. The
+      # whole rendered string is baked here, so the format lives in one place.
       - name: Stamp the build
         run: |
-          echo "SNUFFLER_BUILD_DATE=$(date -u +'%Y-%m-%d %H:%M')" >> "$GITHUB_ENV"
+          echo "SNUFFLER_BUILD_DATE=$(TZ=Europe/Berlin date +'%Y-%m-%d %H:%M (%Z, Europe/Berlin)')" >> "$GITHUB_ENV"
           echo "SNUFFLER_GIT_COMMIT=${GITHUB_SHA::10}" >> "$GITHUB_ENV"
 
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.

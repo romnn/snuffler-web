@@ -3,8 +3,9 @@
 use snuffler_web_core::bridge::RuntimeInfo;
 use snuffler_web_core::state::AppState;
 
-/// When the published build was built (UTC, to the minute), and the commit it
-/// came from. Both are baked in from the environment by the deploy workflow.
+/// When the published build was built — Berlin time to the minute, naming its
+/// own zone — and the commit it came from. Both are baked in from the
+/// environment by the deploy workflow, which is where the format lives.
 ///
 /// Read with `option_env!` rather than produced by a build script on purpose: a
 /// script that stamped the current time would have to re-run — and so relink the
@@ -13,15 +14,17 @@ use snuffler_web_core::state::AppState;
 const BUILD_DATE: Option<&str> = option_env!("SNUFFLER_BUILD_DATE");
 const GIT_COMMIT: Option<&str> = option_env!("SNUFFLER_GIT_COMMIT");
 
-/// The stamp for the top bar: the build date, or `dev` for an unpublished build.
-pub fn build_stamp() -> &'static str {
-    BUILD_DATE.unwrap_or("dev")
+/// The stamp for the top bar. Labelled, because a bare timestamp in a row that
+/// also carries the cursor clock reads as just another time.
+pub fn build_stamp() -> String {
+    BUILD_DATE.map_or_else(|| "dev build".to_owned(), |date| format!("built on {date}"))
 }
 
 /// Hover text for the stamp — what does not fit in the top bar.
 pub fn build_tooltip() -> String {
+    // The date already names its own zone (see the deploy workflow).
     let head = match BUILD_DATE {
-        Some(date) => format!("Built {date} UTC"),
+        Some(date) => format!("Built {date}"),
         None => "Development build (built from a working tree)".to_owned(),
     };
     let commit = GIT_COMMIT.map_or_else(String::new, |sha| format!(" · commit {sha}"));
@@ -116,14 +119,7 @@ fn contents(ui: &mut egui::Ui, runtime: Option<&RuntimeInfo>) {
 
     section(ui, "Build");
     table(ui, "about_build", |ui| {
-        fact(
-            ui,
-            "built",
-            &BUILD_DATE.map_or_else(
-                || "development build".to_owned(),
-                |date| format!("{date} UTC"),
-            ),
-        );
+        fact(ui, "built", BUILD_DATE.unwrap_or("development build"));
         if let Some(sha) = GIT_COMMIT {
             fact(ui, "commit", sha);
         }
