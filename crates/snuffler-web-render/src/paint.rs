@@ -422,19 +422,19 @@ pub fn paint(
             }
         }
 
-        // NSLC label with a translucent background
+        // NSLC label with a translucent background, followed by what the active
+        // sort ordered this track by when the bridge annotated it.
+        let label = if t.sort_annotation.is_empty() {
+            t.label.clone()
+        } else {
+            format!("{} ({})", t.label, t.sort_annotation)
+        };
         let label_pos = pos2(track_area.left() + 5.0, top + 3.0);
-        let bg = Rect::from_min_size(label_pos, target.measure(&t.label, LABEL_PT)).expand(3.0);
+        let bg = Rect::from_min_size(label_pos, target.measure(&label, LABEL_PT)).expand(3.0);
         if !state.color_traces || !theme_uses_row_tints(state.wiggle_theme) {
             target.fill_rect(bg, 3.0, pal.label_bg);
         }
-        target.text(
-            label_pos,
-            Align2::LEFT_TOP,
-            &t.label,
-            LABEL_PT,
-            pal.axis_text,
-        );
+        target.text(label_pos, Align2::LEFT_TOP, &label, LABEL_PT, pal.axis_text);
     }
     target.pop_clip();
 
@@ -606,7 +606,7 @@ fn draw_markers(
 #[cfg(test)]
 mod tests {
     use emath::{Rect, Vec2, pos2};
-    use snuffler_web_core::bridge::{ViewData, ViewMeta};
+    use snuffler_web_core::bridge::{ViewData, ViewMeta, ViewTrack};
     use snuffler_web_core::state::{AppState, WiggleTheme};
 
     use crate::draw::SvgTarget;
@@ -642,5 +642,52 @@ mod tests {
         assert!(svg.contains("<svg"));
         assert!(svg.contains("<line"));
         assert!(svg.contains("<text"));
+    }
+
+    #[test]
+    fn track_labels_carry_the_sort_annotation_in_parentheses() {
+        let state = AppState {
+            tmin: 1_700_000_000.0,
+            tmax: 1_700_000_060.0,
+            ..AppState::default()
+        };
+        let track = |cha: &str, annotation: &str| ViewTrack {
+            net: "GE".to_owned(),
+            sta: "APE".to_owned(),
+            cha: cha.to_owned(),
+            label: format!("GE.APE..{cha}"),
+            sort_annotation: annotation.to_owned(),
+            ymin: -1.0,
+            ymax: 1.0,
+            yscale: 1.0,
+            ..ViewTrack::default()
+        };
+        let view = ViewData {
+            meta: ViewMeta {
+                view_tmin: state.tmin,
+                view_tmax: state.tmax,
+                tracks: vec![track("HHZ", "12.3 km"), track("HHN", "no coords")],
+            },
+            ys: Vec::new(),
+        };
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0));
+        let layout = compute_layout(&state, &view, rect);
+        let colors = palette(Theme::Dark, WiggleTheme::SnufflerQt);
+        let mut target = SvgTarget::new(640.0, 360.0, Vec::new(), |text, size| {
+            Vec2::new(text.len() as f32 * size * 0.5, size)
+        });
+
+        paint(
+            &mut target,
+            &state,
+            &view,
+            &colors,
+            &layout,
+            Theme::Dark,
+            false,
+        );
+        let svg = target.finish();
+        assert!(svg.contains("GE.APE..HHZ (12.3 km)"), "{svg}");
+        assert!(svg.contains("GE.APE..HHN (no coords)"), "{svg}");
     }
 }

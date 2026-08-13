@@ -61,6 +61,11 @@ message ViewTrack {
   uint64 nf = 14;
   uint64 nt = 15;
   double fmax = 16;
+  // What the active sort ordered this track by, when that is not evident from
+  // the label: the distance in kilometres for a distance sort, or a note that
+  // the station has no coordinates and therefore could not be placed.
+  // Empty for name sorting.
+  string sort_annotation = 17;
 }
 
 message ViewMeta {

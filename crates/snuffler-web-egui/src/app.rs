@@ -355,10 +355,11 @@ impl App {
             ui.close();
         }
         if ui
-            .button("Open StationXML…")
+            .button("Open StationXML files…")
             .on_hover_text(
-                "Load a local StationXML file: station coordinates (distance/azimuth \
-                 sorting) + instrument responses (Options ▸ Deconvolution).",
+                "Load one or more local StationXML files: station coordinates \
+                 (distance/azimuth sorting) + instrument responses \
+                 (Options ▸ Deconvolution).",
             )
             .clicked()
         {

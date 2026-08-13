@@ -473,11 +473,13 @@ export async function loadMarkers() {
 }
 
 export async function loadStationXml() {
-  const files = await pickFiles(false);
+  const files = await pickFiles(true);
   if (files.length === 0) return new Uint8Array(0);
   const request = toBinary(
     LoadStationXmlRequestSchema,
-    create(LoadStationXmlRequestSchema, { text: await files[0].text() })
+    create(LoadStationXmlRequestSchema, {
+      texts: await Promise.all(files.map((file) => file.text())),
+    })
   );
   return rpcBytes(rpc("loadStationXml"), { request });
 }

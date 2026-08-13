@@ -572,6 +572,39 @@ def _dist_deg(alat: float, alon: float, blat: float, blon: float) -> float:
     return math.degrees(math.acos(cd))
 
 
+def _sort_distance(net: str, sta: str, distances_3d: bool) -> Optional[float]:
+    """Distance from the active event to a station in metres.
+
+    Three-dimensional distance folds in the source depth and station elevation.
+    ``None`` means there is no active event or no coordinates for the station.
+    """
+    if _ACTIVE_EVENT is None:
+        return None
+    st = _STATIONS.get((net, sta))
+    if st is None:
+        return None
+    elat, elon, edep, _et = _ACTIVE_EVENT
+    slat, slon, sele = st
+    from pyrocko import cake
+
+    surface_m = _dist_deg(elat, elon, slat, slon) * cake.d2r * cake.earthradius
+    if distances_3d:
+        return math.hypot(surface_m, float(edep) + float(sele))
+    return surface_m
+
+
+def _sort_annotation(net: str, sta: str, sort: str, distances_3d: bool) -> str:
+    """Track-label annotation naming the value the distance sort ordered by, so a
+    surprising track order can be read off the tracks themselves. Stations without
+    coordinates sort to the end, which looks arbitrary unless it is called out."""
+    if sort != "distance" or _ACTIVE_EVENT is None:
+        return ""
+    dist = _sort_distance(net, sta, distances_3d)
+    if dist is None:
+        return "no coords"
+    return "%.1f km" % (dist / 1000.0)
+
+
 def _sort_order(
     traces: List[ptrace.Trace], sort: str, subsort: str, distances_3d: bool = False
 ) -> List[int]:
@@ -587,24 +620,23 @@ def _sort_order(
 
     geo = sort in ("distance", "azimuth", "azimuth_blocks", "backazimuth")
     if geo and _ACTIVE_EVENT is not None and _STATIONS:
-        from pyrocko import cake
         from pyrocko import orthodrome as od
 
-        elat, elon, edep, _et = _ACTIVE_EVENT
+        elat, elon, _edep, _et = _ACTIVE_EVENT
 
         def geokey(tr: ptrace.Trace) -> Tuple[float, Any]:
-            st = _STATIONS.get((tr.nslc_id[0], tr.nslc_id[1]))
+            net, sta = tr.nslc_id[0], tr.nslc_id[1]
+            st = _STATIONS.get((net, sta))
             if st is None:
                 return (1e30, namekey(tr))
-            slat, slon, sele = st
+            slat, slon, _sele = st
             dist = _dist_deg(elat, elon, slat, slon)
             if sort == "distance":
-                if distances_3d:
-                    # Great-circle degrees -> surface metres, combined with the
-                    # vertical offset (source depth + station elevation).
-                    surface_m = dist * cake.d2r * cake.earthradius
-                    dist = math.hypot(surface_m, float(edep) + float(sele))
-                return (dist, namekey(tr))
+                # Same helper the track annotation shows, so the order the tracks
+                # are in always matches the distance printed on them. It only
+                # returns None without coordinates, which this branch excluded.
+                sort_dist = _sort_distance(net, sta, distances_3d)
+                return (dist if sort_dist is None else sort_dist, namekey(tr))
             if sort == "backazimuth":
                 return (float(od.azimuth(slat, slon, elat, elon)) % 360.0, dist)
             azi = float(od.azimuth(elat, elon, slat, slon)) % 360.0
@@ -1072,6 +1104,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
 
         net, sta, loc, cha = tr.nslc_id
         label = ".".join(tr.nslc_id)
+        annotation = _sort_annotation(net, sta, sort, bool(req.distances_3d))
         want_samples = track_offset <= view_idx < track_end
         if want_samples:
             sample_tracks += 1
@@ -1117,6 +1150,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             t = meta.tracks.add()
             t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
             t.label = label
+            t.sort_annotation = annotation
             t.t0_rel = t0_rel
             t.dt = dt
             t.count = int(nf * nt)
@@ -1170,6 +1204,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             t = meta.tracks.add()
             t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
             t.label = label
+            t.sort_annotation = annotation
             t.t0_rel = t0_rel
             t.dt = dt
             t.count = int(count)
@@ -2898,15 +2933,19 @@ def _response_url(req: data_pb2.StationRequest) -> str:
     return "%s/fdsnws/station/1/query?%s" % (base, q)
 
 
-def _load_responses_result(xml_text: str) -> snuffling_pb2.SnufflingResult:
-    """Parse fetched StationXML into instrument responses (for Deconvolution) and
-    also harvest station coordinates (for distance/azimuth sorting)."""
+def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResult:
+    """Parse and merge StationXML documents into instrument responses.
+
+    Station coordinates are also harvested for distance/azimuth sorting.
+    """
     global _STATIONXML, _RESPONSE_GEN
-    if not xml_text.strip():
+    xml_texts = [text for text in xml_texts if text.strip()]
+    if not xml_texts:
         return snuffling_pb2.SnufflingResult(show_window=True, text="no station metadata returned")
     from pyrocko.io import stationxml
 
-    _STATIONXML = stationxml.load_xml(string=xml_text)
+    station_xmls = [stationxml.load_xml(string=text) for text in xml_texts]
+    _STATIONXML = stationxml.primitive_merge(station_xmls)
     _RESPONSE_GEN += 1
     _clear_view_cache()
     nchan = 0
@@ -2921,9 +2960,13 @@ def _load_responses_result(xml_text: str) -> snuffling_pb2.SnufflingResult:
                 )
             except Exception:
                 pass
+    source_label = (
+        "1 StationXML file" if len(xml_texts) == 1 else "%d StationXML files" % len(xml_texts)
+    )
     return snuffling_pb2.SnufflingResult(
         show_window=True,
-        text="%d channel response(s) loaded — enable Options ▸ Deconvolution" % nchan,
+        text="%d channel response(s) loaded from %s — enable Options ▸ Deconvolution"
+        % (nchan, source_label),
     )
 
 
@@ -3829,7 +3872,7 @@ class _BridgeServicer:
     ) -> snuffling_pb2.SnufflingResult:
         # Same parsing as fetched FDSN responses: sets _STATIONXML (deconvolution)
         # and harvests station coordinates (distance/azimuth sorting, cake).
-        return _load_responses_result(request.text)
+        return _load_responses_result(list(request.texts))
 
     def load_stations(
         self, request: data_pb2.LoadStationsRequest, data: Any
@@ -3891,7 +3934,7 @@ class _BridgeServicer:
     async def fetch_responses(
         self, request: data_pb2.StationRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        return _load_responses_result(await _fetch_fdsn_text_or_empty(_response_url(request)))
+        return _load_responses_result([await _fetch_fdsn_text_or_empty(_response_url(request))])
 
     def gf_store_label(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
         return bridge_pb2.StringValue(value=gf_store_label(data or ""))

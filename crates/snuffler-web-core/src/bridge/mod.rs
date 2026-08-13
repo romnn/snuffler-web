@@ -1343,6 +1343,8 @@ mod web {
         }
 
         /// Search a CORS-enabled FDSN event service; results become event markers.
+        /// The largest-magnitude hit becomes the active event, so this forces a
+        /// re-dispatch for the distance/azimuth sort to recompute against it.
         pub fn catalog_search(&self, params: CatalogRequest) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
@@ -1363,6 +1365,7 @@ mod web {
                         i.snuffling = Some(r);
                         i.snuffling_gen += 1;
                     }
+                    invalidate_view_request(&mut i);
                 }
                 repaint.request_repaint();
             });
@@ -1780,9 +1783,9 @@ mod web {
             });
         }
 
-        /// Pick a local `StationXML` file and load it (instrument responses for
-        /// deconvolution + station coordinates for sorting) — the same parsing as
-        /// fetched `FDSN` responses, from a browser-picked file.
+        /// Pick and merge local `StationXML` files (instrument responses for
+        /// deconvolution + station coordinates for sorting) using the same parsing
+        /// as fetched `FDSN` responses.
         pub fn load_station_xml(&self) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
@@ -1828,7 +1831,8 @@ mod web {
         }
 
         /// Pick a local pyrocko event file and load it: event markers + the active
-        /// event (largest magnitude) for distance/azimuth sorting.
+        /// event (largest magnitude) for distance/azimuth sorting, which forces a
+        /// re-dispatch so that sort recomputes against the new active event.
         pub fn load_events(&self) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
@@ -1845,6 +1849,7 @@ mod web {
                     let mut i = inner.borrow_mut();
                     i.snuffling = Some(result);
                     i.snuffling_gen += 1;
+                    invalidate_view_request(&mut i);
                 }
                 repaint.request_repaint();
             });
@@ -1955,6 +1960,11 @@ mod web {
                             }
                         }
                     }
+                    // The distance/azimuth sorts and their track annotations are
+                    // measured from the active event, so the view has to be
+                    // rebuilt against the new one — its request params are
+                    // unchanged, so nothing else would re-dispatch it.
+                    invalidate_view_request(&mut i);
                 }
                 repaint.request_repaint();
             });

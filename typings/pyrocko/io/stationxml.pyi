@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Iterable
 
 class _Value:
     value: float
@@ -27,3 +27,4 @@ class StationXml:
     ) -> Any: ...
 
 def load_xml(string: str) -> StationXml: ...
+def primitive_merge(sxs: Iterable[StationXml]) -> StationXml: ...

@@ -117,10 +117,11 @@ message LoadMarkersRequest {
   string text = 1;
 }
 
-// A StationXML file's text, picked in the browser and parsed in Python (station
-// coordinates for sorting + instrument responses for deconvolution).
+// StationXML documents picked in the browser (the picker is multi-select) and
+// parsed in Python (station coordinates for sorting + instrument responses for
+// deconvolution).
 message LoadStationXmlRequest {
-  string text = 1;
+  repeated string texts = 1;
 }
 
 // A pyrocko station file's text, picked in the browser and parsed in Python
