@@ -1,4 +1,4 @@
-//! Help and about-window content for the egui frontend.
+//! The keyboard/mouse/command reference window ("Snuffler controls").
 
 use snuffler_web_core::state::AppState;
 
@@ -106,23 +106,17 @@ const HELP_COMMAND_ROWS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Draws the help and about windows requested by shared application state.
+/// Draws the help window when the shared state asks for it.
 pub fn show(ctx: &egui::Context, state: &mut AppState) {
-    if state.show_help {
-        let mut open = true;
-        egui::Window::new("Snuffler controls")
-            .open(&mut open)
-            .default_size([560.0, 640.0])
-            .show(ctx, help_text);
-        state.show_help = open;
+    if !state.show_help {
+        return;
     }
-    if state.show_about {
-        let mut open = true;
-        egui::Window::new("About")
-            .open(&mut open)
-            .show(ctx, about_text);
-        state.show_about = open;
-    }
+    let mut open = true;
+    egui::Window::new("Snuffler controls")
+        .open(&mut open)
+        .default_size([560.0, 640.0])
+        .show(ctx, help_text);
+    state.show_help = open;
 }
 
 fn help_text(ui: &mut egui::Ui) {
@@ -160,15 +154,4 @@ fn help_section(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)], monospace
             }
         });
     ui.add_space(4.0);
-}
-
-fn about_text(ui: &mut egui::Ui) {
-    ui.heading("snuffler-web");
-    ui.label(
-        "pyrocko's snuffler seismic waveform inspector, running in the browser.\n\n\
-         This egui frontend drives real pyrocko + numpy + scipy compiled to \
-         WebAssembly via Pyodide — client-side, no server.",
-    );
-    ui.add_space(6.0);
-    ui.hyperlink("https://pyrocko.org");
 }

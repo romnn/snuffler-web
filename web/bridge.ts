@@ -30,16 +30,27 @@ type SeamMethod = BridgeMethodId | WorkerCommand;
 const BRIDGE_PERF_LOG = false;
 type WorkerEventMessage = { type: "workerEvent"; event: Uint8Array };
 
-// Cosmetic progress/runtime hooks (set by index.html) + the File System Access
-// API. Typed loosely — optional integration points, not the typed proto boundary.
+// Cosmetic progress hook (set by index.html) + the File System Access API. Typed
+// loosely — optional integration points, not the typed proto boundary.
 declare global {
   interface Window {
     __snufflerProgress?: (frac: number, label: string) => void;
-    __snufflerRuntime?: (info: unknown) => void;
     showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
     showOpenFilePicker?: (opts?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>;
   }
 }
+
+// What the worker reports once Python is up, read back from the live interpreter
+// rather than assumed. Rust shows it in the About window.
+type RuntimeInfo = {
+  threaded: boolean;
+  simd: boolean;
+  pthreads: boolean;
+  python: string;
+  numpy: string;
+  pyrocko: string;
+  cores: number;
+};
 
 // Re-readable handles for files opened via the File System Access API, keyed by a
 // stable source id, so "reload modified files" can re-read them from disk.
@@ -61,6 +72,7 @@ let nextRequestId = 1;
 const pending = new Map<number, Pending>();
 let mlDevice = ProtoMlDevice.WASM;
 let latestSeisbenchProgress: SeisbenchProgress | null = null;
+let latestRuntimeInfo: RuntimeInfo | null = null;
 
 function workerUrl() {
   return new URL("bridge_worker.js", document.baseURI).href;
@@ -81,13 +93,7 @@ function ensureWorker() {
       return;
     }
     if (msg.type === "runtime") {
-      try {
-        if (typeof window !== "undefined" && window.__snufflerRuntime) {
-          window.__snufflerRuntime(msg);
-        }
-      } catch (_e) {
-        // The badge is cosmetic; never let it break the bridge.
-      }
+      latestRuntimeInfo = msg as RuntimeInfo;
       return;
     }
     const slot = pending.get(msg.id);
@@ -160,7 +166,7 @@ function copyBytes(value) {
 
 export function seisbenchDevice() {
   ensureWorker();
-  return mlDevice === ProtoMlDevice.WEBGPU ? "WebGPU" : "CPU (wasm)";
+  return mlDevice === ProtoMlDevice.WEBGPU ? "WebGPU" : "CPU (WASM)";
 }
 
 export function seisbenchProgressFraction() {
@@ -173,6 +179,11 @@ export function seisbenchProgressLabel() {
 
 export function clearSeisbenchProgress() {
   latestSeisbenchProgress = null;
+}
+
+// The booted Python runtime, or null until the worker reports it.
+export function runtimeInfo() {
+  return latestRuntimeInfo;
 }
 
 // Post one request to the worker and resolve when its reply with the same id

@@ -177,45 +177,12 @@
             font-weight: 600;
             color: var(--fg);
         }
-
-        /* Subtle debug-only readout of the booted Pyodide runtime, shown
-           top-right once it has come up (set by __snufflerRuntime). Reports the
-           mode + Python/NumPy versions for both paths. Deliberately low-key. */
-        #runtime-badge {
-            position: absolute;
-            top: 5px;
-            right: 7px;
-            z-index: 11;
-            display: none;
-            padding: 1px 3px;
-            font-size: 12px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-            line-height: 1.4;
-            color: var(--muted);
-            opacity: 0.72;
-            white-space: nowrap;
-            user-select: text;
-            pointer-events: none;
-        }
-
-        #runtime-badge.show { display: inline-block; }
-
-        /* The badge floats over the canvas, so on a narrow window it lands on top
-           of the menu bar it is sharing the top row with. It is a debug readout —
-           drop it rather than let it sit over the menus. */
-        @media (max-width: 1100px) {
-            #runtime-badge.show { display: none; }
-        }
     </style>
 </head>
 
 <body>
     <!-- the id is hardcoded in main.rs; keep them in sync -->
     <canvas id="the_canvas_id"></canvas>
-
-    <!-- subtle debug readout of the booted py-mt Pyodide runtime (set by
-         __snufflerRuntime) -->
-    <div id="runtime-badge"></div>
 
     <div id="loading">
         <div class="panel">
@@ -250,63 +217,6 @@
                     setTimeout(() => el.remove(), 450);
                 }
             }
-        };
-
-        const snufflerBadgeState = {
-            runtime: null,
-            frameMs: null,
-            frameBadgeLastMs: 0,
-        };
-
-        function frameCapacityFps(ms) {
-            if (ms <= 0) return 60;
-            return Math.min(60, 1000 / ms);
-        }
-
-        function formatFps(ms) {
-            return Math.round(frameCapacityFps(ms)).toString().padStart(2, "0") + " fps";
-        }
-
-        function updateSnufflerRuntimeBadge() {
-            const info = snufflerBadgeState.runtime;
-            if (!info) return;
-            const badge = document.getElementById("runtime-badge");
-            if (!badge) return;
-            const mt = !!(info.threaded && info.pthreads);
-            const bits = [mt ? "wasm+openmp+simd" : "wasm"];
-            if (mt && info.cores) bits.push(info.cores + " cores");
-            if (info.python) bits.push("py" + info.python);
-            if (info.numpy) bits.push("np" + info.numpy);
-            if (info.pyrocko) bits.push("pyrocko " + info.pyrocko);
-            if (snufflerBadgeState.frameMs !== null) {
-                bits.push(formatFps(snufflerBadgeState.frameMs));
-            }
-            badge.textContent = bits.join(" · ");
-            badge.classList.add("show");
-        }
-
-        window.__snufflerFrameStats = function (frameMs) {
-            if (!Number.isFinite(frameMs) || frameMs < 0) return;
-            snufflerBadgeState.frameMs = frameMs;
-            const now = performance.now();
-            if (
-                snufflerBadgeState.frameBadgeLastMs === 0 ||
-                now - snufflerBadgeState.frameBadgeLastMs >= 250
-            ) {
-                snufflerBadgeState.frameBadgeLastMs = now;
-                updateSnufflerRuntimeBadge();
-            }
-        };
-
-        // Called by web/bridge.js when the Pyodide worker reports its booted
-        // runtime. Shows a subtle debug readout of the versions; the lead token is
-        // "wasm+openmp+simd" once threading is confirmed (pthreads read back from
-        // the live interpreter, so libomp + SIMD are in play) — it should always
-        // be, on this MT-only build; a bare "wasm" would signal threading failed.
-        window.__snufflerRuntime = function (info) {
-            if (!info) return;
-            snufflerBadgeState.runtime = info;
-            updateSnufflerRuntimeBadge();
         };
     </script>
 </body>

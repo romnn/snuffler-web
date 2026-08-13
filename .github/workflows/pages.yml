@@ -143,6 +143,16 @@ jobs:
       - name: Install JS deps (bridge glue)
         run: bun install --frozen-lockfile
 
+      # The build stamp the app shows in its top bar and About window. It is baked
+      # in from the environment (option_env!, no build script) precisely so LOCAL
+      # builds leave it unset and never recompile for it: a build-time-aware build
+      # script would have to re-run — and so relink the wasm — on every edit.
+      # Published builds are the ones anyone needs to identify.
+      - name: Stamp the build
+        run: |
+          echo "SNUFFLER_BUILD_DATE=$(date -u +'%Y-%m-%d %H:%M')" >> "$GITHUB_ENV"
+          echo "SNUFFLER_GIT_COMMIT=${GITHUB_SHA::10}" >> "$GITHUB_ENV"
+
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
       # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/.
       # Threaded build: the wasm atomics/link flags come from .cargo/config.toml;

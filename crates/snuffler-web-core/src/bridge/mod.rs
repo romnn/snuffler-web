@@ -136,6 +136,24 @@ pub enum CommandOutcome {
     Failed(String),
 }
 
+/// The Python runtime the worker booted, read back from the live interpreter
+/// rather than assumed from the build, so the About window reports what is
+/// actually running.
+#[derive(Clone, Debug)]
+pub struct RuntimeInfo {
+    /// `sys.version`'s first token, e.g. `3.14.0`.
+    pub python: String,
+    /// `numpy.__version__`.
+    pub numpy: String,
+    /// `pyrocko.__version__`, or `unknown` on a build that does not carry one.
+    pub pyrocko: String,
+    /// True once pthreads are confirmed live in the interpreter — meaning the
+    /// py-mt build came up with `OpenMP` and SIMD, not a single-threaded fallback.
+    pub threaded: bool,
+    /// `navigator.hardwareConcurrency` as seen by the worker; 0 when unavailable.
+    pub cores: u32,
+}
+
 /// Progress reported by the in-browser `SeisBench` runtime.
 #[derive(Clone, Debug)]
 pub struct SeisbenchProgress {
@@ -252,6 +270,19 @@ impl Bridge {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn request_repaint_after(&self, delay: std::time::Duration) {
         self.repaint.request_repaint_after(delay);
+    }
+
+    /// Returns the booted Python runtime, or `None` until the worker reports it.
+    #[must_use]
+    pub fn runtime_info(&self) -> Option<RuntimeInfo> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::runtime_info()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            None
+        }
     }
 
     /// Returns the current inference device and optional `SeisBench` progress.
@@ -486,6 +517,9 @@ mod web {
         #[wasm_bindgen(js_name = clearSeisbenchProgress)]
         fn js_clear_seisbench_progress();
 
+        #[wasm_bindgen(js_name = runtimeInfo)]
+        fn js_runtime_info() -> JsValue;
+
         // DOM-only calls keep bespoke externs: they drive browser APIs (file
         // pickers, downloads, the File System Access API, tile fetch+decode) that
         // can't be expressed as a uniform request->response RPC.
@@ -539,6 +573,44 @@ mod web {
 
     pub(super) fn seisbench_device() -> String {
         js_seisbench_device()
+    }
+
+    pub(super) fn runtime_info() -> Option<RuntimeInfo> {
+        let info = js_runtime_info();
+        if !info.is_object() {
+            return None;
+        }
+        let string = |key: &str| {
+            js_sys::Reflect::get(&info, &JsValue::from_str(key))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        };
+        let flag = |key: &str| {
+            js_sys::Reflect::get(&info, &JsValue::from_str(key))
+                .ok()
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "hardwareConcurrency is a small non-negative core count"
+        )]
+        let cores = js_sys::Reflect::get(&info, &JsValue::from_str("cores"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .max(0.0) as u32;
+        Some(RuntimeInfo {
+            python: string("python"),
+            numpy: string("numpy"),
+            pyrocko: string("pyrocko"),
+            // Both have to be true: the build says it is threaded, the live
+            // interpreter says pthreads really came up.
+            threaded: flag("threaded") && flag("pthreads"),
+            cores,
+        })
     }
 
     pub(super) fn seisbench_progress() -> Option<SeisbenchProgress> {

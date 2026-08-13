@@ -11,15 +11,14 @@ use snuffler_web_core::state::{
     ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
 };
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = window, js_name = __snufflerFrameStats)]
-    fn js_snuffler_frame_stats(frame_ms: f64);
-}
-
-const FRAME_STATS_REPORT_INTERVAL_S: f64 = 0.25;
+/// How often the displayed frame rate is allowed to change. The measurement is
+/// smoothed every frame; only the number on screen is held still, because one
+/// that rewrites itself at 60 Hz is unreadable.
+const FRAME_STATS_REFRESH_INTERVAL_S: f64 = 0.25;
 const FRAME_STATS_EMA_ALPHA: f64 = 0.2;
+/// The widest the readout can get (the rate is capped at 60), used to reserve a
+/// width that does not change as the number does.
+const FRAME_STATS_WIDEST: &str = "60 fps";
 
 /// Supersampling factor for the resvg-backed PNG export: the output is this many
 /// times the on-screen point size per axis, giving a crisp print/retina image.
@@ -60,17 +59,12 @@ pub struct App {
     /// export off-thread; otherwise it rasterizes synchronously (no receiver).
     #[cfg(all(feature = "svg-raster", feature = "threads"))]
     export_rx: Option<(std::sync::mpsc::Receiver<Option<Vec<u8>>>, String)>,
+    /// Smoothed egui CPU time per frame, in milliseconds.
     frame_stats_ms: Option<f64>,
-    frame_stats_last_report_s: f64,
+    /// The frame rate the top bar is currently showing, and when it last changed.
+    frame_stats_shown_fps: Option<u32>,
+    frame_stats_shown_at_s: f64,
 }
-
-#[cfg(target_arch = "wasm32")]
-fn report_frame_stats(frame_ms: f64) {
-    js_snuffler_frame_stats(frame_ms);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn report_frame_stats(_frame_ms: f64) {}
 
 fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
@@ -157,10 +151,16 @@ impl App {
             #[cfg(all(feature = "svg-raster", feature = "threads"))]
             export_rx: None,
             frame_stats_ms: None,
-            frame_stats_last_report_s: 0.0,
+            frame_stats_shown_fps: None,
+            frame_stats_shown_at_s: 0.0,
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the rounded rate is clamped to 0..=60 before the cast"
+    )]
     fn update_frame_stats(&mut self, ui: &egui::Ui, frame: &eframe::Frame) {
         let Some(cpu_usage) = frame.info().cpu_usage else {
             return;
@@ -176,13 +176,18 @@ impl App {
         self.frame_stats_ms = Some(avg_ms);
 
         let now_s = ui.input(|i| i.time);
-        if self.frame_stats_last_report_s > 0.0
-            && now_s - self.frame_stats_last_report_s < FRAME_STATS_REPORT_INTERVAL_S
+        if self.frame_stats_shown_fps.is_some()
+            && now_s - self.frame_stats_shown_at_s < FRAME_STATS_REFRESH_INTERVAL_S
         {
             return;
         }
-        self.frame_stats_last_report_s = now_s;
-        report_frame_stats(avg_ms);
+        self.frame_stats_shown_at_s = now_s;
+        // egui repaints on demand, so elapsed wall time between frames measures
+        // idleness, not capacity. What the CPU time per frame says is how many
+        // frames per second this machine could sustain — capped at the 60 Hz the
+        // display would grant it anyway.
+        let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 60.0 };
+        self.frame_stats_shown_fps = Some(fps.clamp(0.0, 60.0).round() as u32);
     }
 
     fn clear_annotation_caches(&mut self) {
@@ -696,45 +701,125 @@ impl App {
                     self.session.state.command.toggle();
                 }
                 ui.separator();
-                // The status line is the one place the app tells you that something
-                // finished, failed, or is still running, and none of it is tied to a
-                // widget you would be focused on — so it is announced as it changes.
-                let (status, urgency) = match self.session.bridge.status() {
-                    Status::Booting => {
-                        ui.spinner();
-                        (
-                            ui.label("Starting Python (Pyodide)…"),
-                            crate::a11y::Urgency::Polite,
-                        )
-                    }
-                    Status::Loading(message) => {
-                        ui.spinner();
-                        (ui.label(message), crate::a11y::Urgency::Polite)
-                    }
-                    Status::Ready => (
-                        ui.label(format!("Ready · {total_tracks} traces")),
-                        crate::a11y::Urgency::Polite,
-                    ),
-                    Status::Error(error) => (
-                        ui.colored_label(egui::Color32::RED, format!("Error: {error}")),
-                        crate::a11y::Urgency::Urgent,
-                    ),
-                };
-                crate::a11y::announce_changes(ctx, &status, urgency);
-                if self.session.state.picking.is_some() {
-                    ui.separator();
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0xE0, 0x50, 0x50),
-                        "◉ PICK (Esc to exit)",
-                    )
-                    .on_hover_text(
-                        "Batch picking: click/drag on a trace to place a pick; number/F keys \
-                         set kind/phase and carry to the next pick.",
-                    );
+                // Hand the right edge to the build stamp and frame rate before the
+                // status message is laid out: a message of any length then truncates
+                // within what is left, instead of pushing the readout off the row.
+                let right = Self::right_readout_width(ui);
+                let left = (ui.available_width() - right).max(0.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left, ui.available_height()),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| self.show_activity(ui, ctx, total_tracks),
+                );
+                if right > 0.0 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.show_frame_stats(ui);
+                        ui.separator();
+                        self.show_build_stamp(ui);
+                    });
                 }
-                self.show_cursor_time(ui, ctx);
             });
         });
+    }
+
+    /// What the app is doing right now: the status line, the picking badge, and
+    /// the time under the pointer.
+    fn show_activity(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, total_tracks: usize) {
+        // The status line is the one place the app tells you that something
+        // finished, failed, or is still running, and none of it is tied to a
+        // widget you would be focused on — so it is announced as it changes.
+        let (status, urgency) = match self.session.bridge.status() {
+            Status::Booting => {
+                ui.spinner();
+                (
+                    ui.label("Starting Python (Pyodide)…"),
+                    crate::a11y::Urgency::Polite,
+                )
+            }
+            Status::Loading(message) => {
+                ui.spinner();
+                (ui.label(message), crate::a11y::Urgency::Polite)
+            }
+            Status::Ready => (
+                ui.label(format!("Ready · {total_tracks} traces")),
+                crate::a11y::Urgency::Polite,
+            ),
+            Status::Error(error) => (
+                ui.colored_label(egui::Color32::RED, format!("Error: {error}")),
+                crate::a11y::Urgency::Urgent,
+            ),
+        };
+        crate::a11y::announce_changes(ctx, &status, urgency);
+        if self.session.state.picking.is_some() {
+            ui.separator();
+            ui.colored_label(
+                egui::Color32::from_rgb(0xE0, 0x50, 0x50),
+                "◉ PICK (Esc to exit)",
+            )
+            .on_hover_text(
+                "Batch picking: click/drag on a trace to place a pick; number/F keys \
+                 set kind/phase and carry to the next pick.",
+            );
+        }
+        self.show_cursor_time(ui, ctx);
+    }
+
+    /// Width to reserve at the right of the menu row for the build stamp and the
+    /// frame rate, or zero when the row is too narrow to spare it.
+    ///
+    /// Measured rather than assumed. Everything here moves — the menus are as wide
+    /// as the font makes them, the stamp is a date or `dev`, the window is any
+    /// size — so a fixed threshold (what the HTML badge this replaces used, as a
+    /// hardcoded `max-width` media query) is wrong for some combination of them.
+    fn right_readout_width(ui: &egui::Ui) -> f32 {
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        let text_width = |text: String| {
+            ui.painter()
+                .layout_no_wrap(text, font.clone(), egui::Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        let gap = ui.spacing().item_spacing.x;
+        // Reserved for the widest rate rather than the current one, so the status
+        // beside it does not resize when the first measurement lands or the number
+        // gains a digit. `6.0` is the width egui gives a vertical separator.
+        let width = text_width(crate::view::about::build_stamp().to_owned())
+            + text_width(FRAME_STATS_WIDEST.to_owned())
+            + 6.0
+            + gap * 4.0;
+        // Below this the menus and the status own the row: the readout is the part
+        // worth dropping, and dropping it is what keeps it from painting over them.
+        let status_min = ui.text_style_height(&egui::TextStyle::Body) * 8.0;
+        if ui.available_width() < width + status_min {
+            return 0.0;
+        }
+        width
+    }
+
+    /// The date of the published build (or `dev`), and the way into the About
+    /// window it is a one-line summary of.
+    fn show_build_stamp(&mut self, ui: &mut egui::Ui) {
+        let stamp = egui::RichText::new(crate::view::about::build_stamp())
+            .monospace()
+            .weak();
+        if ui
+            .add(egui::Label::new(stamp).sense(egui::Sense::click()))
+            .on_hover_text(crate::view::about::build_tooltip())
+            .clicked()
+        {
+            self.session.state.show_about = true;
+        }
+    }
+
+    fn show_frame_stats(&self, ui: &mut egui::Ui) {
+        let Some(fps) = self.frame_stats_shown_fps else {
+            return;
+        };
+        ui.label(egui::RichText::new(format!("{fps} fps")).monospace().weak())
+            .on_hover_text(
+                "Frames per second this machine could sustain, from egui's CPU time \
+                 per frame. Capped at 60; the view only redraws when something changes.",
+            );
     }
 
     fn show_cursor_time(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -938,6 +1023,14 @@ impl App {
 
     fn show_auxiliary_windows(&mut self, ctx: &egui::Context) {
         crate::view::help::show(ctx, &mut self.session.state);
+        // Only crosses the JS seam while the window is actually open.
+        let runtime = self
+            .session
+            .state
+            .show_about
+            .then(|| self.session.bridge.runtime_info())
+            .flatten();
+        crate::view::about::show(ctx, &mut self.session.state, runtime.as_ref());
         let downloads = crate::view::forms::download(ctx, &mut self.session.state);
         if let Some(request) = downloads.waveforms {
             self.session.bridge.download_waveforms(request);
