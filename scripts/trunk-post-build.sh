@@ -13,6 +13,27 @@ for dir in "$staging_dir" "$dist_dir"; do
     fi
 done
 
+# Copy only what changed, so a rebuild does not re-copy the big staged payloads
+# (the ONNX weights, the ~54 MB Pyodide runtime). This is `cp -u` by hand because
+# that flag is GNU-only: the BSD cp on a macOS dev box rejects it outright.
+copy_if_newer() {
+    local src="$1" dst="$2"
+
+    if [ ! -e "$dst" ] || [ "$src" -nt "$dst" ]; then
+        cp "$src" "$dst"
+    fi
+}
+
+# `cp -ru src/. dst/` by hand, for the same reason.
+copy_tree_if_newer() {
+    local src="$1" dst="$2" rel
+
+    while IFS= read -r -d '' rel; do
+        mkdir -p "$dst/$(dirname "$rel")"
+        copy_if_newer "$src/$rel" "$dst/$rel"
+    done < <(cd "$src" && find . -type f -print0)
+}
+
 # The core crate's wasm externs import bridge.js through a crate-escaping module
 # path (#[wasm_bindgen(module = "/../../web/gen/bridge.js")] in
 # crates/snuffler-web-core/src/bridge.rs). wasm-bindgen cannot embed a file from
@@ -23,7 +44,7 @@ stage_bridge_module() {
 
     for dir in "${build_dirs[@]}"; do
         mkdir -p "$dir/web/gen"
-        cp -u "$bridge" "$dir/web/gen/bridge.js"
+        copy_if_newer "$bridge" "$dir/web/gen/bridge.js"
     done
 
     echo "[bridge] wasm-bindgen module staged"
@@ -35,12 +56,13 @@ stage_ort_runtime() {
 
     for dir in "${build_dirs[@]}"; do
         mkdir -p "$dir/ort" "$dir/assets"
-        cp -u \
-            "$ort_dir/ort-wasm-simd-threaded.asyncify.wasm" \
-            "$ort_dir/ort-wasm-simd-threaded.jsep.wasm" \
-            "$ort_dir/ort-wasm-simd-threaded.wasm" \
-            "$dir/ort/"
-        cp -u "$manifest" "$dir/assets/seisbench_models.json"
+        for runtime in \
+            ort-wasm-simd-threaded.asyncify.wasm \
+            ort-wasm-simd-threaded.jsep.wasm \
+            ort-wasm-simd-threaded.wasm; do
+            copy_if_newer "$ort_dir/$runtime" "$dir/ort/$runtime"
+        done
+        copy_if_newer "$manifest" "$dir/assets/seisbench_models.json"
     done
 
     echo "[ort] runtime and SeisBench manifest staged"
@@ -60,7 +82,9 @@ stage_seisbench_models() {
 
     for dir in "${build_dirs[@]}"; do
         mkdir -p "$dir/assets/models"
-        cp -u "$src"/*.onnx "$dir/assets/models/"
+        for model in "$src"/*.onnx; do
+            copy_if_newer "$model" "$dir/assets/models/$(basename "$model")"
+        done
     done
 
     echo "[seisbench] model weights staged"
@@ -78,22 +102,70 @@ optimize_app_wasm() {
         optimized+=("$(basename "$wasm")")
     done
 
-    if [ -d "$dist_dir" ]; then
+    # The array guard is for bash 3.2 (what macOS ships), where expanding an
+    # empty array under `set -u` is an error rather than nothing.
+    if [ -d "$dist_dir" ] && [ "${#optimized[@]}" -gt 0 ]; then
         for name in "${optimized[@]}"; do
             cp "$staging_dir/$name" "$dist_dir/$name"
         done
     fi
 }
 
+# Point wasm-bindgen-rayon's worker helper at the real (hashed) main JS module,
+# and give the helper itself a per-build name.
+#
+# wasm-bindgen emits the helper at a path that is STABLE across builds, while the
+# rewrite below makes its contents build-SPECIFIC — a stable url serving changing
+# bytes, which is exactly what an HTTP cache is entitled to get wrong. GitHub Pages
+# serves everything with its own max-age and gives no way to override the headers,
+# so for a while after each deploy a returning browser can pair a cached helper
+# with a freshly hashed module. The result is worse than stale: wasm-bindgen-rayon
+# hands each worker the `WebAssembly.Module` already compiled on the main thread,
+# so the worker links current wasm against a previous build's JS shim and the whole
+# pool dies with a LinkError naming whichever import was added most recently.
+# Renaming the helper per build keeps its url changing in step with its contents,
+# which is the only thing a cache can be expected to honour.
+#
+# Rewriting the already-hashed main module means its name no longer matches its
+# bytes, so this requires the --no-sri builds (see mise.toml).
 patch_rayon_worker_import() {
     for dir in "${build_dirs[@]}"; do
-        local main
+        local main hash
         main=$(basename "$dir"/snuffler-web-*.js 2>/dev/null) || continue
+        # snuffler-web-egui-<hash>.js -> <hash>
+        hash=${main##*-}
+        hash=${hash%.js}
 
         for worker_helpers in "$dir"/snippets/wasm-bindgen-rayon-*/src/workerHelpers.js; do
             [ -f "$worker_helpers" ] || continue
-            sed -i "s#import('../../..')#import('../../../$main')#" "$worker_helpers"
-            echo "[rayon] patched worker module import -> $main"
+            local snippet_dir helper
+            snippet_dir=$(dirname "$worker_helpers")
+            helper="workerHelpers-$hash.js"
+
+            # Drop earlier builds' helpers so dist does not accumulate them.
+            rm -f "$snippet_dir"/workerHelpers-*.js
+
+            # Edit through a temp file: `sed -i` takes no argument on GNU sed but
+            # requires a (possibly empty) backup suffix on the BSD sed shipped
+            # with macOS, so no single spelling works on both. The helper spawns
+            # itself by name, so that reference has to move with the file.
+            sed -e "s#import('../../..')#import('../../../$main')#" \
+                -e "s#new URL('./workerHelpers.js'#new URL('./$helper'#" \
+                "$worker_helpers" > "$snippet_dir/$helper"
+            rm -f "$worker_helpers"
+
+            # Both the main module (which imports the snippet) and index.html (which
+            # preloads it) name the helper, and a missed one is not harmless: trunk
+            # serve answers unknown paths with index.html, so the stale name resolves
+            # to an HTML document that the browser then refuses as a module script.
+            for referrer in "$dir/$main" "$dir/index.html"; do
+                [ -f "$referrer" ] || continue
+                sed "s#src/workerHelpers.js#src/$helper#g" \
+                    "$referrer" > "$referrer.patched"
+                mv "$referrer.patched" "$referrer"
+            done
+
+            echo "[rayon] worker helper -> $helper (imports $main)"
         done
     done
 }
@@ -116,13 +188,13 @@ stage_threaded_pyodide() {
     local src="$repo_dir/docker/pyodide-mt/served"
 
     if [ ! -d "$src" ]; then
-        echo "[py-mt] not staged (run docker/pyodide-mt/stage-web.sh) - single-threaded CDN only"
+        echo "[py-mt] MISSING - the app will hang at boot; build it with docker/pyodide-mt/build-all.sh"
         return
     fi
 
     for dir in "${build_dirs[@]}"; do
         mkdir -p "$dir/py-mt"
-        cp -ru "$src/." "$dir/py-mt/"
+        copy_tree_if_newer "$src" "$dir/py-mt"
     done
 
     echo "[py-mt] threaded runtime staged"

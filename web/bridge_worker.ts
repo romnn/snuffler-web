@@ -730,9 +730,8 @@ async function boot() {
       const t0 = performance.now();
       prog(0.22, "Downloading Python runtime…");
       await prefetchPyodideRuntime();
-      // Pyodide 314 requires a module worker on both paths (it rejects classic
-      // workers), so import the ESM build from whichever base is active — our
-      // local py-mt/ when threaded, else the stock 314 CDN.
+      // Pyodide 314 rejects classic workers, so this is the ESM build, imported
+      // from the only base there is: our locally served py-mt/.
       const { loadPyodide } = await import(PYODIDE_BASE + "pyodide.mjs");
       py = await withFetchProgress(0.43, 0.45, "Starting Python runtime…", postBootProgress, () =>
         loadPyodide({ indexURL: PYODIDE_BASE })

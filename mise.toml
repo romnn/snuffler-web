@@ -60,6 +60,16 @@ PYROCKO_REF = "64ae99fb2c65fbd32836d83d00de05cf405a4ff9"
 description = "Clone pyrocko at the pinned commit into sources/ (gitignored)"
 run = "./pybuild/fetch-pyrocko.sh"
 
+# trunk canonicalizes every `[watch] ignore` path when the watcher starts and
+# aborts if one is missing — so the serve tasks depend on this. (`trunk build`
+# never resolves the list, which is why CI does not hit it.) The one ignored dir
+# that is not guaranteed to exist is docker/pyodide-mt/.work: it is the Pyodide
+# builder's scratch tree, so it only appears once build-all.sh has run locally.
+[tasks.dev-dirs]
+description = "Create the gitignored scratch dir trunk's watcher expects to exist"
+hide = true
+run = "mkdir -p docker/pyodide-mt/.work"
+
 [tasks.build-pyodide]
 description = "Build the custom threaded Pyodide 314 (py-mt; BUILD_CDN=1 also builds the single-threaded wheel)"
 depends = ["fetch-pyrocko"]
@@ -76,7 +86,7 @@ run = "./docker/pyodide-mt/build-all.sh"
 # for that snippet. SRI on a same-origin, self-hosted bundle adds little anyway.
 [tasks.serve]
 description = "Run the web app (trunk serve) — threaded (off-main-thread PNG export)"
-depends = ["fetch-pyrocko"]
+depends = ["fetch-pyrocko", "dev-dirs"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 env.SNUFFLER_EMBED_DATA = "1"
@@ -98,7 +108,7 @@ run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --feat
 # fetches through the local snuffler proxy when running on localhost.
 [tasks.serve-lean]
 description = "Run the web app without bundled SeisBench model weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
-depends = ["fetch-pyrocko"]
+depends = ["fetch-pyrocko", "dev-dirs"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
 env.NO_COLOR = "true"

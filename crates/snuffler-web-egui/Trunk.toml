@@ -17,9 +17,23 @@ dist = "../../dist"
 # Port 17683: clear of the crowded dev range (3000-9100), below Linux's ephemeral
 # outbound range (32768-60999) so it won't clash with OS-assigned ports either,
 # not a registered service port — and mnemonic: 7683 = "SNUF" on a phone keypad.
+# `Cache-Control: no-cache` means "always revalidate", not "never store": assets
+# stay in the browser cache and a reload turns into cheap conditional requests
+# answered with 304, which matters for the ~54 MB py-mt runtime.
+#
+# Without it, several assets served here have a STABLE url but build-specific
+# contents — `snippets/.../workerHelpers.js` has the hashed wasm module name baked
+# into it by scripts/trunk-post-build.sh, and bridge_worker.js, ort_worker.js and
+# bridge.py are regenerated in place. Trunk sends no cache validators of its own,
+# so the browser applies heuristic freshness and can reuse an old copy after a
+# rebuild. That is not merely stale, it is inconsistent: wasm-bindgen-rayon hands
+# each worker the WebAssembly.Module already compiled on the main thread, so a
+# cached workerHelpers.js pointing at the previous build makes a worker link fresh
+# wasm against a stale JS shim, and the pool dies with a LinkError naming whatever
+# import was added last. Only affects `trunk serve`; the Pages build is unaffected.
 [serve]
 port = 17683
-headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "credentialless" }
+headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "credentialless", "Cache-Control" = "no-cache" }
 
 # The pre_build hooks below GENERATE code into the source tree (buf generate ->
 # web/proto, bun build -> web/gen). trunk watches the project for changes, so
@@ -28,8 +42,34 @@ headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder
 # loading. Ignore only the generated output dirs; the .ts/.proto SOURCES
 # (web/bridge*.ts / web/ort_worker.ts, proto/) stay watched, so real edits still
 # rebuild + regenerate.
+#
+# docker/pyodide-mt/.work is the Pyodide builder's scratch tree: it churns for
+# hours while build-all.sh runs, which would otherwise rebuild the app on every
+# intermediate file it writes. Its output (served/) stays watched, so the
+# post_build hook re-stages py-mt/ once the build lands.
 [watch]
-ignore = ["../../web/gen", "../../web/proto", "../../scratchpad"]
+# Trunk's default watch covers only this crate's directory (plus asset inputs),
+# so edits in the sibling workspace crates the wasm is built from — verified by
+# touching accesskit-dom with the server healthy — never triggered a rebuild and
+# the server kept serving stale wasm. List the app's actual inputs explicitly.
+watch = [
+    ".",
+    "../accesskit-dom",
+    "../egui-a11y",
+    "../snuffler-web-core",
+    "../snuffler-web-render",
+    "../../web",
+    "../../proto",
+    # Dependency changes (e.g. bumping the egui fork pin) rebuild too; the lock
+    # only changes on resolution changes, so this does not churn on plain builds.
+    "../../Cargo.toml",
+    "../../Cargo.lock",
+]
+ignore = [
+    "../../web/gen",
+    "../../web/proto",
+    "../../docker/pyodide-mt/.work",
+]
 
 # Generate the protobuf code (web/proto) and bundle the TypeScript bridge glue
 # with bun (pinned in mise) into self-contained ESM: web/bridge.ts ->
@@ -74,11 +114,12 @@ command_arguments = [
 # trip Trunk's subresource-integrity hash for the snippet.
 #
 # The threaded Pyodide 314 runtime + wheels are staged into py-mt/ (loaded by
-# web/bridge_worker.js on the ?threads=1 / cross-origin-isolated path). This is a
+# web/bridge_worker.js, which has no other runtime to fall back to). This is a
 # post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a
-# gitignored build artifact (docker/pyodide-mt/stage-web.sh): absent on a fresh
-# checkout, where the app correctly falls back to the single-threaded CDN runtime.
-# `cp -u` keeps rebuilds cheap by copying only changed files.
+# gitignored build artifact (docker/pyodide-mt/stage-web.sh) and so is absent on a
+# fresh checkout — where the build still succeeds but the app cannot boot past
+# "Downloading Python runtime…" until docker/pyodide-mt/build-all.sh has run. The
+# copy is skipped per file when unchanged, to keep rebuilds cheap.
 [[hooks]]
 stage = "post_build"
 command = "bash"
