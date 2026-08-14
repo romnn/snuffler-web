@@ -33,5 +33,13 @@ for _extra in (ROOT / "web", ROOT / "web" / "proto", HERE):
         sys.path.insert(0, str(_extra))
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
-if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+# `task` passes the terminal through, so isatty covers the normal run. FORCE_COLOR is the
+# escape hatch for where it lies: piping into `less -R`, or a CI log viewer that renders
+# ANSI itself. NO_COLOR and TERM=dumb still win over it — an explicit "off" should stay off.
+_forced = os.environ.get("FORCE_COLOR", "") not in ("", "0")
+if (
+    os.environ.get("NO_COLOR")
+    or os.environ.get("TERM") == "dumb"
+    or (not _forced and not sys.stdout.isatty())
+):
     GREEN = RED = YELLOW = DIM = RESET = ""
