@@ -16,7 +16,11 @@
 # wasm app, node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — the
 # Rust toolchain itself is pinned by rust-toolchain.toml.
 [tools]
-python = "3.12"          # host Python for the uvx-run tooling (ruff, mypy)
+# Host Python for the uvx-run tooling (ruff, mypy). 3.14 matches the wasm
+# interpreter (pyodide-lock's info.python), which docker/pyodide-mt/precompile.sh
+# needs: bytecode magic numbers are fixed per minor version, so only a 3.14 host
+# can emit .pyc the browser's interpreter accepts.
+python = "3.14"
 node = "24"
 bun = "latest"           # bunx prettier (JS/markdown formatting)
 uv = "latest"           # uv + uvx; uvx runs ruff/mypy + the mypy-protobuf Buf plugin

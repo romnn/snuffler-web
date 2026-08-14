@@ -1,7 +1,9 @@
 [tool.mypy]
-python_version = "3.12"
+# The interpreter bridge.py actually runs on: the wasm CPython in our Pyodide
+# build (pyodide-lock's info.python), not the host that runs mypy.
+python_version = "3.14"
 strict = true
-files = ["web/bridge.py", "web/seisbench_infer.py"]
+files = ["web/bridge.py", "web/bootstrap.py", "web/seisbench_infer.py"]
 mypy_path = ["web/proto", "typings"]
 exclude = ["^web/proto/", "^pybuild/build/", "^sources/", "^target/"]
 
