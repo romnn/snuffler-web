@@ -379,6 +379,21 @@ the frequency limits come from `data_len`. Worth remembering that an allowlist
 entry masks every other difference in the checks it claims, so removing one is
 how the next one surfaces.
 
+**Location grouping**, found by reading both sides rather than by a failing check,
+and the one case where the corpus was the thing at fault. Snuffler's two "Grouped
+by Location" subsorts gather on three of the four code elements, so every location
+of a channel lands on one row; the port mapped them to four-element orderings,
+making them duplicates of their ungrouped twins. No dataset had a station
+recording on two location codes, so nothing could see it. Fixed to match, which
+meant following what a merged row implies: the location drops out of the row's
+label and becomes snuffler's own `track_patterns` wildcard `*` in its identity
+(which is what keeps markers matched to the row when their location has no data
+in the window), colour moves to the span (which is why snuffler colours by
+location in exactly the modes that group over it), and the amplitude scale moves,
+because snuffler projects per (track, scaling key) and two sensors at one site do
+not share a scale. The `multiloc` dataset makes the case reproducible, with its
+second sensor an order of magnitude quieter so a row-wide scale would flatten it.
+
 **Genuine divergences**, pinned so they cannot change unnoticed: the demean extent
 (the whole-trace processed-trace cache is a real constraint, though whether the
 port chose it or inherited it is unrecorded), the 3D-distance vertical term

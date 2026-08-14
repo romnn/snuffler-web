@@ -145,6 +145,9 @@ fn maybe_log_paint_perf(
     );
 }
 
+/// Render the current wiggle/waterfall view to a standalone SVG string at the
+/// given pixel size, reusing the exact [`paint`] geometry (vector traces/axes,
+/// the waterfall heatmap embedded as a PNG).
 pub fn render_svg(
     ctx: &egui::Context,
     state: &AppState,

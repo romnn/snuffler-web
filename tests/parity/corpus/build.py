@@ -312,10 +312,46 @@ def build_oddrate(out: Path) -> List[Path]:
     return [path]
 
 
+def build_multiloc(out: Path) -> List[Path]:
+    """Co-located sensors: stations recording the same ground motion twice.
+
+    The case snuffler's "Grouped by Location" subsorts exist for — a surface and a
+    borehole instrument at one site, or a broadband beside a strong-motion sensor —
+    and the one every other dataset here misses, because they all carry a single
+    location code and grouping over it changes nothing.
+
+    Two details are load-bearing. The second sensor of each pair is an order of
+    magnitude quieter, so a row that scaled its traces together rather than each on
+    its own would flatten one of them; and CO03 has a single location, so the same
+    stack exercises a grouped row that groups nothing.
+    """
+    deltat = 0.05
+    nsamples = 6_000  # 300 s at 20 Hz
+    specs = [
+        # station, location, amplitude scale, frequency
+        ("CO01", "00", 1.0, 1.3),
+        ("CO01", "10", 0.08, 1.3),
+        ("CO02", "00", 1.0, 2.1),
+        ("CO02", "20", 0.05, 2.1),
+        ("CO03", "", 1.0, 0.7),
+    ]
+    traces = []
+    for sta, loc, amplitude, freq in specs:
+        for index, cha in enumerate(("BHE", "BHN", "BHZ")):
+            segment = _segment(("XL", sta, loc, cha), T0, deltat, nsamples, freq, 0.6 * index)
+            segment.ydata = segment.ydata * amplitude
+            traces.append(segment)
+
+    path = out / "multiloc.mseed"
+    io.save(traces, str(path))
+    return [path]
+
+
 BUILDERS: Dict[str, Callable[[Path], List[Path]]] = {
     "demo": build_demo,
     "gaplap": build_gaplap,
     "multi": build_multi,
+    "multiloc": build_multiloc,
     "oddrate": build_oddrate,
 }
 

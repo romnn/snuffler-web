@@ -71,6 +71,11 @@ def _nslc(ids: NslcId) -> str:
     return ".".join(ids)
 
 
+def _row(members: Sequence[NslcId]) -> str:
+    """One track's membership, with a ``+`` between channels sharing the row."""
+    return "+".join(_nslc(nslc) for nslc in members) or "(empty)"
+
+
 def _by_nslc(segments: Sequence[Any]) -> Dict[NslcId, List[Any]]:
     out: Dict[NslcId, List[Any]] = {}
     for segment in segments:
@@ -298,8 +303,12 @@ def compare_tracks(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> Lis
     and a track with nothing in it is not a layout difference.
     """
     qt_populated = [track for track in qt.tracks if track.nslc_ids]
-    qt_sequence = [nslc for track in qt_populated for nslc in track.nslc_ids]
-    web_sequence = list(web.track_order)
+    # Membership per row, not one flat list of channels: a row can legitimately
+    # carry several — the segments of a gapped channel, or every location of a
+    # channel under the "Grouped by Location" subsorts — and flattening would call
+    # a stack of two rows carrying two channels each the same as four rows of one.
+    qt_sequence = [sorted(track.nslc_ids) for track in qt_populated]
+    web_sequence = list(web.track_members)
 
     findings = [
         Finding(
@@ -333,12 +342,12 @@ def compare_tracks(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> Lis
                 ok=False,
                 detail=(
                     f"first difference at position {first}: "
-                    f"Qt {_nslc(qt_sequence[first]) if first < len(qt_sequence) else '-'} "
-                    f"vs web {_nslc(web_sequence[first]) if first < len(web_sequence) else '-'}"
+                    f"Qt {_row(qt_sequence[first]) if first < len(qt_sequence) else '-'} "
+                    f"vs web {_row(web_sequence[first]) if first < len(web_sequence) else '-'}"
                 ),
                 metrics={
-                    "qt_head": [_nslc(i) for i in qt_sequence[:6]],
-                    "web_head": [_nslc(i) for i in web_sequence[:6]],
+                    "qt_head": [_row(i) for i in qt_sequence[:6]],
+                    "web_head": [_row(i) for i in web_sequence[:6]],
                 },
             )
         )
@@ -350,7 +359,11 @@ def compare_scales(
     web: web_oracle.WebSnapshot,
     scenario: Scenario,
 ) -> List[Finding]:
-    """Compare the per-track y range each side is about to draw against.
+    """Compare the y range each side is about to draw against, per span.
+
+    Per span rather than per track because snuffler projects per (track, scaling
+    key): two sensors sharing a location-grouped row are each drawn against their
+    own scale, so a per-row comparison could only check one of them.
 
     The Qt value is not recomputed here: it is the ``(ymin, ymax, yinc)`` its own
     ``AutoScaler`` produced during the paint, looked up by the data range the
@@ -360,7 +373,7 @@ def compare_scales(
     policy = scenario.compare
     findings: List[Finding] = []
 
-    for index, nslc in enumerate(web.track_order):
+    for nslc, (web_ymin, web_ymax, _web_yscale) in web.span_scales:
         subject = _nslc(nslc)
         # `None` is the scaling key of the "Common Scale" group, so absence needs a
         # sentinel of its own.
@@ -389,7 +402,6 @@ def compare_scales(
             )
             continue
         qt_ymin, qt_ymax, _yinc = qt.scales[lookup]
-        web_ymin, web_ymax, _yscale = web.track_scales[index]
         span = max(abs(qt_ymax - qt_ymin), 1e-300)
         dmin = abs(qt_ymin - web_ymin)
         dmax = abs(qt_ymax - web_ymax)

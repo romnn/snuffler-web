@@ -62,30 +62,44 @@ message ViewSpan {
   uint64 count = 3;
   // Where this run starts in the flat `ys` payload.
   uint64 offset = 4;
+  // Location code of the trace this run came from, which is the track's own for
+  // every subsort except the two that group over location — there a row carries
+  // several, and this is what tells them apart when colouring.
+  string loc = 5;
+  // The y range and scale this run is drawn against. Per span rather than per
+  // track because snuffler projects per (track, scaling key): two sensors sharing
+  // a location-grouped row keep their own amplitude scales, and a waterfall strip
+  // keeps its own colour range.
+  float ymin = 6;
+  float ymax = 7;
+  float ymean = 8;
+  float yscale = 9;
 }
 
 message ViewTrack {
   string net = 1;
   string sta = 2;
+  // '*' when the row groups over location — the subsorts snuffler words as
+  // "Grouped by Location" put every location of a channel on one row, so this
+  // holds the wildcard snuffler itself writes into `track_patterns` and the
+  // concrete locations live on the spans. Markers match a row through these four
+  // fields, which is why the merged element is a pattern rather than empty:
+  // empty already means an empty location code.
   string loc = 3;
   string cha = 4;
   string label = 5;
-  float ymin = 6;
-  float ymax = 7;
-  float ymean = 8;
-  float yscale = 9;
   // Waterfall frequency bins per column, shared by every span of the track. The
   // time bins are per span: span.count / nf.
-  uint64 nf = 10;
-  double fmax = 11;
+  uint64 nf = 6;
+  double fmax = 7;
   // What the active sort ordered this track by, when that is not evident from
   // the label: the distance in kilometres for a distance sort, or a note that
   // the station has no coordinates and therefore could not be placed.
   // Empty for name sorting.
-  string sort_annotation = 12;
+  string sort_annotation = 8;
   // The runs of samples to draw on this track, in time order: one per segment of
   // the channel that falls in the window, in either view mode.
-  repeated ViewSpan spans = 13;
+  repeated ViewSpan spans = 9;
 }
 
 message ViewMeta {

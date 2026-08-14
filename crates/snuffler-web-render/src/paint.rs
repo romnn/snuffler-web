@@ -6,6 +6,8 @@
     reason = "rendering maps between pixel, time, sample, and track coordinates"
 )]
 
+use std::collections::HashMap;
+
 use ecolor::Color32;
 use emath::{Align2, Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
@@ -19,34 +21,59 @@ use crate::palette::{Palette, Theme};
 
 const LABEL_PT: f32 = 12.5;
 const AXIS_PT: f32 = 12.5;
+/// Size of the per-track y-range annotations ("Show scale ranges").
+const SCALE_PT: f32 = 10.0;
 
 /// The coloring key snuffler pairs with each subsort (the sorting `menudef` in
 /// `pile_viewer.py`): location for NSLC and the grouped-by-location modes,
 /// channel for NSCL/SNCL/LNSC, and the whole net+sta+loc for CNSL.
+///
+/// The location is the *span's*, not the track's. Under the grouped-by-location
+/// subsorts a row carries every location of its channel, and colour is the only
+/// thing telling them apart — which is why snuffler colours by location in exactly
+/// the modes that group over it.
+///
 /// An empty key (single-location data) deliberately falls back to the track
 /// label so the Color lines theme stays varied where snuffler would paint every
 /// trace alike — a signed-off prettiness choice, see `color-traces-theming` in
-/// `tests/parity/known_gaps.toml`.
-fn color_key(track: &ViewTrack, subsort: Subsort) -> String {
+/// `tests/parity/known_gaps.toml`. The `"*"` a span-less grouped row offers as
+/// its location is no key either, so it falls back the same way.
+fn color_key(track: &ViewTrack, loc: &str, subsort: Subsort) -> String {
     let key = match subsort {
-        Subsort::Nslc | Subsort::NscGroupL | Subsort::SncGroupL => track.loc.clone(),
+        Subsort::Nslc | Subsort::NscGroupL | Subsort::SncGroupL => loc.to_owned(),
         Subsort::Nscl | Subsort::Sncl | Subsort::Lnsc => track.cha.clone(),
-        Subsort::Cnsl => format!("{}.{}.{}", track.net, track.sta, track.loc),
+        Subsort::Cnsl => format!("{}.{}.{}", track.net, track.sta, loc),
     };
-    if key.is_empty() {
+    if key.is_empty() || key == "*" {
         track.label.clone()
     } else {
         key
     }
 }
 
-/// One stroke color per painted track, assigned the way snuffler assigns its
-/// Tango colors: distinct coloring keys sorted, then numbered into the palette
-/// in that order (`color_lookup` over the sorted `pile.gather_keys`).
-/// Only the assignment mirrors Qt; the palette is deliberately this frontend's
-/// own, tuned to its themes. Numbering runs over the painted tracks rather than
-/// the whole pile, which only shows when track paging hides a key entirely.
-fn track_stroke_colors(visible: &[ViewTrack], subsort: Subsort) -> Vec<Color32> {
+/// The coloring keys one row contributes to the palette numbering: one per
+/// painted span, since a row can carry traces with different keys, or the row's
+/// own identity's when it has no spans — so the numbering does not shift when a
+/// track happens to have no data in the window.
+fn track_color_keys(track: &ViewTrack, subsort: Subsort) -> Vec<String> {
+    if track.spans.is_empty() {
+        vec![color_key(track, &track.loc, subsort)]
+    } else {
+        track
+            .spans
+            .iter()
+            .map(|span| color_key(track, &span.loc, subsort))
+            .collect()
+    }
+}
+
+/// Stroke color per coloring key, assigned the way snuffler assigns its Tango
+/// colors: the distinct keys sorted, then numbered into the palette in that
+/// order (`color_lookup` over the sorted `pile.gather_keys`). Only the
+/// assignment mirrors Qt; the palette is deliberately this frontend's own, tuned
+/// to its themes. Numbering runs over the painted tracks' keys rather than the
+/// whole pile, which only shows when track paging hides a key entirely.
+fn stroke_color_map(visible: &[ViewTrack], subsort: Subsort) -> HashMap<String, Color32> {
     const PALETTE: [(u8, u8, u8); 7] = [
         (0xCC, 0x4A, 0x4A),
         (0x3A, 0x86, 0xC8),
@@ -56,23 +83,22 @@ fn track_stroke_colors(visible: &[ViewTrack], subsort: Subsort) -> Vec<Color32> 
         (0x2F, 0xA8, 0xA8),
         (0xC8, 0x5F, 0x9C),
     ];
-    let keys: Vec<String> = visible
+    let mut keys: Vec<String> = visible
         .iter()
-        .map(|track| color_key(track, subsort))
+        .flat_map(|track| track_color_keys(track, subsort))
         .collect();
-    let mut sorted = keys.clone();
-    sorted.sort();
-    sorted.dedup();
-    keys.iter()
-        .map(|key| {
-            // The key came out of the same list `sorted` was built from, so the
-            // search cannot miss; 0 is a defensive fallback, not a code path.
-            let index = sorted.binary_search(key).unwrap_or(0);
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            // With the modulo the palette fetch cannot miss; the grey is a
+            // defensive fallback, not a code path.
             let (red, green, blue) = PALETTE
                 .get(index % PALETTE.len())
                 .copied()
                 .unwrap_or((0x88, 0x88, 0x88));
-            Color32::from_rgb(red, green, blue)
+            (key, Color32::from_rgb(red, green, blue))
         })
         .collect()
 }
@@ -120,6 +146,24 @@ fn theme_uses_row_tints(theme: WiggleTheme) -> bool {
 
 fn theme_uses_colored_strokes(theme: WiggleTheme) -> bool {
     matches!(theme, WiggleTheme::ColorLines)
+}
+
+/// The distinct amplitude scales a row draws against, in span order: one for most
+/// rows, several only where a location-grouped row carries traces scaled
+/// differently. Zero lines and scale annotations are drawn per scale, not per
+/// span — the segments of one gapped channel share a scale and must not draw it
+/// twice.
+fn distinct_span_scales(spans: &[ViewSpan]) -> Vec<&ViewSpan> {
+    let mut seen: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let mut distinct = Vec::new();
+    for span in spans {
+        let key = (span.ymin, span.ymax, span.ymean, span.yscale);
+        if !seen.contains(&key) {
+            seen.push(key);
+            distinct.push(span);
+        }
+    }
+    distinct
 }
 
 /// Time bounds of one run of samples. A track holds one of these per segment of its
@@ -212,15 +256,15 @@ pub fn paint(
     let time_margin = f64::from(point_margin / rect.width().max(1.0)) * window;
     let in_x = |x: f32| x >= rect.left() - point_margin && x <= rect.right() + point_margin;
 
-    // One stroke color per visible track; the row tints and the colored strokes
-    // both read it, indexed by the same loop position.
+    // Stroke colors by coloring key; the row tints and the colored strokes both
+    // look their key up here.
     let stroke_colors = if state.color_traces
         && (theme_uses_row_tints(state.wiggle_theme)
             || theme_uses_colored_strokes(state.wiggle_theme))
     {
-        track_stroke_colors(visible, state.subsort)
+        stroke_color_map(visible, state.subsort)
     } else {
-        Vec::new()
+        HashMap::new()
     };
 
     target.fill_rect(rect, 0.0, pal.bg);
@@ -252,9 +296,19 @@ pub fn paint(
     } else if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
         target.push_clip(track_area);
         // This branch's guard is part of the `stroke_colors` compute condition, so
-        // there is exactly one color per visible track here.
-        for (k, color) in stroke_colors.iter().enumerate() {
+        // the map is populated here and a row's key cannot miss it.
+        for (k, t) in visible.iter().enumerate() {
             let top = top0 + k as f32 * row_h;
+            // The row tint is one colour for the whole row, so it takes the
+            // first trace's key — this frontend's own theme, not something
+            // snuffler has an opinion about.
+            let key = t.spans.first().map_or_else(
+                || color_key(t, &t.loc, state.subsort),
+                |span| color_key(t, &span.loc, state.subsort),
+            );
+            let Some(color) = stroke_colors.get(&key) else {
+                continue;
+            };
             let fill = row_tint(*color, theme, state.wiggle_theme);
             target.fill_rect(
                 Rect::from_min_max(
@@ -342,9 +396,6 @@ pub fn paint(
                 target.waterfall(r, span.offset);
             }
         } else {
-            // Display scale (units→pixels) comes entirely from pyrocko (yscale).
-            let half = t.yscale.max(1e-12);
-            let amp = row_h * 0.45 * state.gain / half;
             // "Clip traces" keeps each trace inside its own box; off lets it spill.
             let (cl_top, cl_bot) = if state.clip_traces {
                 (top + 1.0, bot - 1.0)
@@ -355,28 +406,55 @@ pub fn paint(
                 pos2(track_area.left(), cl_top),
                 pos2(track_area.right(), cl_bot),
             ));
-            let y_of = |v: f32| mid - (v - t.ymean) * amp;
+            // Display scale (units→pixels) comes entirely from pyrocko (yscale), and
+            // is per span: snuffler projects per (track, scaling key), so two sensors
+            // sharing a location-grouped row each keep their own amplitude scale.
+            let y_of = |span: &ViewSpan, v: f32| {
+                let half = span.yscale.max(1e-12);
+                let amp = row_h * 0.45 * state.gain / half;
+                mid - (v - span.ymean) * amp
+            };
+
+            // A row with no data in the window has no entries here, having no
+            // projection to draw zero lines or scale annotations against.
+            let scale_spans = if state.show_zero_lines || state.show_scale_ranges {
+                distinct_span_scales(&t.spans)
+            } else {
+                Vec::new()
+            };
 
             if state.show_zero_lines {
-                let yz = y_of(0.0);
-                target.line(
-                    pos2(track_area.left(), yz),
-                    pos2(track_area.right(), yz),
-                    1.0,
-                    pal.zero,
-                );
+                for &span in &scale_spans {
+                    let yz = y_of(span, 0.0);
+                    // Only inside this row — snuffler's own guard (`vmin <= v <=
+                    // vmax`): a scale whose zero level lies beyond the row's box
+                    // draws no line rather than a stray one across a neighbour.
+                    if yz < top || yz > bot {
+                        continue;
+                    }
+                    target.line(
+                        pos2(track_area.left(), yz),
+                        pos2(track_area.right(), yz),
+                        1.0,
+                        pal.zero,
+                    );
+                }
             }
 
-            let trace_col = if state.color_traces && theme_uses_colored_strokes(state.wiggle_theme)
-            {
-                stroke_colors.get(k).copied().unwrap_or(pal.trace)
-            } else {
-                pal.trace
-            };
+            let colored_strokes =
+                state.color_traces && theme_uses_colored_strokes(state.wiggle_theme);
             // One polyline per span, never one across them: the segments of a
             // gapped channel share a row but must not be joined by a line drawn
             // through data that is not there.
             for span in &t.spans {
+                let trace_col = if colored_strokes {
+                    stroke_colors
+                        .get(&color_key(t, &span.loc, state.subsort))
+                        .copied()
+                        .unwrap_or(pal.trace)
+                } else {
+                    pal.trace
+                };
                 if span.dt > 0.0 {
                     let samples = view.samples(span);
                     if samples.len() >= 2 {
@@ -396,7 +474,7 @@ pub fn paint(
                             .filter_map(|(i, &v)| {
                                 let t_abs = base_abs + (start_idx + i) as f64 * span.dt;
                                 let x = x_of(t_abs);
-                                in_x(x).then(|| pos2(x, y_of(v)))
+                                in_x(x).then(|| pos2(x, y_of(span, v)))
                             })
                             .collect();
                         if points.len() >= 2 {
@@ -407,7 +485,12 @@ pub fn paint(
                         let half = 0.5 * span.dt;
                         let x0 = x_of(t_abs - half);
                         let x1 = x_of(t_abs + half);
-                        target.line(pos2(x0, y_of(v)), pos2(x1, y_of(v)), 1.0, trace_col);
+                        target.line(
+                            pos2(x0, y_of(span, v)),
+                            pos2(x1, y_of(span, v)),
+                            1.0,
+                            trace_col,
+                        );
                     }
                 } else if span.dt == 0.0 {
                     let points_data = view.points(span, 2);
@@ -422,7 +505,7 @@ pub fn paint(
                             .filter_map(|pair| match pair {
                                 [px, py] => {
                                     let x = x_of(data_tmin + span.t0_rel + f64::from(*px));
-                                    in_x(x).then(|| pos2(x, y_of(*py)))
+                                    in_x(x).then(|| pos2(x, y_of(span, *py)))
                                 }
                                 _ => None,
                             })
@@ -441,7 +524,12 @@ pub fn paint(
                         if !in_x(x) {
                             continue;
                         }
-                        target.line(pos2(x, y_of(*ylo)), pos2(x, y_of(*yhi)), 1.0, trace_col);
+                        target.line(
+                            pos2(x, y_of(span, *ylo)),
+                            pos2(x, y_of(span, *yhi)),
+                            1.0,
+                            trace_col,
+                        );
                     }
                 }
             }
@@ -452,20 +540,36 @@ pub fn paint(
                 target.line(pos2(xa, top + 3.0), pos2(xa, bot - 3.0), 1.0, pal.sep);
             }
             if state.show_scale_ranges {
-                target.text(
-                    pos2(rect.right() - 6.0, top + 3.0),
-                    Align2::RIGHT_TOP,
-                    &format!("{:+.2e}", t.ymax),
-                    10.0,
-                    pal.axis_text,
-                );
-                target.text(
-                    pos2(rect.right() - 6.0, bot - 3.0),
-                    Align2::RIGHT_BOTTOM,
-                    &format!("{:+.2e}", t.ymin),
-                    10.0,
-                    pal.axis_text,
-                );
+                // One pair of numbers per distinct scale on the row, stepped left of
+                // the one before it. Snuffler steps its annotations too, but by a
+                // running max of label widths, which overlaps them at three scales
+                // or more; the sum here keeps every pair readable and agrees with
+                // Qt on the one- and two-scale rows that actually occur.
+                let mut uoff = 0.0;
+                for &span in &scale_spans {
+                    let high = format!("{:+.2e}", span.ymax);
+                    let low = format!("{:+.2e}", span.ymin);
+                    let x = rect.right() - 6.0 - uoff;
+                    target.text(
+                        pos2(x, top + 3.0),
+                        Align2::RIGHT_TOP,
+                        &high,
+                        SCALE_PT,
+                        pal.axis_text,
+                    );
+                    target.text(
+                        pos2(x, bot - 3.0),
+                        Align2::RIGHT_BOTTOM,
+                        &low,
+                        SCALE_PT,
+                        pal.axis_text,
+                    );
+                    let width = target
+                        .measure(&high, SCALE_PT)
+                        .x
+                        .max(target.measure(&low, SCALE_PT).x);
+                    uoff += width + 10.0;
+                }
             }
         }
 
@@ -525,11 +629,14 @@ pub fn paint(
     target.pop_clip();
 }
 
-/// Render the current wiggle/waterfall view to a standalone SVG string at the
-/// given pixel size, reusing the exact [`paint`] geometry (vector traces/axes,
-/// the waterfall heatmap embedded as a PNG).
+/// Whether an NSLC-scoped marker belongs on a row, matched the way snuffler's
+/// `track_patterns` match: `*` (or an empty element) on the marker's side takes
+/// any value, and `*` on the row's side — the location a grouped row carries —
+/// takes any marker. Matching the identity rather than the spans keeps a marker
+/// on its row even when the marker's own location has no data in the window,
+/// exactly as Qt's patterns do.
 fn marker_matches_track(nslc: &(String, String, String, String), t: &ViewTrack) -> bool {
-    let f = |pat: &str, val: &str| pat.is_empty() || pat == "*" || pat == val;
+    let f = |pat: &str, val: &str| pat.is_empty() || pat == "*" || val == "*" || pat == val;
     f(&nslc.0, &t.net) && f(&nslc.1, &t.sta) && f(&nslc.2, &t.loc) && f(&nslc.3, &t.cha)
 }
 
@@ -662,8 +769,9 @@ mod tests {
     use crate::layout::compute_layout;
     use crate::palette::{Theme, palette};
 
-    use super::{paint, track_stroke_colors};
+    use super::{color_key, marker_matches_track, paint, stroke_color_map};
     use ecolor::Color32;
+    use snuffler_web_core::bridge::ViewSpan;
     use snuffler_web_core::state::Subsort;
 
     fn track(net: &str, sta: &str, loc: &str, cha: &str, label: &str) -> ViewTrack {
@@ -682,13 +790,22 @@ mod tests {
     // numbering. The palette itself is deliberately this frontend's own.
 
     /// The stroke colors as a fixed-size array, so the asserts can destructure
-    /// instead of indexing.
+    /// instead of indexing. These tracks carry no spans, so each looks up the
+    /// one key its own identity earns; the fallback only satisfies the
+    /// conversion's type and is unreachable, the map being built from these
+    /// same keys.
     fn colors_of<const N: usize>(tracks: &[ViewTrack; N], subsort: Subsort) -> [Color32; N] {
-        let colors = track_stroke_colors(tracks.as_slice(), subsort);
-        // One color per track, always; the fallback array only satisfies the
-        // conversion's type and is unreachable past this assert.
-        assert_eq!(colors.len(), N);
-        colors.try_into().unwrap_or([Color32::TRANSPARENT; N])
+        let map = stroke_color_map(tracks.as_slice(), subsort);
+        tracks
+            .iter()
+            .map(|track| {
+                map.get(&color_key(track, &track.loc, subsort))
+                    .copied()
+                    .unwrap_or(Color32::TRANSPARENT)
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or([Color32::TRANSPARENT; N])
     }
 
     #[test]
@@ -727,6 +844,58 @@ mod tests {
         ];
         let [a, b] = colors_of(&tracks, Subsort::Nslc);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn grouped_rows_color_each_location_with_its_own_key() {
+        // Under a "Grouped by Location" subsort a row carries one span per
+        // location, and colour is the only thing telling the sensors apart — so
+        // the spans of one row must key differently, and rows sharing a location
+        // share its colour by sharing its key.
+        let mut grouped = track("XL", "CO01", "*", "BHZ", "XL.CO01.BHZ");
+        grouped.spans = vec![
+            ViewSpan {
+                loc: "00".into(),
+                ..ViewSpan::default()
+            },
+            ViewSpan {
+                loc: "10".into(),
+                ..ViewSpan::default()
+            },
+        ];
+        let mut single = track("XL", "CO02", "*", "BHZ", "XL.CO02.BHZ");
+        single.spans = vec![ViewSpan {
+            loc: "00".into(),
+            ..ViewSpan::default()
+        }];
+        let tracks = [grouped, single];
+        let map = stroke_color_map(&tracks, Subsort::NscGroupL);
+        let [grouped, _] = &tracks;
+        // Two locations across the stack, so exactly two keys get numbered.
+        assert_eq!(map.len(), 2);
+        let first = map.get(&color_key(grouped, "00", Subsort::NscGroupL));
+        let second = map.get(&color_key(grouped, "10", Subsort::NscGroupL));
+        assert!(first.is_some());
+        assert!(second.is_some());
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn markers_match_grouped_rows_through_the_location_wildcard() {
+        // A location-grouped row carries '*' as its location (the bridge writes
+        // snuffler's own `track_patterns` wildcard), so a marker picked on one
+        // sensor stays on the row even when that sensor has no data in the
+        // current window — and never leaks onto another station's row.
+        let grouped = track("XL", "CO01", "*", "BHZ", "XL.CO01.BHZ");
+        let other = track("XL", "CO02", "00", "BHZ", "XL.CO02.00.BHZ");
+        let nslc = (
+            "XL".to_owned(),
+            "CO01".to_owned(),
+            "10".to_owned(),
+            "BHZ".to_owned(),
+        );
+        assert!(marker_matches_track(&nslc, &grouped));
+        assert!(!marker_matches_track(&nslc, &other));
     }
 
     #[test]
@@ -783,9 +952,6 @@ mod tests {
             cha: cha.to_owned(),
             label: format!("GE.APE..{cha}"),
             sort_annotation: annotation.to_owned(),
-            ymin: -1.0,
-            ymax: 1.0,
-            yscale: 1.0,
             ..ViewTrack::default()
         };
         let view = ViewData {

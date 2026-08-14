@@ -1175,9 +1175,16 @@ mod web {
             } else {
                 values.len() as f64 / f64::from(params.npx)
             };
+            // The first span stands for the row in this diagnostic line; a row that
+            // carries several says so through `spans=`, and the detail belongs in a
+            // per-span line if anyone ever needs it.
             let first = track.spans.first();
             let t0_rel = first.map_or(0.0, |span| span.t0_rel);
             let dt = first.map_or(0.0, |span| span.dt);
+            let ymin = first.map_or(0.0, |span| span.ymin);
+            let ymax = first.map_or(0.0, |span| span.ymax);
+            let ymean = first.map_or(0.0, |span| span.ymean);
+            let yscale = first.map_or(0.0, |span| span.yscale);
             if let Some((min_v, max_v, mean, rms)) = finite_stats(&values) {
                 log::debug!(
                     "[view.track] idx={} label={} mode={} spans={} count={} points_per_px={:.3} data_min={:.6} data_max={:.6} data_mean={:.6} data_rms={:.6} scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9} head=[{}]",
@@ -1191,10 +1198,10 @@ mod web {
                     max_v,
                     mean,
                     rms,
-                    track.ymin,
-                    track.ymax,
-                    track.ymean,
-                    track.yscale,
+                    ymin,
+                    ymax,
+                    ymean,
+                    yscale,
                     t0_rel,
                     dt,
                     sample_head(&values),
@@ -1206,10 +1213,10 @@ mod web {
                     track.label,
                     mode,
                     track.spans.len(),
-                    track.ymin,
-                    track.ymax,
-                    track.ymean,
-                    track.yscale,
+                    ymin,
+                    ymax,
+                    ymean,
+                    yscale,
                     t0_rel,
                     dt,
                 );

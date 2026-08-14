@@ -592,9 +592,18 @@ _SUBSORT = {
     "sncl": (1, 0, 3, 2),
     "lnsc": (2, 0, 1, 3),
     "cnsl": (3, 0, 1, 2),
-    "nsc_l": (0, 1, 3, 2),
-    "snc_l": (1, 0, 3, 2),
+    # Three elements, not four: these are snuffler's "Grouped by Location" pair, and
+    # the element left out of the key is the one the rows group over — every location
+    # of a channel lands on the same row. Listing all four here instead made them
+    # duplicates of `nscl` and `sncl`.
+    "nsc_l": (0, 1, 3),
+    "snc_l": (1, 0, 3),
 }
+
+
+def _subsort_perm(subsort: str) -> Tuple[int, ...]:
+    """The gather permutation of a subsort; nslc order for an unknown name."""
+    return _SUBSORT.get(subsort, (0, 1, 2, 3))
 
 
 def _dist_m(alat: float, alon: float, blat: float, blon: float) -> float:
@@ -664,11 +673,15 @@ def _sort_order(
     (from a station fetch) + the active event; without them they fall back to name
     order. With ``distances_3d`` the distance sort adds the source depth and station
     elevation (snuffler's '3D distances' option). All geo math is pyrocko's."""
-    perm = _SUBSORT.get(subsort, (0, 1, 2, 3))
+    perm = _subsort_perm(subsort)
 
-    def namekey(tr: ptrace.Trace) -> Tuple[str, str, str, str]:
+    def namekey(tr: ptrace.Trace) -> Tuple[str, ...]:
+        # The gather key itself, which is what snuffler sorts its rows by
+        # (`sorted(keys)` over `set_gathering`'s keys). Three elements wide for the
+        # location-grouped subsorts, so the traces sharing a row tie here and the
+        # stable sort leaves them in the order they arrived.
         nslc = tr.nslc_id
-        return (nslc[perm[0]], nslc[perm[1]], nslc[perm[2]], nslc[perm[3]])
+        return tuple(nslc[i] for i in perm)
 
     geo = sort in ("distance", "azimuth", "azimuth_blocks", "backazimuth")
     if geo and _ACTIVE_EVENT is not None and _STATIONS:
@@ -717,20 +730,12 @@ def _sort_order(
     return sorted(range(len(traces)), key=lambda i: namekey(traces[i]))
 
 
-def _track_scaling_key(t: view_pb2.ViewTrack, group: str) -> Any:
-    """Grouping key for shared amplitude scaling (snuffler's Scaling menu)."""
-    if group == "common":
-        return None
-    if group == "per_station":
-        return (t.net, t.sta)
-    if group == "per_station_location":
-        return (t.net, t.sta, t.loc)
-    if group == "per_component":
-        return t.cha
-    return (t.net, t.sta, t.loc, t.cha)
-
-
 def _trace_scaling_key(tr: ptrace.Trace, group: str) -> Any:
+    """Grouping key for shared amplitude scaling (snuffler's Scaling menu).
+
+    Asked of the trace, never of the track: a row that groups over location carries
+    traces with different keys, and snuffler scales each of them separately.
+    """
     if group == "common":
         return None
     if group == "per_station":
@@ -1052,7 +1057,14 @@ def _colorize_waterfall(meta: view_pb2.ViewMeta, ys: np.ndarray, req: view_pb2.V
             if not cnt or strip.size != cnt:
                 continue
             ys[off : off + cnt] = _wf_rgba(
-                strip, float(t.ymin), float(t.ymax), clip_lo, clip_hi, symmetry, reverse, lut
+                strip,
+                float(span.ymin),
+                float(span.ymax),
+                clip_lo,
+                clip_hi,
+                symmetry,
+                reverse,
+                lut,
             )
 
 
@@ -1112,14 +1124,37 @@ def _gather_tracks(
     its segments falls in the window, so a gap that spans the whole view is the one
     case that drops it.
     """
-    perm = _SUBSORT.get(subsort, (0, 1, 2, 3))
+    perm = _subsort_perm(subsort)
     groups: Dict[Tuple[str, ...], List[Tuple[int, ptrace.Trace]]] = {}
     for index, tr in enumerate(traces):
         display_tmin, display_tmax = _display_time_span(tr)
         if display_tmax < visible_tmin or display_tmin > visible_tmax:
             continue
         groups.setdefault(tuple(tr.nslc_id[i] for i in perm), []).append((index, tr))
-    return [sorted(members, key=lambda item: item[1].tmin) for members in groups.values()]
+    # Time order within a row, with the nslc id as a tiebreak: two traces can start at
+    # the same instant when the row groups several channels together, and a stack that
+    # reshuffles between identical requests is worse than either order.
+    return [
+        sorted(members, key=lambda item: (item[1].tmin, item[1].nslc_id))
+        for members in groups.values()
+    ]
+
+
+class _SpanBuild(NamedTuple):
+    """One run of samples on its way into a ``ViewSpan``, with what produced it.
+
+    The source trace rides along because the scale is settled after the whole stack
+    is known — a span is scaled by *its own* trace's scaling key, which on a
+    location-grouped row is not the row's.
+    """
+
+    t0_rel: float
+    dt: float
+    npoints: int
+    payload: np.ndarray
+    source: ptrace.Trace
+    # Waterfall only: the strip's own amplitude range, before the global pass.
+    wf_range: Optional[Tuple[float, float]] = None
 
 
 def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
@@ -1189,6 +1224,9 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     ys_parts: List[np.ndarray] = []
     range_traces: List[ptrace.Trace] = []
     data_ranges: Dict[Any, Tuple[float, float]] = {}
+    # Every emitted span with the trace behind it, so the scaling pass below can key
+    # each one on its own trace rather than on the row it happens to share.
+    scaled_spans: List[Tuple[view_pb2.ViewSpan, ptrace.Trace]] = []
     fast_individual_minmax = base == "minmax" and scaling_group == "individual"
     offset = 0
     view_idx = 0
@@ -1199,11 +1237,18 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     # the Robust and Mean±Nσ bases with no range at all in the default grouping, so
     # they flattened the display to ymin=0, ymax=1.
     need_group_range = not fast_individual_minmax
+    perm = _subsort_perm(subsort)
     for members in _gather_tracks(work, subsort, visible_tmin, visible_tmax):
         wanted_tracks += 1
         head = members[0][1]
-        net, sta, loc, cha = head.nslc_id
-        label = ".".join(head.nslc_id)
+        # A row is named by what it groups on: an element the rows merge over drops
+        # out of the label and becomes '*' in the identity rather than showing one
+        # member's value. Both are snuffler's own representations — its track label
+        # is the gather key, and its `track_patterns` hold '*' for the merged
+        # element, which is what keeps a marker matched to its row even when the
+        # marker's own location has no data in the window.
+        net, sta, loc, cha = (head.nslc_id[i] if i in perm else "*" for i in range(4))
+        label = ".".join(head.nslc_id[i] for i in range(4) if i in perm)
         annotation = _sort_annotation(net, sta, sort, bool(req.distances_3d))
         want_samples = track_offset <= view_idx < track_end
         if want_samples:
@@ -1213,11 +1258,9 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         # Built before the track is added, because a track whose every segment
         # fails to process is left out of the stack entirely rather than drawn
         # empty, and `offset` must not advance for a payload nobody receives.
-        spans: List[Tuple[float, float, int, np.ndarray]] = []
+        spans: List[_SpanBuild] = []
         nf = 0
         fmax = 0.0
-        vmin, vmax = (-1.0, 1.0) if not wf_abs else (0.0, 1.0)
-        wf_lo, wf_hi = math.inf, -math.inf
         for tr_idx, tr in members:
             if not (want_samples or (mode != "waterfall" and need_group_range)):
                 continue
@@ -1249,10 +1292,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 if not strip.size:
                     continue
                 nf = 1
-                if wf_abs:
-                    wf_lo = min(wf_lo, float(strip.min()))
-                    wf_hi = max(wf_hi, float(strip.max()))
-                spans.append((ytmin - tmin, dt, int(strip.size), strip))
+                wf_range = (float(strip.min()), float(strip.max())) if wf_abs else None
+                spans.append(_SpanBuild(ytmin - tmin, dt, int(strip.size), strip, tr, wf_range))
                 continue
 
             data_sliced = _slice_segment(entry, tmin, tmax, 4.0) if want_samples else None
@@ -1264,9 +1305,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if scale_sliced is not None:
                 yrange, yrmin, rdt, _range_offset = scale_sliced
                 if fast_individual_minmax:
-                    # Merged, not overwritten: every segment of a channel shares
-                    # one track and therefore one scale, so the range has to span
-                    # all of them.
+                    # Merged, not overwritten: the segments of one channel share a
+                    # scaling key, so the range has to span all of them.
                     lo, hi = float(np.min(yrange)), float(np.max(yrange))
                     previous = data_ranges.get(tr.nslc_id)
                     data_ranges[tr.nslc_id] = (
@@ -1282,7 +1322,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             target = npx if allow_ds else len(yview)
             y, count, dt = _decimate(yview, deltat, target, allow_ds, sample_offset)
             if count:
-                spans.append((ytmin - tmin, dt, int(count), y))
+                spans.append(_SpanBuild(ytmin - tmin, dt, int(count), y, tr))
 
         if want_samples and not spans:
             continue
@@ -1290,35 +1330,34 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
         t.sort_annotation = annotation
-        t.ymax = 1.0
-        t.yscale = 1.0
         if mode == "waterfall":
-            if wf_abs and wf_lo <= wf_hi:
-                vmin, vmax = wf_lo, wf_hi
-            t.ymin = vmin
-            t.ymax = vmax
             t.nf = int(nf)
             t.fmax = fmax
-        for t0_rel, dt, count, payload in spans:
+        for build in spans:
             span = t.spans.add()
-            span.t0_rel = t0_rel
-            span.dt = dt
-            span.count = count
+            span.t0_rel = build.t0_rel
+            span.dt = build.dt
+            span.count = build.npoints
             span.offset = int(offset)
-            ys_parts.append(np.ascontiguousarray(payload, dtype="<f4"))
-            offset += int(payload.size)
+            span.loc = build.source.nslc_id[2]
+            span.ymax = 1.0
+            span.yscale = 1.0
+            if mode == "waterfall":
+                span.ymin, span.ymax = build.wf_range or ((0.0, 1.0) if wf_abs else (-1.0, 1.0))
+            scaled_spans.append((span, build.source))
+            ys_parts.append(np.ascontiguousarray(build.payload, dtype="<f4"))
+            offset += int(build.payload.size)
 
     perf_loop = time.monotonic()
     if mode == "waterfall":
         if wf_abs:
-            lo = min((t.ymin for t in meta.tracks if t.nf), default=0.0)
-            hi = max((t.ymax for t in meta.tracks if t.nf), default=1.0)
+            lo = min((span.ymin for span, _ in scaled_spans), default=0.0)
+            hi = max((span.ymax for span, _ in scaled_spans), default=1.0)
             if hi <= lo:
                 hi = lo + 1e-12
-            for t in meta.tracks:
-                if t.nf:
-                    t.ymin = lo
-                    t.ymax = hi
+            for span, _source in scaled_spans:
+                span.ymin = lo
+                span.ymax = hi
     elif range_traces or data_ranges:
         global _OLD_DATA_RANGE_CONTEXT
         if range_traces:
@@ -1356,10 +1395,11 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             approx_ticks=15.0,
             snap=(show_scale_ranges or show_scale_axes) and not show_scale_axes,
         )
-        for t in meta.tracks:
-            if t.nf:
-                continue
-            dymin, dymax = data_ranges.get(_track_scaling_key(t, scaling_group), (0.0, 1.0))
+        # Per span, keyed on the span's own trace: snuffler projects per
+        # (track, scaling key), so two sensors sharing a location-grouped row are
+        # each drawn against their own amplitude scale.
+        for span, source in scaled_spans:
+            dymin, dymax = data_ranges.get(_trace_scaling_key(source, scaling_group), (0.0, 1.0))
             # An equal range is real data — a dead channel pinned at one value — and
             # AutoScaler pads it to ±1 around the value, exactly as snuffler centres
             # such a flatline.
@@ -1372,10 +1412,10 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if ymax <= ymin:
                 ymax = ymin + 1e-12
             half = max(0.5 * (ymax - ymin), 1e-12)
-            t.ymin = ymin
-            t.ymax = ymax
-            t.ymean = 0.5 * (ymin + ymax)
-            t.yscale = max(gain * half, 1e-12)
+            span.ymin = ymin
+            span.ymax = ymax
+            span.ymean = 0.5 * (ymin + ymax)
+            span.yscale = max(gain * half, 1e-12)
 
     perf_scale = time.monotonic()
     ys = (

@@ -90,6 +90,7 @@ DATASETS: Dict[str, Dataset] = {
         events="multi.events",
         responses=("multi.stationxml",),
     ),
+    "multiloc": Dataset(waveforms="multiloc.mseed"),
     "oddrate": Dataset(waveforms="oddrate.mseed"),
     # Real recordings of a small Eifel event: 354 stations across six networks at
     # three sampling rates, a yaml event catalog, and per-network StationXML with

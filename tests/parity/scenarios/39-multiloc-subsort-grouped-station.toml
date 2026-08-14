@@ -1,0 +1,12 @@
+name = "multiloc-subsort-grouped-station"
+title = "Co-located sensors share one track, station-major"
+dataset = "multiloc"
+tiers = [1]
+
+# The other half of the pair: same grouping, station before network in the key.
+# One network here, so this pins the ordering rather than the grouping.
+[state]
+subsort = "snc_l"
+
+[compare]
+reason = "station-major ordering of the location-grouped rows"

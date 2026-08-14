@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import bridge
 import numpy as np
@@ -42,7 +42,15 @@ class WebSnapshot:
     segments: List[Segment]
     # One entry per track, in the order the frontend stacks them.
     track_order: List[NslcId] = field(default_factory=list)
-    track_scales: Dict[int, Tuple[float, float, float]] = field(default_factory=dict)
+    # Which traces landed on each track. More than one only where a row groups
+    # several channels: the segments of one gapped channel, or the locations of a
+    # channel under the "Grouped by Location" subsorts.
+    track_members: List[List[NslcId]] = field(default_factory=list)
+    # (ymin, ymax, yscale) per span, keyed by the span's own trace, because a row
+    # can carry traces on different scales. Exact duplicates are folded — the
+    # segments of one gapped channel share a scale — so a repeated trace here
+    # always means two of its spans genuinely disagree.
+    span_scales: List[Tuple[NslcId, Tuple[float, float, float]]] = field(default_factory=list)
     sort_annotations: List[str] = field(default_factory=list)
     raw_ys: Optional[np.ndarray] = None
 
@@ -114,22 +122,31 @@ def snapshot(req: view_pb2.ViewParams) -> WebSnapshot:
     meta, ys = bridge._get_view_data(req)
     segments: List[Segment] = []
     order: List[NslcId] = []
-    scales: Dict[int, Tuple[float, float, float]] = {}
+    track_members: List[List[NslcId]] = []
+    scales: List[Tuple[NslcId, Tuple[float, float, float]]] = []
     annotations: List[str] = []
 
-    for index, track in enumerate(meta.tracks):
+    for track in meta.tracks:
         nslc: NslcId = (track.net, track.sta, track.loc, track.cha)
         order.append(nslc)
         annotations.append(track.sort_annotation)
-        scales[index] = (float(track.ymin), float(track.ymax), float(track.yscale))
         # One track, one or more spans: a channel that arrives in pieces draws every
-        # piece on the same row, so the segment list is flattened out of the spans.
+        # piece on the same row, and so do the locations of a channel when the
+        # subsort groups over them. Each span names the trace it came from, which is
+        # what the row's membership and the per-span scales are keyed on.
+        members: List[NslcId] = []
         for span in track.spans:
+            span_nslc: NslcId = (track.net, track.sta, span.loc, track.cha)
+            if span_nslc not in members:
+                members.append(span_nslc)
+            scale = (span_nslc, (float(span.ymin), float(span.ymax), float(span.yscale)))
+            if scale not in scales:
+                scales.append(scale)
             payload = np.asarray(ys[span.offset : span.offset + _payload_len(span)])
             if span.dt > 0.0:
                 segments.append(
                     Segment(
-                        nslc=nslc,
+                        nslc=span_nslc,
                         tmin=float(req.tmin) + float(span.t0_rel),
                         deltat=float(span.dt),
                         y=payload.astype(np.float64),
@@ -139,19 +156,22 @@ def snapshot(req: view_pb2.ViewParams) -> WebSnapshot:
                 # dt == 0 marks the decimated form: interleaved (t_rel, y) extrema.
                 segments.append(
                     Segment(
-                        nslc=nslc,
+                        nslc=span_nslc,
                         tmin=float(req.tmin) + float(span.t0_rel),
                         deltat=0.0,
                         y=payload.astype(np.float64),
                         uniform=False,
                     )
                 )
+        members.sort()
+        track_members.append(members)
 
     return WebSnapshot(
         window=(float(meta.view_tmin), float(meta.view_tmax)),
         segments=segments,
         track_order=order,
-        track_scales=scales,
+        track_members=track_members,
+        span_scales=scales,
         sort_annotations=annotations,
         raw_ys=ys,
     )

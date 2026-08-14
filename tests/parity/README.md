@@ -142,6 +142,7 @@ drift is never ignorable.
 | `demo` | the synthetic demo `qt/make_demo.py` and `bridge._make_example_scene` both produce, byte for byte |
 | `gaplap` | gaps and overlaps at every size the degap logic branches on, aligned and off-grid |
 | `multi` | 4 stations × 3 components with coordinates, an event and poles-zeros responses |
+| `multiloc` | co-located sensors: two location codes at a site, the second an order of magnitude quieter |
 | `oddrate` | 5 Hz, 7 Hz and 50 Hz in one pile: Nyquist clamping and mixed-rate selection |
 | `eifel` | real recordings: 354 stations, six networks, three rates, a yaml event catalog, per-network StationXML |
 
