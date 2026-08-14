@@ -16,10 +16,17 @@ done
 # Copy only what changed, so a rebuild does not re-copy the big staged payloads
 # (the ONNX weights, the ~54 MB Pyodide runtime). This is `cp -u` by hand because
 # that flag is GNU-only: the BSD cp on a macOS dev box rejects it outright.
+# Size is checked as well as mtime: `-nt` alone trusts the clock, and a source
+# that changed WITHOUT becoming newer — restored from a backup, checked out at an
+# older revision, or rewritten by a tool that preserves mtimes — would otherwise
+# leave the previous file in dist/. A stale py-mt wheel there does not fail loudly;
+# it hangs the app at boot, so the extra stat is worth it.
 copy_if_newer() {
     local src="$1" dst="$2"
 
-    if [ ! -e "$dst" ] || [ "$src" -nt "$dst" ]; then
+    if [ ! -e "$dst" ] || [ "$src" -nt "$dst" ] ||
+        [ "$(stat -f%z "$src" 2>/dev/null || stat -c%s "$src")" \
+            != "$(stat -f%z "$dst" 2>/dev/null || stat -c%s "$dst")" ]; then
         cp "$src" "$dst"
     fi
 }
