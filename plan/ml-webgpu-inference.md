@@ -126,12 +126,15 @@ three build systems):
   puts it in the picker request (protobuf DTO — no hardcoded URLs leaking through
   side channels).
 - **Trunk**: a conditional post_build **copy hook** (mirroring the py-mt
-  conditional-copy hook in `Trunk.toml`) stages `web/assets/models/*.onnx` only
-  when an env var (e.g. `SNUFFLER_EMBED_DATA`) is set.
-- **mise/taskfile**: the default `serve`/`build` tasks build with the feature and
-  set that env var together (as they already pair `threads` with
-  `CARGO_UNSTABLE_BUILD_STD`/`TRUNK_BUILD_NO_SRI`); a lean variant builds
-  `--no-default-features` (re-adding the needed defaults) and leaves it unset.
+  conditional-copy hook in `Trunk.toml`) stages `web/assets/models/*.onnx`.
+  *As shipped this is opt-OUT* (`SNUFFLER_EMBED_DATA=0`), not opt-in: the shell
+  switch has to default the same way the cargo feature does, or a build path that
+  never sets it (the GitHub Pages workflow drives trunk directly) ships an app
+  that asks for weights nobody copied — a green deploy that 404s on every pick.
+  The hook also fails the build when a weight named by the manifest is missing.
+- **mise/taskfile**: the default `serve`/`build` tasks just build with the
+  feature; only the lean variant — `--no-default-features` (re-adding the needed
+  defaults) — sets `SNUFFLER_EMBED_DATA=0` to match.
 
 ## Risks / validation gates
 

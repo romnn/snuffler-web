@@ -161,7 +161,11 @@ jobs:
           echo "SNUFFLER_GIT_COMMIT=${GITHUB_SHA::10}" >> "$GITHUB_ENV"
 
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
-      # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/.
+      # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/ and
+      # web/assets/models/*.onnx -> assets/models/. Note this drives trunk directly
+      # rather than through `mise run build`, so it does NOT inherit that task's env
+      # — everything the build needs is set here. Anything that must differ from the
+      # mise task's defaults has to be repeated in this step.
       # Threaded build: the wasm atomics/link flags come from .cargo/config.toml;
       # only nightly + `-Z build-std` (rebuild std with atomics) are build-scoped
       # here, matching the mise serve/build tasks.

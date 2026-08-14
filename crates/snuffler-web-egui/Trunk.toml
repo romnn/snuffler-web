@@ -90,8 +90,8 @@ command_arguments = [
 
 # The post-build work is kept in one ordered hook because Trunk runs multiple
 # same-stage hooks concurrently. The script stages onnxruntime-web's WebGPU/JSEP
-# runtime and the tiny SeisBench manifest, conditionally stages model weights for
-# the default embed-data build, optimizes the fresh app wasm from the staging
+# runtime and the tiny SeisBench manifest, stages the model weights the default
+# embed-data build fetches locally, optimizes the fresh app wasm from the staging
 # directory, patches wasm-bindgen-rayon's worker import, and stages the optional
 # threaded Pyodide runtime.
 #

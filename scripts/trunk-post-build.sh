@@ -75,24 +75,76 @@ stage_ort_runtime() {
     echo "[ort] runtime and SeisBench manifest staged"
 }
 
+# The ONNX weights named by web/assets/seisbench_models.json, in manifest order.
+manifest_model_files() {
+    SNUFFLER_SEISBENCH_MANIFEST="$1" bun -e '
+        const manifest = JSON.parse(
+            require("fs").readFileSync(process.env.SNUFFLER_SEISBENCH_MANIFEST, "utf8"),
+        );
+        for (const model of manifest.models ?? []) {
+            if (model.file) console.log(model.file);
+        }
+    '
+}
+
+# Staging the weights is OPT-OUT, because the cargo feature that makes the app ask
+# for them — `embed-data` — is on by DEFAULT. Only the lean build turns that
+# feature off (and points the app at a remote SNUFFLER_ONNX_MODEL_BASE_URL
+# instead), so only the lean build sets SNUFFLER_EMBED_DATA=0.
+#
+# The polarity is the whole point: as opt-in, the two switches disagreed silently
+# in exactly one direction — default features (app requests assets/models/) with
+# the env unset (nothing copied) — which is what the GitHub Pages workflow did,
+# since it drives trunk directly and never saw the mise task's env. The deploy
+# succeeded and every pick run 404'd. Getting it wrong the other way round only
+# costs ~14 MB of unused files in dist.
 stage_seisbench_models() {
-    if [ -z "${SNUFFLER_EMBED_DATA:-}" ]; then
-        echo "[seisbench] model weights not embedded"
-        return
-    fi
-
+    local manifest="$repo_dir/web/assets/seisbench_models.json"
     local src="$repo_dir/web/assets/models"
-    if [ ! -d "$src" ]; then
-        echo "[seisbench] no exported model weights found"
+
+    if [ "${SNUFFLER_EMBED_DATA:-1}" = "0" ]; then
+        echo "[seisbench] model weights not embedded (SNUFFLER_EMBED_DATA=0)"
         return
     fi
 
-    for dir in "${build_dirs[@]}"; do
-        mkdir -p "$dir/assets/models"
-        for model in "$src"/*.onnx; do
-            copy_if_newer "$model" "$dir/assets/models/$(basename "$model")"
+    # Read the list into a variable rather than piping the loop: a manifest that
+    # cannot be read must abort (`set -e` on this assignment), not feed an empty
+    # loop that then reports success with nothing copied.
+    local files
+    files=$(manifest_model_files "$manifest")
+    if [ -z "$files" ]; then
+        echo "[seisbench] ERROR: $manifest names no model files" >&2
+        exit 1
+    fi
+
+    # Every file the manifest names must ship: the app resolves the model URL from
+    # the manifest, so a missing or half-exported web/assets/models is a 404 at
+    # pick time — a runtime failure for users, from a build that looked green.
+    local missing=()
+    while IFS= read -r model; do
+        [ -n "$model" ] || continue
+        if [ -f "$src/$model" ]; then
+            for dir in "${build_dirs[@]}"; do
+                mkdir -p "$dir/assets/models"
+                copy_if_newer "$src/$model" "$dir/assets/models/$model"
+            done
+        else
+            missing+=("$model")
+        fi
+    done <<<"$files"
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "[seisbench] ERROR: seisbench_models.json names weights that are not in" >&2
+        echo "  $src:" >&2
+        for model in "${missing[@]}"; do
+            echo "    $model" >&2
         done
-    done
+        echo "  The default build has the \`embed-data\` feature on, so the app will" >&2
+        echo "  request assets/models/<file> and 404. Export the weights, or build" >&2
+        echo "  lean (mise run build-lean, --no-default-features + a remote" >&2
+        echo "  SNUFFLER_ONNX_MODEL_BASE_URL)." >&2
+        exit 1
+    fi
 
     echo "[seisbench] model weights staged"
 }

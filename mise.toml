@@ -97,7 +97,6 @@ description = "Run the web app (trunk serve) — optimized, threaded (off-main-t
 depends = ["fetch-pyrocko", "dev-dirs"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
-env.SNUFFLER_EMBED_DATA = "1"
 env.NO_COLOR = "true"
 run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --cargo-profile serve --features threads"
 
@@ -106,7 +105,6 @@ description = "Build the web app for release — threaded (off-main-thread PNG e
 depends = ["fetch-pyrocko"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
-env.SNUFFLER_EMBED_DATA = "1"
 env.NO_COLOR = "true"
 run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --features threads"
 
@@ -114,11 +112,19 @@ run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --feat
 # SNUFFLER_ONNX_MODEL_BASE_URL at build time to an HTTP directory containing the
 # files named in web/assets/seisbench_models.json. bridge.py proxies those remote
 # fetches through the local snuffler proxy when running on localhost.
+#
+# SNUFFLER_EMBED_DATA=0 is what stops the post_build hook from staging the weights
+# into dist, and it belongs ONLY here: it has to track `--no-default-features`
+# (which drops `embed-data`, so the app fetches from the remote base instead).
+# The default builds above deliberately set nothing — the hook stages by default,
+# so a build path that forgets this knob (as the Pages workflow did) still ships
+# the weights its app is going to ask for.
 [tasks.serve-lean]
 description = "Run the web app without bundled SeisBench model weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
 depends = ["fetch-pyrocko", "dev-dirs"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
+env.SNUFFLER_EMBED_DATA = "0"
 env.NO_COLOR = "true"
 run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features svg-raster,gf,threads"
 
@@ -127,6 +133,7 @@ description = "Build the web app without bundled SeisBench model weights; requir
 depends = ["fetch-pyrocko"]
 env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
 env.TRUNK_BUILD_NO_SRI = "true"
+env.SNUFFLER_EMBED_DATA = "0"
 env.NO_COLOR = "true"
 run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features svg-raster,gf,threads"
 
