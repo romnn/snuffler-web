@@ -239,16 +239,6 @@ impl Subsort {
             Subsort::SncGroupL => "Station, Network, Channel (by Location)",
         }
     }
-    /// Which NSLC element drives the trace color when "Color traces" is on:
-    /// 0=net 1=sta 2=loc 3=cha (matches snuffler's coloring key).
-    #[must_use]
-    pub fn color_index(self) -> usize {
-        match self {
-            Subsort::Nslc | Subsort::NscGroupL | Subsort::SncGroupL => 2, // by location
-            Subsort::Nscl | Subsort::Sncl | Subsort::Lnsc => 3,           // by channel
-            Subsort::Cnsl => 1,                                           // by station
-        }
-    }
 }
 
 /// Transfer function applied before mapping waterfall power to color.
@@ -268,7 +258,10 @@ impl ColorScale {
     }
 }
 
-/// Waterfall colormaps (a subset of snuffler's, util.py:651-663).
+/// Waterfall colormaps.
+/// Snuffler's `ColorbarControl` (util.py:651-663) offers a different nine,
+/// sharing only viridis and magma with this list — an open gap, tracked as
+/// `waterfall-colormap-set` in `tests/parity/known_gaps.toml`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Colormap {
     /// Perceptually uniform blue-green-yellow colors.

@@ -565,8 +565,9 @@ impl App {
             ui.checkbox(&mut self.session.state.demean, "Demean");
             ui.checkbox(&mut self.session.state.remove_response, "Deconvolution")
                 .on_hover_text(
-                    "Deconvolve the instrument response to displacement. Fetch \
-                     responses first via Data ▸ Download ▸ Fetch responses.",
+                    "Deconvolve the instrument response, giving the instrument's own \
+                     input unit (velocity for a broadband). Fetch responses first via \
+                     Data ▸ Download ▸ Fetch responses.",
                 );
             ui.checkbox(&mut self.session.state.distances_3d, "3D distances")
                 .on_hover_text("Use station depth in distance sorting (needs coordinates).");

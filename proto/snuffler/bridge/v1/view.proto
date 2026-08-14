@@ -44,28 +44,48 @@ message ViewParams {
   bool wf_reverse = 36;
 }
 
+// One contiguous run of payload on a track.
+//
+// A channel that arrives in several pieces — anything with a gap — is one track
+// carrying several spans, because snuffler stacks one track per gather key and
+// paints every segment of that channel onto it. Emitting a track per segment
+// instead stacks a gapped channel several times over and scales each piece on its
+// own.
+message ViewSpan {
+  // Start of this run, relative to ViewParams.tmin.
+  double t0_rel = 1;
+  // Sample spacing, and with it how to read this run out of `ys`: > 0 uniform
+  // samples, 0 interleaved (t_rel, y) pairs, < 0 interleaved (t_rel, ylo, yhi)
+  // triples.
+  double dt = 2;
+  // Number of points, not of floats — the interleaved forms carry 2 or 3 each.
+  uint64 count = 3;
+  // Where this run starts in the flat `ys` payload.
+  uint64 offset = 4;
+}
+
 message ViewTrack {
   string net = 1;
   string sta = 2;
   string loc = 3;
   string cha = 4;
   string label = 5;
-  double t0_rel = 6;
-  double dt = 7;
-  uint64 count = 8;
-  uint64 offset = 9;
-  float ymin = 10;
-  float ymax = 11;
-  float ymean = 12;
-  float yscale = 13;
-  uint64 nf = 14;
-  uint64 nt = 15;
-  double fmax = 16;
+  float ymin = 6;
+  float ymax = 7;
+  float ymean = 8;
+  float yscale = 9;
+  // Waterfall frequency bins per column, shared by every span of the track. The
+  // time bins are per span: span.count / nf.
+  uint64 nf = 10;
+  double fmax = 11;
   // What the active sort ordered this track by, when that is not evident from
   // the label: the distance in kilometres for a distance sort, or a note that
   // the station has no coordinates and therefore could not be placed.
   // Empty for name sorting.
-  string sort_annotation = 17;
+  string sort_annotation = 12;
+  // The runs of samples to draw on this track, in time order: one per segment of
+  // the channel that falls in the window, in either view mode.
+  repeated ViewSpan spans = 13;
 }
 
 message ViewMeta {

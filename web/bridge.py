@@ -452,6 +452,37 @@ def _decimate(
     return out, int(idx.size), 0.0
 
 
+# snuffler's `gap_lap_tolerance`: the largest gap it will interpolate across and the
+# largest overlap it will trim, both in samples.
+_GAP_LAP_TOLERANCE = 5.0
+
+
+def _degap(traces: List[ptrace.Trace]) -> List[ptrace.Trace]:
+    """Merge adjacent segments of a channel, as snuffler's chopper does.
+
+    Two details this is easy to get wrong, and did:
+
+    ``degapper`` merges by rewriting the *first* trace of each run in place, and what
+    gets handed to it here is the loaded pile itself — so computing one view would
+    permanently rewrite the data, and turning the option back off would not bring it
+    back. Snuffler never hits this because its chopper degaps freshly chopped copies.
+    Only traces sharing an nslc id can merge, so copying just those is enough, and a
+    pile without gaps copies nothing.
+
+    ``maxlap`` defaults to ``None``, meaning "trim an overlap of any size", where
+    snuffler passes ``gap_lap_tolerance`` for both bounds and so leaves a larger
+    overlap alone.
+    """
+    counts: Dict[Tuple[str, str, str, str], int] = {}
+    for tr in traces:
+        counts[tr.nslc_id] = counts.get(tr.nslc_id, 0) + 1
+    prepared = [tr.copy() if counts[tr.nslc_id] > 1 else tr for tr in traces]
+    # degapper walks the list pairwise, so each channel's segments have to be
+    # contiguous and in time order first — snuffler sorts on `full_id` for this.
+    prepared.sort(key=lambda tr: tr.full_id)
+    return ptrace.degapper(prepared, maxgap=_GAP_LAP_TOLERANCE, maxlap=_GAP_LAP_TOLERANCE)
+
+
 def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace]:
     """Rotate horizontal component pairs (N/E or 1/2) by `deg` degrees, like
     snuffler's rotate control, using pyrocko's own ``trace.rotate`` (verified
@@ -462,10 +493,13 @@ def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace
     for tr in traces:
         groups.setdefault(tr.nslc_id[:3], []).append(tr)
 
-    out: List[ptrace.Trace] = []
+    # Substitution, not reconstruction: every trace keeps the slot the sort gave it
+    # and only its samples change. Appending the rotated pair ahead of the rest
+    # instead would reorder the tracks — dragging the Rotate control would swap the
+    # two horizontal rows out from under the pointer.
+    replacements: Dict[int, ptrace.Trace] = {}
     for grp in groups.values():
         by_comp = {t.channel[-1].upper(): t for t in grp if t.channel}
-        rotated: set[int] = set()
         for n, e in (("N", "E"), ("1", "2")):
             tn, te = by_comp.get(n), by_comp.get(e)
             if (
@@ -487,10 +521,8 @@ def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace
                 except Exception:  # noqa: BLE001 — leave unrotatable pairs as-is
                     continue
                 if len(pair) == 2:
-                    out.extend(pair)
-                    rotated.update((id(tn), id(te)))
-        out.extend(t for t in grp if id(t) not in rotated)
-    return out
+                    replacements[id(tn)], replacements[id(te)] = pair[0], pair[1]
+    return [replacements.get(id(t), t) for t in traces]
 
 
 def _decon_freq_limits(
@@ -516,37 +548,41 @@ def _decon_freq_limits(
 
 
 def _remove_response(
-    traces: List[ptrace.Trace],
+    tr: ptrace.Trace,
     enabled: bool,
     hp: Optional[float] = None,
     lp: Optional[float] = None,
-) -> List[ptrace.Trace]:
-    """Deconvolve the instrument response to displacement using StationXML fetched
-    from an FDSN station service (Data ▸ Download ▸ Fetch responses). A no-op until
-    responses are loaded; traces without a matching response pass through. The
-    frequency limits + cut-off-fading match snuffler's deconvolution exactly."""
+) -> ptrace.Trace:
+    """Deconvolve the instrument response using StationXML fetched from an FDSN
+    station service (Data ▸ Download ▸ Fetch responses). A no-op until responses are
+    loaded; a trace without a matching response passes through. The frequency limits +
+    cut-off-fading match snuffler's deconvolution exactly.
+
+    The result is in the instrument's own input unit — velocity for a broadband —
+    because that is what snuffler's ``get_instrument_response`` produces. Passing
+    ``fake_input_units='M'`` here instead would append a differentiation stage and
+    yield displacement, differing from Qt by a factor of i*omega across the band with
+    nothing on screen to say so.
+
+    Takes the *already demeaned and filtered* segment, because that is the order
+    snuffler restitutes in: its restitution block runs over `processed_traces`, after
+    the lowpass/highpass. The order matters even though both steps are linear — the
+    frequency limits are derived from `data_len`, so deconvolving a differently
+    extended trace tapers differently."""
     if not enabled or _STATIONXML is None:
-        return traces
-    out: List[ptrace.Trace] = []
-    for tr in traces:
-        try:
-            resp = _STATIONXML.get_pyrocko_response(
-                tr.nslc_id, timespan=(tr.tmin, tr.tmax), fake_input_units="M"
-            )
-            data_len = len(tr.ydata) if tr.ydata is not None else 0
-            freqlimits = _decon_freq_limits(float(tr.deltat), data_len, hp, lp)
-            out.append(
-                tr.transfer(
-                    freqlimits=freqlimits,
-                    transfer_function=resp,
-                    cut_off_fading=True,
-                    demean=True,
-                    invert=True,
-                )
-            )
-        except Exception:  # noqa: BLE001 — a channel without a usable response passes through
-            out.append(tr)
-    return out
+        return tr
+    try:
+        resp = _STATIONXML.get_pyrocko_response(tr.nslc_id, timespan=(tr.tmin, tr.tmax))
+        freqlimits = _decon_freq_limits(float(tr.deltat), int(tr.data_len()), hp, lp)
+        return tr.transfer(
+            freqlimits=freqlimits,
+            transfer_function=resp,
+            cut_off_fading=True,
+            demean=True,
+            invert=True,
+        )
+    except Exception:  # noqa: BLE001 — a channel without a usable response passes through
+        return tr
 
 
 # Subsort -> order of nslc elements for the sort/grouping key (snuffler's subsort).
@@ -561,17 +597,31 @@ _SUBSORT = {
 }
 
 
-def _dist_deg(alat: float, alon: float, blat: float, blon: float) -> float:
-    """Great-circle distance in degrees via pyrocko's pure-Python ``cosdelta``.
+def _dist_m(alat: float, alon: float, blat: float, blon: float) -> float:
+    """Surface distance in metres on the WGS84 spheroid, as snuffler measures it.
 
-    ``orthodrome.distance_accurate50m`` needs ``orthodrome_ext`` (a C extension
-    absent from our minimal wheel), so use the analytic cos-delta form, which is
-    plenty accurate for sorting and cake travel times.
+    ``Location.distance_to`` — what ``set_event_relative_data`` fills ``dist_m``
+    from — measures on the WGS84 spheroid via ``orthodrome_ext``, the compiled
+    extension the minimal wheel does not ship. But ``distance_accurate50m`` takes
+    ``implementation='python'`` and then evaluates the same Meeus formula with plain
+    ``math``, agreeing with the C path bit-for-bit. The analytic ``cosdelta`` form
+    used here before is spherical, and drifts by several hundred metres over a few
+    hundred kilometres.
+
+    The scalar entry point on purpose: the ``_numpy`` one broadcasts scalars to 0-d
+    arrays and its Python branch then dies in ``num.where``.
     """
     from pyrocko import orthodrome as od
 
-    cd = max(-1.0, min(1.0, float(od.cosdelta(alat, alon, blat, blon))))
-    return math.degrees(math.acos(cd))
+    return float(od.distance_accurate50m(alat, alon, blat, blon, implementation="python"))
+
+
+def _dist_deg(alat: float, alon: float, blat: float, blon: float) -> float:
+    """Epicentral distance in degrees, converted the way ``Station.dist_deg`` is:
+    spheroid metres over the *equatorial* radius, not the mean radius."""
+    from pyrocko import orthodrome as od
+
+    return _dist_m(alat, alon, blat, blon) / od.earthradius_equator * od.r2d
 
 
 def _sort_distance(net: str, sta: str, distances_3d: bool) -> Optional[float]:
@@ -587,9 +637,9 @@ def _sort_distance(net: str, sta: str, distances_3d: bool) -> Optional[float]:
         return None
     elat, elon, edep, _et = _ACTIVE_EVENT
     slat, slon, sele = st
-    from pyrocko import cake
-
-    surface_m = _dist_deg(elat, elon, slat, slon) * cake.d2r * cake.earthradius
+    # Snuffler sorts on `Station.dist_m`, which is the spheroid distance itself, not
+    # a degree value converted back with some radius.
+    surface_m = _dist_m(elat, elon, slat, slon)
     if distances_3d:
         return math.hypot(surface_m, float(edep) + float(sele))
     return surface_m
@@ -626,25 +676,41 @@ def _sort_order(
 
         elat, elon, _edep, _et = _ACTIVE_EVENT
 
-        def geokey(tr: ptrace.Trace) -> Tuple[float, Any]:
+        # Mirrors snuffler's gather key exactly (`set_gathering`, pile_viewer.py):
+        # the sort-mode value first, then the subsorted nslc as the tie-break —
+        # never distance, except inside the azimuthal blocks where snuffler
+        # subsorts each sector by distance.
+        # Stations without coordinates order last, which is what snuffler's
+        # None-aware float subclasses do; a leading flag stands in for that here.
+        def geokey(tr: ptrace.Trace) -> Tuple[Any, ...]:
             net, sta = tr.nslc_id[0], tr.nslc_id[1]
             st = _STATIONS.get((net, sta))
             if st is None:
-                return (1e30, namekey(tr))
+                return (1, 0.0, 0.0, namekey(tr))
             slat, slon, _sele = st
-            dist = _dist_deg(elat, elon, slat, slon)
             if sort == "distance":
                 # Same helper the track annotation shows, so the order the tracks
                 # are in always matches the distance printed on them. It only
                 # returns None without coordinates, which this branch excluded.
-                sort_dist = _sort_distance(net, sta, distances_3d)
-                return (dist if sort_dist is None else sort_dist, namekey(tr))
+                return (0, _sort_distance(net, sta, distances_3d), 0.0, namekey(tr))
             if sort == "backazimuth":
-                return (float(od.azimuth(slat, slon, elat, elon)) % 360.0, dist)
-            azi = float(od.azimuth(elat, elon, slat, slon)) % 360.0
+                return (0, float(od.azimuth(slat, slon, elat, elon)), 0.0, namekey(tr))
+            # In azibazi's own (-180, 180] wrap, so the ring is cut where snuffler
+            # cuts it — wrapping to [0, 360) starts the same cyclic order at a
+            # different track.
+            azi = float(od.azimuth(elat, elon, slat, slon))
             if sort == "azimuth":
-                return (azi, dist)
-            return (float(int(azi // 30.0)), dist)  # azimuth_blocks: 30° sectors
+                return (0, azi, 0.0, namekey(tr))
+            # azimuth_blocks: twelve 30° sectors *centred* on multiples of 30, as
+            # snuffler bins them (`sector_int(round((azimuth+15.)/30.))`), with
+            # the boundary sector split across ±180 exactly as snuffler splits it
+            # (`sector_int` never wraps) and each sector subsorted by distance.
+            return (
+                0,
+                float(round((azi + 15.0) / 30.0)),
+                _sort_distance(net, sta, distances_3d),
+                namekey(tr),
+            )
 
         return sorted(range(len(traces)), key=lambda i: geokey(traces[i]))
 
@@ -802,6 +868,7 @@ def _processed_trace(
     demean: bool,
     fft: bool,
     lphp: bool,
+    remove_response: bool = False,
 ) -> Optional[Tuple[float, float, np.ndarray]]:
     del tmin, tmax
     proc_min, proc_max = float(tr.tmin), float(tr.tmax)
@@ -832,6 +899,9 @@ def _processed_trace(
     if demean:
         seg.ydata = seg.ydata - seg.ydata.mean()
     _filter_seg(seg, hp, lp, fft, lphp)
+    seg = _remove_response(seg, remove_response, hp, lp)
+    if seg.ydata is None or len(seg.ydata) == 0:
+        return None
     entry = (
         float(seg.tmin),
         float(seg.deltat),
@@ -973,16 +1043,17 @@ def _colorize_waterfall(meta: view_pb2.ViewMeta, ys: np.ndarray, req: view_pb2.V
     symmetry = bool(req.wf_symmetry)
     reverse = bool(req.wf_reverse)
     for t in meta.tracks:
-        if not t.nf or not t.count:
+        if not t.nf:
             continue
-        off = int(t.offset)
-        cnt = int(t.count)
-        strip = ys[off : off + cnt]
-        if strip.size != cnt:
-            continue
-        ys[off : off + cnt] = _wf_rgba(
-            strip, float(t.ymin), float(t.ymax), clip_lo, clip_hi, symmetry, reverse, lut
-        )
+        for span in t.spans:
+            off = int(span.offset)
+            cnt = int(span.count)
+            strip = ys[off : off + cnt]
+            if not cnt or strip.size != cnt:
+                continue
+            ys[off : off + cnt] = _wf_rgba(
+                strip, float(t.ymin), float(t.ymax), clip_lo, clip_hi, symmetry, reverse, lut
+            )
 
 
 def _maybe_log_view_perf(
@@ -1023,6 +1094,32 @@ def _maybe_log_view_perf(
         f"scale_ms={(t_scale - t_loop) * 1000.0:.2f} "
         f"concat_ms={(t_concat - t_scale) * 1000.0:.2f}"
     )
+
+
+def _gather_tracks(
+    traces: List[ptrace.Trace], subsort: str, visible_tmin: float, visible_tmax: float
+) -> List[List[Tuple[int, ptrace.Trace]]]:
+    """Group traces into tracks the way snuffler gathers them.
+
+    Snuffler's stack is one row per *gather key* — the subsort permutation of the
+    nslc id (`set_gathering`) — and every segment of that channel is painted onto
+    that one row. Keying on the trace instead stacks a channel with a gap once per
+    segment, and scales each piece on its own; the two only agree on gapless data,
+    which is why it went unnoticed.
+
+    Rows keep the order the sort put them in, taken from where each key first
+    appears; within a row the segments run in time order. A row survives if any of
+    its segments falls in the window, so a gap that spans the whole view is the one
+    case that drops it.
+    """
+    perm = _SUBSORT.get(subsort, (0, 1, 2, 3))
+    groups: Dict[Tuple[str, ...], List[Tuple[int, ptrace.Trace]]] = {}
+    for index, tr in enumerate(traces):
+        display_tmin, display_tmax = _display_time_span(tr)
+        if display_tmax < visible_tmin or display_tmin > visible_tmax:
+            continue
+        groups.setdefault(tuple(tr.nslc_id[i] for i in perm), []).append((index, tr))
+    return [sorted(members, key=lambda item: item[1].tmin) for members in groups.values()]
 
 
 def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
@@ -1080,13 +1177,12 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     perf_visible = time.monotonic()
     if degap:
         try:
-            traces = ptrace.degapper(traces)
+            traces = _degap(traces)
         except Exception:
             pass
     order = _sort_order(traces, sort, subsort, bool(req.distances_3d))
     work = [traces[i] for i in order]
     work = _apply_rotation(work, rotate)
-    work = _remove_response(work, remove_response, hp, lp)
     perf_prepare = time.monotonic()
 
     meta = view_pb2.ViewMeta(view_tmin=tmin, view_tmax=tmax)
@@ -1098,123 +1194,119 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     view_idx = 0
     wanted_tracks = 0
     sample_tracks = 0
-    for tr_idx, tr in enumerate(work):
-        display_tmin, display_tmax = _display_time_span(tr)
-        if display_tmax < visible_tmin or display_tmin > visible_tmax:
-            continue
+    # Everything the fast path does not handle needs the `trace.minmax` path,
+    # whatever the grouping — asking `scaling_group != "individual"` instead left
+    # the Robust and Mean±Nσ bases with no range at all in the default grouping, so
+    # they flattened the display to ymin=0, ymax=1.
+    need_group_range = not fast_individual_minmax
+    for members in _gather_tracks(work, subsort, visible_tmin, visible_tmax):
         wanted_tracks += 1
-
-        net, sta, loc, cha = tr.nslc_id
-        label = ".".join(tr.nslc_id)
+        head = members[0][1]
+        net, sta, loc, cha = head.nslc_id
+        label = ".".join(head.nslc_id)
         annotation = _sort_annotation(net, sta, sort, bool(req.distances_3d))
         want_samples = track_offset <= view_idx < track_end
         if want_samples:
             sample_tracks += 1
         view_idx += 1
-        track_key = (
-            tr_idx,
-            tuple(tr.nslc_id),
-            _float_key(float(tr.tmin)),
-            _float_key(float(tr.tmax)),
-            _float_key(float(tr.deltat)),
-            int(tr.data_len()),
-            _float_key(rotate),
-            bool(remove_response),
-            bool(degap),
-        )
 
-        if mode == "waterfall":
-            flat = np.zeros(0, dtype="<f4")
-            nf = nt = 0
-            fmax = 0.0
-            vmin, vmax = (-1.0, 1.0) if not wf_abs else (0.0, 1.0)
-            t0_rel = max(float(tr.tmin), tmin) - tmin
-            dt = float(tr.deltat)
-            if want_samples:
-                entry = _processed_trace(tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
-                if entry is not None:
-                    sliced = _slice_segment(entry, tmin, tmax, 4.0)
-                else:
-                    sliced = None
-                if sliced is not None:
-                    yview, ytmin, deltat, _sample_offset = sliced
-                    strip, dt = _waterfall_trace(
-                        yview, deltat, npx, wf_abs, wf_integrate, wf_color_scale
+        # Built before the track is added, because a track whose every segment
+        # fails to process is left out of the stack entirely rather than drawn
+        # empty, and `offset` must not advance for a payload nobody receives.
+        spans: List[Tuple[float, float, int, np.ndarray]] = []
+        nf = 0
+        fmax = 0.0
+        vmin, vmax = (-1.0, 1.0) if not wf_abs else (0.0, 1.0)
+        wf_lo, wf_hi = math.inf, -math.inf
+        for tr_idx, tr in members:
+            if not (want_samples or (mode != "waterfall" and need_group_range)):
+                continue
+            track_key = (
+                tr_idx,
+                tuple(tr.nslc_id),
+                _float_key(float(tr.tmin)),
+                _float_key(float(tr.tmax)),
+                _float_key(float(tr.deltat)),
+                int(tr.data_len()),
+                _float_key(rotate),
+                bool(remove_response),
+                bool(degap),
+            )
+            entry = _processed_trace(
+                tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp, remove_response
+            )
+            if entry is None:
+                continue
+
+            if mode == "waterfall":
+                sliced = _slice_segment(entry, tmin, tmax, 4.0)
+                if sliced is None:
+                    continue
+                yview, ytmin, deltat, _sample_offset = sliced
+                strip, dt = _waterfall_trace(
+                    yview, deltat, npx, wf_abs, wf_integrate, wf_color_scale
+                )
+                if not strip.size:
+                    continue
+                nf = 1
+                if wf_abs:
+                    wf_lo = min(wf_lo, float(strip.min()))
+                    wf_hi = max(wf_hi, float(strip.max()))
+                spans.append((ytmin - tmin, dt, int(strip.size), strip))
+                continue
+
+            data_sliced = _slice_segment(entry, tmin, tmax, 4.0) if want_samples else None
+            scale_sliced = (
+                _slice_segment(entry, scale_tmin, scale_tmax, 0.0)
+                if fast_individual_minmax or need_group_range
+                else None
+            )
+            if scale_sliced is not None:
+                yrange, yrmin, rdt, _range_offset = scale_sliced
+                if fast_individual_minmax:
+                    # Merged, not overwritten: every segment of a channel shares
+                    # one track and therefore one scale, so the range has to span
+                    # all of them.
+                    lo, hi = float(np.min(yrange)), float(np.max(yrange))
+                    previous = data_ranges.get(tr.nslc_id)
+                    data_ranges[tr.nslc_id] = (
+                        (lo, hi)
+                        if previous is None
+                        else (min(previous[0], lo), max(previous[1], hi))
                     )
-                    if strip.size:
-                        flat = strip
-                        nf = 1
-                        nt = int(strip.size)
-                        if wf_abs:
-                            vmin = float(strip.min())
-                            vmax = float(strip.max())
-                        t0_rel = ytmin - tmin
-            t = meta.tracks.add()
-            t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
-            t.label = label
-            t.sort_annotation = annotation
-            t.t0_rel = t0_rel
-            t.dt = dt
-            t.count = int(nf * nt)
-            t.offset = int(offset)
+                else:
+                    range_traces.append(_range_trace(tr.nslc_id, yrmin, rdt, yrange))
+            if data_sliced is None:
+                continue
+            yview, ytmin, deltat, sample_offset = data_sliced
+            target = npx if allow_ds else len(yview)
+            y, count, dt = _decimate(yview, deltat, target, allow_ds, sample_offset)
+            if count:
+                spans.append((ytmin - tmin, dt, int(count), y))
+
+        if want_samples and not spans:
+            continue
+        t = meta.tracks.add()
+        t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
+        t.label = label
+        t.sort_annotation = annotation
+        t.ymax = 1.0
+        t.yscale = 1.0
+        if mode == "waterfall":
+            if wf_abs and wf_lo <= wf_hi:
+                vmin, vmax = wf_lo, wf_hi
             t.ymin = vmin
             t.ymax = vmax
-            t.yscale = 1.0
             t.nf = int(nf)
-            t.nt = int(nt)
             t.fmax = fmax
-            if want_samples and flat.size:
-                ys_parts.append(np.ascontiguousarray(flat, dtype="<f4"))
-                offset += int(nf * nt)
-        else:
-            count = 0
-            dt = float(tr.deltat)
-            t0_rel = max(display_tmin, tmin) - tmin
-            payload_len = 0
-            need_group_range = scaling_group != "individual"
-            if want_samples or need_group_range:
-                entry = _processed_trace(tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp)
-                if entry is None:
-                    if want_samples:
-                        continue
-                else:
-                    data_sliced = _slice_segment(entry, tmin, tmax, 4.0) if want_samples else None
-                    scale_sliced = (
-                        _slice_segment(entry, scale_tmin, scale_tmax, 0.0)
-                        if fast_individual_minmax or need_group_range
-                        else None
-                    )
-                    if data_sliced is None and want_samples:
-                        continue
-                    if scale_sliced is not None:
-                        yrange, yrmin, rdt, _range_offset = scale_sliced
-                        if fast_individual_minmax:
-                            data_ranges[tr.nslc_id] = (
-                                float(np.min(yrange)),
-                                float(np.max(yrange)),
-                            )
-                        else:
-                            range_traces.append(_range_trace(tr.nslc_id, yrmin, rdt, yrange))
-                    if data_sliced is not None:
-                        yview, ytmin, deltat, sample_offset = data_sliced
-                        dt = deltat
-                        t0_rel = ytmin - tmin
-                        target = npx if allow_ds else len(yview)
-                        y, count, dt = _decimate(yview, deltat, target, allow_ds, sample_offset)
-                        ys_parts.append(np.ascontiguousarray(y, dtype="<f4"))
-                        payload_len = int(y.size)
-            t = meta.tracks.add()
-            t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
-            t.label = label
-            t.sort_annotation = annotation
-            t.t0_rel = t0_rel
-            t.dt = dt
-            t.count = int(count)
-            t.offset = int(offset)
-            t.ymax = 1.0
-            t.yscale = 1.0
-            if want_samples:
-                offset += payload_len
+        for t0_rel, dt, count, payload in spans:
+            span = t.spans.add()
+            span.t0_rel = t0_rel
+            span.dt = dt
+            span.count = count
+            span.offset = int(offset)
+            ys_parts.append(np.ascontiguousarray(payload, dtype="<f4"))
+            offset += int(payload.size)
 
     perf_loop = time.monotonic()
     if mode == "waterfall":
@@ -1268,7 +1360,11 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if t.nf:
                 continue
             dymin, dymax = data_ranges.get(_track_scaling_key(t, scaling_group), (0.0, 1.0))
-            if not math.isfinite(dymin) or not math.isfinite(dymax) or dymax <= dymin:
+            # An equal range is real data — a dead channel pinned at one value — and
+            # AutoScaler pads it to ±1 around the value, exactly as snuffler centres
+            # such a flatline.
+            # Only a non-finite or inverted range has no meaning.
+            if not math.isfinite(dymin) or not math.isfinite(dymax) or dymax < dymin:
                 dymin, dymax = 0.0, 1.0
             ymin, ymax, _yinc = yscaler.make_scale((dymin / gain, dymax / gain))
             ymin = float(ymin)
@@ -2952,18 +3048,21 @@ def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResul
     _STATIONXML = stationxml.primitive_merge(station_xmls)
     _RESPONSE_GEN += 1
     _clear_view_cache()
-    nchan = 0
-    for net in _STATIONXML.network_list:
-        for st in net.station_list:
-            nchan += len(st.channel_list)
-            try:
-                _STATIONS[(net.code, st.code)] = (
-                    float(st.latitude.value),
-                    float(st.longitude.value),
-                    float(st.elevation.value),
-                )
-            except Exception:
-                pass
+    nchan = sum(len(st.channel_list) for net in _STATIONXML.network_list for st in net.station_list)
+    # Coordinates via `get_pyrocko_stations`, the same call snuffler feeds
+    # `--stationxml` files through — not the station element's own lat/lon.
+    # The two can genuinely disagree (real files carry channel positions ~100 m
+    # away from the station element), and snuffler's distance/azimuth sorts follow
+    # the channel-derived position, epoch handling and all.
+    for st in _STATIONXML.get_pyrocko_stations():
+        try:
+            _STATIONS[(st.network, st.station)] = (
+                float(st.lat),
+                float(st.lon),
+                float(st.elevation),
+            )
+        except Exception:  # noqa: BLE001 — skip malformed entries
+            pass
     source_label = (
         "1 StationXML file" if len(xml_texts) == 1 else "%d StationXML files" % len(xml_texts)
     )

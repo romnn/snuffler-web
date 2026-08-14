@@ -232,16 +232,20 @@ fn marker_row(
         .copied()
         .unwrap_or(Color32::from_rgb(204, 0, 0));
     let symbol = egui::RichText::new(if marker.is_event { "▲" } else { "●" }).color(color);
-    if ui.selectable_label(marker.selected, symbol).clicked() {
+    // Both cells select the row, and both say so: without this the only place
+    // selection surfaces is the table's "N markers · M selected" summary, which
+    // tells a screen-reader user how many rows are picked but never which.
+    let symbol_cell = ui.selectable_label(marker.selected, symbol);
+    crate::a11y::publish_selected(ui.ctx(), &symbol_cell, marker.selected);
+    if symbol_cell.clicked() {
         marker.selected = !marker.selected;
     }
-    if ui
-        .selectable_label(
-            marker.selected,
-            snuffler_web_core::timeaxis::format_full(marker.tmin),
-        )
-        .clicked()
-    {
+    let time_cell = ui.selectable_label(
+        marker.selected,
+        snuffler_web_core::timeaxis::format_full(marker.tmin),
+    );
+    crate::a11y::publish_selected(ui.ctx(), &time_cell, marker.selected);
+    if time_cell.clicked() {
         marker.selected = !marker.selected;
     }
     let span = marker.tmax - marker.tmin;

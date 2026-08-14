@@ -5,6 +5,7 @@
 //! [`SvgTarget`] serializes those calls to a standalone SVG. Frontends provide their own
 //! on-screen target implementations.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use ecolor::Color32;
@@ -26,8 +27,10 @@ pub trait DrawTarget {
     fn text(&mut self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32);
     /// Measures text with the same metrics used by the corresponding frontend.
     fn measure(&self, text: &str, size: f32) -> Vec2;
-    /// Draws the cached waterfall image for a visible track.
-    fn waterfall(&mut self, rect: Rect, idx: usize);
+    /// Draws the cached waterfall image for one span, keyed by its payload
+    /// offset — a track can carry several strips, so a row index would not
+    /// identify one.
+    fn waterfall(&mut self, rect: Rect, key: u64);
     /// Intersects subsequent drawing with `rect`.
     fn push_clip(&mut self, rect: Rect);
     /// Restores the previous clipping region.
@@ -52,7 +55,7 @@ pub struct SvgTarget {
     measure: Box<MeasureText>,
     body: String,
     defs: String,
-    images: Vec<Option<RasterImage>>,
+    images: HashMap<u64, RasterImage>,
     next_clip: u32,
     open_clips: u32,
     width: f32,
@@ -64,7 +67,7 @@ impl SvgTarget {
     pub fn new(
         width: f32,
         height: f32,
-        images: Vec<Option<RasterImage>>,
+        images: HashMap<u64, RasterImage>,
         measure: impl Fn(&str, f32) -> Vec2 + 'static,
     ) -> Self {
         Self {
@@ -209,8 +212,8 @@ impl DrawTarget for SvgTarget {
         (self.measure)(text, size)
     }
 
-    fn waterfall(&mut self, rect: Rect, idx: usize) {
-        let Some(Some(img)) = self.images.get(idx) else {
+    fn waterfall(&mut self, rect: Rect, key: u64) {
+        let Some(img) = self.images.get(&key) else {
             return;
         };
         let Some(png) = encode_png_rgba(img.width, img.height, &img.rgba) else {
@@ -310,6 +313,8 @@ pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ecolor::Color32;
     use emath::{Align2, Rect, pos2, vec2};
 
@@ -317,7 +322,7 @@ mod tests {
 
     #[test]
     fn svg_target_preserves_clips_and_escapes_labels() {
-        let mut target = SvgTarget::new(200.0, 100.0, Vec::new(), |text, size| {
+        let mut target = SvgTarget::new(200.0, 100.0, HashMap::new(), |text, size| {
             vec2(text.chars().fold(0.0, |width, _| width + size * 0.5), size)
         });
         target.push_clip(Rect::from_min_max(pos2(2.0, 3.0), pos2(80.0, 60.0)));

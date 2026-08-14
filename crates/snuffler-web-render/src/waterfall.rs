@@ -1,27 +1,31 @@
 //! Raw waterfall image construction shared by canvas, SVG, and native backends.
 
-use snuffler_web_core::bridge::{ViewData, ViewTrack};
+use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 
 use crate::draw::RasterImage;
 
-/// Reinterprets one track's packed colormap cells as a row-major RGBA image.
+/// Reinterprets one span's packed colormap cells as a row-major RGBA image.
 ///
 /// Pyrocko computes the colors and packs one RGBA pixel into each sample `f32`; this function
 /// only flips the frequency axis and exposes the bytes to rendering backends.
+///
+/// The frequency bins are a property of the track and the time bins of the span, so a
+/// channel that arrives in several pieces yields one image per piece.
 #[expect(
     clippy::indexing_slicing,
     reason = "the data and destination bounds follow from the checked nf*nt dimensions"
 )]
 #[must_use]
-pub fn build_image(view: &ViewData, track: &ViewTrack) -> Option<RasterImage> {
-    if track.nf == 0 || track.nt == 0 {
+pub fn build_image(view: &ViewData, track: &ViewTrack, span: &ViewSpan) -> Option<RasterImage> {
+    if track.nf == 0 || span.count == 0 {
         return None;
     }
-    let (frequency_bins, time_bins) = (
-        usize::try_from(track.nf).ok()?,
-        usize::try_from(track.nt).ok()?,
-    );
-    let data = view.samples(track);
+    let frequency_bins = usize::try_from(track.nf).ok()?;
+    let time_bins = usize::try_from(span.count.checked_div(track.nf)?).ok()?;
+    if time_bins == 0 {
+        return None;
+    }
+    let data = view.samples(span);
     if data.len() < frequency_bins.saturating_mul(time_bins) {
         return None;
     }
@@ -46,7 +50,7 @@ pub fn build_image(view: &ViewData, track: &ViewTrack) -> Option<RasterImage> {
 
 #[cfg(test)]
 mod tests {
-    use snuffler_web_core::bridge::{ViewData, ViewMeta, ViewTrack};
+    use snuffler_web_core::bridge::{ViewData, ViewMeta, ViewSpan, ViewTrack};
 
     use super::build_image;
 
@@ -62,15 +66,17 @@ mod tests {
             meta: ViewMeta::default(),
             ys: pixels.into_iter().map(f32::from_le_bytes).collect(),
         };
-        let track = ViewTrack {
+        let span = ViewSpan {
             offset: 0,
             count: 4,
+            ..ViewSpan::default()
+        };
+        let track = ViewTrack {
             nf: 2,
-            nt: 2,
             ..ViewTrack::default()
         };
 
-        let image = build_image(&view, &track);
+        let image = build_image(&view, &track, &span);
         assert!(image.is_some());
         let Some(image) = image else {
             return;

@@ -8,7 +8,7 @@
 
 use ecolor::Color32;
 use emath::{Align2, Rect, pos2};
-use snuffler_web_core::bridge::{ViewData, ViewTrack};
+use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 use snuffler_web_core::markers::{MARKER_COLORS, Marker};
 use snuffler_web_core::state::{AppState, Subsort, WiggleTheme};
 use snuffler_web_core::timeaxis;
@@ -20,7 +20,33 @@ use crate::palette::{Palette, Theme};
 const LABEL_PT: f32 = 12.5;
 const AXIS_PT: f32 = 12.5;
 
-fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
+/// The coloring key snuffler pairs with each subsort (the sorting `menudef` in
+/// `pile_viewer.py`): location for NSLC and the grouped-by-location modes,
+/// channel for NSCL/SNCL/LNSC, and the whole net+sta+loc for CNSL.
+/// An empty key (single-location data) deliberately falls back to the track
+/// label so the Color lines theme stays varied where snuffler would paint every
+/// trace alike — a signed-off prettiness choice, see `color-traces-theming` in
+/// `tests/parity/known_gaps.toml`.
+fn color_key(track: &ViewTrack, subsort: Subsort) -> String {
+    let key = match subsort {
+        Subsort::Nslc | Subsort::NscGroupL | Subsort::SncGroupL => track.loc.clone(),
+        Subsort::Nscl | Subsort::Sncl | Subsort::Lnsc => track.cha.clone(),
+        Subsort::Cnsl => format!("{}.{}.{}", track.net, track.sta, track.loc),
+    };
+    if key.is_empty() {
+        track.label.clone()
+    } else {
+        key
+    }
+}
+
+/// One stroke color per painted track, assigned the way snuffler assigns its
+/// Tango colors: distinct coloring keys sorted, then numbered into the palette
+/// in that order (`color_lookup` over the sorted `pile.gather_keys`).
+/// Only the assignment mirrors Qt; the palette is deliberately this frontend's
+/// own, tuned to its themes. Numbering runs over the painted tracks rather than
+/// the whole pile, which only shows when track paging hides a key entirely.
+fn track_stroke_colors(visible: &[ViewTrack], subsort: Subsort) -> Vec<Color32> {
     const PALETTE: [(u8, u8, u8); 7] = [
         (0xCC, 0x4A, 0x4A),
         (0x3A, 0x86, 0xC8),
@@ -30,21 +56,25 @@ fn trace_color(track: &ViewTrack, subsort: Subsort) -> Color32 {
         (0x2F, 0xA8, 0xA8),
         (0xC8, 0x5F, 0x9C),
     ];
-    let key = match subsort.color_index() {
-        0 => &track.net,
-        1 => &track.sta,
-        2 => &track.loc,
-        _ => &track.cha,
-    };
-    let key = if key.is_empty() { &track.label } else { key };
-    let hash = key.bytes().fold(0u32, |acc, byte| {
-        acc.wrapping_mul(131).wrapping_add(u32::from(byte))
-    });
-    let (red, green, blue) = PALETTE
-        .get(hash as usize % PALETTE.len())
-        .copied()
-        .unwrap_or((0x88, 0x88, 0x88));
-    Color32::from_rgb(red, green, blue)
+    let keys: Vec<String> = visible
+        .iter()
+        .map(|track| color_key(track, subsort))
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    sorted.dedup();
+    keys.iter()
+        .map(|key| {
+            // The key came out of the same list `sorted` was built from, so the
+            // search cannot miss; 0 is a defensive fallback, not a code path.
+            let index = sorted.binary_search(key).unwrap_or(0);
+            let (red, green, blue) = PALETTE
+                .get(index % PALETTE.len())
+                .copied()
+                .unwrap_or((0x88, 0x88, 0x88));
+            Color32::from_rgb(red, green, blue)
+        })
+        .collect()
 }
 
 fn row_tint(color: Color32, theme: Theme, wiggle: WiggleTheme) -> Color32 {
@@ -92,41 +122,41 @@ fn theme_uses_colored_strokes(theme: WiggleTheme) -> bool {
     matches!(theme, WiggleTheme::ColorLines)
 }
 
-fn track_time_bounds(data_tmin: f64, view: &ViewData, track: &ViewTrack) -> Option<(f64, f64)> {
-    if track.nf > 0 && track.nt > 0 {
-        return Some((
-            data_tmin + track.t0_rel,
-            data_tmin + track.t0_rel + track.nt.saturating_sub(1) as f64 * track.dt,
-        ));
+/// Time bounds of one run of samples. A track holds one of these per segment of its
+/// channel, so a gapped channel gets a box per piece rather than one box bridging
+/// the gap.
+fn span_time_bounds(
+    data_tmin: f64,
+    view: &ViewData,
+    track: &ViewTrack,
+    span: &ViewSpan,
+) -> Option<(f64, f64)> {
+    let t0 = data_tmin + span.t0_rel;
+    if track.nf > 0 {
+        let time_bins = span.count.checked_div(track.nf)?;
+        if time_bins == 0 {
+            return None;
+        }
+        return Some((t0, t0 + time_bins.saturating_sub(1) as f64 * span.dt));
     }
-    if track.dt > 0.0 && track.count > 0 {
-        return Some((
-            data_tmin + track.t0_rel,
-            data_tmin + track.t0_rel + track.count.saturating_sub(1) as f64 * track.dt,
-        ));
+    if span.dt > 0.0 && span.count > 0 {
+        return Some((t0, t0 + span.count.saturating_sub(1) as f64 * span.dt));
     }
-    if track.dt == 0.0 && track.count > 0 {
-        let start = (track.offset as usize).min(view.ys.len());
-        let end =
-            ((track.offset as usize) + (track.count as usize).saturating_mul(2)).min(view.ys.len());
-        return view.ys.get(start..end).and_then(|points| {
-            let mut chunks = points.chunks_exact(2);
-            let [first_t, _] = chunks.next()? else {
-                return None;
-            };
-            let mut tmin = f64::from(*first_t);
-            let mut tmax = tmin;
-            for pair in chunks {
-                let [pt, _] = pair else { continue };
-                let t = f64::from(*pt);
-                tmin = tmin.min(t);
-                tmax = tmax.max(t);
-            }
-            Some((
-                data_tmin + track.t0_rel + tmin,
-                data_tmin + track.t0_rel + tmax,
-            ))
-        });
+    if span.dt == 0.0 && span.count > 0 {
+        let points = view.points(span, 2);
+        let mut chunks = points.chunks_exact(2);
+        let [first_t, _] = chunks.next()? else {
+            return None;
+        };
+        let mut tmin = f64::from(*first_t);
+        let mut tmax = tmin;
+        for pair in chunks {
+            let [pt, _] = pair else { continue };
+            let t = f64::from(*pt);
+            tmin = tmin.min(t);
+            tmax = tmax.max(t);
+        }
+        return Some((t0 + tmin, t0 + tmax));
     }
     None
 }
@@ -182,35 +212,50 @@ pub fn paint(
     let time_margin = f64::from(point_margin / rect.width().max(1.0)) * window;
     let in_x = |x: f32| x >= rect.left() - point_margin && x <= rect.right() + point_margin;
 
+    // One stroke color per visible track; the row tints and the colored strokes
+    // both read it, indexed by the same loop position.
+    let stroke_colors = if state.color_traces
+        && (theme_uses_row_tints(state.wiggle_theme)
+            || theme_uses_colored_strokes(state.wiggle_theme))
+    {
+        track_stroke_colors(visible, state.subsort)
+    } else {
+        Vec::new()
+    };
+
     target.fill_rect(rect, 0.0, pal.bg);
 
     if state.show_boxes && !waterfall && state.wiggle_theme == WiggleTheme::SnufflerQt {
         target.push_clip(track_area);
         for (k, t) in visible.iter().enumerate() {
-            let Some((t0, t1)) = track_time_bounds(data_tmin, view, t) else {
-                continue;
-            };
-            let top = top0 + k as f32 * row_h + row_h * 0.05;
-            let bot = top0 + k as f32 * row_h + row_h * 0.95;
-            let x0 = x_of(t0).clamp(track_area.left(), track_area.right());
-            let x1 = x_of(t1).clamp(track_area.left(), track_area.right());
-            if x1 <= x0 || bot <= top {
-                continue;
+            for span in &t.spans {
+                let Some((t0, t1)) = span_time_bounds(data_tmin, view, t, span) else {
+                    continue;
+                };
+                let top = top0 + k as f32 * row_h + row_h * 0.05;
+                let bot = top0 + k as f32 * row_h + row_h * 0.95;
+                let x0 = x_of(t0).clamp(track_area.left(), track_area.right());
+                let x1 = x_of(t1).clamp(track_area.left(), track_area.right());
+                if x1 <= x0 || bot <= top {
+                    continue;
+                }
+                let (fill, frame) = qt_box_style(lay.off + k);
+                let r = Rect::from_min_max(pos2(x0, top), pos2(x1, bot));
+                target.fill_rect(r, 0.0, fill);
+                target.line(r.left_top(), r.right_top(), 1.0, frame);
+                target.line(r.right_top(), r.right_bottom(), 1.0, frame);
+                target.line(r.right_bottom(), r.left_bottom(), 1.0, frame);
+                target.line(r.left_bottom(), r.left_top(), 1.0, frame);
             }
-            let (fill, frame) = qt_box_style(lay.off + k);
-            let r = Rect::from_min_max(pos2(x0, top), pos2(x1, bot));
-            target.fill_rect(r, 0.0, fill);
-            target.line(r.left_top(), r.right_top(), 1.0, frame);
-            target.line(r.right_top(), r.right_bottom(), 1.0, frame);
-            target.line(r.right_bottom(), r.left_bottom(), 1.0, frame);
-            target.line(r.left_bottom(), r.left_top(), 1.0, frame);
         }
         target.pop_clip();
     } else if state.color_traces && !waterfall && theme_uses_row_tints(state.wiggle_theme) {
         target.push_clip(track_area);
-        for (k, t) in visible.iter().enumerate() {
+        // This branch's guard is part of the `stroke_colors` compute condition, so
+        // there is exactly one color per visible track here.
+        for (k, color) in stroke_colors.iter().enumerate() {
             let top = top0 + k as f32 * row_h;
-            let fill = row_tint(trace_color(t, state.subsort), theme, state.wiggle_theme);
+            let fill = row_tint(*color, theme, state.wiggle_theme);
             target.fill_rect(
                 Rect::from_min_max(
                     pos2(track_area.left(), top),
@@ -284,11 +329,18 @@ pub fn paint(
         }
 
         if waterfall && t.nf > 0 {
-            let t_abs = data_tmin + t.t0_rel;
-            let x0 = x_of(t_abs);
-            let x1 = x_of(t_abs + t.nt as f64 * t.dt);
-            let r = Rect::from_min_max(pos2(x0, top + 1.0), pos2(x1, top + row_h - 1.0));
-            target.waterfall(r, lay.off + k);
+            for span in &t.spans {
+                let Some(time_bins) = span.count.checked_div(t.nf) else {
+                    continue;
+                };
+                let t_abs = data_tmin + span.t0_rel;
+                let x0 = x_of(t_abs);
+                let x1 = x_of(t_abs + time_bins as f64 * span.dt);
+                let r = Rect::from_min_max(pos2(x0, top + 1.0), pos2(x1, top + row_h - 1.0));
+                // Keyed by payload offset, not by row: one strip per segment, and a
+                // row can carry several.
+                target.waterfall(r, span.offset);
+            }
         } else {
             // Display scale (units→pixels) comes entirely from pyrocko (yscale).
             let half = t.yscale.max(1e-12);
@@ -317,80 +369,75 @@ pub fn paint(
 
             let trace_col = if state.color_traces && theme_uses_colored_strokes(state.wiggle_theme)
             {
-                trace_color(t, state.subsort)
+                stroke_colors.get(k).copied().unwrap_or(pal.trace)
             } else {
                 pal.trace
             };
-            if t.dt > 0.0 {
-                let samples = view.samples(t);
-                if samples.len() >= 2 {
-                    let base_abs = data_tmin + t.t0_rel;
-                    let start_idx = ((view_tmin - time_margin - base_abs) / t.dt)
-                        .floor()
-                        .max(0.0) as usize;
-                    let end_idx = ((view_tmax + time_margin - base_abs) / t.dt)
-                        .ceil()
-                        .clamp(0.0, samples.len() as f64)
-                        as usize;
-                    let points: Vec<_> = samples
-                        .get(start_idx..end_idx)
-                        .unwrap_or(&[])
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, &v)| {
-                            let t_abs = base_abs + (start_idx + i) as f64 * t.dt;
-                            let x = x_of(t_abs);
-                            in_x(x).then(|| pos2(x, y_of(v)))
-                        })
-                        .collect();
-                    if points.len() >= 2 {
-                        target.polyline(points, 1.0, trace_col);
+            // One polyline per span, never one across them: the segments of a
+            // gapped channel share a row but must not be joined by a line drawn
+            // through data that is not there.
+            for span in &t.spans {
+                if span.dt > 0.0 {
+                    let samples = view.samples(span);
+                    if samples.len() >= 2 {
+                        let base_abs = data_tmin + span.t0_rel;
+                        let start_idx = ((view_tmin - time_margin - base_abs) / span.dt)
+                            .floor()
+                            .max(0.0) as usize;
+                        let end_idx = ((view_tmax + time_margin - base_abs) / span.dt)
+                            .ceil()
+                            .clamp(0.0, samples.len() as f64)
+                            as usize;
+                        let points: Vec<_> = samples
+                            .get(start_idx..end_idx)
+                            .unwrap_or(&[])
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &v)| {
+                                let t_abs = base_abs + (start_idx + i) as f64 * span.dt;
+                                let x = x_of(t_abs);
+                                in_x(x).then(|| pos2(x, y_of(v)))
+                            })
+                            .collect();
+                        if points.len() >= 2 {
+                            target.polyline(points, 1.0, trace_col);
+                        }
+                    } else if let Some(&v) = samples.first() {
+                        let t_abs = data_tmin + span.t0_rel;
+                        let half = 0.5 * span.dt;
+                        let x0 = x_of(t_abs - half);
+                        let x1 = x_of(t_abs + half);
+                        target.line(pos2(x0, y_of(v)), pos2(x1, y_of(v)), 1.0, trace_col);
                     }
-                } else if let Some(&v) = samples.first() {
-                    let t_abs = data_tmin + t.t0_rel;
-                    let half = 0.5 * t.dt;
-                    let x0 = x_of(t_abs - half);
-                    let x1 = x_of(t_abs + half);
-                    target.line(pos2(x0, y_of(v)), pos2(x1, y_of(v)), 1.0, trace_col);
-                }
-            } else if t.dt == 0.0 {
-                let start = (t.offset as usize).min(view.ys.len());
-                let end =
-                    ((t.offset as usize) + (t.count as usize).saturating_mul(2)).min(view.ys.len());
-                if let Some(points_data) = view.ys.get(start..end)
-                    && points_data.len() >= 4
-                {
-                    let lo_rel = (view_tmin - time_margin - data_tmin - t.t0_rel) as f32;
-                    let hi_rel = (view_tmax + time_margin - data_tmin - t.t0_rel) as f32;
-                    let (start_pair, end_pair) = point_pair_bounds(points_data, lo_rel, hi_rel);
-                    let points: Vec<_> = points_data
-                        .get(start_pair..end_pair)
-                        .unwrap_or(&[])
-                        .chunks_exact(2)
-                        .filter_map(|pair| match pair {
-                            [px, py] => {
-                                let x = x_of(data_tmin + t.t0_rel + f64::from(*px));
-                                in_x(x).then(|| pos2(x, y_of(*py)))
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    if points.len() >= 2 {
-                        target.polyline(points, 1.0, trace_col);
+                } else if span.dt == 0.0 {
+                    let points_data = view.points(span, 2);
+                    if points_data.len() >= 4 {
+                        let lo_rel = (view_tmin - time_margin - data_tmin - span.t0_rel) as f32;
+                        let hi_rel = (view_tmax + time_margin - data_tmin - span.t0_rel) as f32;
+                        let (start_pair, end_pair) = point_pair_bounds(points_data, lo_rel, hi_rel);
+                        let points: Vec<_> = points_data
+                            .get(start_pair..end_pair)
+                            .unwrap_or(&[])
+                            .chunks_exact(2)
+                            .filter_map(|pair| match pair {
+                                [px, py] => {
+                                    let x = x_of(data_tmin + span.t0_rel + f64::from(*px));
+                                    in_x(x).then(|| pos2(x, y_of(*py)))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        if points.len() >= 2 {
+                            target.polyline(points, 1.0, trace_col);
+                        }
                     }
-                }
-            } else if t.dt < 0.0 {
-                let start = (t.offset as usize).min(view.ys.len());
-                let end =
-                    ((t.offset as usize) + (t.count as usize).saturating_mul(3)).min(view.ys.len());
-                if let Some(envelope) = view.ys.get(start..end)
-                    && envelope.len() >= 3
-                {
+                } else {
+                    let envelope = view.points(span, 3);
                     for triple in envelope.chunks_exact(3) {
                         let [t0, ylo, yhi] = triple else {
                             continue;
                         };
-                        let x = x_of(data_tmin + t.t0_rel + f64::from(*t0));
+                        let x = x_of(data_tmin + span.t0_rel + f64::from(*t0));
                         if !in_x(x) {
                             continue;
                         }
@@ -605,6 +652,8 @@ fn draw_markers(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use emath::{Rect, Vec2, pos2};
     use snuffler_web_core::bridge::{ViewData, ViewMeta, ViewTrack};
     use snuffler_web_core::state::{AppState, WiggleTheme};
@@ -613,7 +662,84 @@ mod tests {
     use crate::layout::compute_layout;
     use crate::palette::{Theme, palette};
 
-    use super::paint;
+    use super::{paint, track_stroke_colors};
+    use ecolor::Color32;
+    use snuffler_web_core::state::Subsort;
+
+    fn track(net: &str, sta: &str, loc: &str, cha: &str, label: &str) -> ViewTrack {
+        ViewTrack {
+            net: net.into(),
+            sta: sta.into(),
+            loc: loc.into(),
+            cha: cha.into(),
+            label: label.into(),
+            ..ViewTrack::default()
+        }
+    }
+
+    // These pin the half of `color-traces-theming` (tests/parity/known_gaps.toml)
+    // that mirrors snuffler: the per-subsort coloring keys and the sorted-key
+    // numbering. The palette itself is deliberately this frontend's own.
+
+    /// The stroke colors as a fixed-size array, so the asserts can destructure
+    /// instead of indexing.
+    fn colors_of<const N: usize>(tracks: &[ViewTrack; N], subsort: Subsort) -> [Color32; N] {
+        let colors = track_stroke_colors(tracks.as_slice(), subsort);
+        // One color per track, always; the fallback array only satisfies the
+        // conversion's type and is unreachable past this assert.
+        assert_eq!(colors.len(), N);
+        colors.try_into().unwrap_or([Color32::TRANSPARENT; N])
+    }
+
+    #[test]
+    fn nslc_subsort_colors_by_location() {
+        let tracks = [
+            track("XX", "AAA", "00", "HHZ", "XX.AAA.00.HHZ"),
+            track("XX", "BBB", "00", "HHN", "XX.BBB.00.HHN"),
+            track("XX", "CCC", "10", "HHZ", "XX.CCC.10.HHZ"),
+        ];
+        // Shared location means a shared color; a different location does not.
+        let [a, b, c] = colors_of(&tracks, Subsort::Nslc);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn cnsl_subsort_colors_by_net_sta_loc_composite() {
+        // Same station code under two networks: snuffler's CNSL coloring key is
+        // the (net, sta, loc) tuple, so these two must not share a color.
+        let tracks = [
+            track("XX", "AAA", "", "HHZ", "XX.AAA..HHZ"),
+            track("YY", "AAA", "", "HHZ", "YY.AAA..HHZ"),
+        ];
+        let [a, b] = colors_of(&tracks, Subsort::Cnsl);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn empty_location_falls_back_to_per_track_label() {
+        // Single-location data would collapse to one color under snuffler's key;
+        // the label fallback keeps the Color lines theme varied instead — the
+        // signed-off prettiness choice in the register entry.
+        let tracks = [
+            track("XX", "AAA", "", "HHZ", "XX.AAA..HHZ"),
+            track("XX", "BBB", "", "HHZ", "XX.BBB..HHZ"),
+        ];
+        let [a, b] = colors_of(&tracks, Subsort::Nslc);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn assignment_numbers_sorted_keys_independent_of_track_order() {
+        let first = track("XX", "AAA", "00", "HHZ", "a");
+        let second = track("XX", "BBB", "10", "HHZ", "b");
+        // A key's color depends on the sorted key set, never on which track came
+        // first — the same rule as snuffler's `color_lookup` over sorted keys.
+        let [fa, fb] = colors_of(&[first.clone(), second.clone()], Subsort::Nslc);
+        let [rb, ra] = colors_of(&[second, first], Subsort::Nslc);
+        assert_eq!(fa, ra);
+        assert_eq!(fb, rb);
+    }
 
     #[test]
     fn complete_pipeline_renders_axes_to_svg_on_the_host() {
@@ -633,7 +759,7 @@ mod tests {
         let layout = compute_layout(&state, &view, rect);
         let theme = Theme::Dark;
         let colors = palette(theme, WiggleTheme::SnufflerQt);
-        let mut target = SvgTarget::new(640.0, 360.0, Vec::new(), |text, size| {
+        let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
 
@@ -673,7 +799,7 @@ mod tests {
         let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0));
         let layout = compute_layout(&state, &view, rect);
         let colors = palette(Theme::Dark, WiggleTheme::SnufflerQt);
-        let mut target = SvgTarget::new(640.0, 360.0, Vec::new(), |text, size| {
+        let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
 

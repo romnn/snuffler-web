@@ -28,7 +28,7 @@ pub use proto::pb::{
     RmsSnufflingParams, SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams,
     SetActiveEventRequest, SnufflingParams, SnufflingRequestParams, SnufflingResult,
     SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest,
-    ViewMeta, ViewParams, ViewTrack, WaveformDownloadRequest,
+    ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
 
 /// Visible live waveform window once enough samples have arrived.
@@ -57,11 +57,20 @@ pub struct ViewData {
 }
 
 impl ViewData {
-    /// Raw uniform samples or waterfall cells for one track as a flat slice.
+    /// Raw uniform samples or waterfall cells for one span as a flat slice.
     #[must_use]
-    pub fn samples<'a>(&'a self, t: &ViewTrack) -> &'a [f32] {
-        let off = usize::try_from(t.offset).unwrap_or(usize::MAX);
-        let cnt = usize::try_from(t.count).unwrap_or(usize::MAX);
+    pub fn samples<'a>(&'a self, span: &ViewSpan) -> &'a [f32] {
+        self.points(span, 1)
+    }
+
+    /// A span's payload as a flat slice, `stride` floats per point: 1 for uniform
+    /// samples, 2 for `(t_rel, y)` pairs, 3 for `(t_rel, ylo, yhi)` envelope triples.
+    #[must_use]
+    pub fn points<'a>(&'a self, span: &ViewSpan, stride: usize) -> &'a [f32] {
+        let off = usize::try_from(span.offset).unwrap_or(usize::MAX);
+        let cnt = usize::try_from(span.count)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(stride);
         let end = off.saturating_add(cnt).min(self.ys.len());
         self.ys.get(off.min(self.ys.len())..end).unwrap_or(&[])
     }
@@ -1041,45 +1050,40 @@ mod web {
         invalidate_view_request(i);
     }
 
+    /// The values one track would draw, flattened across its spans, for the
+    /// diagnostic log. A gapped channel contributes every segment.
     fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
         if track.nf > 0 {
             return ("waterfall", Vec::new());
         }
-        if track.dt > 0.0 {
-            return ("raw", view.samples(track).to_vec());
+        let mut kind = "missing";
+        let mut values = Vec::new();
+        for span in &track.spans {
+            if span.dt > 0.0 {
+                kind = "raw";
+                values.extend_from_slice(view.samples(span));
+            } else if span.dt == 0.0 {
+                kind = "points";
+                values.extend(
+                    view.points(span, 2)
+                        .chunks_exact(2)
+                        .filter_map(|pair| match pair {
+                            [_, y] => Some(*y),
+                            _ => None,
+                        }),
+                );
+            } else {
+                kind = "legacy-envelope";
+                for triple in view.points(span, 3).chunks_exact(3) {
+                    let [_, ylo, yhi] = triple else {
+                        continue;
+                    };
+                    values.push(*ylo);
+                    values.push(*yhi);
+                }
+            }
         }
-
-        let stride = if track.dt == 0.0 { 2 } else { 3 };
-        let off = usize::try_from(track.offset).unwrap_or(usize::MAX);
-        let cnt = usize::try_from(track.count).unwrap_or(usize::MAX);
-        let start = off.min(view.ys.len());
-        let end = off
-            .saturating_add(cnt.saturating_mul(stride))
-            .min(view.ys.len());
-        let Some(payload) = view.ys.get(start..end) else {
-            return ("missing", Vec::new());
-        };
-        if track.dt == 0.0 {
-            return (
-                "points",
-                payload
-                    .chunks_exact(2)
-                    .filter_map(|pair| match pair {
-                        [_, y] => Some(*y),
-                        _ => None,
-                    })
-                    .collect(),
-            );
-        }
-        let mut values = Vec::with_capacity(cnt.saturating_mul(2));
-        for triple in payload.chunks_exact(3) {
-            let [_, ylo, yhi] = triple else {
-                continue;
-            };
-            values.push(*ylo);
-            values.push(*yhi);
-        }
-        ("legacy-envelope", values)
+        (kind, values)
     }
 
     #[allow(
@@ -1127,18 +1131,18 @@ mod web {
         let tcount = usize::try_from(params.track_count).unwrap_or(usize::MAX);
 
         let rendered_tracks: Vec<_> = view.meta.tracks.iter().skip(toff).take(tcount).collect();
-        let raw_tracks = rendered_tracks
-            .iter()
-            .filter(|track| track.nf == 0 && track.count > 0 && track.dt > 0.0)
-            .count();
-        let point_tracks = rendered_tracks
-            .iter()
-            .filter(|track| track.nf == 0 && track.count > 0 && track.dt == 0.0)
-            .count();
-        let legacy_tracks = rendered_tracks
-            .iter()
-            .filter(|track| track.nf == 0 && track.count > 0 && track.dt < 0.0)
-            .count();
+        // Counted per span: a track carries one per segment of its channel, and a
+        // gapped channel can well be raw in one piece and decimated in another.
+        let payload_spans = || {
+            rendered_tracks
+                .iter()
+                .filter(|track| track.nf == 0)
+                .flat_map(|track| track.spans.iter())
+                .filter(|span| span.count > 0)
+        };
+        let raw_tracks = payload_spans().filter(|span| span.dt > 0.0).count();
+        let point_tracks = payload_spans().filter(|span| span.dt == 0.0).count();
+        let legacy_tracks = payload_spans().filter(|span| span.dt < 0.0).count();
         let window = params.tmax - params.tmin;
         let ys_mb = view.ys.len() as f64 * 4.0 / 1_000_000.0;
         let throughput = if request_ms > 0.0 {
@@ -1171,12 +1175,16 @@ mod web {
             } else {
                 values.len() as f64 / f64::from(params.npx)
             };
+            let first = track.spans.first();
+            let t0_rel = first.map_or(0.0, |span| span.t0_rel);
+            let dt = first.map_or(0.0, |span| span.dt);
             if let Some((min_v, max_v, mean, rms)) = finite_stats(&values) {
                 log::debug!(
-                    "[view.track] idx={} label={} mode={} count={} points_per_px={:.3} data_min={:.6} data_max={:.6} data_mean={:.6} data_rms={:.6} scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9} head=[{}]",
+                    "[view.track] idx={} label={} mode={} spans={} count={} points_per_px={:.3} data_min={:.6} data_max={:.6} data_mean={:.6} data_rms={:.6} scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9} head=[{}]",
                     idx,
                     track.label,
                     mode,
+                    track.spans.len(),
                     values.len(),
                     points_per_px,
                     min_v,
@@ -1187,22 +1195,23 @@ mod web {
                     track.ymax,
                     track.ymean,
                     track.yscale,
-                    track.t0_rel,
-                    track.dt,
+                    t0_rel,
+                    dt,
                     sample_head(&values),
                 );
             } else {
                 log::debug!(
-                    "[view.track] idx={} label={} mode={} count=0 scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9}",
+                    "[view.track] idx={} label={} mode={} spans={} count=0 scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9}",
                     idx,
                     track.label,
                     mode,
+                    track.spans.len(),
                     track.ymin,
                     track.ymax,
                     track.ymean,
                     track.yscale,
-                    track.t0_rel,
-                    track.dt,
+                    t0_rel,
+                    dt,
                 );
             }
         }

@@ -64,3 +64,16 @@ pub fn announce_changes(ctx: &egui::Context, response: &egui::Response, urgency:
     ctx.accesskit_node_builder(response.id, |node| node.set_live(live))
         .unwrap_or_default();
 }
+
+/// Mark a widget as selected or not, so its state can be read off the row itself
+/// rather than inferred from a count somewhere else.
+///
+/// egui gives `selectable_label` a *toggled* state, which surfaces as
+/// `aria-checked` — right for a toggle button, wrong for a row of a selection list,
+/// where the question is which rows are picked. AccessKit distinguishes the two and
+/// so does ARIA, but only the app knows which it means. A no-op while AccessKit is
+/// off, since egui then builds no nodes to annotate.
+pub fn publish_selected(ctx: &egui::Context, response: &egui::Response, selected: bool) {
+    ctx.accesskit_node_builder(response.id, |node| node.set_selected(selected))
+        .unwrap_or_default();
+}

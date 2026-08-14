@@ -16,6 +16,7 @@ class Trace:
     tmax: float
     ydata: np.ndarray[Any, Any]
     nslc_id: tuple[str, str, str, str]
+    full_id: tuple[str, str, str, str, float]
     meta: Any
 
     def __init__(
@@ -95,7 +96,13 @@ class Trace:
     ) -> None: ...
     def append(self, value: np.ndarray[Any, Any]) -> None: ...
 
-def degapper(traces: Sequence[Trace]) -> list[Trace]: ...
+def degapper(
+    traces: Sequence[Trace],
+    maxgap: float = ...,
+    fillmethod: str = ...,
+    deoverlap: str = ...,
+    maxlap: float | None = ...,
+) -> list[Trace]: ...
 def rotate(
     traces: Sequence[Trace],
     azimuth: float,

@@ -1,5 +1,7 @@
 //! Egui drawing backend and image conversion for the shared renderer.
 
+use std::collections::HashMap;
+
 use egui::{Align2, Color32, ColorImage, Pos2, Rect, Vec2};
 
 pub use snuffler_web_render::draw::{DrawTarget, RasterImage, SvgTarget, encode_png_rgba};
@@ -8,12 +10,13 @@ pub use snuffler_web_render::draw::{DrawTarget, RasterImage, SvgTarget, encode_p
 pub struct EguiTarget<'a> {
     base: egui::Painter,
     clips: Vec<egui::Painter>,
-    textures: &'a [Option<egui::TextureHandle>],
+    textures: &'a HashMap<u64, egui::TextureHandle>,
 }
 
 impl<'a> EguiTarget<'a> {
-    /// Wraps an egui painter and the waterfall textures for the visible tracks.
-    pub fn new(painter: egui::Painter, textures: &'a [Option<egui::TextureHandle>]) -> Self {
+    /// Wraps an egui painter and the waterfall textures for the visible spans,
+    /// keyed by payload offset.
+    pub fn new(painter: egui::Painter, textures: &'a HashMap<u64, egui::TextureHandle>) -> Self {
         Self {
             base: painter,
             clips: Vec::new(),
@@ -66,8 +69,8 @@ impl DrawTarget for EguiTarget<'_> {
         })
     }
 
-    fn waterfall(&mut self, rect: Rect, index: usize) {
-        if let Some(Some(texture)) = self.textures.get(index) {
+    fn waterfall(&mut self, rect: Rect, key: u64) {
+        if let Some(texture) = self.textures.get(&key) {
             self.current().image(
                 texture.id(),
                 rect,

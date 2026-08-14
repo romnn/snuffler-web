@@ -11,13 +11,14 @@
 )]
 
 use std::cell::Cell;
+use std::collections::HashMap;
 
 use egui::{
     Align2, Color32, ColorImage, FontId, Key, Rect, Sense, Stroke, TextureHandle, TextureOptions,
 };
 
 use crate::view::draw::{EguiTarget, RasterImage, SvgTarget};
-use snuffler_web_core::bridge::{ViewData, ViewTrack};
+use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 use snuffler_web_core::markers::{Marker, PHASE_KEYS};
 use snuffler_web_core::state::{
     ActiveEventReq, AppState, DEFAULT_NTRACKS_SHOWN, MAX_TRACK_H, MIN_TRACK_H, PickingState,
@@ -43,7 +44,9 @@ thread_local! {
 #[derive(Default)]
 pub struct WaterfallCache {
     epoch: u64,
-    textures: Vec<Option<TextureHandle>>,
+    /// Keyed by the span's payload offset: a track can carry one strip per segment
+    /// of its channel, so a row index would not identify one.
+    textures: HashMap<u64, TextureHandle>,
 }
 
 impl WaterfallCache {
@@ -56,8 +59,10 @@ impl WaterfallCache {
             .meta
             .tracks
             .iter()
-            .enumerate()
-            .map(|(i, t)| build_texture(ctx, view, t, i))
+            .flat_map(|t| t.spans.iter().map(move |span| (t, span)))
+            .filter_map(|(t, span)| {
+                build_texture(ctx, view, t, span).map(|texture| (span.offset, texture))
+            })
             .collect();
     }
 }
@@ -66,15 +71,16 @@ fn build_texture(
     ctx: &egui::Context,
     view: &ViewData,
     t: &ViewTrack,
-    idx: usize,
+    span: &ViewSpan,
 ) -> Option<TextureHandle> {
-    let img = build_image(view, t)?;
-    Some(ctx.load_texture(format!("wf{idx}"), img, TextureOptions::NEAREST))
+    let img = build_image(view, t, span)?;
+    let key = span.offset;
+    Some(ctx.load_texture(format!("wf{key}"), img, TextureOptions::NEAREST))
 }
 
 /// Converts the shared raw waterfall image into an egui texture source.
-fn build_image(view: &ViewData, t: &ViewTrack) -> Option<ColorImage> {
-    let image = snuffler_web_render::waterfall::build_image(view, t)?;
+fn build_image(view: &ViewData, t: &ViewTrack, span: &ViewSpan) -> Option<ColorImage> {
+    let image = snuffler_web_render::waterfall::build_image(view, t, span)?;
     let size = [
         usize::try_from(image.width).ok()?,
         usize::try_from(image.height).ok()?,
@@ -87,9 +93,10 @@ fn paint_payload_points(visible: &[ViewTrack]) -> usize {
     visible
         .iter()
         .filter(|track| track.nf == 0)
-        .map(|track| {
-            let count = usize::try_from(track.count).unwrap_or(usize::MAX);
-            if track.dt < 0.0 {
+        .flat_map(|track| track.spans.iter())
+        .map(|span| {
+            let count = usize::try_from(span.count).unwrap_or(usize::MAX);
+            if span.dt < 0.0 {
                 count.saturating_mul(2)
             } else {
                 count
@@ -150,19 +157,20 @@ pub fn render_svg(
     let rect = Rect::from_min_size(egui::Pos2::ZERO, size);
     let lay = compute_layout(state, view, rect);
     let waterfall = state.view_mode == ViewMode::Waterfall;
-    let images: Vec<Option<RasterImage>> = if waterfall {
+    let images: HashMap<u64, RasterImage> = if waterfall {
         view.meta
             .tracks
             .iter()
             .enumerate()
-            .map(|(i, t)| {
-                (i >= lay.off && i < lay.off + lay.n_shown)
-                    .then(|| snuffler_web_render::waterfall::build_image(view, t))
-                    .flatten()
+            .filter(|(i, _)| *i >= lay.off && *i < lay.off + lay.n_shown)
+            .flat_map(|(_, t)| t.spans.iter().map(move |span| (t, span)))
+            .filter_map(|(t, span)| {
+                snuffler_web_render::waterfall::build_image(view, t, span)
+                    .map(|image| (span.offset, image))
             })
             .collect()
     } else {
-        Vec::new()
+        HashMap::new()
     };
     let measure_ctx = ctx.clone();
     let mut target = SvgTarget::new(size.x, size.y, images, move |text, size| {
@@ -625,7 +633,18 @@ fn handle_interaction(
     if resp.double_clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
             let t = t_at_x(p.x);
-            state.markers.push(Marker::new(t, t, state.marker_kind));
+            // Selected, and the only one selected — snuffler's `stop_picking` ends
+            // with `floating_marker.selected = True` after a `deselect_all`, so the
+            // marker just placed is the one every following keystroke acts on.
+            // Leaving it unselected makes the whole marker-editing vocabulary
+            // (kind digits, phase keys, backspace) do nothing until the user picks
+            // it out by hand.
+            for m in &mut state.markers {
+                m.selected = false;
+            }
+            let mut m = Marker::new(t, t, state.marker_kind);
+            m.selected = true;
+            state.markers.push(m);
         }
     } else if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
@@ -716,7 +735,17 @@ fn handle_keyboard(
 ) {
     // Don't fire single-key shortcuts while a text field (FDSN forms, command
     // line) has the keyboard — otherwise typing "n" would jump markers.
-    if ui.ctx().egui_wants_keyboard_input() {
+    //
+    // Asked of the text edit specifically, not of focus in general:
+    // `egui_wants_keyboard_input` is true whenever *any* widget holds focus, so a
+    // menu item activated from the keyboard kept focus afterwards and killed every
+    // single-key shortcut until a pointer click on the canvas took it back. That is
+    // invisible to a mouse user and a dead end for a keyboard-only one, and
+    // snuffler has no such state: closing a menu returns the keyboard to the viewer.
+    //
+    // An open menu still swallows them, the way a QMenu holds the keyboard while it
+    // is up; the point is that closing it gives them back.
+    if ui.ctx().text_edit_focused() || ui.ctx().any_popup_open() {
         return;
     }
     ui.input(|i| {

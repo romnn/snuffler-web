@@ -24,7 +24,7 @@ use egui_a11y::accesskit_dom;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-pub use egui_a11y::{Urgency, announce_changes};
+pub use egui_a11y::{Urgency, announce_changes, publish_selected};
 
 /// Must match the canvas the app is mounted on in `main.rs` and `index.html`.
 const CANVAS_ID: &str = "the_canvas_id";
