@@ -43,6 +43,9 @@
     <!-- SeisBench picker pre/post-processing; ONNX Runtime and model assets are
          staged by Trunk.toml post_build hooks. -->
     <link data-trunk rel="copy-file" href="../../web/seisbench_infer.py" />
+    <!-- Python side of the worker's boot: defers pyrocko's module-scope scipy
+         imports and reports import progress (imported before bridge.py) -->
+    <link data-trunk rel="copy-file" href="../../web/bootstrap.py" />
     <link data-trunk rel="copy-file" href="../../web/gen/bridge_worker.js" />
     <link data-trunk rel="copy-file" href="../../web/gen/ort_worker.js" />
     <!-- cross-origin isolation shim (opt-in; see the script in <head>) -->
@@ -218,6 +221,25 @@
                 }
             }
         };
+
+        // Start the Pyodide worker HERE, not from web/bridge.js: bridge.js is
+        // imported by the app wasm, so waiting for it would queue the ~47 MB
+        // Python download behind the ~13 MB wasm download + instantiate. The
+        // worker boots Python on module load (see web/bridge_worker.ts), so
+        // creating it is enough; bridge.js adopts this instance and drains the
+        // messages queued below, which are otherwise dropped for want of a
+        // listener.
+        //
+        // Only when the page is ALREADY cross-origin isolated: without it the
+        // pthread Pyodide cannot come up at all, and on the Pages deploy the
+        // coi-serviceworker shim reloads the page to get there — so starting a
+        // download now would just be thrown away by that reload.
+        if (window.crossOriginIsolated) {
+            const worker = new Worker("bridge_worker.js", { type: "module" });
+            const queue = [];
+            worker.onmessage = (event) => queue.push(event);
+            window.__snufflerWorker = { worker, queue };
+        }
     </script>
 </body>
 

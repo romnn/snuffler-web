@@ -15,7 +15,11 @@ import {
   type WorkerEvent,
 } from "./proto/snuffler/bridge/v1/bridge_pb.js";
 import { rpc } from "./rpc.js";
-import { WORKER_MOUNT_GF_STORE, WORKER_RELOAD_SNUFFLINGS } from "./worker_command.js";
+import {
+  WORKER_MOUNT_GF_STORE,
+  WORKER_RELOAD_SNUFFLINGS,
+  WORKER_WARM_DEFERRED,
+} from "./worker_command.js";
 
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
 
@@ -62,16 +66,6 @@ const GET_VIEW_METHOD = rpc("getView");
 const BRIDGE_PERF_LOG = false;
 type BridgePerf = Record<string, number>;
 type MlDeviceInfo = { device: MlDevice; adapter: unknown | null };
-type ProgressPost = (fraction: number, label: string) => void;
-type FetchProgressContext = {
-  start: number;
-  end: number;
-  label: string;
-  post: ProgressPost;
-  loadedBytes: number;
-  totalBytes: number;
-  lastFraction: number;
-};
 type OrtWorkerDevice = "webgpu" | "wasm";
 type OrtRequest = {
   type: "infer";
@@ -121,7 +115,6 @@ type OrtClient = {
 };
 
 let mlDeviceInfoPromise: Promise<MlDeviceInfo> | null = null;
-let activeFetchProgress: FetchProgressContext | null = null;
 let ortWebgpuClient: OrtClient | null = null;
 let ortWasmClient: OrtClient | null = null;
 const ortWebgpuFailedModels = new Set<string>();
@@ -130,6 +123,10 @@ const ORT_WASM_SETUP_TIMEOUT_MS = 60_000;
 const ORT_RUN_TIMEOUT_MS = 180_000;
 const nativeFetch = self.fetch.bind(self) as typeof fetch;
 const prefetchedResponses = new Map<string, Uint8Array>();
+// Requests in flight while prefetching the runtime + wheels. Six matches what
+// browsers allow per host over HTTP/1.1, and keeps a high-latency link busy
+// instead of paying one round trip per wheel.
+const PREFETCH_CONCURRENCY = 6;
 const PYODIDE_PACKAGES = [
   "numpy",
   "scipy",
@@ -198,58 +195,23 @@ function responseContentLength(response: Response): number {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function responseInit(response: Response): ResponseInit {
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  };
-}
-
 function progressFraction(start: number, end: number, loaded: number, total: number): number {
   if (total <= 0) return start;
   return start + (end - start) * Math.max(0, Math.min(1, loaded / total));
 }
 
-function reportFetchProgress(context: FetchProgressContext, fraction: number) {
-  context.lastFraction = Math.max(context.lastFraction, Math.min(context.end, fraction));
-  context.post(context.lastFraction, context.label);
-}
-
+// Serve loadPyodide()/loadPackage()'s own fetches out of the batch we downloaded
+// ahead of them (see startPrefetch); anything they ask for that we did not
+// prefetch falls through to the network unchanged.
 (self as any).fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = normalizeFetchUrl(input);
   const prefetched = prefetchedResponses.get(url);
-  if (prefetched) {
-    prefetchedResponses.delete(url);
-    return new Response(prefetched.slice(), {
-      status: 200,
-      headers: responseHeadersFor(url, prefetched),
-    });
-  }
-
-  const response = await nativeFetch(input, init);
-  const context = activeFetchProgress;
-  const total = responseContentLength(response);
-  if (!context || !response.body || total === 0) {
-    return response;
-  }
-
-  context.totalBytes += total;
-  const [metered, body] = response.body.tee();
-  void (async () => {
-    const reader = metered.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      context.loadedBytes += value.byteLength;
-      reportFetchProgress(
-        context,
-        progressFraction(context.start, context.end, context.loadedBytes, context.totalBytes)
-      );
-    }
-  })().catch((e) => console.warn("[bridge-worker] progress meter failed:", e));
-  return new Response(body, responseInit(response));
+  if (!prefetched) return await nativeFetch(input, init);
+  prefetchedResponses.delete(url);
+  return new Response(prefetched.slice(), {
+    status: 200,
+    headers: responseHeadersFor(url, prefetched),
+  });
 };
 
 async function fetchContentLength(url: string): Promise<number> {
@@ -291,34 +253,109 @@ async function fetchBytes(url: string, loaded: (bytes: number) => void): Promise
   return bytes;
 }
 
-async function prefetchUrls(
-  urls: string[],
+// The boot phase the progress bar is labelled with. The download meter below runs
+// across several phases (the runtime starts while the wheels are still coming in),
+// so the fraction it posts is byte-driven while the label tracks whatever boot() is
+// actually waiting on.
+//
+// The spans each phase gets are its share of a real first visit, measured at
+// 25 Mbit/s with a cold cache (~20 s end to end). The app wasm and the Python
+// assets download CONCURRENTLY now (index.html starts this worker at page
+// parse), and the two meters cannot see each other's bytes, so the bar shows
+// whichever is further along: the app's span covers most of a cold load and is
+// sized for that (0 -> 0.44, driven by the Trunk loader; see
+// scripts/patch-trunk-loader.mjs), then downloads -> 0.84, installing -> 0.92,
+// importing -> 0.96, first scene the rest. Both long phases are metered by
+// what actually costs the time — bytes for the download and install, modules for
+// the import — rather than by step count, so the bar tracks work done and not the
+// number of names in a list.
+let bootPhase = "Starting…";
+let bootFraction = 0;
+
+function setBootPhase(label: string) {
+  bootPhase = label;
+  postBootProgress(bootFraction, label);
+}
+
+// Roughly how many modules `import bridge` pulls in, used only to shape the bar
+// across the import phase. The count is measured, not derived, so it drifts as
+// pyrocko/numpy change — progressFraction clamps at the end of the span, and the
+// final report jumps the bar there regardless, so drift costs smoothness, never
+// correctness.
+const BOOT_MODULE_ESTIMATE = 700;
+
+// Called from Python as modules come in (see bootstrap.import_bridge).
+function bootModuleProgress(count: number) {
+  prog(
+    progressFraction(0.92, 0.96, count, BOOT_MODULE_ESTIMATE),
+    count >= BOOT_MODULE_ESTIMATE ? "Importing pyrocko…" : `Importing pyrocko… (${count} modules)`
+  );
+}
+
+// Download `urls` into `prefetchedResponses` with `PREFETCH_CONCURRENCY` requests
+// in flight, metering all of them as one byte-accurate progress span.
+//
+// `priority` is a prefix of `urls` that boot() needs before the rest (the Pyodide
+// runtime, so the interpreter can start while the wheels are still downloading);
+// it is fetched first and awaited separately.
+function startPrefetch(
+  priority: string[],
+  rest: string[],
   start: number,
-  end: number,
-  label: string,
-  cacheResponses: boolean
-): Promise<void> {
-  const uniqueUrls = Array.from(new Set(urls));
-  const lengths = await Promise.all(uniqueUrls.map(fetchContentLength));
-  const total = lengths.reduce((sum, value) => sum + value, 0);
+  end: number
+): { priority: Promise<void>; all: Promise<void> } {
+  // A Set keeps first-insertion order, so the priority urls stay at the front of
+  // the queue the workers below pull from.
+  const urls = Array.from(new Set([...priority, ...rest]));
+  const settled = new Map<string, { resolve: () => void; reject: (error: unknown) => void }>();
+  const ready = priority.map(
+    (url) =>
+      new Promise<void>((resolve, reject) => {
+        settled.set(url, { resolve, reject });
+      })
+  );
+
   let loaded = 0;
-  let lastFraction = start;
+  let total = 0;
   const report = () => {
-    const fraction =
-      total > 0 ? progressFraction(start, end, loaded, total) : Math.min(end - 0.01, lastFraction);
-    lastFraction = Math.max(lastFraction, fraction);
-    postBootProgress(lastFraction, label);
+    if (total <= 0) return;
+    bootFraction = Math.max(bootFraction, progressFraction(start, end, loaded, total));
+    postBootProgress(bootFraction, bootPhase);
   };
 
-  postBootProgress(start, label);
-  for (const url of uniqueUrls) {
-    const bytes = await fetchBytes(url, (n) => {
-      loaded += n;
-      report();
-    });
-    if (cacheResponses) prefetchedResponses.set(url, bytes);
-  }
-  postBootProgress(end, label);
+  const all = (async () => {
+    const lengths = await Promise.all(urls.map(fetchContentLength));
+    total = lengths.reduce((sum, value) => sum + value, 0);
+    let next = 0;
+    const drain = async () => {
+      for (;;) {
+        const index = next++;
+        if (index >= urls.length) return;
+        const url = urls[index];
+        try {
+          prefetchedResponses.set(
+            url,
+            await fetchBytes(url, (n) => {
+              loaded += n;
+              report();
+            })
+          );
+          settled.get(url)?.resolve();
+        } catch (e) {
+          settled.get(url)?.reject(e);
+          throw e;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, urls.length) }, drain));
+    bootFraction = Math.max(bootFraction, end);
+    postBootProgress(bootFraction, bootPhase);
+  })();
+
+  // boot() awaits `priority` first and `all` later; without this sink a failure
+  // that surfaces through `priority` would also land as an unhandled rejection.
+  void all.catch(() => {});
+  return { priority: Promise.all(ready).then(() => undefined), all };
 }
 
 function pyodidePackageName(name: string): string {
@@ -342,62 +379,74 @@ function pyodidePackageClosure(lock: any): string[] {
   return out;
 }
 
-async function prefetchPyodideRuntime(): Promise<void> {
-  await prefetchUrls(
-    [
-      resolveUrl("py-mt/pyodide-lock.json"),
-      resolveUrl("py-mt/pyodide.asm.mjs"),
-      resolveUrl("py-mt/pyodide.asm.wasm"),
-      resolveUrl("py-mt/python_stdlib.zip"),
-    ],
-    0.22,
-    0.45,
-    "Downloading Python runtime…",
-    true
-  );
-}
-
-async function prefetchPyodidePackages(): Promise<void> {
+// Start every download the boot needs — runtime first, then the wheel closure —
+// as ONE metered, concurrent batch. The wheels are not needed until loadPackage(),
+// so downloading them alongside the runtime start overlaps ~30 MB of network with
+// the interpreter's own (CPU-bound) startup instead of queueing behind it.
+async function startPyodidePrefetch(): Promise<{
+  priority: Promise<void>;
+  all: Promise<void>;
+  packages: Array<{ name: string; url: string }>;
+}> {
+  // loadPyodide() and loadPackage() both read the lock again; keep the bytes so
+  // they are answered from the prefetch cache rather than a second round trip.
   const lockUrl = resolveUrl("py-mt/pyodide-lock.json");
-  const lockBytes = prefetchedResponses.get(lockUrl);
-  const lock =
-    lockBytes != null
-      ? JSON.parse(new TextDecoder().decode(lockBytes))
-      : await (await nativeFetch(lockUrl)).json();
-  const packages = lock.packages || {};
-  const urls = pyodidePackageClosure(lock).map((name) =>
-    resolveUrl(`py-mt/${packages[name].file_name}`)
-  );
-  await prefetchUrls(urls, 0.45, 0.86, "Downloading Python packages…", true);
+  const lockBytes = new Uint8Array(await (await fetchOk(lockUrl)).arrayBuffer());
+  prefetchedResponses.set(lockUrl, lockBytes);
+  const lock = JSON.parse(new TextDecoder().decode(lockBytes));
+  const entries = lock.packages || {};
+  const packages = pyodidePackageClosure(lock).map((name) => ({
+    name,
+    url: resolveUrl(`py-mt/${entries[name].file_name}`),
+  }));
+  return {
+    packages,
+    ...startPrefetch(
+      [
+        resolveUrl("py-mt/pyodide.asm.mjs"),
+        resolveUrl("py-mt/pyodide.asm.wasm"),
+        resolveUrl("py-mt/python_stdlib.zip"),
+      ],
+      packages.map((pkg) => pkg.url),
+      0.44,
+      0.84
+    ),
+  };
 }
 
-async function withFetchProgress<T>(
-  start: number,
-  end: number,
-  label: string,
-  post: ProgressPost,
-  action: () => Promise<T>
-): Promise<T> {
-  const previous = activeFetchProgress;
-  const context: FetchProgressContext = {
-    start,
-    end,
-    label,
-    post,
-    loadedBytes: 0,
-    totalBytes: 0,
-    lastFraction: start,
-  };
-
-  try {
-    activeFetchProgress = context;
-    reportFetchProgress(context, start);
-    const result = await action();
-    reportFetchProgress(context, end);
-    return result;
-  } finally {
-    activeFetchProgress = previous;
-  }
+// The generated proto modules + bridge.py, staged into the Pyodide FS once Python
+// is up. They are plain static files with no dependency on the runtime, so fetch
+// them in parallel with it rather than one at a time after it (11 serial requests
+// on the critical path cost 11 round trips on a real connection).
+async function fetchBridgeSources(): Promise<Array<[string, string]>> {
+  const protoDir = "proto/snuffler/bridge/v1";
+  const files = [
+    ...[
+      "common_pb2.py",
+      "scene_pb2.py",
+      "view_pb2.py",
+      "snuffling_pb2.py",
+      "figure_pb2.py",
+      "data_pb2.py",
+      "bridge_pb2.py",
+      // Generated typed servicer Protocol + dispatch (from BridgeService);
+      // bridge.py imports it, so it must be staged alongside the *_pb2 modules.
+      "bridge_dispatch.py",
+    ].map((file): [string, string] => [`/snuffler/bridge/v1/${file}`, `${protoDir}/${file}`]),
+    // Helper module bridge.py imports lazily for SeisBench pre/post-processing.
+    ["/seisbench_infer.py", "seisbench_infer.py"] as [string, string],
+    // Imported BEFORE bridge.py: it decides what pyrocko's own imports defer.
+    ["/bootstrap.py", "bootstrap.py"] as [string, string],
+    ["/bridge.py", "bridge.py"] as [string, string],
+  ];
+  return await Promise.all(
+    files.map(
+      async ([dest, path]): Promise<[string, string]> => [
+        dest,
+        await (await fetchOk(resolveUrl(path))).text(),
+      ]
+    )
+  );
 }
 
 async function mlDeviceInfo(): Promise<MlDeviceInfo> {
@@ -699,11 +748,22 @@ async function fetchOk(url) {
 }
 
 function prog(frac, label) {
-  postBootProgress(frac, label);
+  bootFraction = Math.max(bootFraction, frac);
+  bootPhase = label;
+  postBootProgress(bootFraction, label);
 }
 
 function destroyMaybe(value) {
   if (value && typeof value.destroy === "function") value.destroy();
+}
+
+// Copy a Python list of strings into JS and release the proxy behind it.
+function pyList(value): string[] {
+  try {
+    return value.toJs() as string[];
+  } finally {
+    destroyMaybe(value);
+  }
 }
 
 function ownedBytes(value) {
@@ -728,28 +788,53 @@ async function boot() {
   pyodideReadyPromise = (async () => {
     try {
       const t0 = performance.now();
-      prog(0.22, "Downloading Python runtime…");
-      await prefetchPyodideRuntime();
+      setBootPhase("Downloading Python runtime…");
+
+      // Everything the boot downloads starts here, concurrently: the runtime, the
+      // wheel closure, and our own Python sources. Only the runtime is awaited
+      // before the interpreter starts; the rest lands while it is coming up.
+      const sources = fetchBridgeSources();
+      void sources.catch(() => {});
+      const prefetch = await startPyodidePrefetch();
+      await prefetch.priority;
+
       // Pyodide 314 rejects classic workers, so this is the ESM build, imported
       // from the only base there is: our locally served py-mt/.
+      setBootPhase("Starting Python runtime…");
       const { loadPyodide } = await import(PYODIDE_BASE + "pyodide.mjs");
-      py = await withFetchProgress(0.43, 0.45, "Starting Python runtime…", postBootProgress, () =>
-        loadPyodide({ indexURL: PYODIDE_BASE })
-      );
+      py = await loadPyodide({ indexURL: PYODIDE_BASE });
       const tRuntime = performance.now();
 
-      prog(0.45, "Downloading Python packages…");
-      await prefetchPyodidePackages();
-      prog(0.86, "Installing Python packages…");
+      setBootPhase("Downloading Python packages…");
+      await prefetch.all;
+      setBootPhase("Installing Python packages…");
       // Everything (incl. pyrocko, protobuf, requests, pyodide-http) is in
-      // py-mt/pyodide-lock.json, built for this runtime — load by name.
-      await withFetchProgress(0.86, 0.87, "Installing Python packages…", postBootProgress, () =>
-        py.loadPackage(PYODIDE_PACKAGES)
-      );
+      // py-mt/pyodide-lock.json, built for this runtime — load by name. Installed
+      // one at a time so the bar advances per package (~60 ms slower than handing
+      // loadPackage the whole list at once, measured); the wheels are already in
+      // memory by now, so this is unpack + dlopen with no network left to overlap.
+      //
+      // Progress is weighted by wheel size, not package count: unpacking costs
+      // ~50 ms/MB, so scipy alone is over half this phase while 19 of the 23
+      // packages together are under 5% of it.
+      const installed = prefetch.packages.map((pkg) => ({
+        name: pkg.name,
+        bytes: prefetchedResponses.get(pkg.url)?.byteLength ?? 0,
+      }));
+      const installTotal = installed.reduce((sum, pkg) => sum + pkg.bytes, 0);
+      let installDone = 0;
+      for (const pkg of installed) {
+        await py.loadPackage(pkg.name);
+        installDone += pkg.bytes;
+        prog(
+          progressFraction(0.84, 0.92, installDone, installTotal),
+          "Installing Python packages…"
+        );
+      }
       prefetchedResponses.clear();
       const tPackages = performance.now();
 
-      prog(0.88, "Importing pyrocko…");
+      prog(0.92, "Importing pyrocko…");
       for (const dir of ["/snuffler", "/snuffler/bridge", "/snuffler/bridge/v1"]) {
         try {
           py.FS.mkdir(dir);
@@ -757,29 +842,18 @@ async function boot() {
           // Already exists.
         }
       }
-      for (const file of [
-        "common_pb2.py",
-        "scene_pb2.py",
-        "view_pb2.py",
-        "snuffling_pb2.py",
-        "figure_pb2.py",
-        "data_pb2.py",
-        "bridge_pb2.py",
-        // Generated typed servicer Protocol + dispatch (from BridgeService);
-        // bridge.py imports it, so it must be staged alongside the *_pb2 modules.
-        "bridge_dispatch.py",
-      ]) {
-        const src = await (await fetchOk(resolveUrl(`proto/snuffler/bridge/v1/${file}`))).text();
-        py.FS.writeFile(`/snuffler/bridge/v1/${file}`, src);
+      for (const [dest, src] of await sources) py.FS.writeFile(dest, src);
+      // bootstrap.py defers the scipy imports pyrocko does at module scope but only
+      // uses inside functions, then imports the bridge while counting modules so the
+      // longest phase of the boot has a moving bar instead of a frozen one.
+      py.runPython('import sys; sys.path.insert(0, "/"); import bootstrap');
+      const deferred = pyList(py.runPython("bootstrap.defer()"));
+      const importBridge = py.runPython("bootstrap.import_bridge");
+      try {
+        bridge = importBridge(bootModuleProgress);
+      } finally {
+        importBridge.destroy();
       }
-      // Helper module bridge.py imports lazily for SeisBench pre/post-processing.
-      for (const mod of ["seisbench_infer.py"]) {
-        const src = await (await fetchOk(resolveUrl(mod))).text();
-        py.FS.writeFile(`/${mod}`, src);
-      }
-      const bridgeSrc = await (await fetchOk(resolveUrl("bridge.py"))).text();
-      py.FS.writeFile("/bridge.py", bridgeSrc);
-      bridge = py.runPython('import sys; sys.path.insert(0, "/"); import bridge; bridge');
       const tImport = performance.now();
 
       // Boot-phase timings, logged once so future regressions are visible in the
@@ -791,7 +865,7 @@ async function boot() {
       console.log(
         `[bridge-worker] boot timing (ms): runtime=${ms(t0, tRuntime)} ` +
           `packages=${ms(tRuntime, tPackages)} import=${ms(tPackages, tImport)} ` +
-          `total=${ms(t0, tImport)}`
+          `total=${ms(t0, tImport)} deferred=${deferred.join(",") || "none"}`
       );
 
       // Report the booted runtime so the UI can show a truthful debug badge.
@@ -936,6 +1010,19 @@ bridge._mark_traces_changed()
 `);
     return { text: "ok" };
   }
+  if (msg.method === WORKER_WARM_DEFERRED) {
+    // Python is single-threaded here, so this cannot run *inside* another rpc —
+    // it takes the interpreter for the duration and the next rpc queues behind
+    // it, which is why it is sent only once the first scene is already painted.
+    const t0 = performance.now();
+    const warmed = pyList(py.runPython("bootstrap.warm()"));
+    console.log(
+      `[bridge-worker] warmed ${warmed.join(",") || "nothing"} in ${Math.round(
+        performance.now() - t0
+      )} ms`
+    );
+    return { text: "ok" };
+  }
   if (msg.method === WORKER_MOUNT_GF_STORE) {
     gfStoreCounter += 1;
     const mount = "/gfstores/" + gfStoreCounter;
@@ -953,6 +1040,13 @@ bridge._mark_traces_changed()
   if (tracePerf) tracePerf.py_call_ms = performance.now() - pyCallT0;
   return bridgeResult(res, tracePerf);
 }
+
+// Booting Python is this worker's whole purpose and takes seconds, so start it on
+// module load rather than waiting for the first rpc: the page creates the worker
+// while the app wasm is still downloading (see index.html), and that head start is
+// the entire Pyodide download. handleRequest awaits the same memoized promise, so
+// a request that arrives mid-boot still queues behind it and surfaces its failure.
+void boot().catch(() => {});
 
 self.onmessage = (event) => {
   const workerRecvMs = performance.now();

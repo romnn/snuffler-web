@@ -42,7 +42,7 @@ async function snufflerWasmResponse(url) {
     }
     const total = Number(response.headers.get("content-length") || 0);
     if (!response.body || !Number.isFinite(total) || total <= 0) {
-        snufflerReport(0.18, "Downloading app...");
+        snufflerReport(0.42, "Downloading app...");
         return response;
     }
 
@@ -55,7 +55,7 @@ async function snufflerWasmResponse(url) {
             if (done) break;
             if (!value) continue;
             loaded += value.byteLength;
-            const fraction = 0.01 + 0.17 * Math.max(0, Math.min(1, loaded / total));
+            const fraction = 0.01 + 0.41 * Math.max(0, Math.min(1, loaded / total));
             snufflerReport(fraction, "Downloading app...");
         }
     })().catch((e) => console.warn("[loader] progress meter failed:", e));
@@ -68,7 +68,7 @@ async function snufflerWasmResponse(url) {
 }
 
 const wasm = await init({ module_or_path: snufflerWasmResponse('${wasmPath}') });
-snufflerReport(0.20, "Starting app...");
+snufflerReport(0.44, "Starting app...");
 
 window.wasmBindings = bindings;
 

@@ -21,6 +21,7 @@ import { rpc, BridgeMethod, type BridgeMethodId } from "./rpc.js";
 import {
   WORKER_MOUNT_GF_STORE,
   WORKER_RELOAD_SNUFFLINGS,
+  WORKER_WARM_DEFERRED,
   type WorkerCommand,
 } from "./worker_command.js";
 
@@ -35,6 +36,9 @@ type WorkerEventMessage = { type: "workerEvent"; event: Uint8Array };
 declare global {
   interface Window {
     __snufflerProgress?: (frac: number, label: string) => void;
+    // The Pyodide worker index.html starts at page load, with the messages its
+    // placeholder listener parked until ensureWorker() takes over.
+    __snufflerWorker?: { worker: Worker; queue: MessageEvent[] };
     showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
     showOpenFilePicker?: (opts?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>;
   }
@@ -80,10 +84,15 @@ function workerUrl() {
 
 function ensureWorker() {
   if (worker) return worker;
+  // Adopt the worker index.html started at page load, which has had the whole
+  // wasm download to get Python going; only fall back to creating one here if
+  // that early start was skipped (no cross-origin isolation yet).
+  //
   // Pyodide 314 rejects classic workers on BOTH paths — the threaded build
   // spawns its pthread workers as ES modules, and even the stock single-threaded
   // 314 CDN build refuses a classic worker — so always use a module worker.
-  worker = new Worker(workerUrl(), { type: "module" });
+  const early = window.__snufflerWorker;
+  worker = early ? early.worker : new Worker(workerUrl(), { type: "module" });
   worker.onmessage = (event) => {
     const receivedMs = performance.now();
     const receivedEpochMs = Date.now();
@@ -128,6 +137,13 @@ function ensureWorker() {
     for (const slot of pending.values()) slot.reject(error);
     pending.clear();
   };
+  if (early) {
+    // Replay what the early listener parked while the wasm was still loading —
+    // boot progress, and the runtime info posted once Python is up.
+    const queued = early.queue;
+    window.__snufflerWorker = undefined;
+    for (const event of queued) worker.onmessage(event);
+  }
   return worker;
 }
 
@@ -265,7 +281,29 @@ export async function call(method: BridgeMethodId, request, data) {
   // the first call after boot) is in; the boot sequence stops at 0.97. Typed
   // compare against the generated id so a rename of MakeExample is a tsc error.
   if (method === BridgeMethod.makeExample) prog(1.0, "Ready");
+  // After the FIRST view, not the first scene: the scene is only data, the view is
+  // what gets painted, and warming ahead of it just moves the wait in front of the
+  // frame the user is waiting for.
+  if (method === BridgeMethod.getView) warmDeferredImports();
   return out;
+}
+
+// Pay for the imports the boot deferred (scipy) now that there are waveforms on
+// screen, so the first filter does not. Fire-and-forget: it is an optimization,
+// and anything that needs those modules imports them itself if it gets there first.
+//
+// Deliberately queued at idle rather than sent straight away: the worker runs it
+// on the one Python thread it has, so an rpc that arrives meanwhile waits for it —
+// sending it immediately put the whole warm-up in front of the first getView.
+let warmRequested = false;
+function warmDeferredImports() {
+  if (warmRequested) return;
+  warmRequested = true;
+  const warm = () => void send(WORKER_WARM_DEFERRED).catch(() => {});
+  const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => void })
+    .requestIdleCallback;
+  if (idle) idle.call(window, warm);
+  else window.setTimeout(warm, 1000);
 }
 
 export async function addCakeModel() {
