@@ -1,0 +1,11 @@
+name = "oddrate-nyquist"
+title = "A lowpass above the Nyquist frequency of two of three traces"
+dataset = "oddrate"
+tiers = [1]
+
+[state]
+demean = true
+lowpass = 3.0
+
+[compare]
+reason = "the < 0.5/deltat guards, on 5 Hz, 7 Hz and 50 Hz traces at once"

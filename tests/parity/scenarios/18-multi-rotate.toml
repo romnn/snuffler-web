@@ -1,0 +1,10 @@
+name = "multi-rotate"
+title = "Horizontal components rotated by 45 degrees"
+dataset = "multi"
+tiers = [1]
+
+[state]
+rotate = 45.0
+
+[compare]
+reason = "trace.rotate on aligned N/E pairs against Qt's in-place 2x2 in prepare_cutout2"

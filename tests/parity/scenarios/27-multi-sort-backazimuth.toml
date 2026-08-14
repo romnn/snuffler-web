@@ -1,0 +1,11 @@
+name = "multi-sort-backazimuth"
+title = "Tracks ordered by backazimuth"
+dataset = "multi"
+tiers = [1]
+load = ["stations", "events"]
+
+[state]
+sort = "backazimuth"
+
+[compare]
+reason = "the azimuth sort from the station's point of view, same wrap, same order"

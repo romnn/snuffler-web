@@ -1,0 +1,35 @@
+name = "ui-option-toggles"
+title = "Option and view checkboxes toggle the same way on both sides"
+dataset = "demo"
+tiers = [3]
+watch_menus = ["Options", "View"]
+
+# Menu targets are written in Qt's wording; the diff normalizes both sides and the
+# [[alias]] table in known_gaps.toml covers the rest.
+[[step]]
+action = "menu"
+target = "Options/Demean"
+
+[[step]]
+action = "menu"
+target = "Options/Allow Degapping"
+
+[[step]]
+action = "menu"
+target = "Options/FFT Filtering"
+
+[[step]]
+action = "menu"
+target = "View/Clip Traces"
+
+[[step]]
+action = "menu"
+target = "View/Show Zero Lines"
+
+[[step]]
+action = "menu"
+target = "Options/Demean"
+
+[compare]
+expect_divergence = ["color-traces-default"]
+reason = "one default differs; everything else must track"

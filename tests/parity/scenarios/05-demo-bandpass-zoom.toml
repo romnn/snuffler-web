@@ -1,0 +1,20 @@
+name = "demo-bandpass-zoom"
+title = "Butterworth bandpass, 60 s window"
+dataset = "demo"
+tiers = [1]
+
+[window]
+start_s = 150.0
+length_s = 60.0
+
+[state]
+highpass = 0.5
+lowpass = 2.0
+
+[compare]
+expect_divergence = ["filter-context-extent"]
+# Qt filters a tpad-padded chop of the window (tpad = 2/highpass = 4 s here); the
+# web filters the whole trace and slices. Both are settled well inside the window,
+# so trim a padding length from each end rather than relaxing the tolerance.
+edge_trim_s = 8.0
+reason = "interior of a filtered sub-window; the edges carry each side's own filter transient"

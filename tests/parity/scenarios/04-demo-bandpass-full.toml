@@ -1,0 +1,12 @@
+name = "demo-bandpass-full"
+title = "Butterworth bandpass 0.5-2 Hz over the whole extent"
+dataset = "demo"
+tiers = [1]
+
+[state]
+demean = true
+highpass = 0.5
+lowpass = 2.0
+
+[compare]
+reason = "same samples in, same filter, so the IIR path must agree to float32"

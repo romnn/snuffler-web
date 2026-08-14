@@ -1,0 +1,15 @@
+name = "multi-decon-fft"
+title = "FFT filtering and deconvolution at once"
+dataset = "multi"
+tiers = [1]
+load = ["responses"]
+
+[state]
+highpass = 0.05
+lowpass = 2.0
+fft_filtering = true
+remove_response = true
+
+[compare]
+expect_divergence = ["fft-decon-not-combined"]
+reason = "Qt folds the inverse response into the same transfer function it filters with"

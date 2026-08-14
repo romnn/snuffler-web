@@ -1,0 +1,4327 @@
+%YAML 1.1
+--- !pf.Event
+lat: 50.6318
+lon: 7.2308
+time: '2022-09-22 12:04:27.140000105'
+depth: 10150.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3996
+lon: 7.2987
+time: '2022-09-22 21:25:26.730000019'
+depth: 6200.0
+magnitude: 0.4
+--- !pf.Event
+lat: 50.4542
+lon: 7.3065
+time: '2022-09-24 04:43:38.460000038'
+depth: 12980.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.4519
+lon: 7.3092
+time: '2022-09-24 14:57:57.50999999'
+depth: 13360.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.371
+lon: 7.3776
+time: '2022-09-24 17:41:29.980000019'
+depth: 10910.0
+magnitude: 1.9
+--- !pf.Event
+lat: 50.3725
+lon: 7.3762
+time: '2022-09-24 17:43:24.130000114'
+depth: 10560.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3715
+lon: 7.3759
+time: '2022-09-24 17:44:23.50999999'
+depth: 10900.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3701
+lon: 7.3736
+time: '2022-09-24 17:48:25.869999886'
+depth: 10440.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3713
+lon: 7.3769
+time: '2022-09-24 17:51:51.210000038'
+depth: 10290.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.373
+lon: 7.3719
+time: '2022-09-24 17:53:26.940000057'
+depth: 10000.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3973
+lon: 7.3439
+time: '2022-09-25 04:59:34.25'
+depth: 12960.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3959
+lon: 7.3451
+time: '2022-09-25 05:00:23.589999914'
+depth: 12650.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.6232
+lon: 7.2898
+time: '2022-09-25 17:27:46.140000105'
+depth: 10110.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.626
+lon: 7.2921
+time: '2022-09-25 20:05:59.970000029'
+depth: 9060.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3601
+lon: 7.3858
+time: '2022-09-26 23:03:14.140000105'
+depth: 11050.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3722
+lon: 7.3774
+time: '2022-09-27 19:31:46.390000105'
+depth: 10500.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1079
+lon: 7.3523
+time: '2022-09-28 02:35:19.970000029'
+depth: 11720.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4328
+lon: 7.1172
+time: '2022-09-28 02:52:40.609999895'
+depth: 13460.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2874
+lon: 7.5332
+time: '2022-09-28 15:48:00.200000048'
+depth: 13400.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3556
+lon: 7.3943
+time: '2022-09-28 17:13:00.279999971'
+depth: 12640.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2888
+lon: 7.5309
+time: '2022-09-28 17:44:38.630000114'
+depth: 13610.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1075
+lon: 7.3547
+time: '2022-09-28 18:27:50.970000029'
+depth: 11490.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3977
+lon: 6.695
+time: '2022-09-28 20:01:30.950000048'
+depth: 7660.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3923
+lon: 7.5869
+time: '2022-09-28 20:08:41.950000048'
+depth: 13100.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3952
+lon: 7.5885
+time: '2022-09-29 22:22:44.089999914'
+depth: 13650.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3962
+lon: 7.5842
+time: '2022-09-30 00:58:40.819999933'
+depth: 12440.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3141
+lon: 7.4257
+time: '2022-09-30 04:37:36.99000001'
+depth: 10650.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3661
+lon: 7.3836
+time: '2022-10-01 12:27:31.269999981'
+depth: 10040.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3944
+lon: 7.5895
+time: '2022-10-01 21:13:34.809999943'
+depth: 12770.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3938
+lon: 7.5878
+time: '2022-10-02 10:11:42.829999924'
+depth: 13130.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3336
+lon: 6.9149
+time: '2022-10-02 10:43:55.579999924'
+depth: 13760.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3099
+lon: 6.8309
+time: '2022-10-03 00:53:01.940000057'
+depth: 9510.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.6241
+lon: 7.2953
+time: '2022-10-04 07:45:38.819999933'
+depth: 9650.0
+magnitude: 0.9
+--- !pf.Event
+lat: 49.9672
+lon: 7.0225
+time: '2022-10-04 11:50:30.299999952'
+depth: 11500.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.5414
+lon: 7.0633
+time: '2022-10-05 02:30:30.059999943'
+depth: 12600.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.395
+lon: 7.5881
+time: '2022-10-07 09:02:04.25999999'
+depth: 13440.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3937
+lon: 7.5211
+time: '2022-10-08 02:56:39.329999924'
+depth: 16020.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.795
+lon: 6.893
+time: '2022-10-08 03:24:20.269999981'
+depth: 5110.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.8604
+lon: 6.8545
+time: '2022-10-08 03:34:05.5'
+depth: 13780.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3504
+lon: 7.3941
+time: '2022-10-08 20:46:11.960000038'
+depth: 12580.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3819
+lon: 7.4905
+time: '2022-10-09 04:33:42.049999952'
+depth: 9630.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3931
+lon: 7.5245
+time: '2022-10-09 06:15:43.99000001'
+depth: 15780.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1844
+lon: 7.7239
+time: '2022-10-11 11:36:02.849999905'
+depth: 780.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3432
+lon: 7.4116
+time: '2022-10-11 14:32:39.109999895'
+depth: 13680.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3712
+lon: 7.3767
+time: '2022-10-11 22:33:02.349999905'
+depth: 11230.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.5869
+lon: 7.1899
+time: '2022-10-12 20:27:25.799999952'
+depth: 6010.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4002
+lon: 7.3405
+time: '2022-10-13 20:34:04.359999895'
+depth: 9590.0
+magnitude: 0.4
+--- !pf.Event
+lat: 50.3779
+lon: 7.368
+time: '2022-10-13 23:36:20.339999914'
+depth: 10660.0
+magnitude: 0.4
+--- !pf.Event
+lat: 50.5843
+lon: 7.0691
+time: '2022-10-14 20:13:01.380000114'
+depth: 12260.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.1132
+lon: 7.3589
+time: '2022-10-15 01:01:08.019999981'
+depth: 13780.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3628
+lon: 7.3799
+time: '2022-10-15 13:44:49.470000029'
+depth: 15120.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3652
+lon: 7.3832
+time: '2022-10-15 15:26:19.579999924'
+depth: 14500.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.322
+lon: 7.465
+time: '2022-10-16 00:06:44.890000105'
+depth: 12760.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3551
+lon: 7.3487
+time: '2022-10-16 00:12:19.609999895'
+depth: 5770.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4567
+lon: 7.302
+time: '2022-10-16 00:36:47.630000114'
+depth: 12520.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3193
+lon: 7.4259
+time: '2022-10-16 07:35:44.190000057'
+depth: 7750.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.5297
+lon: 7.1797
+time: '2022-10-17 07:33:41.470000029'
+depth: 11060.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3777
+lon: 7.3757
+time: '2022-10-18 00:08:00.25999999'
+depth: 11730.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4384
+lon: 7.0598
+time: '2022-10-18 13:27:52.730000019'
+depth: 14260.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3778
+lon: 7.3683
+time: '2022-10-18 16:06:15.119999886'
+depth: 11390.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.615
+lon: 7.3053
+time: '2022-10-18 18:35:45.549999952'
+depth: 11210.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.6882
+lon: 7.142
+time: '2022-10-22 00:05:26.130000114'
+depth: 12640.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3732
+lon: 6.4414
+time: '2022-10-22 03:21:59.109999895'
+depth: 17040.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3064
+lon: 7.4933
+time: '2022-10-22 06:27:47.369999886'
+depth: 13320.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.109
+lon: 7.3424
+time: '2022-10-22 12:36:36.24000001'
+depth: 11490.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3502
+lon: 7.3766
+time: '2022-10-22 12:45:51.230000019'
+depth: 12190.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3155
+lon: 7.4677
+time: '2022-10-22 15:05:13.829999924'
+depth: 12980.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3029
+lon: 7.4991
+time: '2022-10-24 18:44:04.549999952'
+depth: 12790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3054
+lon: 7.4936
+time: '2022-10-24 19:40:02.609999895'
+depth: 13310.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.5486
+lon: 7.0585
+time: '2022-10-26 16:36:53.130000114'
+depth: 12210.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1083
+lon: 7.3511
+time: '2022-10-27 21:29:14.910000086'
+depth: 10460.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1074
+lon: 7.3528
+time: '2022-10-27 23:29:37.269999981'
+depth: 10840.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.1068
+lon: 7.3481
+time: '2022-10-27 23:43:53.549999952'
+depth: 11260.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1055
+lon: 7.3529
+time: '2022-10-28 00:04:27.140000105'
+depth: 10740.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1091
+lon: 7.3479
+time: '2022-10-28 00:25:08.220000029'
+depth: 10990.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1081
+lon: 7.35
+time: '2022-10-28 01:14:01.680000067'
+depth: 10820.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3193
+lon: 7.9873
+time: '2022-10-28 07:51:20.859999895'
+depth: 1800.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3495
+lon: 7.3923
+time: '2022-10-28 18:10:36.430000067'
+depth: 11050.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.1064
+lon: 7.3536
+time: '2022-10-28 19:17:31.910000086'
+depth: 11670.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3581
+lon: 7.3804
+time: '2022-10-29 02:32:38.589999914'
+depth: 10840.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3897
+lon: 7.3583
+time: '2022-10-29 08:26:07.230000019'
+depth: 11490.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3898
+lon: 7.3568
+time: '2022-10-29 10:19:36.059999943'
+depth: 10610.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.462
+lon: 7.0974
+time: '2022-10-30 15:04:03.75'
+depth: 5760.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3067
+lon: 7.4933
+time: '2022-10-30 19:59:25.450000048'
+depth: 13130.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3132
+lon: 7.4613
+time: '2022-10-31 02:46:52.420000076'
+depth: 14100.0
+magnitude: 0.7
+--- !pf.Event
+lat: 49.9733
+lon: 7.9183
+time: '2022-10-31 11:02:34.220000029'
+depth: -500.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.5048
+lon: 7.1857
+time: '2022-11-01 15:40:21.839999914'
+depth: 11140.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3734
+lon: 7.3715
+time: '2022-11-03 01:07:47.230000019'
+depth: 11200.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.5444
+lon: 7.0706
+time: '2022-11-03 23:47:59.160000086'
+depth: 10690.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4491
+lon: 7.158
+time: '2022-11-04 14:12:39.599999905'
+depth: 6870.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4505
+lon: 7.1502
+time: '2022-11-04 14:33:37.420000076'
+depth: 7010.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.0949
+lon: 7.965
+time: '2022-11-05 02:15:49.160000086'
+depth: 7030.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3344
+lon: 7.4174
+time: '2022-11-05 04:36:59.299999952'
+depth: 10240.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.6185
+lon: 7.304
+time: '2022-11-05 23:46:39.930000067'
+depth: 11630.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3894
+lon: 7.3125
+time: '2022-11-07 03:21:35.109999895'
+depth: 7400.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1099
+lon: 7.3482
+time: '2022-11-07 04:00:21.75999999'
+depth: 11410.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.5391
+lon: 7.2787
+time: '2022-11-07 04:12:25.420000076'
+depth: 11240.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3522
+lon: 7.3826
+time: '2022-11-09 09:24:36.390000105'
+depth: 11340.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3946
+lon: 7.5864
+time: '2022-11-11 00:40:47.190000057'
+depth: 13280.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3244
+lon: 7.4225
+time: '2022-11-11 23:17:23.769999981'
+depth: 11370.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3691
+lon: 7.4774
+time: '2022-11-12 19:03:06.349999905'
+depth: 6150.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3429
+lon: 7.3527
+time: '2022-11-12 19:13:20.960000038'
+depth: 13640.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3083
+lon: 7.4912
+time: '2022-11-13 01:26:28.519999981'
+depth: 14540.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.6231
+lon: 7.1202
+time: '2022-11-13 03:15:34.619999886'
+depth: 12020.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2112
+lon: 7.4293
+time: '2022-11-14 07:37:50.269999981'
+depth: 9150.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.284
+lon: 6.6724
+time: '2022-11-16 11:56:49.269999981'
+depth: -500.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.2552
+lon: 7.4029
+time: '2022-11-17 19:31:12.789999962'
+depth: 11110.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.316
+lon: 7.4394
+time: '2022-11-18 01:42:21.380000114'
+depth: 12660.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.1539
+lon: 7.413
+time: '2022-11-20 12:51:28.569999933'
+depth: 3390.0
+magnitude: 2.0
+--- !pf.Event
+lat: 50.3787
+lon: 7.3789
+time: '2022-11-21 09:30:00.690000057'
+depth: 1170.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3659
+lon: 7.0261
+time: '2022-11-23 03:58:22.420000076'
+depth: 6720.0
+magnitude: 0.9
+#--- !pf.Event
+#lat: 50.2047
+#lon: 7.6555
+#time: '2022-11-26 03:25:46.25999999'
+#depth: 1430.0
+#magnitude: 1.7
+--- !pf.Event
+lat: 50.111
+lon: 7.947
+time: '2022-11-26 03:25:42.760'
+depth: 11000.0
+magnitude: 2.2
+--- !pf.Event
+lat: 50.3599
+lon: 7.3931
+time: '2022-11-28 00:45:37.160000086'
+depth: 12580.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4039
+lon: 7.1776
+time: '2022-11-29 04:47:40.769999981'
+depth: 9750.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4078
+lon: 7.1712
+time: '2022-11-29 04:49:01.640000105'
+depth: 9440.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4038
+lon: 7.1715
+time: '2022-11-29 04:49:20.059999943'
+depth: 9170.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4066
+lon: 7.1767
+time: '2022-11-29 04:53:22.369999886'
+depth: 9960.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4037
+lon: 7.1741
+time: '2022-11-29 05:42:15.079999924'
+depth: 9750.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2948
+lon: 8.0713
+time: '2022-11-29 11:21:31.849999905'
+depth: -500.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3725
+lon: 7.3797
+time: '2022-11-29 12:21:55.279999971'
+depth: 11150.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4072
+lon: 7.1766
+time: '2022-11-30 08:02:59.410000086'
+depth: 9750.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4068
+lon: 7.1818
+time: '2022-11-30 08:08:54.799999952'
+depth: 9520.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4066
+lon: 7.1766
+time: '2022-11-30 08:22:52.569999933'
+depth: 9380.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4064
+lon: 7.1752
+time: '2022-11-30 09:03:23.650000095'
+depth: 9790.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4087
+lon: 7.1703
+time: '2022-11-30 11:22:35.339999914'
+depth: 9270.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4049
+lon: 7.1705
+time: '2022-11-30 22:38:41.25999999'
+depth: 9550.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.4061
+lon: 7.1766
+time: '2022-11-30 22:38:53.539999962'
+depth: 9690.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.4502
+lon: 7.3114
+time: '2022-11-30 23:55:14.109999895'
+depth: 13770.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3451
+lon: 7.3977
+time: '2022-12-03 12:29:28.779999971'
+depth: 11980.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2924
+lon: 7.0939
+time: '2022-12-04 02:45:28.319999933'
+depth: 12400.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2968
+lon: 7.0993
+time: '2022-12-04 02:51:34.130000114'
+depth: 13120.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.34
+lon: 7.4099
+time: '2022-12-05 20:35:16.099999905'
+depth: 13360.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.028
+lon: 7.4664
+time: '2022-12-06 00:20:37.079999924'
+depth: 3400.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3547
+lon: 7.3486
+time: '2022-12-06 09:37:14.839999914'
+depth: 5910.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4048
+lon: 7.1735
+time: '2022-12-08 11:30:07.269999981'
+depth: 9540.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.5657
+lon: 7.1497
+time: '2022-12-09 19:50:01.480000019'
+depth: 8570.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3052
+lon: 7.4352
+time: '2022-12-09 20:22:49.079999924'
+depth: 6340.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4057
+lon: 7.2968
+time: '2022-12-10 00:51:36.49000001'
+depth: 5790.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4037
+lon: 7.3363
+time: '2022-12-10 16:52:54.349999905'
+depth: 12060.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4035
+lon: 7.3369
+time: '2022-12-10 16:53:33.559999943'
+depth: 12100.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3212
+lon: 7.4317
+time: '2022-12-10 22:24:55.950000048'
+depth: 11670.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3244
+lon: 7.454
+time: '2022-12-10 23:01:10.279999971'
+depth: 12130.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.5047
+lon: 7.1223
+time: '2022-12-11 03:03:57.690000057'
+depth: 8039.999999999999
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3099
+lon: 7.4838
+time: '2022-12-11 21:00:44.910000086'
+depth: 13400.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1955
+lon: 7.9399
+time: '2022-12-12 02:31:34.849999905'
+depth: 8050.000000000001
+magnitude: 1.1
+--- !pf.Event
+lat: 50.4109
+lon: 7.2872
+time: '2022-12-12 03:31:23.970000029'
+depth: 5880.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3331
+lon: 7.4223
+time: '2022-12-13 04:35:29.549999952'
+depth: 12440.0
+magnitude: 0.9
+#--- !pf.Event
+#lat: 50.6169
+#lon: 6.833
+#depth: 5440.0
+#time: '2022-12-14 07:18:30.50999999'
+#magnitude: 2.2
+--- !pf.Event
+lat: 50.830
+lon: 6.506
+depth: 16000.0
+time: '2022-12-14 07:18:25.30000000'
+magnitude: 2.6
+--- !pf.Event
+lat: 50.3341
+lon: 7.4434
+time: '2022-12-14 17:32:37.980000019'
+depth: 11260.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.5056
+lon: 7.1579
+time: '2022-12-15 03:36:41.50999999'
+depth: 9140.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.6784
+lon: 6.8102
+time: '2022-12-15 22:33:08.25'
+depth: 11050.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.1051
+lon: 7.3499
+time: '2022-12-16 21:02:57.579999924'
+depth: 10820.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3577
+lon: 7.3909
+time: '2022-12-16 22:40:57.809999943'
+depth: 11780.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3027
+lon: 7.5118
+time: '2022-12-17 06:15:58.00999999'
+depth: 12390.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4342
+lon: 7.0779
+time: '2022-12-17 19:54:13.380000114'
+depth: 13530.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3223
+lon: 7.3784
+time: '2022-12-17 20:44:26.559999943'
+depth: 9870.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.333
+lon: 7.4178
+time: '2022-12-17 21:06:50.109999895'
+depth: 11530.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3356
+lon: 7.4156
+time: '2022-12-17 21:14:17.089999914'
+depth: 11180.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3347
+lon: 7.4199
+time: '2022-12-17 21:21:01.930000067'
+depth: 11430.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3267
+lon: 7.3801
+time: '2022-12-17 23:10:00.170000076'
+depth: 10340.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3892
+lon: 7.3558
+time: '2022-12-18 19:51:55.730000019'
+depth: 10780.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3942
+lon: 7.2547
+time: '2022-12-19 02:45:42.359999895'
+depth: 5640.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.7076
+lon: 7.0412
+time: '2022-12-19 17:20:41.980000019'
+depth: 14650.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.6066
+lon: 7.2557
+time: '2022-12-21 21:16:58.690000057'
+depth: 11960.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3304
+lon: 7.424
+time: '2022-12-22 03:13:22.529999971'
+depth: 12630.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4871
+lon: 7.0585
+time: '2022-12-22 19:46:59.450000048'
+depth: 13760.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4828
+lon: 7.0534
+time: '2022-12-22 19:55:02.559999943'
+depth: 14080.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3748
+lon: 7.3692
+time: '2022-12-22 21:43:54.119999886'
+depth: 11590.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4858
+lon: 7.0486
+time: '2022-12-22 22:21:34.980000019'
+depth: 13840.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4863
+lon: 7.0491
+time: '2022-12-22 22:26:49.220000029'
+depth: 13990.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4847
+lon: 7.0527
+time: '2022-12-22 22:31:41.130000114'
+depth: 14230.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4848
+lon: 7.0504
+time: '2022-12-22 22:48:34.980000019'
+depth: 14160.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4851
+lon: 7.054
+time: '2022-12-22 22:58:33.75'
+depth: 14040.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.484
+lon: 7.051
+time: '2022-12-22 22:59:58.420000076'
+depth: 14000.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.485
+lon: 7.0573
+time: '2022-12-22 23:06:24.680000067'
+depth: 14080.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4839
+lon: 7.059
+time: '2022-12-22 23:12:52.089999914'
+depth: 14240.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.487
+lon: 7.0506
+time: '2022-12-22 23:14:42.25'
+depth: 13750.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4849
+lon: 7.0508
+time: '2022-12-22 23:18:19.349999905'
+depth: 14120.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4879
+lon: 7.0517
+time: '2022-12-23 00:01:23.420000076'
+depth: 13320.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4804
+lon: 7.0451
+time: '2022-12-23 00:12:25.930000067'
+depth: 13650.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4845
+lon: 7.0522
+time: '2022-12-23 01:54:28.029999971'
+depth: 13980.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4849
+lon: 7.0519
+time: '2022-12-23 18:54:00.589999914'
+depth: 14090.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3814
+lon: 7.3619
+time: '2022-12-24 00:25:25.210000038'
+depth: 12650.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.382
+lon: 7.3626
+time: '2022-12-24 00:30:05'
+depth: 12720.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3819
+lon: 7.3648
+time: '2022-12-24 00:31:26.440000057'
+depth: 12900.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3801
+lon: 7.3625
+time: '2022-12-24 00:34:48.779999971'
+depth: 12720.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3845
+lon: 7.3843
+time: '2022-12-24 00:38:19.299999952'
+depth: 12530.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3811
+lon: 7.3632
+time: '2022-12-24 00:39:02.359999895'
+depth: 12440.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4833
+lon: 7.0519
+time: '2022-12-24 06:37:48'
+depth: 13890.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4847
+lon: 7.055
+time: '2022-12-24 06:38:18.960000038'
+depth: 14090.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3841
+lon: 7.3643
+time: '2022-12-24 11:33:23.859999895'
+depth: 12540.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3284
+lon: 7.7518
+time: '2022-12-25 03:02:16.549999952'
+depth: 7830.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.5618
+lon: 7.1715
+time: '2022-12-25 15:01:05.450000048'
+depth: 6110.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.5389
+lon: 7.1453
+time: '2022-12-25 23:16:22.289999962'
+depth: 11790.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3842
+lon: 7.477
+time: '2022-12-26 06:32:24.670000076'
+depth: 7080.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4545
+lon: 7.3078
+time: '2022-12-27 00:13:34.170000076'
+depth: 14360.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1931
+lon: 7.9409
+time: '2022-12-27 11:55:04.930000067'
+depth: 8010.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.5355
+lon: 7.1367
+time: '2022-12-29 12:39:20.029999971'
+depth: 11550.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.2769
+lon: 7.4844
+time: '2022-12-30 00:49:59.230000019'
+depth: 14000.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.2927
+lon: 6.3463
+time: '2023-01-01 02:00:40.519999981'
+depth: 10390.0
+magnitude: 1.5
+--- !pf.Event
+lat: 50.3226
+lon: 7.2861
+time: '2023-01-01 05:45:52.160000086'
+depth: 4680.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3443
+lon: 7.3914
+time: '2023-01-03 01:59:19.609999895'
+depth: 11800.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3683
+lon: 7.3847
+time: '2023-01-03 03:20:43.119999886'
+depth: 12510.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4657
+lon: 7.1578
+time: '2023-01-03 03:36:43.029999971'
+depth: 12160.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4637
+lon: 7.1441
+time: '2023-01-03 03:54:04.789999962'
+depth: 11530.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.5362
+lon: 7.1507
+time: '2023-01-03 05:24:13.359999895'
+depth: 11930.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.122
+lon: 7.5816
+time: '2023-01-05 08:45:56.519999981'
+depth: 13190.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.4057
+lon: 7.1776
+time: '2023-01-05 13:35:01.119999886'
+depth: 9680.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4747
+lon: 7.2212
+time: '2023-01-06 22:57:39.920000076'
+depth: 5630.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3715
+lon: 7.3731
+time: '2023-01-07 05:40:38.059999943'
+depth: 10970.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4842
+lon: 7.0483
+time: '2023-01-07 08:54:53.390000105'
+depth: 13730.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3219
+lon: 7.9631
+time: '2023-01-09 11:11:49.980000019'
+depth: 480.0
+magnitude: 1.7
+--- !pf.Event
+lat: 50.3624
+lon: 7.5477
+time: '2023-01-09 16:15:39.50999999'
+depth: 14270.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.4761
+lon: 7.2305
+time: '2023-01-10 01:09:45.74000001'
+depth: 6910.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1556
+lon: 7.4158
+time: '2023-01-10 12:09:19.059999943'
+depth: 2860.0
+magnitude: 1.5
+--- !pf.Event
+lat: 50.0806
+lon: 7.3714
+time: '2023-01-12 21:47:49.940000057'
+depth: 9320.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3731
+lon: 7.3779
+time: '2023-01-14 22:52:12.130000114'
+depth: 10930.0
+magnitude: 2.1
+--- !pf.Event
+lat: 50.3725
+lon: 7.3768
+time: '2023-01-14 22:52:18.559999943'
+depth: 11000.0
+magnitude: 2.2
+--- !pf.Event
+lat: 50.3724
+lon: 7.3747
+time: '2023-01-14 22:52:52.789999962'
+depth: 11220.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3707
+lon: 7.3779
+time: '2023-01-14 22:53:14.720000029'
+depth: 11310.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3722
+lon: 7.3779
+time: '2023-01-14 22:53:46.940000057'
+depth: 11360.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3721
+lon: 7.3768
+time: '2023-01-14 22:54:01.309999943'
+depth: 11010.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3723
+lon: 7.3725
+time: '2023-01-14 22:57:28.289999962'
+depth: 10710.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3701
+lon: 7.3747
+time: '2023-01-14 22:58:28.539999962'
+depth: 10790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.372
+lon: 7.3769
+time: '2023-01-14 23:00:52.089999914'
+depth: 11050.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.373
+lon: 7.3783
+time: '2023-01-14 23:05:09.779999971'
+depth: 11280.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3728
+lon: 7.3796
+time: '2023-01-14 23:12:54.5'
+depth: 11580.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3756
+lon: 7.3818
+time: '2023-01-14 23:14:57.730000019'
+depth: 10900.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3715
+lon: 7.3781
+time: '2023-01-14 23:31:51.809999943'
+depth: 11180.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1561
+lon: 7.3973
+time: '2023-01-15 00:03:01.950000048'
+depth: 7100.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.6058
+lon: 7.0959
+time: '2023-01-15 12:29:12'
+depth: 7160.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.5191
+lon: 7.1486
+time: '2023-01-16 05:19:59.849999905'
+depth: 10660.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3212
+lon: 7.2897
+time: '2023-01-16 11:06:28.799999952'
+depth: 3890.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.0956
+lon: 7.9485
+time: '2023-01-16 20:57:51.920000076'
+depth: 1680.0
+magnitude: 1.6
+--- !pf.Event
+lat: 50.3205
+lon: 7.9621
+time: '2023-01-18 10:07:11.880000114'
+depth: -500.0
+magnitude: 1.5
+--- !pf.Event
+lat: 50.3318
+lon: 7.4211
+time: '2023-01-19 16:19:29.900000095'
+depth: 6850.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4102
+lon: 7.2818
+time: '2023-01-20 02:24:51.559999943'
+depth: 6440.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.0498
+lon: 6.9463
+time: '2023-01-20 10:21:06.640000105'
+depth: 12180.0
+magnitude: 1.3
+#--- !pf.Event
+#lat: 49.8107
+#lon: 7.6956
+#time: '2023-01-20 23:13:56.380000114'
+#depth: -500.0
+#magnitude: 2.4
+#--- !pf.Event
+lat: 49.787
+lon: 7.699 
+time: '2023-01-20 23:13:56.520'
+depth: 8000.0
+magnitude: 2.8
+--- !pf.Event
+lat: 50.3573
+lon: 7.3902
+time: '2023-01-21 19:10:54.50999999'
+depth: 11750.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.5721
+lon: 7.1956
+time: '2023-01-22 02:37:17.029999971'
+depth: 13840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.5708
+lon: 7.1886
+time: '2023-01-22 03:19:33.329999924'
+depth: 13610.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3437
+lon: 7.4179
+time: '2023-01-24 04:28:13.710000038'
+depth: 13000.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3904
+lon: 7.3535
+time: '2023-01-24 14:41:54.539999962'
+depth: 12840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3784
+lon: 7.4597
+time: '2023-01-26 04:55:26.619999886'
+depth: 5090.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.0914
+lon: 7.9534
+time: '2023-01-27 07:06:47.109999895'
+depth: 2820.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3496
+lon: 7.3766
+time: '2023-01-29 09:52:51'
+depth: 12300.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.357
+lon: 7.3905
+time: '2023-01-30 22:26:05.549999952'
+depth: 11740.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3033
+lon: 6.6212
+time: '2023-02-01 09:56:13.450000048'
+depth: 12710.0
+magnitude: 1.6
+--- !pf.Event
+lat: 50.4072
+lon: 7.3359
+time: '2023-02-01 11:20:16.339999914'
+depth: 13070.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.4079
+lon: 7.3375
+time: '2023-02-01 11:26:22.920000076'
+depth: 12800.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.0482
+lon: 6.954
+time: '2023-02-02 10:43:29.019999981'
+depth: 12040.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.3786
+lon: 7.3686
+time: '2023-02-02 20:54:30.730000019'
+depth: 11700.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3502
+lon: 7.3987
+time: '2023-02-04 01:29:06.130000114'
+depth: 12530.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3478
+lon: 7.3533
+time: '2023-02-05 00:10:34.670000076'
+depth: 5720.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3467
+lon: 7.351
+time: '2023-02-05 00:19:16.059999943'
+depth: 5440.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.368
+lon: 7.3775
+time: '2023-02-05 04:14:18.680000067'
+depth: 11260.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3689
+lon: 7.3787
+time: '2023-02-05 04:15:24.670000076'
+depth: 11710.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3733
+lon: 7.4652
+time: '2023-02-06 10:17:43.640000105'
+depth: 3850.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3272
+lon: 7.4242
+time: '2023-02-06 20:30:05.579999924'
+depth: 11430.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3181
+lon: 7.9721
+time: '2023-02-08 10:58:01.680000067'
+depth: -500.0
+magnitude: 1.8
+--- !pf.Event
+lat: 50.3364
+lon: 7.4207
+time: '2023-02-10 06:00:58.49000001'
+depth: 12310.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3732
+lon: 7.4454
+time: '2023-02-11 21:13:05.920000076'
+depth: 7550.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2885
+lon: 7.4693
+time: '2023-02-13 06:31:31.829999924'
+depth: 7300.0
+magnitude: 0.9
+--- !pf.Event
+lat: 49.9765
+lon: 7.9125
+time: '2023-02-13 11:00:20.319999933'
+depth: -500.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.4921
+lon: 7.0648
+time: '2023-02-13 18:27:18.309999943'
+depth: 14190.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4929
+lon: 7.0644
+time: '2023-02-14 00:35:41.430000067'
+depth: 14220.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4693
+lon: 7.2264
+time: '2023-02-14 23:20:02.450000048'
+depth: 5380.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.5365
+lon: 7.0591
+time: '2023-02-15 00:27:06.980000019'
+depth: 12200.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2972
+lon: 8.0653
+time: '2023-02-15 11:21:43.359999895'
+depth: -500.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3668
+lon: 7.3784
+time: '2023-02-17 01:14:23.329999924'
+depth: 11070.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.5058
+lon: 7.1862
+time: '2023-02-17 09:12:30.069999933'
+depth: 11390.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3641
+lon: 7.3786
+time: '2023-02-18 23:42:07.210000038'
+depth: 11720.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3559
+lon: 7.3904
+time: '2023-02-20 00:09:47.269999981'
+depth: 11520.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3083
+lon: 7.5156
+time: '2023-02-20 22:27:50.269999981'
+depth: 6860.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.364
+lon: 7.4013
+time: '2023-02-21 19:30:00.460000038'
+depth: 14840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3531
+lon: 7.3945
+time: '2023-02-22 00:03:11.480000019'
+depth: 13950.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.2074
+lon: 7.9805
+time: '2023-02-22 02:29:54.640000105'
+depth: 9800.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3663
+lon: 7.0656
+time: '2023-02-23 17:50:17.089999914'
+depth: 3730.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.0091
+lon: 6.9957
+time: '2023-02-24 11:11:02.029999971'
+depth: 200.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.2992
+lon: 7.5075
+time: '2023-02-24 15:28:45.519999981'
+depth: 13010.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3037
+lon: 7.5076
+time: '2023-02-24 15:29:19.099999905'
+depth: 12520.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3012
+lon: 7.5042
+time: '2023-02-24 17:31:16.529999971'
+depth: 13210.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3212
+lon: 7.4595
+time: '2023-02-25 16:23:29.549999952'
+depth: 12830.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.413
+lon: 7.3943
+time: '2023-02-25 19:47:15.50999999'
+depth: 13320.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1431
+lon: 7.5048
+time: '2023-02-27 02:26:02.640000105'
+depth: 8060.000000000001
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4424
+lon: 7.3183
+time: '2023-02-28 18:01:44.50999999'
+depth: 13760.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1505
+lon: 7.3996
+time: '2023-03-01 06:30:52.569999933'
+depth: 5020.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.6152
+lon: 7.3055
+time: '2023-03-02 03:29:33.720000029'
+depth: 11490.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3555
+lon: 7.3948
+time: '2023-03-02 22:48:09.069999933'
+depth: 14820.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3961
+lon: 7.4137
+time: '2023-03-03 07:38:21.50999999'
+depth: 14130.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4221
+lon: 7.3491
+time: '2023-03-03 07:59:41.839999914'
+depth: 13410.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.6635
+lon: 6.3039
+time: '2023-03-05 03:44:55.710000038'
+depth: 3620.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.5692
+lon: 7.0819
+time: '2023-03-05 09:56:10.220000029'
+depth: 6320.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3305
+lon: 6.3658
+time: '2023-03-05 18:51:19.069999933'
+depth: 8260.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3234
+lon: 7.4615
+time: '2023-03-05 22:17:33.190000057'
+depth: 12590.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.6961
+lon: 7.14
+time: '2023-03-06 09:54:34.019999981'
+depth: 12450.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3836
+lon: 7.3871
+time: '2023-03-06 10:14:20.539999962'
+depth: 2490.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.4382
+lon: 7.3184
+time: '2023-03-06 11:45:47.190000057'
+depth: 12810.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.5504
+lon: 6.908
+time: '2023-03-07 01:27:47.160000086'
+depth: 6740.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.361
+lon: 7.3912
+time: '2023-03-08 06:17:03.279999971'
+depth: 11070.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3231
+lon: 7.4607
+time: '2023-03-09 02:54:44.269999981'
+depth: 12760.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1141
+lon: 6.7387
+time: '2023-03-10 10:18:10.900000095'
+depth: 14030.0
+magnitude: 1.6
+--- !pf.Event
+lat: 50.0819
+lon: 7.3677
+time: '2023-03-10 20:26:31.329999924'
+depth: 9440.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.391
+lon: 7.4171
+time: '2023-03-11 02:17:40.799999952'
+depth: 12230.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3857
+lon: 7.3588
+time: '2023-03-11 04:22:02.690000057'
+depth: 12700.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3093
+lon: 7.4853
+time: '2023-03-11 09:50:18'
+depth: 13330.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.447
+lon: 7.3132
+time: '2023-03-11 10:23:35.599999905'
+depth: 14010.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4447
+lon: 7.3142
+time: '2023-03-11 10:24:14.160000086'
+depth: 14120.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4462
+lon: 7.3147
+time: '2023-03-11 10:24:43.319999933'
+depth: 14080.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3058
+lon: 7.4896
+time: '2023-03-11 10:33:09.119999886'
+depth: 12380.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.31
+lon: 7.4851
+time: '2023-03-11 10:37:07.5'
+depth: 12690.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.1101
+lon: 7.3476
+time: '2023-03-11 14:13:12.140000105'
+depth: 11070.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.1097
+lon: 7.3479
+time: '2023-03-13 23:06:21.210000038'
+depth: 11340.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3325
+lon: 7.4176
+time: '2023-03-15 21:51:50.99000001'
+depth: 11780.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3718
+lon: 7.3805
+time: '2023-03-16 00:54:06.630000114'
+depth: 12430.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.345
+lon: 7.3945
+time: '2023-03-16 02:01:03.99000001'
+depth: 12720.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.36
+lon: 7.396
+time: '2023-03-17 04:55:25.119999886'
+depth: 12310.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.732
+lon: 6.7377
+time: '2023-03-18 13:00:51.059999943'
+depth: 14360.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3276
+lon: 7.3462
+time: '2023-03-19 04:42:50.589999914'
+depth: 3750.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.5397
+lon: 7.1278
+time: '2023-03-19 06:57:27.430000067'
+depth: 13070.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.5446
+lon: 7.1181
+time: '2023-03-19 07:02:20.049999952'
+depth: 14470.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3612
+lon: 7.3866
+time: '2023-03-20 01:46:52.559999943'
+depth: 11720.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3997
+lon: 7.4696
+time: '2023-03-20 02:33:44.059999943'
+depth: 8160.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3743
+lon: 7.3775
+time: '2023-03-20 20:42:00.089999914'
+depth: 11820.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3749
+lon: 7.3789
+time: '2023-03-20 20:42:07.319999933'
+depth: 11650.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3749
+lon: 7.3797
+time: '2023-03-20 20:46:15.299999952'
+depth: 11950.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3853
+lon: 7.3593
+time: '2023-03-21 06:15:00.309999943'
+depth: 13100.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3317
+lon: 7.4625
+time: '2023-03-26 02:36:28.00999999'
+depth: 9740.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2604
+lon: 6.3488
+time: '2023-03-28 17:03:13.779999971'
+depth: 11750.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.2322
+lon: 7.797
+time: '2023-03-30 01:53:39.920000076'
+depth: 3090.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3979
+lon: 7.3069
+time: '2023-03-30 17:49:10.309999943'
+depth: 6910.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.0823
+lon: 7.3571
+time: '2023-04-02 03:02:24.210000038'
+depth: 10100.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.1286
+lon: 6.8869
+time: '2023-04-05 11:16:32.039999962'
+depth: 2560.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.5299
+lon: 7.1828
+time: '2023-04-06 08:40:56.809999943'
+depth: 11590.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2899
+lon: 7.4249
+time: '2023-04-06 16:55:01.75'
+depth: 7780.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2942
+lon: 7.4198
+time: '2023-04-06 17:19:11.00999999'
+depth: 7650.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2945
+lon: 7.4235
+time: '2023-04-06 18:48:37.660000086'
+depth: 7800.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2896
+lon: 7.4227
+time: '2023-04-06 18:53:10.440000057'
+depth: 7810.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2899
+lon: 7.4227
+time: '2023-04-06 18:53:48.630000114'
+depth: 7790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2947
+lon: 7.422
+time: '2023-04-06 18:56:47.900000095'
+depth: 7730.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2925
+lon: 7.4227
+time: '2023-04-06 23:24:18.730000019'
+depth: 8039.999999999999
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2909
+lon: 7.4209
+time: '2023-04-07 02:26:56.150000095'
+depth: 7720.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2928
+lon: 7.423
+time: '2023-04-07 12:26:31.329999924'
+depth: 7840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2903
+lon: 7.4246
+time: '2023-04-07 12:33:14.539999962'
+depth: 8010.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3581
+lon: 7.0416
+time: '2023-04-07 20:11:45.859999895'
+depth: 6080.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4077
+lon: 7.3393
+time: '2023-04-08 07:01:49.569999933'
+depth: 12880.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1115
+lon: 7.3532
+time: '2023-04-09 06:25:37.019999981'
+depth: 11340.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4801
+lon: 6.5554
+time: '2023-04-09 23:42:03.579999924'
+depth: 5690.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.2076
+lon: 7.9127
+time: '2023-04-10 02:00:44.769999981'
+depth: 6420.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.355
+lon: 7.3719
+time: '2023-04-10 11:04:10.890000105'
+depth: 10900.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3833
+lon: 7.533
+time: '2023-04-10 15:52:16.430000067'
+depth: 15110.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.482
+lon: 6.554
+time: '2023-04-10 17:37:24.420000076'
+depth: 7400.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3022
+lon: 8.0759
+time: '2023-04-13 10:25:15.180000067'
+depth: -500.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.3648
+lon: 7.546
+time: '2023-04-13 10:30:27.859999895'
+depth: 12950.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3681
+lon: 7.3826
+time: '2023-04-14 06:18:52.420000076'
+depth: 12700.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.354
+lon: 7.3973
+time: '2023-04-15 17:48:06.529999971'
+depth: 12950.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2702
+lon: 7.4774
+time: '2023-04-16 18:14:02.130000114'
+depth: 7460.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3557
+lon: 7.3964
+time: '2023-04-16 20:00:09.349999905'
+depth: 12120.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4541
+lon: 7.9333
+time: '2023-04-17 01:40:21.029999971'
+depth: 10360.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2158
+lon: 7.4738
+time: '2023-04-17 09:29:28.460000038'
+depth: 14380.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3332
+lon: 7.4607
+time: '2023-04-17 17:05:44.950000048'
+depth: 13990.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3205
+lon: 7.4612
+time: '2023-04-17 17:07:04.839999914'
+depth: 12760.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3212
+lon: 7.46
+time: '2023-04-17 17:07:15.299999952'
+depth: 12790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3203
+lon: 7.4619
+time: '2023-04-17 17:26:30.039999962'
+depth: 13230.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3591
+lon: 7.3903
+time: '2023-04-18 01:19:36.289999962'
+depth: 11440.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3206
+lon: 7.4604
+time: '2023-04-18 01:23:51.339999914'
+depth: 13060.0
+magnitude: 2.6
+--- !pf.Event
+lat: 50.3231
+lon: 7.4559
+time: '2023-04-18 01:24:51.039999962'
+depth: 12620.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.325
+lon: 7.4599
+time: '2023-04-18 01:26:13.5'
+depth: 12840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3256
+lon: 7.4573
+time: '2023-04-18 01:26:48.019999981'
+depth: 14790.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3234
+lon: 7.4559
+time: '2023-04-18 01:27:14.589999914'
+depth: 11980.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3197
+lon: 7.4603
+time: '2023-04-18 01:27:53.680000067'
+depth: 12870.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3216
+lon: 7.4575
+time: '2023-04-18 01:28:14.539999962'
+depth: 12880.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3211
+lon: 7.4589
+time: '2023-04-18 01:28:44.359999895'
+depth: 12730.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3217
+lon: 7.4569
+time: '2023-04-18 01:31:03.529999971'
+depth: 12560.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3261
+lon: 7.456
+time: '2023-04-18 01:33:29.200000048'
+depth: 12310.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.322
+lon: 7.461
+time: '2023-04-18 01:34:07.140000105'
+depth: 12510.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3207
+lon: 7.4614
+time: '2023-04-18 01:36:33.170000076'
+depth: 12880.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.319
+lon: 7.4618
+time: '2023-04-18 01:37:42.559999943'
+depth: 12960.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3224
+lon: 7.4593
+time: '2023-04-18 01:44:05.140000105'
+depth: 12730.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3239
+lon: 7.4569
+time: '2023-04-18 01:54:44.200000048'
+depth: 12720.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.323
+lon: 7.4554
+time: '2023-04-18 01:59:20.069999933'
+depth: 12960.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3242
+lon: 7.4595
+time: '2023-04-18 02:00:33.059999943'
+depth: 11870.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3279
+lon: 7.4569
+time: '2023-04-18 02:02:48.589999914'
+depth: 12340.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3218
+lon: 7.4591
+time: '2023-04-18 02:08:35.279999971'
+depth: 12790.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.323
+lon: 7.4581
+time: '2023-04-18 02:09:44.289999962'
+depth: 12610.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3259
+lon: 7.4555
+time: '2023-04-18 02:11:31.319999933'
+depth: 12360.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3174
+lon: 7.4618
+time: '2023-04-18 02:22:31.859999895'
+depth: 13030.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3225
+lon: 7.4618
+time: '2023-04-18 02:23:07.640000105'
+depth: 13110.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3226
+lon: 7.4581
+time: '2023-04-18 02:24:21.720000029'
+depth: 12660.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3211
+lon: 7.4592
+time: '2023-04-18 03:02:49.230000019'
+depth: 12750.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3214
+lon: 7.4612
+time: '2023-04-18 03:14:43.480000019'
+depth: 12410.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3256
+lon: 7.458
+time: '2023-04-18 03:42:49.470000029'
+depth: 13110.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3216
+lon: 7.4586
+time: '2023-04-18 04:03:50.829999924'
+depth: 12980.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3293
+lon: 7.4513
+time: '2023-04-18 04:03:59.799999952'
+depth: 12790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3284
+lon: 7.4521
+time: '2023-04-18 04:16:08.019999981'
+depth: 12290.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3251
+lon: 7.4611
+time: '2023-04-18 04:40:37.660000086'
+depth: 13060.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3241
+lon: 7.4534
+time: '2023-04-18 06:05:58.619999886'
+depth: 13110.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3236
+lon: 7.4528
+time: '2023-04-18 06:06:57.460000038'
+depth: 12670.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3228
+lon: 7.4573
+time: '2023-04-18 07:21:04.690000057'
+depth: 13570.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3223
+lon: 7.466
+time: '2023-04-18 07:24:27.950000048'
+depth: 12970.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3206
+lon: 7.4595
+time: '2023-04-18 09:23:17.50999999'
+depth: 12770.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3239
+lon: 7.4586
+time: '2023-04-18 12:38:44.079999924'
+depth: 12570.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.319
+lon: 7.4624
+time: '2023-04-18 21:09:45.930000067'
+depth: 12470.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3224
+lon: 7.4625
+time: '2023-04-18 22:25:39.24000001'
+depth: 13000.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3218
+lon: 7.4591
+time: '2023-04-18 22:34:22.579999924'
+depth: 12640.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3212
+lon: 7.4589
+time: '2023-04-19 00:00:48.190000057'
+depth: 13170.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.324
+lon: 7.4575
+time: '2023-04-19 00:20:46.779999971'
+depth: 12510.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3198
+lon: 7.4627
+time: '2023-04-19 00:41:53.650000095'
+depth: 12840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3248
+lon: 7.4601
+time: '2023-04-19 03:02:03.99000001'
+depth: 12690.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3232
+lon: 7.461
+time: '2023-04-19 03:35:23.940000057'
+depth: 13220.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3216
+lon: 7.461
+time: '2023-04-19 03:37:05.400000095'
+depth: 12910.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.322
+lon: 7.4596
+time: '2023-04-19 10:51:50.640000105'
+depth: 12660.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.322
+lon: 7.4588
+time: '2023-04-19 13:34:41.920000076'
+depth: 12690.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3624
+lon: 7.4288
+time: '2023-04-19 16:48:07.640000105'
+depth: 10020.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3858
+lon: 7.3617
+time: '2023-04-19 19:18:51.109999895'
+depth: 11870.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3582
+lon: 7.3772
+time: '2023-04-19 20:32:39.00999999'
+depth: 5630.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3746
+lon: 7.3745
+time: '2023-04-19 21:51:59.480000019'
+depth: 11810.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.6236
+lon: 7.2944
+time: '2023-04-20 00:05:57.549999952'
+depth: 9670.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3247
+lon: 7.4609
+time: '2023-04-20 05:33:23.25'
+depth: 12050.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3211
+lon: 7.4593
+time: '2023-04-20 05:33:58.25'
+depth: 12700.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3222
+lon: 7.4595
+time: '2023-04-20 16:59:46.890000105'
+depth: 12760.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2595
+lon: 7.8482
+time: '2023-04-20 20:39:26.5'
+depth: 6180.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.6619
+lon: 6.3301
+time: '2023-04-20 21:20:34.549999952'
+depth: 1200.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.7423
+lon: 7.5398
+time: '2023-04-21 07:56:31.720000029'
+depth: -500.0
+magnitude: 0.0
+--- !pf.Event
+lat: 50.3228
+lon: 7.4621
+time: '2023-04-21 22:17:24.660000086'
+depth: 12800.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3235
+lon: 7.4633
+time: '2023-04-21 22:23:25.049999952'
+depth: 12750.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3219
+lon: 7.4618
+time: '2023-04-22 02:30:10.549999952'
+depth: 12400.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3217
+lon: 7.4586
+time: '2023-04-22 15:06:42.890000105'
+depth: 12540.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3231
+lon: 7.458
+time: '2023-04-22 19:31:17.269999981'
+depth: 12790.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3218
+lon: 7.4599
+time: '2023-04-22 22:09:39.900000095'
+depth: 13010.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3208
+lon: 7.4577
+time: '2023-04-24 17:34:23.109999895'
+depth: 12860.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3092
+lon: 6.624
+time: '2023-04-25 09:07:22.130000114'
+depth: -500.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3506
+lon: 7.3744
+time: '2023-04-25 12:00:03.109999895'
+depth: 12900.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3243
+lon: 7.4569
+time: '2023-04-25 17:19:55.410000086'
+depth: 12810.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.323
+lon: 7.4559
+time: '2023-04-25 17:21:21.349999905'
+depth: 12580.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3235
+lon: 7.4571
+time: '2023-04-25 17:21:32.069999933'
+depth: 12390.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3577
+lon: 7.3895
+time: '2023-04-25 18:56:26.569999933'
+depth: 11520.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3239
+lon: 7.4533
+time: '2023-04-25 23:07:57.569999933'
+depth: 12700.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.373
+lon: 7.3783
+time: '2023-04-26 00:01:00.869999886'
+depth: 11060.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3744
+lon: 7.3762
+time: '2023-04-26 00:08:48.890000105'
+depth: 10710.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3206
+lon: 7.4595
+time: '2023-04-26 10:20:50.930000067'
+depth: 12690.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2809
+lon: 8.1022
+time: '2023-04-26 10:37:21.599999905'
+depth: -500.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3363
+lon: 7.4176
+time: '2023-04-26 22:13:43.319999933'
+depth: 12340.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3377
+lon: 7.4173
+time: '2023-04-27 00:44:48.460000038'
+depth: 12070.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3202
+lon: 7.4598
+time: '2023-04-27 17:08:38.839999914'
+depth: 12730.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3223
+lon: 7.4608
+time: '2023-04-27 17:09:58.579999924'
+depth: 12720.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3229
+lon: 7.4582
+time: '2023-04-27 17:48:46.559999943'
+depth: 12890.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4933
+lon: 6.7163
+time: '2023-04-27 19:12:33.670000076'
+depth: 8100.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4934
+lon: 6.7115
+time: '2023-04-27 20:55:24.309999943'
+depth: 8090.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4952
+lon: 6.7119
+time: '2023-04-27 20:56:48.130000114'
+depth: 8550.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3226
+lon: 7.4597
+time: '2023-04-27 22:02:21.269999981'
+depth: 13120.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3208
+lon: 7.4591
+time: '2023-04-27 23:59:09.859999895'
+depth: 13230.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2729
+lon: 7.4648
+time: '2023-04-28 08:20:20.49000001'
+depth: 6430.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4754
+lon: 7.2168
+time: '2023-04-28 08:45:54.190000057'
+depth: 4970.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1112
+lon: 6.3385
+time: '2023-04-28 10:23:08.269999981'
+depth: 14050.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3737
+lon: 7.3796
+time: '2023-04-28 20:37:37.809999943'
+depth: 11100.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3684
+lon: 7.3807
+time: '2023-04-28 21:25:10.980000019'
+depth: 9960.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4062
+lon: 6.6759
+time: '2023-04-29 02:29:20.900000095'
+depth: 8070.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2347
+lon: 6.4506
+time: '2023-04-29 08:41:38.549999952'
+depth: -500.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.6817
+lon: 6.5497
+time: '2023-04-30 01:19:32.660000086'
+depth: 12540.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.0501
+lon: 7.3941
+time: '2023-04-30 01:27:41.859999895'
+depth: 6190.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3221
+lon: 7.459
+time: '2023-04-30 03:52:53.420000076'
+depth: 12730.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3209
+lon: 7.459
+time: '2023-04-30 03:54:26.559999943'
+depth: 12490.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3236
+lon: 7.4583
+time: '2023-04-30 04:17:17.980000019'
+depth: 12370.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3187
+lon: 7.3514
+time: '2023-04-30 06:21:35.670000076'
+depth: 6070.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3229
+lon: 7.4591
+time: '2023-04-30 15:23:15.720000029'
+depth: 13190.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4054
+lon: 6.6757
+time: '2023-04-30 16:40:00.299999952'
+depth: 6340.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3985
+lon: 7.3682
+time: '2023-04-30 22:18:30.869999886'
+depth: 10860.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3952
+lon: 7.3632
+time: '2023-04-30 22:20:13.029999971'
+depth: 10520.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4051
+lon: 6.6757
+time: '2023-05-01 01:59:18.089999914'
+depth: 6930.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3208
+lon: 7.4615
+time: '2023-05-01 20:04:23.950000048'
+depth: 13040.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.331
+lon: 7.4602
+time: '2023-05-01 20:16:20.140000105'
+depth: 12870.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.38
+lon: 7.3709
+time: '2023-05-02 03:56:32.210000038'
+depth: 10310.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3229
+lon: 7.4611
+time: '2023-05-03 03:05:06.910000086'
+depth: 12320.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3215
+lon: 7.4591
+time: '2023-05-03 13:58:53.339999914'
+depth: 12920.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3216
+lon: 7.4586
+time: '2023-05-04 03:16:04.410000086'
+depth: 12940.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3209
+lon: 7.4588
+time: '2023-05-04 04:09:01'
+depth: 13000.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.4136
+lon: 7.2797
+time: '2023-05-04 20:06:16.109999895'
+depth: 6180.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3661
+lon: 7.5266
+time: '2023-05-04 22:45:22.460000038'
+depth: 7640.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1984
+lon: 7.7681
+time: '2023-05-05 02:01:56.470000029'
+depth: 8940.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3234
+lon: 7.4613
+time: '2023-05-06 16:14:33.75'
+depth: 12230.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3628
+lon: 7.3871
+time: '2023-05-06 18:02:03.660000086'
+depth: 11980.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3419
+lon: 7.3954
+time: '2023-05-06 22:49:21.5'
+depth: 14170.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.5581
+lon: 7.1682
+time: '2023-05-06 23:49:22.190000057'
+depth: 7260.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3224
+lon: 7.4574
+time: '2023-05-06 23:50:31.660000086'
+depth: 12700.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.322
+lon: 7.4555
+time: '2023-05-07 04:09:20.730000019'
+depth: 12960.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4427
+lon: 7.2475
+time: '2023-05-07 05:26:11.630000114'
+depth: 9880.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3197
+lon: 7.4655
+time: '2023-05-07 06:17:46'
+depth: 12350.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.322
+lon: 7.4556
+time: '2023-05-07 06:23:56.039999962'
+depth: 13570.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3234
+lon: 7.459
+time: '2023-05-08 01:06:22.5'
+depth: 12540.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4012
+lon: 7.3349
+time: '2023-05-08 08:45:19.029999971'
+depth: 9830.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.6953
+lon: 7.1449
+time: '2023-05-08 23:36:09.680000067'
+depth: 12530.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3737
+lon: 7.3702
+time: '2023-05-10 01:31:01.940000057'
+depth: 12560.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3218
+lon: 7.4588
+time: '2023-05-10 03:22:07.00999999'
+depth: 13320.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.321
+lon: 7.4621
+time: '2023-05-10 07:33:55.660000086'
+depth: 13360.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.58
+lon: 7.2365
+time: '2023-05-10 07:55:37.460000038'
+depth: 8970.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3241
+lon: 7.4577
+time: '2023-05-10 20:02:21.25999999'
+depth: 12650.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4606
+lon: 7.304
+time: '2023-05-10 23:01:51.720000029'
+depth: 13540.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4715
+lon: 7.2887
+time: '2023-05-10 23:01:55.319999933'
+depth: 14310.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3465
+lon: 7.4028
+time: '2023-05-11 04:05:28.279999971'
+depth: 11890.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2868
+lon: 7.4643
+time: '2023-05-11 04:44:04.890000105'
+depth: 11920.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.5192
+lon: 7.145
+time: '2023-05-11 14:12:14.299999952'
+depth: 6730.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3309
+lon: 7.4468
+time: '2023-05-13 04:57:57.460000038'
+depth: 13400.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3209
+lon: 7.4614
+time: '2023-05-13 04:58:14.430000067'
+depth: 12420.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3175
+lon: 7.4649
+time: '2023-05-13 14:52:17.230000019'
+depth: 13050.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.6002
+lon: 7.3149
+time: '2023-05-14 09:29:04.589999914'
+depth: 11830.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3216
+lon: 7.4579
+time: '2023-05-15 02:31:03.630000114'
+depth: 13090.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3164
+lon: 7.456
+time: '2023-05-15 02:40:36.099999905'
+depth: 11740.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3202
+lon: 7.459
+time: '2023-05-15 16:56:47.329999924'
+depth: 12820.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3212
+lon: 7.4593
+time: '2023-05-15 22:04:59.640000105'
+depth: 13270.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4769
+lon: 7.2151
+time: '2023-05-16 01:06:21.74000001'
+depth: 4600.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3208
+lon: 7.4621
+time: '2023-05-16 14:14:43.00999999'
+depth: 12880.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3765
+lon: 7.3769
+time: '2023-05-16 17:30:23.609999895'
+depth: 10620.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3201
+lon: 7.4598
+time: '2023-05-16 21:28:07.019999981'
+depth: 12940.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4797
+lon: 7.2229
+time: '2023-05-17 15:00:56.24000001'
+depth: 5430.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3809
+lon: 7.4459
+time: '2023-05-18 01:43:04.339999914'
+depth: 7550.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3213
+lon: 7.4617
+time: '2023-05-18 17:16:12.180000067'
+depth: 12900.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3202
+lon: 7.4618
+time: '2023-05-18 18:00:36.130000114'
+depth: 12980.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.7039
+lon: 6.2584
+time: '2023-05-18 22:58:23.049999952'
+depth: 6650.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3205
+lon: 7.4594
+time: '2023-05-19 01:14:35.339999914'
+depth: 12860.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3234
+lon: 7.4585
+time: '2023-05-20 02:02:39.25'
+depth: 12530.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3292
+lon: 7.4254
+time: '2023-05-20 05:30:56.059999943'
+depth: 12790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4044
+lon: 6.6742
+time: '2023-05-21 01:04:35.680000067'
+depth: 6810.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3207
+lon: 7.4586
+time: '2023-05-21 18:47:07.390000105'
+depth: 12790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.6399
+lon: 7.2002
+time: '2023-05-21 23:02:45.920000076'
+depth: 8310.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.7225
+lon: 7.5779
+time: '2023-05-22 09:01:41.150000095'
+depth: -500.0
+magnitude: 0.0
+--- !pf.Event
+lat: 50.3745
+lon: 7.3761
+time: '2023-05-22 22:20:02.450000048'
+depth: 10650.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3821
+lon: 7.3647
+time: '2023-05-23 12:07:17.059999943'
+depth: 12410.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.6197
+lon: 7.0564
+time: '2023-05-23 12:56:41.859999895'
+depth: 13720.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.233
+lon: 6.4737
+time: '2023-05-23 16:08:50.359999895'
+depth: -500.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.488
+lon: 7.1441
+time: '2023-05-23 23:11:43.549999952'
+depth: 5660.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4862
+lon: 7.1455
+time: '2023-05-24 01:24:20.789999962'
+depth: 6090.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.322
+lon: 7.4586
+time: '2023-05-24 03:51:58.480000019'
+depth: 12880.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3165
+lon: 7.478
+time: '2023-05-25 05:59:56.75999999'
+depth: 12410.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3134
+lon: 7.4797
+time: '2023-05-25 06:20:10.190000057'
+depth: 12890.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3158
+lon: 7.4779
+time: '2023-05-25 06:21:42.460000038'
+depth: 12900.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3198
+lon: 7.4705
+time: '2023-05-25 06:24:38.170000076'
+depth: 12860.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3207
+lon: 7.4631
+time: '2023-05-25 10:03:36.769999981'
+depth: 12850.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.7315
+lon: 7.5598
+time: '2023-05-26 08:41:52.829999924'
+depth: -500.0
+magnitude: 0.0
+--- !pf.Event
+lat: 50.3405
+lon: 7.414
+time: '2023-05-27 08:32:28.099999905'
+depth: 12730.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3415
+lon: 7.4171
+time: '2023-05-27 08:33:20.640000105'
+depth: 12630.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3751
+lon: 7.3768
+time: '2023-05-27 18:07:25.859999895'
+depth: 11210.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3731
+lon: 7.378
+time: '2023-05-27 18:11:09.430000067'
+depth: 11200.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3741
+lon: 7.3811
+time: '2023-05-27 18:11:26.349999905'
+depth: 11440.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3297
+lon: 7.456
+time: '2023-05-28 06:20:45.480000019'
+depth: 12110.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3228
+lon: 7.4592
+time: '2023-05-28 19:16:38.710000038'
+depth: 12770.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3753
+lon: 7.3682
+time: '2023-05-29 12:04:42.079999924'
+depth: 13510.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3998
+lon: 7.3495
+time: '2023-05-29 21:50:17.25'
+depth: 11290.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3366
+lon: 7.4127
+time: '2023-05-30 07:57:17.160000086'
+depth: 13490.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2674
+lon: 7.0393
+time: '2023-06-01 00:13:32.829999924'
+depth: 16000.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3002
+lon: 6.9702
+time: '2023-06-01 00:28:39.900000095'
+depth: 15990.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2713
+lon: 7.0337
+time: '2023-06-01 00:39:53.49000001'
+depth: 16090.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2697
+lon: 7.0448
+time: '2023-06-01 00:46:57.109999895'
+depth: 16270.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.2687
+lon: 7.0382
+time: '2023-06-01 01:02:37.589999914'
+depth: 15850.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3256
+lon: 7.2845
+time: '2023-06-01 01:18:59.819999933'
+depth: 4390.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.298
+lon: 7.5186
+time: '2023-06-01 05:26:56.349999905'
+depth: 13060.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.2986
+lon: 7.5203
+time: '2023-06-01 05:28:25.559999943'
+depth: 12790.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2849
+lon: 8.1042
+time: '2023-06-01 10:33:49.690000057'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.2979
+lon: 7.5191
+time: '2023-06-01 16:25:02.450000048'
+depth: 12930.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3288
+lon: 7.4509
+time: '2023-06-01 23:51:28.079999924'
+depth: 13270.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3398
+lon: 7.3965
+time: '2023-06-03 01:54:46.019999981'
+depth: 13390.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3729
+lon: 7.3793
+time: '2023-06-03 12:30:47.190000057'
+depth: 11290.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3211
+lon: 7.4587
+time: '2023-06-04 22:17:04.329999924'
+depth: 12670.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.323
+lon: 7.4597
+time: '2023-06-05 02:32:55.49000001'
+depth: 12500.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.289
+lon: 7.5866
+time: '2023-06-05 10:52:04.690000057'
+depth: 10000.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3217
+lon: 7.458
+time: '2023-06-06 08:18:51.869999886'
+depth: 12460.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.5748
+lon: 7.1075
+time: '2023-06-06 11:06:18.109999895'
+depth: 11790.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.32
+lon: 7.4614
+time: '2023-06-07 00:59:18.920000076'
+depth: 12770.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.7342
+lon: 7.5441
+time: '2023-06-07 09:11:18.829999924'
+depth: -500.0
+magnitude: 0.0
+--- !pf.Event
+lat: 50.2977
+lon: 7.4579
+time: '2023-06-07 10:17:18.380000114'
+depth: 12020.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3252
+lon: 7.2834
+time: '2023-06-07 22:18:46.700000048'
+depth: 3680.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3547
+lon: 7.3958
+time: '2023-06-08 03:30:39.180000067'
+depth: 11820.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3506
+lon: 7.4014
+time: '2023-06-09 10:39:42.940000057'
+depth: 12070.0
+magnitude: 1.8
+--- !pf.Event
+lat: 50.3473
+lon: 7.4021
+time: '2023-06-09 10:42:38.710000038'
+depth: 12460.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3241
+lon: 7.4562
+time: '2023-06-10 19:59:29.809999943'
+depth: 12790.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.1324
+lon: 7.7618
+time: '2023-06-10 21:06:28.819999933'
+depth: 3230.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.33
+lon: 7.2776
+time: '2023-06-11 02:45:11.359999895'
+depth: 4030.0000000000005
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3241
+lon: 7.4595
+time: '2023-06-15 22:07:57.680000067'
+depth: 12680.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3645
+lon: 7.3858
+time: '2023-06-17 06:54:08.829999924'
+depth: 12250.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.5996
+lon: 7.3173
+time: '2023-06-17 09:57:09.619999886'
+depth: 11280.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.6343
+lon: 6.9105
+time: '2023-06-17 12:24:48.029999971'
+depth: 12090.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3992
+lon: 7.3543
+time: '2023-06-18 08:27:52.700000048'
+depth: 11320.0
+magnitude: 0.5
+--- !pf.Event
+lat: 49.971
+lon: 7.4156
+time: '2023-06-19 19:04:41.359999895'
+depth: 8039.999999999999
+magnitude: 0.8
+--- !pf.Event
+lat: 50.351
+lon: 7.3716
+time: '2023-06-20 09:26:11.640000105'
+depth: 12640.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.362
+lon: 7.3891
+time: '2023-06-21 15:01:36.309999943'
+depth: 11830.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3634
+lon: 7.3889
+time: '2023-06-21 15:19:31.380000114'
+depth: 11940.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2588
+lon: 8.0347
+time: '2023-06-21 16:09:11.460000038'
+depth: -500.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3568
+lon: 7.3917
+time: '2023-06-21 23:58:15.50999999'
+depth: 11540.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3974
+lon: 6.6768
+time: '2023-06-22 01:52:18.190000057'
+depth: 2290.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3203
+lon: 6.3816
+time: '2023-06-22 06:10:33.289999962'
+depth: 3740.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2098
+lon: 6.5062
+time: '2023-06-23 08:23:41.430000067'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3902
+lon: 7.4238
+time: '2023-06-23 22:06:33.430000067'
+depth: 13420.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3479
+lon: 7.4043
+time: '2023-06-24 18:06:28.029999971'
+depth: 13330.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3606
+lon: 7.3952
+time: '2023-06-24 22:04:57.809999943'
+depth: 12250.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3261
+lon: 7.4588
+time: '2023-06-25 09:54:40.710000038'
+depth: 12780.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3973
+lon: 7.3095
+time: '2023-06-26 18:08:35.549999952'
+depth: 6970.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.0273
+lon: 7.4813
+time: '2023-06-26 21:25:39.890000105'
+depth: 9970.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3367
+lon: 7.4345
+time: '2023-06-27 06:52:21.579999924'
+depth: 8109.999999999999
+magnitude: 0.8
+--- !pf.Event
+lat: 50.0655
+lon: 7.5326
+time: '2023-06-27 15:48:47.539999962'
+depth: 2500.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3378
+lon: 7.413
+time: '2023-06-27 23:08:04.680000067'
+depth: 8170.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3391
+lon: 7.414
+time: '2023-06-28 00:01:11.880000114'
+depth: 8480.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3228
+lon: 7.46
+time: '2023-06-29 05:53:46.809999943'
+depth: 12720.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4667
+lon: 6.2527
+time: '2023-06-29 08:11:46.420000076'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.4736
+lon: 6.2522
+time: '2023-06-29 08:24:54.670000076'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.1804
+lon: 8.1819
+time: '2023-06-29 18:13:27.24000001'
+depth: 2830.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.2786
+lon: 7.3918
+time: '2023-06-30 00:25:32.589999914'
+depth: 5840.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4789
+lon: 7.2144
+time: '2023-06-30 21:38:50.930000067'
+depth: 4800.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3374
+lon: 7.4182
+time: '2023-07-02 02:27:03.190000057'
+depth: 8210.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3527
+lon: 7.3728
+time: '2023-07-02 07:46:45.019999981'
+depth: 11710.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4742
+lon: 7.2198
+time: '2023-07-02 16:07:01.559999943'
+depth: 4820.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.319
+lon: 7.464
+time: '2023-07-02 23:38:11.630000114'
+depth: 13410.0
+magnitude: 0.8
+--- !pf.Event
+lat: 49.9465
+lon: 7.5604
+time: '2023-07-04 03:48:14.940000057'
+depth: 12580.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3164
+lon: 7.4855
+time: '2023-07-05 22:52:59.190000057'
+depth: 11600.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2602
+lon: 7.5834
+time: '2023-07-06 17:22:16.299999952'
+depth: 5700.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.6898
+lon: 7.2269
+time: '2023-07-06 23:13:38.349999905'
+depth: 12320.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3755
+lon: 7.3506
+time: '2023-07-07 02:12:29.400000095'
+depth: 4940.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4678
+lon: 6.2458
+time: '2023-07-07 09:16:45.150000095'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3213
+lon: 7.4588
+time: '2023-07-08 12:49:21.950000048'
+depth: 12440.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3679
+lon: 7.3812
+time: '2023-07-08 14:03:01.779999971'
+depth: 14770.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3707
+lon: 7.3825
+time: '2023-07-10 01:06:11.089999914'
+depth: 11240.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3935
+lon: 7.3563
+time: '2023-07-10 04:45:20.950000048'
+depth: 11350.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.2758
+lon: 8.1049
+time: '2023-07-11 10:37:05.769999981'
+depth: -500.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3913
+lon: 7.352
+time: '2023-07-11 18:13:16.420000076'
+depth: 14050.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.1021
+lon: 7.1089
+time: '2023-07-12 00:33:31.619999886'
+depth: 14190.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3879
+lon: 7.3586
+time: '2023-07-12 01:08:01.670000076'
+depth: 14050.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3525
+lon: 7.3686
+time: '2023-07-12 03:59:08.269999981'
+depth: 12940.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3541
+lon: 7.3655
+time: '2023-07-12 04:00:03.519999981'
+depth: 12870.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3885
+lon: 7.3575
+time: '2023-07-12 05:29:12.559999943'
+depth: 14080.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3861
+lon: 7.3657
+time: '2023-07-14 08:02:26.470000029'
+depth: 11500.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4065
+lon: 6.6751
+time: '2023-07-15 07:10:34.279999971'
+depth: 7090.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4723
+lon: 7.2171
+time: '2023-07-15 15:45:30.160000086'
+depth: 5100.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4801
+lon: 7.2178
+time: '2023-07-16 20:00:16.25999999'
+depth: 4920.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4789
+lon: 7.2199
+time: '2023-07-16 21:54:25.309999943'
+depth: 5280.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2111
+lon: 7.0641
+time: '2023-07-16 23:05:36.569999933'
+depth: 4910.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4781
+lon: 7.2047
+time: '2023-07-17 06:22:31.950000048'
+depth: 13540.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.7309
+lon: 7.554
+time: '2023-07-17 08:17:36.640000105'
+depth: -500.0
+magnitude: 0.0
+--- !pf.Event
+lat: 50.4092
+lon: 7.2881
+time: '2023-07-17 15:37:38.869999886'
+depth: 6130.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4091
+lon: 7.2877
+time: '2023-07-17 15:38:40.440000057'
+depth: 6350.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4057
+lon: 7.2956
+time: '2023-07-17 15:45:51.319999933'
+depth: 7210.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4096
+lon: 6.6718
+time: '2023-07-17 21:50:16.25'
+depth: 7680.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.374
+lon: 7.3787
+time: '2023-07-17 22:32:58.920000076'
+depth: 11000.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.4893
+lon: 7.1859
+time: '2023-07-18 16:42:48.660000086'
+depth: 11070.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3212
+lon: 7.4591
+time: '2023-07-18 20:54:18.930000067'
+depth: 12950.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3183
+lon: 6.3795
+time: '2023-07-19 01:26:48.920000076'
+depth: 3620.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3779
+lon: 7.374
+time: '2023-07-19 08:11:50.809999943'
+depth: 10860.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.377
+lon: 7.3731
+time: '2023-07-19 08:19:33.140000105'
+depth: 10610.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.6801
+lon: 6.8652
+time: '2023-07-20 15:57:26.349999905'
+depth: 12070.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1401
+lon: 8.1494
+time: '2023-07-21 02:37:39.910000086'
+depth: 2230.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3729
+lon: 7.3792
+time: '2023-07-21 06:15:56.029999971'
+depth: 11290.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3201
+lon: 7.4648
+time: '2023-07-22 19:49:27.910000086'
+depth: 12830.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3203
+lon: 7.4611
+time: '2023-07-22 19:55:11.839999914'
+depth: 12710.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3217
+lon: 7.4586
+time: '2023-07-22 21:04:09.160000086'
+depth: 12590.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2872
+lon: 6.3586
+time: '2023-07-23 08:55:51.359999895'
+depth: 10060.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3212
+lon: 7.4612
+time: '2023-07-23 10:18:58.859999895'
+depth: 12830.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.397
+lon: 7.443
+time: '2023-07-23 23:57:52.319999933'
+depth: 8230.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3513
+lon: 7.3957
+time: '2023-07-24 09:11:25.309999943'
+depth: 11330.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4833
+lon: 7.2929
+time: '2023-07-25 06:48:43.890000105'
+depth: 10990.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.7344
+lon: 7.5513
+time: '2023-07-25 07:57:35.410000086'
+depth: -500.0
+magnitude: 0.0
+--- !pf.Event
+lat: 50.3392
+lon: 7.3509
+time: '2023-07-25 18:59:34.839999914'
+depth: 6790.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2732
+lon: 7.4866
+time: '2023-07-26 01:29:43.140000105'
+depth: 7660.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3397
+lon: 7.3527
+time: '2023-07-26 19:52:53.950000048'
+depth: 6870.0
+magnitude: 0.7
+--- !pf.Event
+lat: 49.983
+lon: 7.9078
+time: '2023-07-28 10:01:55.299999952'
+depth: -500.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.442
+lon: 7.3178
+time: '2023-07-30 06:11:36.980000019'
+depth: 13060.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3368
+lon: 7.4037
+time: '2023-07-30 08:29:38.079999924'
+depth: 13570.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3219
+lon: 7.4309
+time: '2023-07-30 21:35:58.5'
+depth: 8000.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3214
+lon: 7.4266
+time: '2023-07-30 21:37:41.829999924'
+depth: 8370.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.1417
+lon: 7.8704
+time: '2023-07-30 21:41:27.920000076'
+depth: 6380.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.3193
+lon: 7.4332
+time: '2023-07-30 21:53:34.569999933'
+depth: 7970.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3739
+lon: 7.3826
+time: '2023-07-31 08:45:47.059999943'
+depth: 11140.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.1413
+lon: 7.8635
+time: '2023-07-31 20:45:38.930000067'
+depth: 6260.0
+magnitude: 1.4
+--- !pf.Event
+lat: 50.4014
+lon: 7.2998
+time: '2023-07-31 22:30:53.289999962'
+depth: 6070.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3746
+lon: 7.3798
+time: '2023-08-01 13:42:53.279999971'
+depth: 10930.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3832
+lon: 7.3632
+time: '2023-08-04 05:18:41.75999999'
+depth: 11310.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3226
+lon: 7.4321
+time: '2023-08-04 07:56:15.960000038'
+depth: 7800.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3763
+lon: 7.3746
+time: '2023-08-04 11:57:18.039999962'
+depth: 10670.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3753
+lon: 7.3777
+time: '2023-08-04 11:59:15.019999981'
+depth: 11100.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3772
+lon: 7.3739
+time: '2023-08-04 12:31:22.960000038'
+depth: 10560.0
+magnitude: 1.2
+--- !pf.Event
+lat: 50.3777
+lon: 7.3717
+time: '2023-08-04 12:32:22.920000076'
+depth: 10140.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3784
+lon: 7.3722
+time: '2023-08-04 12:44:53.690000057'
+depth: 10610.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3736
+lon: 7.3794
+time: '2023-08-05 00:31:54.559999943'
+depth: 11020.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3592
+lon: 7.3906
+time: '2023-08-05 10:19:35.119999886'
+depth: 11350.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.3212
+lon: 7.4603
+time: '2023-08-05 19:21:11.460000038'
+depth: 12980.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3806
+lon: 7.3683
+time: '2023-08-05 22:09:33.880000114'
+depth: 10870.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3213
+lon: 7.4619
+time: '2023-08-06 01:47:27.930000067'
+depth: 12860.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3222
+lon: 7.4575
+time: '2023-08-06 05:37:43.49000001'
+depth: 12840.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3218
+lon: 7.4548
+time: '2023-08-06 05:48:13.309999943'
+depth: 12560.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4341
+lon: 7.2075
+time: '2023-08-07 07:31:21.650000095'
+depth: 11450.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.322
+lon: 7.4343
+time: '2023-08-08 23:28:31.380000114'
+depth: 8220.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.7118
+lon: 7.1826
+time: '2023-08-09 14:00:05.660000086'
+depth: 14610.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3595
+lon: 7.383
+time: '2023-08-09 15:06:48.359999895'
+depth: 11230.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2168
+lon: 7.4626
+time: '2023-08-09 19:48:03.660000086'
+depth: 14370.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.2148
+lon: 7.872
+time: '2023-08-09 21:38:20.670000076'
+depth: 8670.0
+magnitude: 1.0
+--- !pf.Event
+lat: 50.3744
+lon: 7.3782
+time: '2023-08-10 04:09:51.420000076'
+depth: 11120.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.4769
+lon: 7.2151
+time: '2023-08-10 05:44:24.710000038'
+depth: 4690.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3783
+lon: 7.3758
+time: '2023-08-11 00:42:22.720000029'
+depth: 10710.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.379
+lon: 7.4151
+time: '2023-08-11 02:15:16.450000048'
+depth: 6170.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.4091
+lon: 6.6661
+time: '2023-08-11 03:36:17.880000114'
+depth: 6170.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.269
+lon: 7.5927
+time: '2023-08-12 19:30:09.130000114'
+depth: 13610.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3208
+lon: 7.435
+time: '2023-08-13 05:57:08.539999962'
+depth: 7690.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3751
+lon: 7.376
+time: '2023-08-14 02:15:49.74000001'
+depth: 11480.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3755
+lon: 7.3731
+time: '2023-08-14 02:23:28.720000029'
+depth: 11350.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3231
+lon: 7.457
+time: '2023-08-14 17:03:03.920000076'
+depth: 13000.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3223
+lon: 7.4566
+time: '2023-08-14 23:24:08.730000019'
+depth: 13090.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.3214
+lon: 7.4574
+time: '2023-08-14 23:25:45.50999999'
+depth: 13270.0
+magnitude: 1.3
+--- !pf.Event
+lat: 50.3222
+lon: 7.4573
+time: '2023-08-14 23:26:42.299999952'
+depth: 12670.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3221
+lon: 7.4567
+time: '2023-08-14 23:27:18.359999895'
+depth: 13040.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.322
+lon: 7.4563
+time: '2023-08-15 00:20:51.730000019'
+depth: 12700.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.3238
+lon: 7.4535
+time: '2023-08-15 07:44:18.49000001'
+depth: 12900.0
+magnitude: 0.7
+--- !pf.Event
+lat: 50.2836
+lon: 8.0968
+time: '2023-08-15 10:21:23.74000001'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.6271
+lon: 7.119
+time: '2023-08-15 12:43:02.690000057'
+depth: 14220.0
+magnitude: 0.9
+--- !pf.Event
+lat: 50.2769
+lon: 8.1087
+time: '2023-08-16 10:42:33.940000057'
+depth: -500.0
+magnitude: 1.1
+--- !pf.Event
+lat: 50.4768
+lon: 7.2136
+time: '2023-08-16 19:29:14.170000076'
+depth: 4510.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4767
+lon: 7.2148
+time: '2023-08-17 02:10:13.190000057'
+depth: 4450.0
+magnitude: 0.5
+--- !pf.Event
+lat: 50.3896
+lon: 7.3605
+time: '2023-08-17 05:01:10.559999943'
+depth: 9570.0
+magnitude: 0.6
+--- !pf.Event
+lat: 50.6241
+lon: 7.1138
+time: '2023-08-18 03:01:38.440000057'
+depth: 12540.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.3232
+lon: 7.4584
+time: '2023-08-18 09:47:14.150000095'
+depth: 12690.0
+magnitude: 0.8
+--- !pf.Event
+lat: 50.4707
+lon: 7.2238
+time: '2023-08-19 19:27:07.24000001'
+depth: 5340.0
+magnitude: 0.7

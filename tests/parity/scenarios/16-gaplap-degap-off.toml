@@ -1,0 +1,7 @@
+name = "gaplap-degap-off"
+title = "Gapped and overlapping segments, degapping off"
+dataset = "gaplap"
+tiers = [1]
+
+[compare]
+reason = "segment geometry before any joining, so the pairing itself is under test"

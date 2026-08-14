@@ -1,8 +1,11 @@
 # The SeisBench weights are float32 tensors, not text: typos decodes stretches of
 # them as words and flags the ones that land near an English misspelling ("Yor"),
 # which is unfixable by definition — the bytes are the model.
+# The eifel parity corpus is checked-in real-world data pinned by sha256: its
+# station codes ("NAST", "ACN") read as misspellings and may not be corrected —
+# the bytes are the dataset.
 [files]
-extend-exclude = ["web/assets/models/*.onnx"]
+extend-exclude = ["web/assets/models/*.onnx", "tests/parity/corpus/eifel/"]
 
 # numpy's np.arange is not a misspelling of "arrange".
 [default.extend-words]
@@ -13,3 +16,8 @@ nd = "nd"
 Pn = "Pn"
 # "NED" is the north-east-down coordinate convention moment tensors use, not "need".
 NED = "NED"
+# "Symetric" is upstream pyrocko's own spelling, in the tooltip of the waterfall
+# colorbar's symmetry toggle (`gui/util.py` ColorbarControl). The parity harness
+# matches that tooltip verbatim to pair it with the web port's "Symmetry", so
+# correcting it here would break the match rather than fix anything.
+Symetric = "Symetric"

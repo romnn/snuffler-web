@@ -1,0 +1,13 @@
+name = "demo-downsampling"
+title = "Allow Downsampling on, whole extent"
+dataset = "demo"
+tiers = [1]
+
+[state]
+demean = true
+lowpass = 1.0
+allow_downsampling = true
+
+[compare]
+expect_divergence = ["allow-downsampling-meaning"]
+reason = "the same menu item means two different things on the two sides"

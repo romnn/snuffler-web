@@ -1,0 +1,10 @@
+name = "demo-subsort-grouped"
+title = "Subsort by network, station, channel, grouped by location"
+dataset = "demo"
+tiers = [1]
+
+[state]
+subsort = "nsc_l"
+
+[compare]
+reason = "the grouped subsorts, where Qt gathers several locations onto one track"

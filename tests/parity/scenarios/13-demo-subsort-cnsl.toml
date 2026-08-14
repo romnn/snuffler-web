@@ -1,0 +1,10 @@
+name = "demo-subsort-cnsl"
+title = "Subsort by channel first"
+dataset = "demo"
+tiers = [1]
+
+[state]
+subsort = "cnsl"
+
+[compare]
+reason = "the permutation table, on a dataset where channel-first reorders every track"

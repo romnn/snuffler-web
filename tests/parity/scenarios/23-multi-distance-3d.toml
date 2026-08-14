@@ -1,0 +1,13 @@
+name = "multi-distance-3d"
+title = "Distance sorting with 3D distances"
+dataset = "multi"
+tiers = [1]
+load = ["stations", "events"]
+
+[state]
+sort = "distance"
+distances_3d = true
+
+[compare]
+expect_divergence = ["distance-3d-vertical"]
+reason = "the vertical term: Qt uses the station's borehole depth, the web its elevation"

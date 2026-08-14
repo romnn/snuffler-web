@@ -1,0 +1,11 @@
+name = "multi-sort-distance"
+title = "Tracks ordered by epicentral distance"
+dataset = "multi"
+tiers = [1]
+load = ["stations", "events"]
+
+[state]
+sort = "distance"
+
+[compare]
+reason = "Qt measures on the ellipsoid, the web on a sphere; the order may still agree"

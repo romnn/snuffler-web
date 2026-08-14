@@ -46,3 +46,7 @@ docker/pyodide-mt/served/
 # agent scratch + local uv lock (test artifacts)
 scratchpad/
 uv.lock
+
+# parity harness: generated corpus (manifest.json IS checked in) and run artifacts
+/tests/parity/corpus/data
+/tests/parity/.artifacts

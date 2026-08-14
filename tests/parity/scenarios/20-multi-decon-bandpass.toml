@@ -1,0 +1,13 @@
+name = "multi-decon-bandpass"
+title = "Instrument response removed inside a passband"
+dataset = "multi"
+tiers = [1]
+load = ["responses"]
+
+[state]
+remove_response = true
+highpass = 0.05
+lowpass = 4.0
+
+[compare]
+reason = "get_freq_limits vs _decon_freq_limits with both corners set"

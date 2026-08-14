@@ -1,0 +1,37 @@
+name = "ui-marker-editing"
+title = "Pick a marker, then recolour, select and delete it from the keyboard"
+dataset = "demo"
+tiers = [3]
+watch_menus = ["Options"]
+
+# Where the pick lands is a fraction of the waveform area, so each side turns it into
+# its own pixels. The resulting *time and track* therefore differ between the two
+# layouts by construction, and the diff says so: it compares what the marker is, not
+# where it was placed.
+[[step]]
+action = "pick"
+x = 0.5
+y = 0.4
+
+[[step]]
+action = "key"
+target = "3"
+
+[[step]]
+action = "key"
+target = "d"
+
+[[step]]
+action = "key"
+target = "A"
+
+[[step]]
+action = "key"
+target = "5"
+
+[[step]]
+action = "key"
+target = "<backspace>"
+
+[compare]
+reason = "the pick lands on both sides, is selected on both, and every later keystroke acts on it"

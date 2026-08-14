@@ -1,8 +1,20 @@
 # Parity testing: proving the web port behaves like Qt snuffler
 
-> Status: **proposal, nothing built yet.** Drafted 2026-08-13 against pyrocko
-> `64ae99fb` (the `PYROCKO_REF` pin in `mise.toml`). Supersedes the assumption
-> that comparing the two frontends requires driving the noVNC container.
+> Status: **built.** All three tiers live in [`tests/parity/`](../tests/parity/)
+> behind `task test:parity`, `task test:parity:inventory` and
+> `task test:parity:scenarios`; see [that README](../tests/parity/README.md) for
+> how to run them and what each one compares. Drafted 2026-08-13 against pyrocko
+> `64ae99fb` (the `PYROCKO_REF` pin in `mise.toml`), implemented 2026-08-14.
+> Supersedes the assumption that comparing the two frontends requires driving the
+> noVNC container.
+>
+> The design below survived contact with the code essentially unchanged. Two
+> things turned out better than proposed: the Qt oracle does not call
+> `prepare_cutout2` itself but **records a real paint**, which also yields the
+> scaling matrix and track layout for free; and the tier-2 key inventory is
+> extracted from Qt's *live* bindings rather than its help page, which is how it
+> found that upstream's help page understates its own key ranges. What the suite
+> found on its first runs is listed under [Findings](#findings).
 
 ## TL;DR
 
@@ -60,6 +72,14 @@ and asked the same question.
 | --- | --- | --- |
 | Qt | `PileViewerMain.prepare_cutout2(tmin, tmax, ...)` — `sources/pyrocko/src/gui/snuffler/pile_viewer.py:3590` | the `list[Trace]` the renderer is about to draw |
 | web | `bridge._get_view_data(req: ViewParams)` — `web/bridge.py:1026` | `(ViewMeta, np.ndarray)` |
+
+> As built, the harness does not *call* `prepare_cutout2`; it paints the widget
+> and records what the painter passed through it. Same seam, better coverage: the
+> arguments then come from the painter rather than from the harness's idea of
+> them (`trace_selector`, `degap`, `demean` are all read off the viewer at the
+> call site), and the same pass yields `trace.minmax`, every `AutoScaler.make_scale`
+> result and `track_to_nslc_ids` — which is the whole of "What to compare" below,
+> obtained without reimplementing any of it.
 
 `prepare_cutout2` is the whole pipeline — chopper → demean → degap → pre-process
 hooks → filtering (IIR or FFT) → response removal → rotation → post-process hooks
@@ -134,6 +154,21 @@ Everything needed is reachable from the live widget tree:
 - **Keyboard shortcuts** — the `keyPressEvent` key map plus the `fkey_map` table
   (`pile_viewer.py:755`).
 
+  As built this is extracted rather than transcribed, and it is worth saying how:
+  `keyPressEvent` is a chain of comparisons ending in
+  `else: super().keyPressEvent(...)`, so "did snuffler bind this key" is exactly
+  "did that fall-through run". Standing in for `QWidget.keyPressEvent` while
+  pressing every candidate key answers it precisely — `event.isAccepted()` does
+  not, since PyQt leaves the event accepted either way. Union that with the
+  `QAction` shortcuts the menu walk already sees and the result is the live key
+  surface, which is how the harness noticed snuffler's own help page claiming
+  `0 ... 5` and `<f1> ... <f5>` where the code binds `0 ... 7` and `<f1> ... <f10>`.
+
+  The web half is probed the same way rather than read: press each key Qt binds
+  and see whether anything the accessibility layer describes changed. Keys that
+  only pan the view or scroll tracks report as *inert* rather than unbound, since
+  the layer does not describe either — and the diff says so instead of guessing.
+
 ### Extracting the web inventory
 
 Already built. `?a11y=debug` publishes the raw AccessKit tree as JSON on
@@ -189,7 +224,13 @@ One pinned set of inputs, loaded as **identical bytes** by both sides:
 - a small real MiniSEED file with a gap and an overlap (degap/maxlap paths),
 - a multi-station, multi-channel set with StationXML (response removal,
   distance sorting, rotation),
-- one file with a non-trivial sampling rate (decimation and Nyquist clamping).
+- one file with a non-trivial sampling rate (decimation and Nyquist clamping),
+- and, as built, one **checked-in real-world dataset** (`corpus/eifel`): a
+  recorded Eifel event over 354 stations in six networks at three sampling
+  rates, with a yaml event catalog and per-network StationXML. Generated data
+  cannot carry what a deployment does — on its first run this dataset surfaced
+  a dead channel pinned at the digitizer rail that the two sides scaled
+  differently.
 
 Fix every clock: no `now()`, no wall-clock-derived time ranges, no randomness in
 scenario generation. Both sides must be reproducible in isolation before they can
@@ -225,37 +266,188 @@ preference:
 Tier 3's web driver additionally needs the app served, same as
 `task test:a11y:browser` does today.
 
-## Proposed layout
+## Layout
+
+As built — see [`tests/parity/README.md`](../tests/parity/README.md) for the full
+file list. The proposed layout survived; what it gained was a runner per tier, a
+shared scenario model, the `freq_limits.py` property grid, one key notation shared
+by both web drivers, and two modules the runners share instead of repeating:
+`gaps.py`, the one reader and enforcer of `known_gaps.toml`, and `harness.py`, the
+process scaffolding every entry point imports first.
 
 ```
 tests/parity/
-  corpus/            # pinned inputs, or a fetch script if size is a problem
+  corpus/build.py    # deterministic corpus + a checked-in sha256 manifest
   scenarios/         # declarative scenario files, shared by tiers 1 and 3
-  qt_oracle.py       # offscreen PileViewer -> prepare_cutout2 -> snapshot
+  qt_oracle.py       # offscreen PileViewer -> real paint, recorded -> snapshot
   web_oracle.py      # bridge._get_view_data -> snapshot
   compare.py         # snapshot diff with per-field tolerances
   inventory_qt.py    # tier 2 extraction from the live widget tree
-  inventory_web.ts   # tier 2 extraction from window.__snufflerA11y
+  inventory_web.ts   # tier 2 extraction from the accessibility layer
   known_gaps.toml    # allowlist, keyed to native-gaps.md buckets
+  run_{oracle,inventory,scenarios}.py
 ```
 
-Task targets to add alongside the existing `test:*` group:
+Task targets, alongside the existing `test:*` group:
 
 - `task test:parity` — tier 1, the default; no serving, no browser.
 - `task test:parity:inventory` — tier 2; needs the app served for the web half.
 - `task test:parity:scenarios` — tier 3; needs the app served.
 
-## Open questions
+## Answers to the open questions
 
-- **Decimation.** Does the web side expose a way to request undecimated view
-  data, or does the harness compare Qt's drawn envelope against the web
-  envelope? The first is a cleaner comparison; the second tests more of the real
-  path. Possibly both, at different scenario densities.
-- **Snuffling parity depth.** Tier 2 gives us the parameter *surface* of every
-  built-in snuffling for free. Comparing snuffling *output* (`rms`, `stalta`,
-  `ampspec`, `polarization`, `cake_phase`) is a natural extension of tier 1 —
-  the Qt snufflings are callable directly — but each needs its own oracle seam.
-  Worth scoping separately once tier 1 exists.
-- **Marker semantics.** Marker kinds, phase names, and the active-event notion
-  are stateful in ways that may not have a single-snapshot representation.
-  Likely needs a purpose-built comparison rather than a generic field diff.
+- **Decimation — settled.** The web side does expose undecimated view data:
+  `allow_downsampling = false` makes `_decimate` return raw samples, because
+  `_get_view_data` then passes `len(yview)` as the bin target and the
+  `n <= npx * 4` short-circuit fires. Tier 1 therefore compares samples to
+  samples. Comparing envelope to envelope turned out to be the wrong second
+  option anyway: Qt's `Allow Downsampling` is not display decimation at all but
+  an actual `trace.downsample(2)` of the data, so the two menu items are
+  different transformations sharing a name (`allow-downsampling-meaning`).
+- **Snuffling parity depth — still open, and now cheaper.** Tier 2 extracts the
+  full parameter surface of all 20 built-in snufflings, including every `Param`
+  range and `Choice` option. Comparing snuffling *output* remains unbuilt; the
+  scenario format and the corpus would carry it, but each snuffling needs its own
+  oracle seam.
+- **Marker semantics — partly settled.** A single-snapshot representation does
+  work for kind, phase, polarity and per-marker selection, which is what tier 3
+  compares now that the marker rows publish `aria-selected`. The active-event
+  notion is still not covered: it is stateful across markers rather than a
+  property of one.
+
+## Findings
+
+What the suite reported the first time it ran. Every defect it found *then* has
+since been fixed and its `known_gaps.toml` entry deleted, which is the only way the
+register lets a fix land: an entry that stops diverging fails the run as stale, so
+the fix and the removal have to arrive together. Two defects are open at the time
+of writing, both found by the sweep below and both reproducing on every run.
+
+**Defects found and fixed** — differences with no defensible reason, found by
+tier 1 and 3:
+
+- Three of the four Scaling menu bases (Robust, Mean ± 2σ, Mean ± 4σ) computed no
+  data range at all in the default per-trace grouping, so every track rendered
+  with `ymin = 0, ymax = 1` instead of being scaled.
+- Every gap segment became its own track: a two-channel file with gaps stacked
+  eight tracks where snuffler stacks two. Fixing it meant giving `ViewTrack` a
+  repeated `ViewSpan`, so one row can carry one run of samples per segment.
+- Turning on rotation reordered the tracks, swapping the two horizontal rows.
+- Degapping rewrote the loaded pile in place, so the option was not reversible.
+- Overlaps longer than five samples were trimmed only on the web side
+  (`maxlap=None` against snuffler's `gap_lap_tolerance`).
+- A freshly picked marker was not selected, so the entire marker-editing keyboard
+  vocabulary did nothing until the user selected it by hand.
+- Single-key shortcuts stopped working after a menu was used from the keyboard,
+  and only a pointer click on the canvas brought them back. The guard asked
+  `egui_wants_keyboard_input()` — true whenever *any* widget holds focus — where
+  it meant `text_edit_focused()`.
+- Marker rows published no selected state, so a screen reader could read the table
+  and not tell what was selected in it. Tier 3 compared the aggregate count as a
+  result; it now compares selection per marker.
+- A dead channel — every sample at −2²³, the 24-bit digitizer rail, exactly what the
+  real-world corpus exists to carry — rendered with a `[0, 1]` y range on the web,
+  leaving the flatline outside its own track, where snuffler centres it at ±1 around
+  the value. The bridge's degenerate-range guard treated an *equal* range as
+  meaningless when pyrocko's own `AutoScaler` already pads it the way Qt shows it;
+  the guard now steps in only for non-finite or inverted ranges.
+
+Three more were filed as legitimate divergences on the first pass and reclassified
+after review, which is worth recording as a caution about allowlists:
+
+- **Deconvolution output unit** (displacement against velocity, a factor of iω).
+  Justified as a deliberate choice on the strength of a docstring restating the
+  code. Nothing in the browser prevented matching Qt, nothing downstream read the
+  unit, and no unit appeared anywhere on screen — so a user got a different
+  physical quantity with no way to notice. Defect.
+- **Spherical against ellipsoidal distance.** Filed as `sandbox-hard`, repeating
+  `bridge._dist_deg`'s comment that `distance_accurate50m` needs the
+  `orthodrome_ext` C extension. It does not: the same function takes
+  `implementation='python'` and runs the same Meeus formula in pure Python,
+  measured bit-identical to the C path (0.00e+00 m) where the spherical form is
+  out by up to 666 m. Defect, one keyword.
+- **Azimuthal blocks.** Folded into the azimuth-wrap entry, where the defensible
+  half covered for it. The wrap is a free choice that changes nothing about
+  grouping; the block sort binned on a half-sector offset, so stations near a
+  boundary landed in different blocks. Split out as its own defect.
+
+Fixing the unit then exposed a twelfth difference the register had been hiding:
+`decon-output-units` claimed the `samples` check for the decon scenarios, so
+nobody could see that the web deconvolved *before* filtering while snuffler
+restitutes `processed_traces` *after*. Same linear operators, different taper —
+the frequency limits come from `data_len`. Worth remembering that an allowlist
+entry masks every other difference in the checks it claims, so removing one is
+how the next one surfaces.
+
+**Genuine divergences**, pinned so they cannot change unnoticed: the demean extent
+(the whole-trace processed-trace cache is a real constraint, though whether the
+port chose it or inherited it is unrecorded), the 3D-distance vertical term
+(neither formula is simply wrong — Qt ignores elevation, the web ignores borehole
+depth), and Qt's `min_deltat_allow` dropping high-rate traces at
+wide zoom (unreconciled: a fetch optimisation with a real cost against keeping
+every channel on screen — a product call, recorded so it gets made).
+
+The azimuth wrap was pinned here too, until the rule "a difference must be
+justified" was applied to it: its own entry admitted the wrap was a free choice,
+so the web now sorts through snuffler's exact gather key — azibazi's (-180, 180]
+wrap, the subsorted nslc as the tie-break, missing coordinates last, the boundary
+block sector split across ±180 — and the entry is gone. Making the eifel ring
+match exactly also required taking station coordinates from the same
+`get_pyrocko_stations` call snuffler uses, because real StationXML carries channel
+positions that disagree with the station element's own by ~100 m.
+
+**Command-surface gaps**, all accounted for: no Ctrl accelerators, no `s`-prefixed
+chords, no Demean key, only the double-couple seismosizer source, no per-snuffling
+help, and the GEOFON one-click presets folded into the catalog search. Plus two
+accessibility gaps the diff surfaced on its own — 27 radio-group commands that
+publish no selected state, and a colormap picker with no accessible name.
+
+### The systematic sweep
+
+The findings above are what the suite reported by running. A later pass went the
+other way: seven parallel readings of both implementations — keys and pointer, the
+command surface, the DSP pipeline, markers and events, layout and the time axis,
+all thirteen built-in snufflings, and application lifecycle and I/O — each one
+comparing source against source and holding the result against the register.
+
+It found roughly seventy differences the register did not have, and three of them
+were reproducible in tier 1 the same day:
+
+- The lowpass and highpass stages let pyrocko's `demean=True` default fire where
+  snuffler passes `demean=False`, so with Demean *off* the web still removes the
+  trace mean — 6.7e-2 relative RMS, five orders past tolerance. The bandpass branch
+  beside them is correct, which is what makes it an omission rather than a choice.
+- FFT filtering and Deconvolution together run as two passes where snuffler folds
+  the inverse response, the taper and the Butterworth into one transfer function —
+  1.2e-2 relative.
+- The deconvolution is not window-faithful: restituting a 60 s window and
+  restituting 300 s and cutting 60 s out of it differ by 2.1e-1 in the window's
+  interior, which `edge_trim_s` cannot reach.
+
+Each got a scenario, so all three are now enforced rather than asserted. The rest
+went into `[[manual]]`, which is where the sweep's real lesson is: the register
+grew from six enforced entries and two manual ones to nine and fifty-four, and the
+imbalance is not a property of the port. It is a map of what the tiers cannot see.
+Three blind spots account for most of it — tier 2 diffs names and discards the
+option sets, ranges, enabled state and the entire `snufflings` section its own Qt
+extractor already emits; tier 3 snapshots menu checkables, four control values and
+marker identity and nothing else; and no tier compares rendering by design, so a
+difference in *what is drawn* lands in `[[manual]]` even when it changes
+information rather than appearance.
+
+That reframes the next round of work. The highest-value additions are no longer
+more scenarios but wider extractors: a fourth `diff_section` over `snufflings`
+would enforce most of a thirteen-panel parameter surface at once, comparing combo
+choices would close the colormap and data-centre entries together, and carrying
+the view time range into tier 3 would settle the navigation and follow-mode
+entries. Each is small, and each graduates a group of entries rather than one.
+
+Two habits the sweep confirmed are worth keeping. Every existing entry was re-read
+against the code, and six were imprecise in the same direction — a plausible reason
+that turned out weaker than stated, which is exactly how `decon-output-units` hid a
+second difference before. And the sweep also read the harness, not just the port:
+`scenario_qt.py` implements the `pick` action as the web's semantics hand-coded
+into the Qt driver, `inventory_qt.py` builds a viewer with no panel parent so Qt's
+panel togglers never exist to be diffed, and a `liberal_fetch` scenario knob
+reaches the Qt oracle with nothing on the web side to receive it. An oracle that
+agrees with the implementation it is testing is worse than no oracle.

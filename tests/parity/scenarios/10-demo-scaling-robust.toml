@@ -1,0 +1,11 @@
+name = "demo-scaling-robust"
+title = "Robust min/max, shared per station"
+dataset = "demo"
+tiers = [1]
+
+[state]
+scaling_group = "per_station"
+scaling_base = "robust"
+
+[compare]
+reason = "trace.minmax outer_mode='robust' through the per-station grouping"

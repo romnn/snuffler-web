@@ -1,0 +1,15 @@
+name = "demo-raw-zoom"
+title = "A 60 s window with nothing switched on"
+dataset = "demo"
+tiers = [1]
+
+# start_s puts the window's largest sample four samples outside it, where the two sides
+# fetch different amounts of context. Nothing diverges, because with no filter Qt's
+# chopper leaves the +/- 4-sample chop nothing to reach back into — which is what makes
+# this the control for the margin term in `filter-context-extent`.
+[window]
+start_s = 207.0
+length_s = 60.0
+
+[compare]
+reason = "that zooming alone needs no excuse: every other zoom scenario also turns something on"

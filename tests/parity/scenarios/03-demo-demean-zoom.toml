@@ -1,0 +1,15 @@
+name = "demo-demean-zoom"
+title = "Demean, 60 s window"
+dataset = "demo"
+tiers = [1]
+
+[window]
+start_s = 150.0
+length_s = 60.0
+
+[state]
+demean = true
+
+[compare]
+expect_divergence = ["demean-extent"]
+reason = "Qt removes the mean of the fetched window, the web removes the mean of the whole trace"

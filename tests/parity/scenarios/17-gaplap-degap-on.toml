@@ -1,0 +1,10 @@
+name = "gaplap-degap-on"
+title = "Gapped and overlapping segments, degapping on"
+dataset = "gaplap"
+tiers = [1]
+
+[state]
+degap = true
+
+[compare]
+reason = "Qt degaps inside the chopper (maxgap=maxlap=5), the web calls degapper directly (maxlap=None)"

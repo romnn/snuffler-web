@@ -1,0 +1,11 @@
+name = "demo-lowpass-only"
+title = "A lowpass with Demean off"
+dataset = "demo"
+tiers = [1]
+
+[state]
+lowpass = 1.0
+
+[compare]
+expect_divergence = ["filter-demean-not-suppressed"]
+reason = "whether a filter stage removes a mean of its own when Demean is off"

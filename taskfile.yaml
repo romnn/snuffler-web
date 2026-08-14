@@ -112,12 +112,12 @@ tasks:
   format:py:
     desc: "format Python bridge code"
     cmds:
-      - uvx --from ruff==0.14.8 ruff format --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py tests/seisbench_validate.py typings {{.CLI_ARGS}}
+      - uvx --from ruff==0.14.8 ruff format --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
 
   format:js:
     desc: "format JavaScript bridge code"
     cmds:
-      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.ts web/bridge_worker.ts web/ort_worker.ts scripts/patch-trunk-loader.mjs tests/seisbench_browser_validate.ts tests/a11y_browser_validate.ts package.json {{.CLI_ARGS}}
+      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.ts web/bridge_worker.ts web/ort_worker.ts scripts/patch-trunk-loader.mjs tests/seisbench_browser_validate.ts tests/a11y_browser_validate.ts tests/parity/inventory_web.ts tests/parity/scenario_web.ts tests/parity/parity_keys.ts package.json {{.CLI_ARGS}}
 
   format:proto:
     desc: "format protobuf schemas"
@@ -159,7 +159,7 @@ tasks:
     desc: "lint Python bridge with ruff"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py tests/seisbench_validate.py typings {{.CLI_ARGS}}
+      - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
 
   test:seisbench:
     desc: "validate exported SeisBench ONNX models against pinned seisbench"
@@ -178,6 +178,50 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - bun tests/a11y_browser_validate.ts {{.CLI_ARGS}}
+
+  # Parity against the original Qt snuffler. All three tiers run pyrocko built from
+  # sources/ at the PYROCKO_REF pin rather than from PyPI, so the Qt side only moves
+  # when the pin is deliberately bumped — and the pinned numpy keeps the corpus
+  # generator's RNG stream fixed. See tests/parity/README.md.
+  test:parity:
+    desc: "tier 1 parity: Qt snuffler's own paint output vs web/bridge.py, headless, no browser"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - mise run fetch-pyrocko
+      - buf generate
+      # The harness self-test runs first: the tiers trust gaps.evaluate to hold
+      # findings to the register, so its edge cases are proven before any scenario
+      # relies on them. Inlined rather than chained through test:parity:unit so
+      # scenario names passed as CLI_ARGS never leak into pytest.
+      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with numpy==2.4.3 python -m pytest -q tests/parity/test_gaps.py
+      - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_oracle.py {{.CLI_ARGS}}
+
+  test:parity:unit:
+    desc: "unit tests for the parity harness's own enforcement (gaps.evaluate, Register.load)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with numpy==2.4.3 python -m pytest -q tests/parity/test_gaps.py {{.CLI_ARGS}}
+
+  test:parity:inventory:
+    desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - mise run fetch-pyrocko
+      - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_inventory.py {{.CLI_ARGS}}
+
+  test:parity:scenarios:
+    desc: "tier 3 parity: one scenario through both GUIs (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - mise run fetch-pyrocko
+      - buf generate
+      - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_scenarios.py {{.CLI_ARGS}}
 
   lint:
     desc: "lint Rust (host + wasm32) and Python workspace"

@@ -1,0 +1,14 @@
+name = "oddrate-coarse-window"
+title = "A window wide enough that Qt stops fetching the finest traces"
+dataset = "oddrate"
+tiers = [1]
+
+# visible_length is what prepare_cutout2 uses as its target sample count, so
+# lowering it makes Qt's min_deltat_allow selector coarse enough to drop the 50 Hz
+# trace while keeping the 5 Hz and 7 Hz ones.
+[state]
+visible_length = 1000.0
+
+[compare]
+expect_divergence = ["min-deltat-allow"]
+reason = "Qt drops traces too finely sampled for the window; the web decimates them instead"

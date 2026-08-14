@@ -1,0 +1,16 @@
+name = "multi-decon-zoom"
+title = "Instrument response removed, 60 s window"
+dataset = "multi"
+tiers = [1]
+load = ["responses"]
+
+[window]
+start_s = 60.0
+length_s = 60.0
+
+[state]
+remove_response = true
+
+[compare]
+expect_divergence = ["decon-context-extent"]
+reason = "whether the deconvolution is window-faithful, or only agrees over the whole extent"

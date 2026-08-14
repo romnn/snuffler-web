@@ -1,0 +1,13 @@
+name = "demo-fft-full"
+title = "FFT filtering over the whole extent"
+dataset = "demo"
+tiers = [1]
+
+[state]
+demean = true
+highpass = 0.5
+lowpass = 2.0
+fft_filtering = true
+
+[compare]
+reason = "the detrend / pow2-pad / Butterworth-spectrum / irfft / retrend path"

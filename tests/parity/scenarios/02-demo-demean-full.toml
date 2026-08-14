@@ -1,0 +1,10 @@
+name = "demo-demean-full"
+title = "Demean over the whole extent"
+dataset = "demo"
+tiers = [1]
+
+[state]
+demean = true
+
+[compare]
+reason = "with the window covering the whole trace, both sides demean the same samples"

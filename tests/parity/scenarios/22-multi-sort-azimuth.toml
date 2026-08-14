@@ -1,0 +1,11 @@
+name = "multi-sort-azimuth"
+title = "Tracks ordered by azimuth"
+dataset = "multi"
+tiers = [1]
+load = ["stations", "events"]
+
+[state]
+sort = "azimuth"
+
+[compare]
+reason = "both sides call orthodrome.azimuth in the same wrap, so the order must be identical"

@@ -1,0 +1,10 @@
+name = "demo-gain"
+title = "Amplitude gain of 4"
+dataset = "demo"
+tiers = [1]
+
+[state]
+gain = 4.0
+
+[compare]
+reason = "gain divides the data range before AutoScaler sees it, on both sides"

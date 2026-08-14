@@ -1,0 +1,11 @@
+name = "multi-sort-azimuth-blocks"
+title = "Tracks ordered by distance in azimuthal blocks"
+dataset = "multi"
+tiers = [1]
+load = ["stations", "events"]
+
+[state]
+sort = "azimuth_blocks"
+
+[compare]
+reason = "the same twelve sectors, binned and distance-subsorted the same way"

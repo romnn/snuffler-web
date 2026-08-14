@@ -1,0 +1,11 @@
+name = "demo-scaling-mean2"
+title = "Mean +/- 2 sigma, per component"
+dataset = "demo"
+tiers = [1]
+
+[state]
+scaling_group = "per_component"
+scaling_base = "mean2"
+
+[compare]
+reason = "the mean/std scaling base, where the mode argument is a number and not 'minmax'"

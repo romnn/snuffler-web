@@ -1,0 +1,16 @@
+name = "demo-highpass-zoom"
+title = "Highpass only, 90 s window"
+dataset = "demo"
+tiers = [1]
+
+[window]
+start_s = 120.0
+length_s = 90.0
+
+[state]
+highpass = 1.5
+
+[compare]
+expect_divergence = ["filter-context-extent"]
+edge_trim_s = 4.0
+reason = "the highpass-only branch, where the lowpass guard in _filter_seg does not apply"

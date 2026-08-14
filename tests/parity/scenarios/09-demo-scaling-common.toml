@@ -1,0 +1,10 @@
+name = "demo-scaling-common"
+title = "One amplitude scale shared by every track"
+dataset = "demo"
+tiers = [1]
+
+[state]
+scaling_group = "common"
+
+[compare]
+reason = "the group key collapses to None, so every track must land on one range"

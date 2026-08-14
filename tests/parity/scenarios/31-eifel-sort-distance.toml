@@ -1,0 +1,17 @@
+name = "eifel-sort-distance"
+title = "Distance sort over 354 real stations, with the km labels checked"
+dataset = "eifel"
+tiers = [1]
+load = ["events", "responses"]
+
+# The distance sort at deployment scale. The station coordinates come out of the
+# same per-network StationXML both frontends load, the active event is the largest
+# magnitude in the catalog on both sides, and the comparison covers the full track
+# ordering *and* every track's printed distance — the web's "N.N km" annotation is
+# held against the metres Qt's own set_origin computed, per station, to the label's
+# own 0.1 km precision.
+[state]
+sort = "distance"
+
+[compare]
+reason = "same spheroid, same event, same XML: order and km labels must agree everywhere"

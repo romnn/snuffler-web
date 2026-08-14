@@ -1,0 +1,11 @@
+name = "multi-decon"
+title = "Instrument response removed, no filter"
+dataset = "multi"
+tiers = [1]
+load = ["responses"]
+
+[state]
+remove_response = true
+
+[compare]
+reason = "the deconvolution path, including the frequency limits both sides derive"
