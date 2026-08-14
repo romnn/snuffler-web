@@ -65,6 +65,12 @@ PY
 echo "threaded runtime staged → $out"
 du -sh "$out"
 
+# Ship bytecode, not sources: Pyodide runs with sys.dont_write_bytecode=True, so
+# without this every page load recompiles the ~1000 modules the app imports (~3.3 s,
+# measured in the browser). This also rewrites the lock's checksums, so it must run
+# before check-lock.sh validates it.
+bash "$here/precompile.sh" "$out"
+
 # Refuse to ship a partial/stale build: every package the bridge loads at boot must
 # be in the staged lock, or loadPackage() fails at runtime. This also turns a stale
 # or partial *cached* dist-mt into a loud failure here instead of a broken deploy.
