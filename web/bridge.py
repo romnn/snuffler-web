@@ -2202,8 +2202,10 @@ async def _seisbench_pick_result(
         for phase, kind in (("P", 1), ("S", 2)):
             if phase not in sbi.labels(spec):
                 continue
-            thr = float(thresholds[phase])
-            for idx, _val in sbi.extract_picks(ann.data[:, sbi.phase_channel(spec, phase)], thr):
+            threshold = float(thresholds[phase])
+            for idx, _val in sbi.extract_picks(
+                ann.data[:, sbi.phase_channel(spec, phase)], threshold
+            ):
                 marker = result.markers.add()
                 marker.t = g_tmin + ann.start_offset + idx / ann.sampling_rate
                 marker.kind = kind
