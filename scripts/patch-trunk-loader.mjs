@@ -67,7 +67,18 @@ async function snufflerWasmResponse(url) {
     });
 }
 
-const wasm = await init({ module_or_path: snufflerWasmResponse('${wasmPath}') });
+// Report a failed instantiate instead of leaving the bar frozen. The app wasm is
+// linked --shared-memory, so an engine that will not grant shared memory rejects
+// here — WebKit without cross-origin isolation does exactly that — and the page
+// otherwise just stops with no explanation. Rethrown so the failure still shows
+// up as an error, rather than being swallowed into a silent no-op.
+let wasm;
+try {
+    wasm = await init({ module_or_path: snufflerWasmResponse('${wasmPath}') });
+} catch (e) {
+    if (window.__snufflerLoadFailed) window.__snufflerLoadFailed(e);
+    throw e;
+}
 snufflerReport(0.44, "Starting app...");
 
 window.wasmBindings = bindings;

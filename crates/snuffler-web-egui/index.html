@@ -14,13 +14,18 @@
          loading. There is no runtime toggle: a non-threaded build, if ever
          needed, is produced via the `threads` build-time feature and hosted on a
          separate path so the two never interfere. -->
+    <!-- NOT quiet: on a browser where isolation cannot be reached the shim's own
+         messages ("perhaps due to private mode", "a secure context is required")
+         are the only explanation there is, and it returns early — without ever
+         registering — on engines that predate `crossOriginIsolated`. Silencing
+         that left an iPad stuck on the loading bar with an empty console. -->
     <script>
         (function () {
             window.coi = {
                 coepCredentialless: function () { return true; },
                 shouldRegister: function () { return true; },
                 shouldDeregister: function () { return false; },
-                quiet: true,
+                quiet: false,
             };
         })();
     </script>
@@ -180,6 +185,26 @@
             font-weight: 600;
             color: var(--fg);
         }
+
+        #unsupported {
+            display: none;
+            text-align: left;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--fg);
+        }
+
+        #unsupported strong {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 15px;
+        }
+
+        #unsupported code {
+            font-size: 12px;
+            color: var(--muted);
+            overflow-wrap: anywhere;
+        }
     </style>
 </head>
 
@@ -194,16 +219,119 @@
             <div class="sub">seismic waveform inspector</div>
             <div class="bar"><div id="bar-fill"></div></div>
             <div class="row"><span id="pct">0%</span><span id="stage">starting…</span></div>
+            <div id="unsupported"></div>
         </div>
     </div>
 
     <script>
+        // What the app cannot run without, probed rather than inferred from a
+        // version or a user-agent string.
+        //
+        // The blocking capability is WebAssembly SHARED MEMORY, not the
+        // SharedArrayBuffer constructor: the app wasm is linked --shared-memory
+        // --import-memory, so instantiating it needs a shared WebAssembly.Memory.
+        // Chrome grants that on a non-isolated page while withholding the SAB
+        // constructor (verified), so testing for SAB would report a failure on a
+        // browser that runs the app fine. Test the memory itself.
+        //
+        // SIMD is checked too, but is not fatal here: it is the wheels that need
+        // it (numpy/pyrocko are built -msimd128), so it fails later, while
+        // packages install, rather than at wasm startup.
+        const snufflerCapabilities = (function () {
+            const sharedMemory = (function () {
+                try {
+                    return new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true })
+                        .buffer.byteLength > 0;
+                } catch (_e) {
+                    return false;
+                }
+            })();
+            // Canonical wasm-feature-detect probe: a module returning v128.
+            const simd = WebAssembly.validate(new Uint8Array([
+                0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0,
+                10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11,
+            ]));
+            return {
+                sharedMemory,
+                simd,
+                // `undefined` (not false) on engines with no notion of isolation —
+                // the case where coi-serviceworker gives up without registering.
+                crossOriginIsolated: window.crossOriginIsolated,
+                secureContext: window.isSecureContext,
+                serviceWorker: !!navigator.serviceWorker,
+            };
+        })();
+        console.log("[snuffler] capabilities", snufflerCapabilities);
+
+        function snufflerMissing() {
+            const missing = [];
+            if (!snufflerCapabilities.sharedMemory) {
+                missing.push(
+                    "WebAssembly shared memory, which needs cross-origin isolation " +
+                    "(Safari supports it from 15.2)"
+                );
+            }
+            if (!snufflerCapabilities.simd) {
+                missing.push("WebAssembly SIMD, which the numpy/pyrocko builds need " +
+                    "(Safari supports it from 16.4)");
+            }
+            return missing;
+        }
+
+        // Replace the bar with what went wrong. Called from the loader when the wasm
+        // fails to instantiate, which is the real, immediate signal — the engine tells
+        // us outright, so nothing here has to be inferred from elapsed time.
+        let snufflerFailureShown = false;
+        window.__snufflerLoadFailed = function (error) {
+            if (snufflerFailureShown) return;
+            snufflerFailureShown = true;
+            const missing = snufflerMissing();
+            const el = document.getElementById("unsupported");
+            if (!el) return;
+            const bar = document.querySelector("#loading .bar");
+            const row = document.querySelector("#loading .row");
+            if (bar) bar.style.display = "none";
+            if (row) row.style.display = "none";
+            // Only blame the browser when a capability is actually absent; a failed
+            // download reaches here too, and telling someone to update their OS over
+            // a dropped request would send them off fixing the wrong thing.
+            el.innerHTML =
+                (missing.length
+                    ? "<strong>This browser cannot run snuffler-web.</strong>" +
+                      "It is missing " + missing.join(", and ") + "." +
+                      "<br><br>On iPhone and iPad every browser uses the system WebKit, " +
+                      "so updating iOS/iPadOS — or using a different device — is what " +
+                      "changes this."
+                    : "<strong>snuffler-web failed to start.</strong>" +
+                      "The browser supports everything the app needs, so this is most " +
+                      "likely a network or hosting problem. Reloading may fix it.") +
+                "<br><br><code>" + String(error && error.message ? error.message : error) +
+                "<br>" + JSON.stringify(snufflerCapabilities) + "</code>";
+            el.style.display = "block";
+            console.error("[snuffler] startup failed:", error, snufflerCapabilities);
+        };
+
+        // Backstop for a failure that never raises: a worker that silently refuses to
+        // start, or a fetch that hangs. Only speaks up when a REQUIRED capability is
+        // genuinely absent, so a slow connection is never mistaken for an unsupported
+        // browser — and a page that is merely waiting to reload into isolation, which
+        // is what coi-serviceworker does, gets the time to do it.
+        const SNUFFLER_STALL_MS = 20000;
+        let snufflerLastProgressMs = Date.now();
+        setInterval(function () {
+            if (snufflerFailureShown || snufflerLoadingFraction >= 1) return;
+            if (Date.now() - snufflerLastProgressMs < SNUFFLER_STALL_MS) return;
+            if (!snufflerMissing().length) return;
+            window.__snufflerLoadFailed(new Error("stalled with no progress"));
+        }, 2000);
+
         let snufflerLoadingFraction = 0;
 
         // Driven first by the patched Trunk loader, then by web/bridge.js as
         // Python + pyrocko load.
         window.__snufflerProgress = function (frac, label) {
             const requested = Math.max(0, Math.min(1, frac));
+            if (requested > snufflerLoadingFraction) snufflerLastProgressMs = Date.now();
             snufflerLoadingFraction = Math.max(snufflerLoadingFraction, requested);
             const f = snufflerLoadingFraction;
             const fill = document.getElementById("bar-fill");
