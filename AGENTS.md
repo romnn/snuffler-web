@@ -84,3 +84,40 @@
   extent without tracing statements. This applies to every guard, not just
   `RefCell`: `MutexGuard`, `Ref`/`RefMut`, and anything else whose whole job is to
   be released.
+
+- **Errors are typed in library code and `eyre` in tests.** Two rules, one seam
+  between them:
+  - **Non-test code returns a `thiserror` enum.** Every fallible function in a
+    crate's real code carries a `#[derive(thiserror::Error, Debug)]` type with one
+    variant per failure mode (`#[from]` for wrapped sources). Never
+    `Result<_, String>`, never a stringly-typed variant, and never `eyre`/`anyhow`
+    in a library signature: a `String` cannot be matched on, so a caller cannot
+    recover selectively and the compiler cannot tell it a new failure mode exists.
+    The bridge is the worked example. A failed call is a
+    `snuffler_web_proto::CallError` — `Transport` (the worker never answered),
+    `Remote` (pyrocko raised, and the traceback rides along), `Decode`, `Empty`,
+    or `UnexpectedPayload` (the schema and the generated ends have drifted) — and
+    `snuffler_web_core::bridge::BridgeError` adds what the proto crate cannot see:
+    a rejected DOM call, a malformed JS value, `SeedLink`, an unknown example
+    slug. Keep those distinctions when you add a failure mode; they are the whole
+    reason the type exists, since a status line can only ever show one sentence
+    but the app can act on the variant. `BridgeError` deliberately holds no
+    `JsValue`: it is stored in `Status` and read by the egui frontend, both of
+    which build on the host. Stringify the JS exception at the boundary instead.
+  - **Tests use `color-eyre`, and only where they can actually fail.** A test that
+    reaches for a fixture returns `eyre::Result<()>` and propagates with `?`,
+    `bail!`, `ensure!`, or `let ... else { bail!(…) }`. A test whose only failure
+    is an assertion stays a plain `fn` with `assert!`/`assert_eq!` — do not wrap an
+    infallible test in a `Result` it never uses.
+
+  **Always spell the type `eyre::Result`.** Import the module
+  (`use color_eyre::eyre::{self, bail, ensure};`) and write `-> eyre::Result<()>`.
+  Never import `Result` directly, never alias it to something else, and never
+  shadow `std::result::Result` — at a glance the reader has to see which `Result`
+  a signature means without checking the imports.
+
+  This is not a style preference: the workspace **denies** `clippy::unwrap_used`,
+  `expect_used`, and `panic`. A test module that opens
+  `#![expect(clippy::unwrap_used, …)]` to get around them is a hole in the very
+  policy the lints exist to enforce — the fix is an error that says what was
+  missing, not a suppression.

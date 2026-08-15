@@ -49,15 +49,22 @@ impl prost_build::ServiceGenerator for BridgeClientGen {
 /// request across the bridge boundary and returns the encoded `BridgeResult`
 /// (plus the out-of-band `ys` values for the two buffer-carrying methods). The
 /// frontend implements this over the wasm worker; native builds never call it.
+///
+/// `method` is `&'static str` because every method id is a compile-time constant
+/// generated from the .proto — nothing can name an rpc that is not in the schema.
 pub trait BridgeTransport {
     #[allow(async_fn_in_trait, reason = "the generated client is internal to this workspace")]
-    async fn unary(&self, method: &str, request: Vec<u8>) -> Result<Vec<u8>, String>;
+    async fn unary(
+        &self,
+        method: &'static str,
+        request: Vec<u8>,
+    ) -> Result<Vec<u8>, crate::TransportError>;
     #[allow(async_fn_in_trait, reason = "the generated client is internal to this workspace")]
     async fn unary_with_buffer(
         &self,
-        method: &str,
+        method: &'static str,
         request: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<f32>), String>;
+    ) -> Result<(Vec<u8>, Vec<f32>), crate::TransportError>;
 }
 
 fn encode_msg<M: ::prost::Message>(m: &M) -> Vec<u8> {
@@ -66,19 +73,19 @@ fn encode_msg<M: ::prost::Message>(m: &M) -> Vec<u8> {
     buf
 }
 
-// Decode the BridgeResult envelope: error variant -> Err(String), success
+// Decode the BridgeResult envelope: error variant -> CallError::Remote, success
 // variant -> the contained oneof value. Python never raises across the boundary,
 // so this is the single place a remote error becomes an Err in Rust.
-fn bridge_ok(bytes: &[u8], method: &str) -> Result<bridge_result::Result, String> {
+fn bridge_ok(
+    bytes: &[u8],
+    method: &'static str,
+) -> Result<bridge_result::Result, crate::CallError> {
     let envelope = <BridgeResult as ::prost::Message>::decode(bytes)
-        .map_err(|e| format!("{method}: {e}"))?;
+        .map_err(|source| crate::CallError::Decode { method, source })?;
     match envelope.result {
-        Some(bridge_result::Result::Error(e)) if e.message.is_empty() => {
-            Err(format!("{method}: {}", e.kind))
-        }
-        Some(bridge_result::Result::Error(e)) => Err(format!("{}: {}", e.kind, e.message)),
+        Some(bridge_result::Result::Error(e)) => Err(crate::RemoteError::from(e).into()),
         Some(other) => Ok(other),
-        None => Err(format!("{method}: empty BridgeResult")),
+        None => Err(crate::CallError::Empty { method }),
     }
 }
 
@@ -124,14 +131,14 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
                 let _ = write!(
                     buf,
                     r#"
-    pub async fn {name}(&self{params}) -> Result<({out}, Vec<f32>), String> {{
+    pub async fn {name}(&self{params}) -> Result<({out}, Vec<f32>), crate::CallError> {{
         let (bytes, ys) = self
             .transport
             .unary_with_buffer("{wire}", {encode_expr})
             .await?;
         match bridge_ok(&bytes, "{wire}")? {{
             bridge_result::Result::{variant}(m) => Ok((m, ys)),
-            _ => Err("{wire}: unexpected BridgeResult variant".to_owned()),
+            _ => Err(crate::CallError::UnexpectedPayload {{ method: "{wire}" }}),
         }}
     }}
 "#,
@@ -141,11 +148,11 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
                 let _ = write!(
                     buf,
                     r#"
-    pub async fn {name}(&self{params}) -> Result<{out}, String> {{
+    pub async fn {name}(&self{params}) -> Result<{out}, crate::CallError> {{
         let bytes = self.transport.unary("{wire}", {encode_expr}).await?;
         match bridge_ok(&bytes, "{wire}")? {{
             bridge_result::Result::{variant}(m) => Ok(m),
-            _ => Err("{wire}: unexpected BridgeResult variant".to_owned()),
+            _ => Err(crate::CallError::UnexpectedPayload {{ method: "{wire}" }}),
         }}
     }}
 "#,

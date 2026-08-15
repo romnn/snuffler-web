@@ -2,6 +2,10 @@
 
 pub use prost;
 
+mod error;
+
+pub use error::{CallError, RemoteError, TransportError};
+
 /// Versioned protobuf messages and generated service clients.
 pub mod bridge {
     /// Version 1 of the Rust-to-Python bridge contract.

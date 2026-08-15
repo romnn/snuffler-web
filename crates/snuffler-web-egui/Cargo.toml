@@ -30,6 +30,7 @@ threads = ["dep:rayon", "dep:wasm-bindgen-rayon"]
 [dependencies]
 egui = { workspace = true }
 snuffler-web-core = { path = "../snuffler-web-core", default-features = false }
+strum = { workspace = true }
 snuffler-web-render = { path = "../snuffler-web-render" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

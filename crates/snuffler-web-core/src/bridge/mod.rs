@@ -17,7 +17,11 @@
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
+mod error;
 mod proto;
+
+pub use error::{BridgeError, MarshalError, SeedlinkError};
+pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 
 // The decoded protobuf messages ARE the app-facing domain model — no parallel
 // hand-written structs, no conversion layer. prost generates these from
@@ -126,6 +130,54 @@ enum TileState {
     Failed,
 }
 
+/// A map tile the view wants on screen, and where to get it.
+///
+/// The view submits every visible tile at once ([`Bridge::request_tiles`]) rather
+/// than one call per tile, so the scheduler can order the whole screenful by
+/// `priority` instead of by whatever order the loop happened to walk in.
+#[derive(Clone, Debug)]
+pub struct TileRequest {
+    /// Integer zoom level.
+    pub z: u8,
+    /// Tile column.
+    pub x: u32,
+    /// Tile row.
+    pub y: u32,
+    /// Fully substituted URL for the currently selected basemap.
+    pub url: String,
+    /// Fetch order; lower goes first. The view scores by distance from the middle
+    /// of the screen, which is where the eye is.
+    pub priority: i32,
+}
+
+/// A decoded tile, handed to the view exactly once so it can upload a texture.
+#[derive(Clone, Debug)]
+pub struct ReadyTile {
+    /// Integer zoom level.
+    pub z: u8,
+    /// Tile column.
+    pub x: u32,
+    /// Tile row.
+    pub y: u32,
+    /// Decoded width in pixels.
+    pub width: u32,
+    /// Decoded height in pixels.
+    pub height: u32,
+    /// Unmultiplied RGBA samples, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// Tiles started in one crossing of the wasm boundary. Sized to keep a screenful
+/// moving without letting a burst of stale requests outlive the view that wanted
+/// them — the queue is re-scored every frame, so anything not yet started is
+/// free to be replaced.
+const TILE_BATCH: usize = 8;
+
+/// Batches allowed to be in flight at once. Two keeps the connection busy while
+/// one batch is finishing, without queueing so deeply that a fast zoom leaves a
+/// long tail of tiles nobody is looking at any more.
+const TILE_BATCHES_IN_FLIGHT: usize = 2;
+
 /// Current lifecycle state of the asynchronous pyrocko bridge.
 #[derive(Clone, Debug, Default)]
 pub enum Status {
@@ -136,8 +188,10 @@ pub enum Status {
     Loading(String),
     /// The bridge can accept requests.
     Ready,
-    /// The latest operation failed with a user-visible message.
-    Error(String),
+    /// The latest operation failed. The variant says which layer gave out, and
+    /// [`BridgeError::traceback`] recovers pyrocko's traceback when it was
+    /// pyrocko that raised.
+    Error(BridgeError),
 }
 
 /// How a ':' command line executed by pyrocko turned out.
@@ -215,6 +269,12 @@ struct Inner {
     /// a fetch still in flight when the basemap changes would otherwise land in
     /// the cleared map under the same key as its replacement.
     tile_epoch: u64,
+    /// Wanted tiles that no batch has started yet, ordered by priority. Replaced
+    /// wholesale on every [`Bridge::request_tiles`], which is what lets a zoom or
+    /// a pan abandon the tiles it just moved away from instead of fetching them.
+    tile_queue: Vec<TileRequest>,
+    /// How many batches are out; see [`TILE_BATCHES_IN_FLIGHT`].
+    tile_batches: usize,
     view_in_flight: Option<ViewParams>,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
@@ -228,7 +288,7 @@ struct Inner {
     /// The datasets `File ▸ Examples` offers, fetched the first time that menu is
     /// opened rather than compiled in — so a deployment can gain an example
     /// without a new wasm build. `None` until it has been asked for.
-    examples: Option<Result<Vec<ExampleDataset>, String>>,
+    examples: Option<Result<Vec<ExampleDataset>, BridgeError>>,
     examples_in_flight: bool,
     /// The view a just-loaded bundle asked for, for the frontend to apply — the
     /// bridge does not own the sort state, so it parks it here the way a fetched
@@ -294,7 +354,7 @@ impl Bridge {
     /// `None` means the index has not been fetched yet, which is what the menu
     /// shows as "Loading…" while [`Bridge::list_examples`] is in flight.
     #[must_use]
-    pub fn examples(&self) -> Option<Result<Vec<ExampleDataset>, String>> {
+    pub fn examples(&self) -> Option<Result<Vec<ExampleDataset>, BridgeError>> {
         self.inner.borrow().examples.clone()
     }
 
@@ -476,17 +536,44 @@ impl Bridge {
         self.inner.borrow().kagan_by_hash.get(hash).copied()
     }
 
-    /// Hand the view a ready tile's RGBA exactly once (it caches the texture).
+    /// Take every tile that has finished decoding, each exactly once, for the view
+    /// to upload as a texture.
+    ///
+    /// Draining all of them — rather than asking per key — matters because the
+    /// view moves on: a tile that lands after a zoom has left its level would
+    /// otherwise sit here holding a megabyte of RGBA that nobody ever asks for.
     #[must_use]
-    pub fn take_tile_rgba(&self, z: u8, x: u32, y: u32) -> Option<(u32, u32, Vec<u8>)> {
+    pub fn take_ready_tiles(&self) -> Vec<ReadyTile> {
         let mut i = self.inner.borrow_mut();
-        if matches!(i.tiles.get(&(z, x, y)), Some(TileState::Ready(..)))
-            && let Some(TileState::Ready(w, h, rgba)) =
-                i.tiles.insert((z, x, y), TileState::Consumed)
-        {
-            return Some((w, h, rgba));
-        }
-        None
+        let ready: Vec<(u8, u32, u32)> = i
+            .tiles
+            .iter()
+            .filter(|(_, state)| matches!(state, TileState::Ready(..)))
+            .map(|(key, _)| *key)
+            .collect();
+        ready
+            .into_iter()
+            .filter_map(|key| match i.tiles.insert(key, TileState::Consumed) {
+                Some(TileState::Ready(width, height, rgba)) => Some(ReadyTile {
+                    z: key.0,
+                    x: key.1,
+                    y: key.2,
+                    width,
+                    height,
+                    rgba,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Forget a tile so a later request fetches it again.
+    ///
+    /// The view calls this when it evicts a texture: a tile it has already
+    /// consumed is remembered here as fetched, so without this the evicted tile
+    /// could never be asked for a second time.
+    pub fn forget_tile(&self, z: u8, x: u32, y: u32) {
+        self.inner.borrow_mut().tiles.remove(&(z, x, y));
     }
 
     /// Discard every cached, in-flight, and failed tile so later requests refetch.
@@ -497,6 +584,7 @@ impl Bridge {
     pub fn clear_tiles(&self) {
         let mut i = self.inner.borrow_mut();
         i.tiles.clear();
+        i.tile_queue.clear();
         i.tile_epoch = i.tile_epoch.wrapping_add(1);
     }
 
@@ -567,8 +655,11 @@ mod web {
         #[wasm_bindgen(js_name = addGfStore, catch)]
         async fn js_add_gf_store() -> Result<JsValue, JsValue>;
 
-        #[wasm_bindgen(js_name = fetchTile, catch)]
-        async fn js_fetch_tile(url: String) -> Result<JsValue, JsValue>;
+        #[wasm_bindgen(js_name = fetchTiles, catch)]
+        async fn js_fetch_tiles(
+            urls: js_sys::Array,
+            on_tile: js_sys::Function,
+        ) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = openFiles, catch)]
         async fn js_open_files() -> Result<JsValue, JsValue>;
@@ -661,28 +752,33 @@ mod web {
         })
     }
 
-    fn js_bytes(v: JsValue, what: &str) -> Result<Vec<u8>, String> {
+    fn js_bytes(v: JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
         use wasm_bindgen::JsCast;
 
         v.dyn_into::<js_sys::Uint8Array>()
-            .map_err(|_| format!("{what} is not a Uint8Array"))
+            .map_err(|_| MarshalError::NotBytes { field })
             .map(|arr| arr.to_vec())
     }
 
-    fn object_uint8(obj: &JsValue, key: &str) -> Result<Vec<u8>, String> {
-        let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(jsval_to_string)?;
-        js_bytes(val, key)
+    fn object_uint8(obj: &JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
+        let val = js_sys::Reflect::get(obj, &JsValue::from_str(field))
+            .map_err(|_| MarshalError::Missing { field })?;
+        js_bytes(val, field)
     }
 
-    fn object_f32(obj: &JsValue, key: &str) -> Result<Vec<f32>, String> {
+    fn object_f32(obj: &JsValue, field: &'static str) -> Result<Vec<f32>, MarshalError> {
         use wasm_bindgen::JsCast;
 
-        let val = js_sys::Reflect::get(obj, &JsValue::from_str(key)).map_err(jsval_to_string)?;
+        let val = js_sys::Reflect::get(obj, &JsValue::from_str(field))
+            .map_err(|_| MarshalError::Missing { field })?;
         let arr = val
             .dyn_into::<js_sys::Uint8Array>()
-            .map_err(|_| format!("{key} is not a Uint8Array"))?;
+            .map_err(|_| MarshalError::NotBytes { field })?;
         if arr.byte_length() % 4 != 0 {
-            return Err(format!("{key} byte length is not divisible by 4"));
+            return Err(MarshalError::UnalignedSamples {
+                field,
+                len: arr.byte_length(),
+            });
         }
         let values = arr.byte_length() / 4;
         Ok(js_sys::Float32Array::new_with_byte_offset_and_length(
@@ -733,33 +829,42 @@ mod web {
     const BRIDGE_TRANSPORT_PERF_LOG: bool = false;
 
     impl pb::BridgeTransport for WorkerTransport {
-        async fn unary(&self, method: &str, request: Vec<u8>) -> Result<Vec<u8>, String> {
+        async fn unary(
+            &self,
+            method: &'static str,
+            request: Vec<u8>,
+        ) -> Result<Vec<u8>, TransportError> {
             let obj = js_call(method, request, Vec::new())
                 .await
-                .map_err(jsval_to_string)?;
-            object_uint8(&obj, "result")
+                .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
+            Ok(object_uint8(&obj, "result")
+                .map_err(|e| TransportError::new(method, e.to_string()))?)
         }
 
         async fn unary_with_buffer(
             &self,
-            method: &str,
+            method: &'static str,
             request: Vec<u8>,
-        ) -> Result<(Vec<u8>, Vec<f32>), String> {
+        ) -> Result<(Vec<u8>, Vec<f32>), TransportError> {
+            let marshal = |e: MarshalError| TransportError::new(method, e.to_string());
             if !BRIDGE_TRANSPORT_PERF_LOG {
                 let obj = js_call(method, request, Vec::new())
                     .await
-                    .map_err(jsval_to_string)?;
-                return Ok((object_uint8(&obj, "result")?, object_f32(&obj, "ys")?));
+                    .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
+                return Ok((
+                    object_uint8(&obj, "result").map_err(marshal)?,
+                    object_f32(&obj, "ys").map_err(marshal)?,
+                ));
             }
             let t0 = js_sys::Date::now();
             let request_bytes = request.len();
             let obj = js_call(method, request, Vec::new())
                 .await
-                .map_err(jsval_to_string)?;
+                .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
             let js_done = js_sys::Date::now();
-            let result = object_uint8(&obj, "result")?;
+            let result = object_uint8(&obj, "result").map_err(marshal)?;
             let result_done = js_sys::Date::now();
-            let ys = object_f32(&obj, "ys")?;
+            let ys = object_f32(&obj, "ys").map_err(marshal)?;
             let done = js_sys::Date::now();
             log_transport_perf(
                 method,
@@ -813,7 +918,7 @@ mod web {
             repaint: Repaint,
             params: SeedlinkParams,
             started_at: f64,
-        ) -> Result<Self, String> {
+        ) -> Result<Self, SeedlinkError> {
             let conn = seedlink_connection(&params)?;
             let first_batch = Rc::new(Cell::new(true));
             let on_open = seedlink_on_open(
@@ -855,12 +960,15 @@ mod web {
         commands: Vec<String>,
     }
 
-    fn seedlink_connection(params: &SeedlinkParams) -> Result<SeedlinkConnection, String> {
+    fn seedlink_connection(params: &SeedlinkParams) -> Result<SeedlinkConnection, SeedlinkError> {
         let port = params
             .port
             .trim()
             .parse::<u16>()
-            .map_err(|err| format!("SeedLink port: {err}"))?;
+            .map_err(|source| SeedlinkError::Port {
+                port: params.port.trim().to_owned(),
+                source,
+            })?;
         let source = format!(
             "{}:{} {}.{} {}",
             params.host.trim(),
@@ -869,8 +977,11 @@ mod web {
             params.sta.trim(),
             params.selectors.trim()
         );
-        let ws = web_sys::WebSocket::new(&seedlink_proxy_url(params.host.trim(), port))
-            .map_err(jsval_to_string)?;
+        let url = seedlink_proxy_url(params.host.trim(), port);
+        let ws = web_sys::WebSocket::new(&url).map_err(|e| SeedlinkError::Connect {
+            url,
+            detail: jsval_to_string(e),
+        })?;
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
         Ok(SeedlinkConnection {
             ws,
@@ -889,7 +1000,14 @@ mod web {
         Closure::wrap(Box::new(move |_event: web_sys::Event| {
             for command in &commands {
                 if let Err(err) = ws.send_with_str(command) {
-                    set_bridge_error(&inner, format!("SeedLink send failed: {err:?}"));
+                    set_bridge_error(
+                        &inner,
+                        SeedlinkError::Send {
+                            command: command.clone(),
+                            detail: jsval_to_string(err),
+                        }
+                        .into(),
+                    );
                     repaint.request_repaint();
                     return;
                 }
@@ -940,11 +1058,14 @@ mod web {
             let msg = event.message();
             set_bridge_error(
                 &inner,
-                if msg.is_empty() {
-                    "SeedLink WebSocket error".to_owned()
-                } else {
-                    format!("SeedLink WebSocket error: {msg}")
-                },
+                SeedlinkError::Socket {
+                    detail: if msg.is_empty() {
+                        "the browser gave no reason".to_owned()
+                    } else {
+                        msg
+                    },
+                }
+                .into(),
             );
             repaint.request_repaint();
         }) as Box<dyn FnMut(_)>)
@@ -978,8 +1099,8 @@ mod web {
         }
     }
 
-    fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: String) {
-        inner.borrow_mut().status = Status::Error(error);
+    fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: BridgeError) {
+        inner.borrow_mut().status = Status::Error(error.into());
     }
 
     fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
@@ -1059,7 +1180,7 @@ mod web {
                         i.status = Status::Ready;
                         clear_view(&mut i);
                     }
-                    Err(e) => i.status = Status::Error(e),
+                    Err(e) => i.status = Status::Error(e.into()),
                 }
             }
             repaint.request_repaint();
@@ -1270,7 +1391,7 @@ mod web {
                             i.status = Status::Ready;
                             clear_view(&mut i);
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1309,7 +1430,7 @@ mod web {
                             i.status = Status::Ready;
                             clear_view(&mut i);
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1333,7 +1454,7 @@ mod web {
                             i.status = Status::Ready;
                             clear_view(&mut i);
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1361,7 +1482,7 @@ mod web {
                 {
                     let mut i = inner.borrow_mut();
                     i.examples_in_flight = false;
-                    i.examples = Some(parsed.map(|list| list.examples));
+                    i.examples = Some(parsed.map(|list| list.examples).map_err(BridgeError::from));
                 }
                 repaint.request_repaint();
             });
@@ -1410,11 +1531,11 @@ mod web {
                             }
                             None => {
                                 bridge.inner.borrow_mut().status =
-                                    Status::Error(format!("no example dataset called {slug:?}"));
+                                    Status::Error(BridgeError::UnknownExample { slug });
                             }
                         }
                     }
-                    Err(error) => bridge.inner.borrow_mut().status = Status::Error(error),
+                    Err(error) => bridge.inner.borrow_mut().status = Status::Error(error.into()),
                 }
                 repaint.request_repaint();
             });
@@ -1453,7 +1574,7 @@ mod web {
                                 i.snuffling_gen += 1;
                             }
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1539,7 +1660,7 @@ mod web {
                             i.snuffling = Some(r);
                             i.snuffling_gen += 1;
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1564,7 +1685,7 @@ mod web {
                             i.status = Status::Ready;
                             clear_view(&mut i);
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1588,7 +1709,7 @@ mod web {
                             i.status = Status::Ready;
                             clear_view(&mut i);
                         }
-                        Err(e) => i.status = Status::Error(e),
+                        Err(e) => i.status = Status::Error(e.into()),
                     }
                 }
                 repaint.request_repaint();
@@ -1607,7 +1728,7 @@ mod web {
                     Ok(r) => Some(r),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
-                        text: e,
+                        text: e.to_string(),
                         markers: Vec::new(),
                         scene: None,
                     }),
@@ -1721,7 +1842,7 @@ mod web {
                     Ok(r) => r,
                     Err(e) => pb::CommandResult {
                         action: "error".into(),
-                        message: Some(e),
+                        message: Some(e.to_string()),
                         ..Default::default()
                     },
                 };
@@ -1763,7 +1884,7 @@ mod web {
                     Ok(r) => Some(r),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
-                        text: e,
+                        text: e.to_string(),
                         markers: Vec::new(),
                         scene: None,
                     }),
@@ -1791,7 +1912,7 @@ mod web {
                     Ok(r) => Some(r),
                     Err(e) => Some(SnufflingResult {
                         show_window: true,
-                        text: e,
+                        text: e.to_string(),
                         markers: Vec::new(),
                         scene: None,
                     }),
@@ -1850,7 +1971,7 @@ mod web {
                 Err(err) => {
                     let mut i = self.inner.borrow_mut();
                     i.live_seedlink_started_at = None;
-                    i.status = Status::Error(err);
+                    i.status = Status::Error(err.into());
                 }
             }
             repaint.request_repaint();
@@ -1893,12 +2014,17 @@ mod web {
                                             i.snuffling_gen += 1;
                                         }
                                     }
-                                    Err(e) => i.status = Status::Error(e),
+                                    Err(e) => i.status = Status::Error(e.into()),
                                 }
                             }
-                            Err(e) => i.status = Status::Error(e),
+                            Err(e) => i.status = Status::Error(e.into()),
                         },
-                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                        Err(e) => {
+                            i.status = Status::Error(BridgeError::browser(
+                                "opening files",
+                                jsval_to_string(e),
+                            ))
+                        }
                     }
                 }
                 repaint.request_repaint();
@@ -1926,11 +2052,16 @@ mod web {
                                     i.status = Status::Ready;
                                     clear_view(&mut i);
                                 }
-                                Err(e) => i.status = Status::Error(e),
+                                Err(e) => i.status = Status::Error(e.into()),
                             },
-                            Err(e) => i.status = Status::Error(e),
+                            Err(e) => i.status = Status::Error(e.into()),
                         },
-                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                        Err(e) => {
+                            i.status = Status::Error(BridgeError::browser(
+                                "opening a directory",
+                                jsval_to_string(e),
+                            ))
+                        }
                     }
                 }
                 repaint.request_repaint();
@@ -1954,7 +2085,12 @@ mod web {
                             i.status = Status::Ready;
                             invalidate_view_request(&mut i);
                         }
-                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                        Err(e) => {
+                            i.status = Status::Error(BridgeError::browser(
+                                "reloading snufflings",
+                                jsval_to_string(e),
+                            ))
+                        }
                     }
                 }
                 repaint.request_repaint();
@@ -1983,11 +2119,16 @@ mod web {
                                     i.status = Status::Ready;
                                     clear_view(&mut i);
                                 }
-                                Err(e) => i.status = Status::Error(e),
+                                Err(e) => i.status = Status::Error(e.into()),
                             },
-                            Err(e) => i.status = Status::Error(e),
+                            Err(e) => i.status = Status::Error(e.into()),
                         },
-                        Err(e) => i.status = Status::Error(jsval_to_string(e)),
+                        Err(e) => {
+                            i.status = Status::Error(BridgeError::browser(
+                                "reloading files",
+                                jsval_to_string(e),
+                            ))
+                        }
                     }
                 }
                 repaint.request_repaint();
@@ -2239,63 +2380,126 @@ mod web {
             });
         }
 
-        /// Fetch one map tile (browser fetch + decode); idempotent per (z,x,y).
-        pub fn request_tile(&self, z: u8, x: u32, y: u32, url: String) {
-            let repaint = self.repaint.clone();
-            let epoch = {
+        /// Submit every tile the map wants on screen right now.
+        ///
+        /// This replaces the pending queue rather than adding to it, which is what
+        /// makes a zoom or a pan cheap: tiles the view has moved away from and
+        /// that no batch has started yet are simply dropped, and the survivors are
+        /// re-ordered by the priority the view just scored them with. Tiles
+        /// already fetched, in flight, or known to have failed are skipped, so
+        /// calling this every frame costs a filter over a screenful of keys.
+        pub fn request_tiles(&self, wanted: Vec<TileRequest>) {
+            {
                 let mut i = self.inner.borrow_mut();
-                if i.tiles.contains_key(&(z, x, y)) {
-                    return;
-                }
-                i.tiles.insert((z, x, y), TileState::InFlight);
-                i.tile_epoch
-            };
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                use wasm_bindgen::JsCast;
-                let state = match js_fetch_tile(url).await {
-                    Ok(obj) => {
-                        let num = |key: &str| {
-                            js_sys::Reflect::get(&obj, &JsValue::from_str(key))
-                                .ok()
-                                .and_then(|val| val.as_f64())
-                                .unwrap_or(0.0)
-                        };
-                        // Tile dimensions are small non-negative pixel counts.
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            clippy::cast_sign_loss,
-                            reason = "tile width/height are small non-negative integers"
-                        )]
-                        let (width, height) = (num("w") as u32, num("h") as u32);
-                        let rgba = js_sys::Reflect::get(&obj, &JsValue::from_str("rgba"))
-                            .ok()
-                            .and_then(|val| val.dyn_into::<js_sys::Uint8Array>().ok())
-                            .map(|arr| arr.to_vec());
-                        match rgba {
-                            Some(bytes)
-                                if width > 0
-                                    && height > 0
-                                    && bytes.len() == (width * height * 4) as usize =>
-                            {
-                                TileState::Ready(width, height, bytes)
-                            }
-                            _ => TileState::Failed,
-                        }
-                    }
-                    Err(_) => TileState::Failed,
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    // The basemap changed while this tile was in flight; it now
-                    // holds the wrong provider's imagery for its key.
-                    if i.tile_epoch != epoch {
+                let mut queue: Vec<TileRequest> = wanted
+                    .into_iter()
+                    .filter(|t| !i.tiles.contains_key(&(t.z, t.x, t.y)))
+                    .collect();
+                queue.sort_by_key(|t| t.priority);
+                i.tile_queue = queue;
+            }
+            self.pump_tiles();
+        }
+
+        /// Start batches until the queue empties or the in-flight cap is reached.
+        fn pump_tiles(&self) {
+            loop {
+                let batch = {
+                    let mut i = self.inner.borrow_mut();
+                    if i.tile_batches >= TILE_BATCHES_IN_FLIGHT || i.tile_queue.is_empty() {
                         return;
                     }
-                    i.tiles.insert((z, x, y), state);
+                    let take = i.tile_queue.len().min(TILE_BATCH);
+                    let batch: Vec<TileRequest> = i.tile_queue.drain(..take).collect();
+                    for tile in &batch {
+                        i.tiles
+                            .insert((tile.z, tile.x, tile.y), TileState::InFlight);
+                    }
+                    i.tile_batches += 1;
+                    batch
+                };
+                self.spawn_tile_batch(batch);
+            }
+        }
+
+        /// Fetch and decode one batch in the browser, filing each tile as it lands.
+        fn spawn_tile_batch(&self, batch: Vec<TileRequest>) {
+            let inner = self.inner.clone();
+            let repaint = self.repaint.clone();
+            let me = self.clone();
+            let epoch = self.inner.borrow().tile_epoch;
+            let keys: Vec<(u8, u32, u32)> = batch.iter().map(|t| (t.z, t.x, t.y)).collect();
+            let urls = js_sys::Array::new();
+            for tile in &batch {
+                urls.push(&JsValue::from_str(&tile.url));
+            }
+
+            spawn_local(async move {
+                let on_tile = {
+                    let inner = inner.clone();
+                    let repaint = repaint.clone();
+                    let keys = keys.clone();
+                    // Tile dimensions arrive as JS numbers that are small
+                    // non-negative pixel counts.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "tile width/height are small non-negative integers"
+                    )]
+                    Closure::<dyn FnMut(f64, f64, f64, js_sys::Uint8Array)>::new(
+                        move |index: f64, width: f64, height: f64, rgba: js_sys::Uint8Array| {
+                            let Some(&key) = keys.get(index as usize) else {
+                                return;
+                            };
+                            let (width, height) = (width as u32, height as u32);
+                            let bytes = rgba.to_vec();
+                            let decoded = width > 0
+                                && height > 0
+                                && bytes.len() == (width as usize) * (height as usize) * 4;
+                            {
+                                let mut i = inner.borrow_mut();
+                                // The basemap changed while this tile was in
+                                // flight; it now holds the wrong provider's
+                                // imagery for its key.
+                                if i.tile_epoch != epoch {
+                                    return;
+                                }
+                                i.tiles.insert(
+                                    key,
+                                    if decoded {
+                                        TileState::Ready(width, height, bytes)
+                                    } else {
+                                        TileState::Failed
+                                    },
+                                );
+                            }
+                            repaint.request_repaint();
+                        },
+                    )
+                };
+                let delivered = js_fetch_tiles(
+                    urls,
+                    on_tile.as_ref().unchecked_ref::<js_sys::Function>().clone(),
+                )
+                .await;
+                drop(on_tile);
+                {
+                    let mut i = inner.borrow_mut();
+                    i.tile_batches = i.tile_batches.saturating_sub(1);
+                    // The batch as a whole can reject before every callback fired
+                    // (the module failed to load, say). Anything still marked
+                    // in-flight has no other way to be retired, and would block
+                    // its key from ever being requested again.
+                    if i.tile_epoch == epoch && delivered.is_err() {
+                        for key in keys {
+                            if matches!(i.tiles.get(&key), Some(TileState::InFlight)) {
+                                i.tiles.insert(key, TileState::Failed);
+                            }
+                        }
+                    }
                 }
                 repaint.request_repaint();
+                me.pump_tiles();
             });
         }
 
@@ -2373,7 +2577,7 @@ mod web {
                                     }
                                 }
                             }
-                            Err(e) => i.status = Status::Error(e),
+                            Err(e) => i.status = Status::Error(e.into()),
                         }
                         if i.view_in_flight.as_ref() == Some(&params) {
                             i.view_in_flight = None;

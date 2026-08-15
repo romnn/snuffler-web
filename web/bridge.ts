@@ -598,7 +598,7 @@ export async function loadEvents() {
   return rpcBytes(rpc("loadEvents"), { request });
 }
 
-export async function fetchTile(url) {
+async function decodeTile(url: string): Promise<ImageData> {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`tile ${url}: ${r.status}`);
   const bmp = await createImageBitmap(await r.blob());
@@ -608,5 +608,33 @@ export async function fetchTile(url) {
   cx.drawImage(bmp, 0, 0);
   const img = cx.getImageData(0, 0, bmp.width, bmp.height);
   if (bmp.close) bmp.close();
-  return { w: img.width, h: img.height, rgba: new Uint8Array(img.data.buffer) };
+  return img;
+}
+
+/**
+ * Fetch and decode a whole batch of map tiles at once.
+ *
+ * One call crosses the wasm boundary and starts every fetch in the batch, but
+ * each tile is handed back through `onTile` the moment it decodes rather than at
+ * the end — so a single slow tile delays only itself, and the map paints as its
+ * pieces land. A tile that fails (404 past a provider's max zoom, offline) is
+ * reported with zero dimensions so the caller can retire the slot instead of
+ * waiting on it forever; the promise settles only once every tile is accounted
+ * for, which is the caller's signal to start the next batch.
+ */
+export async function fetchTiles(
+  urls: string[],
+  onTile: (index: number, w: number, h: number, rgba: Uint8Array) => void
+): Promise<void> {
+  const empty = new Uint8Array(0);
+  await Promise.all(
+    urls.map(async (url, index) => {
+      try {
+        const img = await decodeTile(url);
+        onTile(index, img.width, img.height, new Uint8Array(img.data.buffer));
+      } catch {
+        onTile(index, 0, 0, empty);
+      }
+    })
+  );
 }

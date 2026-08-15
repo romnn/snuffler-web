@@ -887,10 +887,17 @@ impl App {
                 ui.label(format!("Ready · {total_tracks} traces")),
                 crate::a11y::Urgency::Polite,
             ),
-            Status::Error(error) => (
-                ui.colored_label(egui::Color32::RED, format!("Error: {error}")),
-                crate::a11y::Urgency::Urgent,
-            ),
+            Status::Error(error) => {
+                let label = ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
+                // pyrocko's traceback now survives the trip as part of the typed
+                // error, and the status line is one sentence wide — hovering is
+                // what turns "it failed" into something reportable.
+                let label = match error.traceback() {
+                    Some(traceback) => label.on_hover_text(traceback),
+                    None => label,
+                };
+                (label, crate::a11y::Urgency::Urgent)
+            }
         };
         crate::a11y::announce_changes(ctx, &status, urgency);
         if self.session.state.picking.is_some() {
