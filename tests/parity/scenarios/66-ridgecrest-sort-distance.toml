@@ -1,0 +1,17 @@
+name = "ridgecrest-sort-distance"
+title = "Distance sort where the stations are kilometres apart, not degrees"
+dataset = "ridgecrest-2019-07-06-m7.1-local"
+tiers = [1]
+load = ["events", "responses"]
+
+# The local end of the same sort `sumatra-sort-distance` covers teleseismically. Here
+# the seven stations span 5 to 89 km, so the ordering turns on differences a
+# thousandth the size, and the printed distances are two- and three-figure kilometres
+# where Sumatra's are five. A rounding difference that hides at 10000 km is visible
+# at 5.
+
+[state]
+sort = "distance"
+
+[compare]
+reason = "the distance sort has to resolve stations kilometres apart, not continents"

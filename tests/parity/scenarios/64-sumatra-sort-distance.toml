@@ -1,0 +1,17 @@
+name = "sumatra-sort-distance"
+title = "Distance sort across 86° to 136°, with the km labels checked"
+dataset = "sumatra-2004-12-26-m9.1-surface-waves"
+tiers = [1]
+load = ["events", "responses"]
+
+# Teleseismic distances, where `ridgecrest-sort-distance` covers local ones: the same
+# sort over stations a third of the planet apart, whose printed kilometres run to five
+# figures. HRV wrote an empty location code in 2004 where the others use 00, so this
+# is also the distance sort meeting a station whose coordinates arrive under a key
+# that does not look like its neighbours'.
+
+[state]
+sort = "distance"
+
+[compare]
+reason = "same spheroid, same event, same XML: order and km labels must agree at teleseismic range"

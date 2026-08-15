@@ -1,0 +1,13 @@
+name = "ridgecrest-raw-full"
+title = "Three minutes of strong motion at 100 Hz, every option off"
+dataset = "ridgecrest-2019-07-06-m7.1-local"
+tiers = [1]
+
+# Accelerometers at 100 Hz, 5 to 89 km from the source: the only local recording in
+# the corpus, and the only one where the interesting part is seconds rather than
+# minutes long. Everything after the first onset — a minute of shaking whose largest
+# motion arrives well after the P — has to survive decimation into the view the same
+# way on both sides.
+
+[compare]
+reason = "identical recorded bytes, no processing, so only float32 transport separates them"

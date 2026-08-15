@@ -8,10 +8,10 @@ two jobs at once:
   `assets/examples/`, and the app fetches it only when someone picks it — so the
   page costs nothing to load and a laptop with no data on it is still a laptop that
   can learn snuffler. Each has a shareable link: `?example=<slug>`.
-- **The parity suite** measures against some of them (`tests/parity/corpus/build.py`
-  pins every file it uses by sha256). Where it does, the bytes a student downloads
-  are the bytes both frontends are proven to agree on, rather than a second copy
-  that drifted.
+- **The parity suite** measures against every one of them (`tests/parity/corpus/build.py`
+  pins every file by sha256). So the bytes a student downloads are the bytes both
+  frontends are proven to agree on, rather than a second copy that drifted — and a
+  dataset cannot be shipped here without the two viewers being held to it.
 
 | dataset | what it shows | bundle |
 | --- | --- | --- |
@@ -19,12 +19,14 @@ two jobs at once:
 | `tohoku-2011-03-11-m9.1-clipping` | one site, three instruments, and the sensitive one going off scale | 0.5 MB |
 | `sumatra-2004-12-26-m9.1-surface-waves` | six hours at 1 Hz: dispersion, and the wave coming back round | 0.8 MB |
 | `ridgecrest-2019-07-06-m7.1-local` | a local earthquake at 100 Hz, 5 to 89 km away | 0.7 MB |
+| `tonga-2022-01-15-air-wave` | an eruption's pressure pulse crossing a planet at 306 m/s, on barometers | 1.4 MB |
+| `kilauea-2018-07-15-caldera-collapse` | a volcanic source that repeats: swarm, collapse, silence | 5.7 MB |
 | `eifel` | a real deployment: 354 stations, six networks, three sampling rates | 20.0 MB |
 
 They are meant to differ from each other. Between them they cover teleseismic and
-local, 1 Hz and 100 Hz, one station and 354, body waves and surface waves, sensors
-that agree and sensors that do not — so "load an example" is a real choice rather
-than a single canned demo.
+local, 1 Hz and 100 Hz, one station and 354, body waves and surface waves, ground
+motion and air pressure, faults and a volcano, sensors that agree and sensors that
+do not — so "load an example" is a real choice rather than a single canned demo.
 
 ## What a dataset directory holds
 
@@ -39,8 +41,12 @@ than a single canned demo.
 `example.toml` describes the dataset; everything else *is* the dataset and goes into
 the bundle. Four of its tables matter:
 
-- `title`, `blurb`, `teaches`, `citation` — what the menu shows, and what the load
-  report shows afterwards. The blurb's first paragraph is the menu tooltip.
+- `title`, `blurb`, `teaches`, `citation` — what the menu shows, and what the
+  `About this dataset` window shows once it is loaded. The blurb's first paragraph
+  is the menu tooltip. `teaches` is a list of *characteristics* — what is unique
+  about this recording — not a list of instructions: the window is headed "What is
+  unique about this dataset", and "Sort by Distance" does not answer that where
+  "distances from 86° to 136°" does.
 - `[state]` — the view to open in. An example exists to show something and the
   setting that shows it is part of the example: co-located sensors say nothing
   until `subsort = "nsc_l"` groups them onto one row. Only these bundles carry it;
@@ -65,8 +71,11 @@ beats handing out a folder and instructions, and the app accepts a bundle from t
 file picker or dropped on the window exactly as it accepts a waveform file.
 
 The shipped bundles additionally carry a `snuffler.json` (the `example.toml`
-fields), which is what the load report shows and where `[state]` travels. A bundle
-without it still loads; it just says less.
+fields), which is what the `About this dataset` window shows and where `[state]`
+travels. A bundle without it still loads and reports what it loaded; it just has
+nothing to say about itself, so the Help entry that reopens that window is not
+offered. Nothing about this is limited to the bundles built here — write a
+`snuffler.json` into your own zip and it describes itself the same way.
 
 Bundles are built deterministically — fixed member timestamps, fixed permissions,
 sorted order — so rebuilding unchanged inputs produces identical bytes and nothing
@@ -87,15 +96,24 @@ downstream re-uploads.
    wrong thing twice.
 4. `mise run build-examples` and check the size. Anything past ~20 MB deserves a
    second look — it is one click for a user on a phone.
-5. Optionally add it to the parity corpus: files in `CHECKED_IN`
-   (`tests/parity/corpus/build.py`), a `Dataset` in `tests/parity/scenario.py`, a
-   scenario, then `python tests/parity/corpus/build.py --update-manifest`. Worth it
-   for a dataset that exercises something the suite should hold; git already
-   protects the rest from silent edits.
+5. Add it to the parity corpus — every dataset here is in it, so this is not
+   optional: its files in `CHECKED_IN` (`tests/parity/corpus/build.py`), a `Dataset`
+   in `tests/parity/scenario.py`, at least a control scenario with every option off
+   plus one that exercises whatever makes the dataset worth shipping, then
+   `python tests/parity/corpus/build.py --update-manifest`. If the window is long or
+   the rate high, the scenario needs a `visible_length` that lets Qt keep every trace
+   — `tests/parity/README.md` explains why.
 
 ## Provenance
 
 These are other people's recordings. `example.toml` carries the citation each
-network asks for and the app shows it in the load report; keep it accurate, and
-check that a dataset is openly licensed before adding it — the GSN, SCSN and Eifel
-networks here are.
+network asks for and the app shows it under `Help ▸ About this dataset`; keep it
+accurate, and check that a dataset is openly licensed before adding it — the GSN,
+SCSN, HVO and Eifel networks here are.
+
+One thing the fetch is allowed to change: MiniSEED records carrying no samples are
+dropped. Datacenters ship them (Sumatra's window came back with nine), pyrocko reads
+each as a trace, and a viewer then draws a blank row for something that is not a
+channel — while pyrocko's own `pile` refuses the file outright, so snuffler could not
+open the dataset at all. Records are deleted whole rather than re-encoded, so every
+sample and start time in what remains is still the datacenter's own.

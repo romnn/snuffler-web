@@ -40,13 +40,23 @@ deltat × length × passband over `_decon_freq_limits` against `PileViewer.get_f
 — the one pair whose docstring claims to be a copy. It runs with the full suite, or
 alone as `task test:parity -- decon-freq-limits`.
 
-The `eifel` and `bonin-2015-05-30-m7.8-multiloc` scenarios are the same comparison on
-recordings nobody generated: 1061 traces over 354 real stations at deployment
-scale, and 42 traces over six GSN stations that each record the same ground
-motion two or three times over. Both sort by distance with every track's printed
-"N.N km" label held against the metres Qt's own `set_origin` computed. Real
-integer counts survive the float32 bridge exactly, so their `max_rel_rms` is 0 —
-on those datasets *any* nonzero residual is a finding, not noise.
+The scenarios on the shipped example datasets are the same comparison on recordings
+nobody generated — every dataset behind `File ▸ Examples`, from 1061 traces over 354
+real stations at deployment scale down to a single site recording one earthquake three
+times over. Each has a control with every option off, and most also sort by distance
+with every track's printed "N.N km" label held against the metres Qt's own
+`set_origin` computed: at teleseismic range on `sumatra`, at 5 to 89 km on
+`ridgecrest`, and on `tonga` where one site contributes two channel positions because
+its barometer and its seismometer sit at different elevations. Real integer counts
+survive the float32 bridge exactly, so their `max_rel_rms` is 0 — on those datasets
+*any* nonzero residual is a finding, not noise.
+
+Two are the exception, and it is worth knowing which: `tohoku` peaks at 46.8 million
+counts and `sumatra` at 67.1 million, past the 2²⁴ where float32 stops counting
+integers exactly, so both come back at ~3e-08 instead of 0. Everything else in the
+corpus stays under that ceiling — `kilauea`'s caldera collapse gets closest at 10.5
+million — which is why 0 is the normal answer here and these two are read against the
+`rtol` like the synthetic datasets are.
 
 ### Reading a result
 
@@ -148,18 +158,32 @@ drift is never ignorable.
 | `oddrate` | 5 Hz, 7 Hz and 50 Hz in one pile: Nyquist clamping and mixed-rate selection |
 | `eifel` | real recordings: 354 stations, six networks, three rates, a yaml event catalog, per-network StationXML |
 | `bonin-2015-05-30-m7.8-multiloc` | real recordings: six GSN stations carrying one channel at two and three location codes |
+| `tohoku-2011-03-11-m9.1-clipping` | real recordings: one site, three instruments, three rates, one of them off scale |
+| `sumatra-2004-12-26-m9.1-surface-waves` | real recordings: the corpus's slowest, LH channels at 1 Hz over six hours |
+| `ridgecrest-2019-07-06-m7.1-local` | real recordings: the only local one, seven stations 5 to 89 km out at 100 Hz |
+| `tonga-2022-01-15-air-wave` | real recordings: barometers beside seismometers, over a 22.5-hour window |
+| `kilauea-2018-07-15-caldera-collapse` | real recordings: 100 Hz volcanic seismicity spanning four orders of magnitude in one trace |
 
 Only `demo` uses an RNG, and only because it has to be that dataset; everything else is
 analytic and stable under any numpy. The task targets pin numpy for the same reason.
 
-The last two are checked in rather than generated (the bytes as the datacenter
-delivered them), because their value is exactly that no generator made them. They live
-in [`examples/`](../../examples/) rather than here, because the app ships them too —
-`File ▸ Examples` fetches each as one bundle — so the bytes a student downloads are the
-bytes this suite holds both frontends to. Each records the queries it came from in its
-own `example.toml`: provenance, not a generator, since StationXML is stamped with its
-creation time and a re-fetch drifts the manifest deliberately. The manifest pins these
-files too, so a locally edited copy fails the same way.
+Everything from `eifel` down is checked in rather than generated (the bytes as the
+datacenter delivered them), because their value is exactly that no generator made them.
+They live in [`examples/`](../../examples/) rather than here, because the app ships
+them too — `File ▸ Examples` fetches each as one bundle — so the bytes a student
+downloads are the bytes this suite holds both frontends to. Every dataset the app
+offers is measured here, which is the only way that sentence stays true. Each records
+the queries it came from in its own `example.toml`: provenance, not a generator, since
+StationXML is stamped with its creation time and a re-fetch drifts the manifest
+deliberately. The manifest pins these files too, so a locally edited copy fails the
+same way.
+
+Three of them need a `visible_length` in their scenarios. Qt fetches nothing finer than
+`min_deltat_allow`, derived from the window and that budget, so at the default a
+22.5-hour window or an hour of 100 Hz leaves it drawing empty rows — the divergence
+`oddrate-coarse-window` exists to document. Raising the budget until Qt keeps every
+trace turns those scenarios back into comparisons of recordings rather than of a fetch
+policy. It is a Qt-side knob; the web decimates whatever it is given.
 
 `eifel` is a deployment: on its first run it found what only one carries, a dead channel
 pinned at −2²³, which the web port scaled to a `[0, 1]` range that left the flatline

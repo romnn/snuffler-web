@@ -1,0 +1,22 @@
+name = "kilauea-raw-full"
+title = "An hour of volcanic seismicity at 100 Hz, every option off"
+dataset = "kilauea-2018-07-15-caldera-collapse"
+tiers = [1]
+
+# The widest dynamic range inside a single trace anywhere in the corpus: dozens of
+# small earthquakes at a few thousand counts, then a caldera collapse at twenty
+# million. Per-trace scaling is decided by that one event, so everything before it is
+# drawn at a hundredth of the row's height — where a decimation that picked its
+# extremes differently would be obvious rather than subtle.
+
+# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window
+# and `visible_length` — at the default budget every trace here is too finely sampled
+# for a window this long and Qt draws empty rows. That divergence is already what
+# `oddrate-coarse-window` is for; repeating it here would only hide the data. So the
+# budget is raised until Qt keeps every trace, and the scenario compares recordings
+# rather than a fetch policy. It is a Qt-side knob: the web decimates whatever it has.
+[state]
+visible_length = 300000
+
+[compare]
+reason = "identical recorded bytes, no processing, over four orders of magnitude in one trace"

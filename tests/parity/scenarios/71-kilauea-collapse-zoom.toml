@@ -1,0 +1,16 @@
+name = "kilauea-collapse-zoom"
+title = "Five minutes around the collapse, at full rate"
+dataset = "kilauea-2018-07-15-caldera-collapse"
+tiers = [1]
+
+# Five minutes of 100 Hz is 30000 samples per trace into 1200 pixels — a decimation
+# of 25, where the full-hour view above decimates by 300. The same data at two very
+# different reductions is the point: whatever each side does to fit a trace into a
+# pixel column has to agree at both.
+
+[window]
+start_s = 2400.0
+length_s = 300.0
+
+[compare]
+reason = "the same traces at a twelfth of the reduction the full-extent scenario uses"

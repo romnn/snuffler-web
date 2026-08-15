@@ -1,0 +1,17 @@
+name = "tonga-airwave-zoom"
+title = "Two hours cut out of a 22-hour pile, around the pressure arrival"
+dataset = "tonga-2022-01-15-air-wave"
+tiers = [1]
+
+# A window one eleventh the length of the traces it is cut from. The zoom scenarios
+# elsewhere take a minute out of ten; this takes two hours out of a day, which is the
+# case where the two pipelines' different ideas about how much context to fetch have
+# the most room to disagree. Centred on the air wave reaching ANMO, so the window
+# holds signal rather than the flat stretch either side of it.
+
+[window]
+start_s = 38000.0
+length_s = 7200.0
+
+[compare]
+reason = "the windowed fetch over the corpus's longest traces, with signal inside the window"

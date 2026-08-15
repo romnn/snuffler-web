@@ -126,6 +126,53 @@ DATASETS: Dict[str, Dataset] = {
             "bonin-2015-05-30-m7.8-multiloc/meta/IU.xml",
         ),
     ),
+    # One site recording the 2011 Tohoku Mww 9.1 three times over: a broadband, a
+    # second broadband five times as sensitive and off scale through the strongest
+    # shaking, and an accelerometer. Three sampling rates on one row when grouped,
+    # and — where every other dataset here deconvolves velocity sensors — a response
+    # in m/s² beside two in m/s.
+    "tohoku-2011-03-11-m9.1-clipping": Dataset(
+        waveforms="tohoku-2011-03-11-m9.1-clipping/tohoku-2011-03-11-m9.1-clipping.mseed",
+        events="tohoku-2011-03-11-m9.1-clipping/catalog.yaml",
+        responses=("tohoku-2011-03-11-m9.1-clipping/meta/IU.xml",),
+    ),
+    # Six hours of the 2004 Sumatra-Andaman Mw 9.1 at 1 Hz. The slow end of the
+    # corpus: LH channels where everything else is 20 Hz and up, and 21600 samples
+    # per trace decimated into a 1200 px view.
+    "sumatra-2004-12-26-m9.1-surface-waves": Dataset(
+        waveforms="sumatra-2004-12-26-m9.1-surface-waves/sumatra-2004-12-26-m9.1-surface-waves.mseed",
+        events="sumatra-2004-12-26-m9.1-surface-waves/catalog.yaml",
+        responses=(
+            "sumatra-2004-12-26-m9.1-surface-waves/meta/II.xml",
+            "sumatra-2004-12-26-m9.1-surface-waves/meta/IU.xml",
+        ),
+    ),
+    # Seven SCSN strong-motion stations 5 to 89 km from the 2019 Ridgecrest Mw 7.1.
+    # The only local dataset: distances in kilometres rather than degrees, where the
+    # distance sort has to resolve stations a few km apart rather than continents.
+    "ridgecrest-2019-07-06-m7.1-local": Dataset(
+        waveforms="ridgecrest-2019-07-06-m7.1-local/ridgecrest-2019-07-06-m7.1-local.mseed",
+        events="ridgecrest-2019-07-06-m7.1-local/catalog.yaml",
+        responses=("ridgecrest-2019-07-06-m7.1-local/meta/CI.xml",),
+    ),
+    # The 2022 Hunga Tonga eruption on five GSN stations, each with a seismometer and
+    # the barometer beside it. Two things nothing else in the corpus has: pressure
+    # channels — a non-seismic instrument that still has to sort, scale and draw like
+    # any other — and a 22.5-hour window, four times the longest span here.
+    "tonga-2022-01-15-air-wave": Dataset(
+        waveforms="tonga-2022-01-15-air-wave/tonga-2022-01-15-air-wave.mseed",
+        events="tonga-2022-01-15-air-wave/catalog.yaml",
+        responses=("tonga-2022-01-15-air-wave/meta/IU.xml",),
+    ),
+    # An hour at the Kilauea summit in 2018, three components at 100 Hz on three
+    # stations, ending with the caldera floor dropping as a Mw 5.3. The corpus's
+    # widest dynamic range inside one trace: dozens of small events at a few thousand
+    # counts and then twenty million, which is what per-trace scaling has to survive.
+    "kilauea-2018-07-15-caldera-collapse": Dataset(
+        waveforms="kilauea-2018-07-15-caldera-collapse/kilauea-2018-07-15-caldera-collapse.mseed",
+        events="kilauea-2018-07-15-caldera-collapse/catalog.yaml",
+        responses=("kilauea-2018-07-15-caldera-collapse/meta/HV.xml",),
+    ),
 }
 
 

@@ -11,15 +11,16 @@ because it has to: it is byte-for-byte the dataset ``qt/make_demo.py`` writes an
 ``bridge._make_example_scene`` synthesizes, so the corpus really is "the demo both
 frontends already show". Everything else is analytic and stable under any numpy.
 
-Two datasets are the exception to generation: real recordings, which live in the
-repository's ``examples/`` directory rather than here, because they are not only
-test input — the app ships them as the bundles behind ``File ▸ Examples`` (see
-``examples/README.md``). No generator can reproduce what a real deployment carries:
-eifel's hundreds of stations, mixed rates and epoch-ridden StationXML, or the GSN's
-co-located sensors, which record one ground motion two and three times over at
-different rates, depths and gains. The manifest covers them too, so a locally edited
-copy fails the same way a drifted generator does — and so the bytes a student
-downloads are the bytes both frontends are proven to agree on.
+The real recordings are the exception to generation. They live in the repository's
+``examples/`` directory rather than here, because they are not only test input — the
+app ships them as the bundles behind ``File ▸ Examples`` (see ``examples/README.md``)
+— and every one of them is measured, so what a student downloads is what both
+frontends are proven to agree on. No generator reproduces what these carry: eifel's
+hundreds of stations and epoch-ridden StationXML, the GSN's co-located sensors
+recording one ground motion three times over at different rates and gains, a
+barometer sampling a pressure wave for a day beside a seismometer, or a hundred small
+volcanic earthquakes at 100 Hz. The manifest covers them too, so a locally edited copy
+fails the same way a drifted generator does.
 
 Run directly to (re)build::
 
@@ -386,6 +387,22 @@ CHECKED_IN: Tuple[str, ...] = (
     "eifel/meta/BQ.KLL.xml",
     "eifel/meta/BQ.KOE.xml",
     "eifel/meta/BQ.NAST.xml",
+    "kilauea-2018-07-15-caldera-collapse/kilauea-2018-07-15-caldera-collapse.mseed",
+    "kilauea-2018-07-15-caldera-collapse/catalog.yaml",
+    "kilauea-2018-07-15-caldera-collapse/meta/HV.xml",
+    "ridgecrest-2019-07-06-m7.1-local/ridgecrest-2019-07-06-m7.1-local.mseed",
+    "ridgecrest-2019-07-06-m7.1-local/catalog.yaml",
+    "ridgecrest-2019-07-06-m7.1-local/meta/CI.xml",
+    "sumatra-2004-12-26-m9.1-surface-waves/sumatra-2004-12-26-m9.1-surface-waves.mseed",
+    "sumatra-2004-12-26-m9.1-surface-waves/catalog.yaml",
+    "sumatra-2004-12-26-m9.1-surface-waves/meta/II.xml",
+    "sumatra-2004-12-26-m9.1-surface-waves/meta/IU.xml",
+    "tohoku-2011-03-11-m9.1-clipping/tohoku-2011-03-11-m9.1-clipping.mseed",
+    "tohoku-2011-03-11-m9.1-clipping/catalog.yaml",
+    "tohoku-2011-03-11-m9.1-clipping/meta/IU.xml",
+    "tonga-2022-01-15-air-wave/tonga-2022-01-15-air-wave.mseed",
+    "tonga-2022-01-15-air-wave/catalog.yaml",
+    "tonga-2022-01-15-air-wave/meta/IU.xml",
 )
 
 
