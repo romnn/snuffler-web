@@ -225,12 +225,21 @@ One pinned set of inputs, loaded as **identical bytes** by both sides:
 - a multi-station, multi-channel set with StationXML (response removal,
   distance sorting, rotation),
 - one file with a non-trivial sampling rate (decimation and Nyquist clamping),
-- and, as built, one **checked-in real-world dataset** (`corpus/eifel`): a
-  recorded Eifel event over 354 stations in six networks at three sampling
-  rates, with a yaml event catalog and per-network StationXML. Generated data
-  cannot carry what a deployment does — on its first run this dataset surfaced
-  a dead channel pinned at the digitizer rail that the two sides scaled
-  differently.
+- and, as built, two **checked-in real-world datasets**, because generated data
+  cannot carry what real instruments do. Both live in `examples/` rather than
+  under the corpus, because the app ships them as well (`File ▸ Examples`), so
+  the bytes a user downloads are the bytes this suite measures:
+  - `examples/eifel`, a recorded Eifel event over 354 stations in six networks at
+    three sampling rates, with a yaml event catalog and per-network StationXML.
+    On its first run it surfaced a dead channel pinned at the digitizer rail
+    that the two sides scaled differently.
+  - `examples/bonin-2015-05-30-m7.8-multiloc`, the GSN recording of a 664 km deep
+    Mww 7.8: six stations carrying one channel at two and three location codes,
+    which is the only shape "Grouped by Location" can be observed on. Real
+    co-location brings what a generator would have to think to arrange — 20 Hz
+    beside 40 Hz on one row, gains an order of magnitude apart, sensor depths
+    that differ where the coordinates do not — and the last of those found a
+    defect.
 
 Fix every clock: no `now()`, no wall-clock-derived time ranges, no randomness in
 scenario generation. Both sides must be reproducible in isolation before they can
@@ -320,8 +329,9 @@ Task targets, alongside the existing `test:*` group:
 What the suite reported the first time it ran. Every defect it found *then* has
 since been fixed and its `known_gaps.toml` entry deleted, which is the only way the
 register lets a fix land: an entry that stops diverging fails the run as stale, so
-the fix and the removal have to arrive together. Two defects are open at the time
-of writing, both found by the sweep below and both reproducing on every run.
+the fix and the removal have to arrive together. Three defects are open at the time
+of writing, all reproducing on every run — two from the sweep below, and one the
+corpus found later, when real co-located instruments arrived.
 
 **Defects found and fixed** — differences with no defensible reason, found by
 tier 1 and 3:
@@ -394,11 +404,27 @@ because snuffler projects per (track, scaling key) and two sensors at one site d
 not share a scale. The `multiloc` dataset makes the case reproducible, with its
 second sensor an order of magnitude quieter so a row-wide scale would flatten it.
 
+Real co-located instruments arrived next, in `bonin-2015-05-30-m7.8-multiloc`, and agreed
+exactly — merged rows, mixed 20/40 Hz members, a shared scale, all at
+`max_rel_rms = 0` — right up to the point where the row has to be *sorted*. Snuffler
+puts the sort value inside the gather key (`set_gathering`), so with 3D distances on,
+two sensors of one station at different depths land on different rows: 27 in Qt
+against the web's 18. The port could not follow, because it stored one position per
+`(net, sta)` and had nowhere to put the second sensor's depth.
+
+Fixed by keying the station table the way snuffler keys its own — every station under
+both `(net, sta, loc)` and `(net, sta)`, resolved in that order (`station_keys`) — and
+by putting the sort value into the web's gather key too, which is what actually splits
+the rows. Both sides now say 27. Note what that means: snuffler ungroups by depth what
+the user asked it to group by location, and matching it meant reproducing that. The
+change also settled the vertical leg, which had been open in both directions: the port
+now computes `event.depth - station.depth` because snuffler does, elevation dropped and
+all. That one is signed off in `vertical-leg-follows-qt` and watched by a canary, since
+it is the rare entry that breaks when *upstream* is fixed.
+
 **Genuine divergences**, pinned so they cannot change unnoticed: the demean extent
 (the whole-trace processed-trace cache is a real constraint, though whether the
-port chose it or inherited it is unrecorded), the 3D-distance vertical term
-(neither formula is simply wrong — Qt ignores elevation, the web ignores borehole
-depth), and Qt's `min_deltat_allow` dropping high-rate traces at
+port chose it or inherited it is unrecorded), and Qt's `min_deltat_allow` dropping high-rate traces at
 wide zoom (unreconciled: a fetch optimisation with a real cost against keeping
 every channel on screen — a product call, recorded so it gets made).
 

@@ -1,0 +1,21 @@
+name = "bonin-subsort-grouped"
+title = "Co-located GSN sensors share one track, on real recordings"
+dataset = "bonin-2015-05-30-m7.8-multiloc"
+tiers = [1]
+
+# The grouped subsort where the co-location is real rather than arranged. All six
+# stations run a second broadband beside the first, KIP and TUC a third, so 42 rows
+# collapse to 18 and every one of them holds two or three locations.
+#
+# What the synthetic `multiloc` cannot stage is inside those rows. The `00` sensor
+# samples at 20 Hz and its partners at 40, so a merged row carries two sampling rates
+# and the trace selector has to choose per gather rather than per trace. The gains
+# differ by an order of magnitude where the sensors do (IU.COLA's STS-2 high-gain
+# beside a KS-54000: a 20x spread in counts across one row), and IU.ANMO.00 sits on a
+# -515000-count offset next to a partner at -628, which is the same hazard as eifel's
+# 5X.DUP.01.EHZ with a co-located control beside it.
+[state]
+subsort = "nsc_l"
+
+[compare]
+reason = "one row per network-station-channel, carrying every location of it, at every rate it was recorded"

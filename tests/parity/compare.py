@@ -455,7 +455,14 @@ def compare_annotations(
         if annotation == "no coords":
             continue
         web_km = float(annotation.split()[0])
-        geometry = qt.station_geometry.get((nslc[0], nslc[1]))
+        # Snuffler's own resolution order (`station_attrib`, pile_viewer.py:1379):
+        # the location-specific station first, the station-wide one as the fallback.
+        # A track that merges over locations reports '*' for its location, and takes
+        # the fallback — which is right, because a merged row can only exist when its
+        # members share a distance.
+        geometry = qt.station_geometry.get((nslc[0], nslc[1], nslc[2])) or qt.station_geometry.get(
+            (nslc[0], nslc[1])
+        )
         if geometry is None or geometry["dist_m"] is None:
             findings.append(
                 Finding(

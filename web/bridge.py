@@ -149,11 +149,19 @@ def _visible_traces() -> List[ptrace.Trace]:
     return out
 
 
-# Station coordinates (net, sta) -> (lat, lon, elevation) and the active event
+# Station coordinates -> (lat, lon, elevation, depth) and the active event
 # (lat, lon, depth_m, time), populated by the FDSN fetch helpers below. Used for
 # distance/azimuth sorting. The fetch itself runs here in Python (pyfetch over the
 # browser's network); URL building, parsing and geo math are all pyrocko/Python.
-_STATIONS: Dict[Tuple[str, str], Tuple[float, float, float]] = {}
+#
+# Keyed as snuffler keys it (`station_keys`, pile_viewer.py:1375): every station is
+# filed under both `(net, sta, loc)` and `(net, sta)`, and looked up in that order.
+# Co-located instruments differ in more than their location code — IU.ANMO's two
+# broadbands hang 145 m and 90 m down the same borehole — so a table with one entry
+# per station cannot say where either of them is. The two-element key stays because
+# it is snuffler's fallback for a trace whose location code no station file mentions,
+# and, as there, the last station added wins it.
+_STATIONS: Dict[Tuple[str, ...], Tuple[float, float, float, float]] = {}
 _ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
 # Moment tensor of the active (largest-magnitude) catalog event, if it has one.
 # Used as the reference for the marker table's Kagan-angle column.
@@ -633,34 +641,75 @@ def _dist_deg(alat: float, alon: float, blat: float, blon: float) -> float:
     return _dist_m(alat, alon, blat, blon) / od.earthradius_equator * od.r2d
 
 
-def _sort_distance(net: str, sta: str, distances_3d: bool) -> Optional[float]:
+def _station_at(net: str, sta: str, loc: str) -> Optional[Tuple[float, float, float, float]]:
+    """The station a trace belongs to, resolved as snuffler resolves it.
+
+    ``station_attrib`` (pile_viewer.py:1379) tries ``(net, sta, loc)`` first and falls
+    back to ``(net, sta)``, so a station file that names location codes places each
+    instrument exactly and one that omits them still places every trace of a station.
+    """
+    return _STATIONS.get((net, sta, loc)) or _STATIONS.get((net, sta))
+
+
+def _add_station(
+    net: str, sta: str, loc: str, lat: float, lon: float, elevation: float, depth: float
+) -> None:
+    """File a station under both of snuffler's keys (``add_stations``,
+    pile_viewer.py:1406), so lookups can be specific and still always resolve."""
+    entry = (float(lat), float(lon), float(elevation), float(depth))
+    _STATIONS[(net, sta, loc)] = entry
+    _STATIONS[(net, sta)] = entry
+
+
+def _stations_by_name() -> Dict[Tuple[str, str], Tuple[float, float, float, float]]:
+    """One entry per ``(net, sta)``, for the consumers that enumerate stations rather
+    than resolve a trace's own — the map, the distance table, cake, the seismosizer.
+
+    Every station sits in ``_STATIONS`` under two keys, so iterating it directly
+    would visit co-located instruments twice. These surfaces name a station without a
+    location code and cannot show more than one of them anyway; which one survives is
+    the same last-one-added that snuffler's own two-element key keeps.
+    """
+    return {(key[0], key[1]): value for key, value in _STATIONS.items() if len(key) == 2}
+
+
+def _sort_distance(net: str, sta: str, loc: str, distances_3d: bool) -> Optional[float]:
     """Distance from the active event to a station in metres.
 
-    Three-dimensional distance folds in the source depth and station elevation.
+    Three-dimensional distance folds in the source depth and the station's depth.
     ``None`` means there is no active event or no coordinates for the station.
     """
     if _ACTIVE_EVENT is None:
         return None
-    st = _STATIONS.get((net, sta))
+    st = _station_at(net, sta, loc)
     if st is None:
         return None
     elat, elon, edep, _et = _ACTIVE_EVENT
-    slat, slon, sele = st
+    slat, slon, _sele, sdep = st
     # Snuffler sorts on `Station.dist_m`, which is the spheroid distance itself, not
     # a degree value converted back with some radius.
     surface_m = _dist_m(elat, elon, slat, slon)
     if distances_3d:
-        return math.hypot(surface_m, float(edep) + float(sele))
+        # `event.depth - station.depth`, exactly as `set_event_relative_data` forms it
+        # (station.py:184). This is deliberately *not* the honest vertical leg: it
+        # takes the station's borehole depth and ignores its elevation, so a station
+        # 1.7 km up a mountain is measured as though it stood at sea level. The
+        # geometrically honest term is `event.depth + elevation - depth`, which
+        # snuffler does not compute — and parity with snuffler is what this port
+        # claims, so it is not ours to quietly correct here. Fixing it belongs
+        # upstream; doing it here would make every distance disagree with the Qt
+        # application the port is measured against.
+        return math.hypot(surface_m, float(edep) - float(sdep))
     return surface_m
 
 
-def _sort_annotation(net: str, sta: str, sort: str, distances_3d: bool) -> str:
+def _sort_annotation(net: str, sta: str, loc: str, sort: str, distances_3d: bool) -> str:
     """Track-label annotation naming the value the distance sort ordered by, so a
     surprising track order can be read off the tracks themselves. Stations without
     coordinates sort to the end, which looks arbitrary unless it is called out."""
     if sort != "distance" or _ACTIVE_EVENT is None:
         return ""
-    dist = _sort_distance(net, sta, distances_3d)
+    dist = _sort_distance(net, sta, loc, distances_3d)
     if dist is None:
         return "no coords"
     return "%.1f km" % (dist / 1000.0)
@@ -696,16 +745,16 @@ def _sort_order(
         # Stations without coordinates order last, which is what snuffler's
         # None-aware float subclasses do; a leading flag stands in for that here.
         def geokey(tr: ptrace.Trace) -> Tuple[Any, ...]:
-            net, sta = tr.nslc_id[0], tr.nslc_id[1]
-            st = _STATIONS.get((net, sta))
+            net, sta, loc = tr.nslc_id[0], tr.nslc_id[1], tr.nslc_id[2]
+            st = _station_at(net, sta, loc)
             if st is None:
                 return (1, 0.0, 0.0, namekey(tr))
-            slat, slon, _sele = st
+            slat, slon, _sele, _sdep = st
             if sort == "distance":
                 # Same helper the track annotation shows, so the order the tracks
                 # are in always matches the distance printed on them. It only
                 # returns None without coordinates, which this branch excluded.
-                return (0, _sort_distance(net, sta, distances_3d), 0.0, namekey(tr))
+                return (0, _sort_distance(net, sta, loc, distances_3d), 0.0, namekey(tr))
             if sort == "backazimuth":
                 return (0, float(od.azimuth(slat, slon, elat, elon)), 0.0, namekey(tr))
             # In azibazi's own (-180, 180] wrap, so the ring is cut where snuffler
@@ -721,7 +770,7 @@ def _sort_order(
             return (
                 0,
                 float(round((azi + 15.0) / 30.0)),
-                _sort_distance(net, sta, distances_3d),
+                _sort_distance(net, sta, loc, distances_3d),
                 namekey(tr),
             )
 
@@ -1108,16 +1157,55 @@ def _maybe_log_view_perf(
     )
 
 
+def _gather_sort_value(tr: ptrace.Trace, sort: str, distances_3d: bool) -> Tuple[Any, ...]:
+    """The sort-mode value snuffler prepends to a track's gather key.
+
+    ``set_gathering`` builds the key as ``ssort(tr) + <subsorted nslc>``
+    (pile_viewer.py:1741), so the value a geo sort orders by is *part of the row's
+    identity*, not just its position. Two traces the subsort would merge onto one
+    row are pulled apart whenever they disagree here — which is how a station whose
+    instruments sit at different depths comes apart under a 3D distance sort, having
+    tied under every other sort. Sorting by name prepends nothing (``lambda tr: ()``)
+    and nothing is ever split.
+
+    ``None`` for a trace with no station, matching the ``default_getter`` each geo
+    entry passes; traces that share that fate share a row, as they do in snuffler.
+    """
+    if sort not in ("distance", "azimuth", "azimuth_blocks", "backazimuth"):
+        return ()
+    net, sta, loc = tr.nslc_id[0], tr.nslc_id[1], tr.nslc_id[2]
+    st = _station_at(net, sta, loc)
+    if sort == "distance":
+        return (_sort_distance(net, sta, loc, distances_3d),)
+    if st is None:
+        return (None, None) if sort == "azimuth_blocks" else (None,)
+    from pyrocko import orthodrome as od
+
+    elat, elon = (_ACTIVE_EVENT or (0.0, 0.0, 0.0, 0.0))[:2]
+    slat, slon = st[0], st[1]
+    if sort == "backazimuth":
+        return (float(od.azimuth(slat, slon, elat, elon)),)
+    azi = float(od.azimuth(elat, elon, slat, slon))
+    if sort == "azimuth":
+        return (azi,)
+    return (float(round((azi + 15.0) / 30.0)), _sort_distance(net, sta, loc, distances_3d))
+
+
 def _gather_tracks(
-    traces: List[ptrace.Trace], subsort: str, visible_tmin: float, visible_tmax: float
+    traces: List[ptrace.Trace],
+    subsort: str,
+    visible_tmin: float,
+    visible_tmax: float,
+    sort: str = "name",
+    distances_3d: bool = False,
 ) -> List[List[Tuple[int, ptrace.Trace]]]:
     """Group traces into tracks the way snuffler gathers them.
 
-    Snuffler's stack is one row per *gather key* — the subsort permutation of the
-    nslc id (`set_gathering`) — and every segment of that channel is painted onto
-    that one row. Keying on the trace instead stacks a channel with a gap once per
-    segment, and scales each piece on its own; the two only agree on gapless data,
-    which is why it went unnoticed.
+    Snuffler's stack is one row per *gather key* — the sort value followed by the
+    subsort permutation of the nslc id (`set_gathering`) — and every segment of that
+    channel is painted onto that one row. Keying on the trace instead stacks a
+    channel with a gap once per segment, and scales each piece on its own; the two
+    only agree on gapless data, which is why it went unnoticed.
 
     Rows keep the order the sort put them in, taken from where each key first
     appears; within a row the segments run in time order. A row survives if any of
@@ -1125,12 +1213,13 @@ def _gather_tracks(
     case that drops it.
     """
     perm = _subsort_perm(subsort)
-    groups: Dict[Tuple[str, ...], List[Tuple[int, ptrace.Trace]]] = {}
+    groups: Dict[Tuple[Any, ...], List[Tuple[int, ptrace.Trace]]] = {}
     for index, tr in enumerate(traces):
         display_tmin, display_tmax = _display_time_span(tr)
         if display_tmax < visible_tmin or display_tmin > visible_tmax:
             continue
-        groups.setdefault(tuple(tr.nslc_id[i] for i in perm), []).append((index, tr))
+        key = _gather_sort_value(tr, sort, distances_3d) + tuple(tr.nslc_id[i] for i in perm)
+        groups.setdefault(key, []).append((index, tr))
     # Time order within a row, with the nslc id as a tiebreak: two traces can start at
     # the same instant when the row groups several channels together, and a stack that
     # reshuffles between identical requests is worse than either order.
@@ -1238,7 +1327,9 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     # they flattened the display to ymin=0, ymax=1.
     need_group_range = not fast_individual_minmax
     perm = _subsort_perm(subsort)
-    for members in _gather_tracks(work, subsort, visible_tmin, visible_tmax):
+    for members in _gather_tracks(
+        work, subsort, visible_tmin, visible_tmax, sort, bool(req.distances_3d)
+    ):
         wanted_tracks += 1
         head = members[0][1]
         # A row is named by what it groups on: an element the rows merge over drops
@@ -1249,7 +1340,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         # marker's own location has no data in the window.
         net, sta, loc, cha = (head.nslc_id[i] if i in perm else "*" for i in range(4))
         label = ".".join(head.nslc_id[i] for i in range(4) if i in perm)
-        annotation = _sort_annotation(net, sta, sort, bool(req.distances_3d))
+        # The head's own location, not the row identity's '*': a row that merges over
+        # locations still holds instruments at one distance, because the gather key
+        # carries that distance. Reading it off '*' would fall back to whichever
+        # location the station table filed last and mislabel one of the split rows.
+        annotation = _sort_annotation(
+            head.nslc_id[0], head.nslc_id[1], head.nslc_id[2], sort, bool(req.distances_3d)
+        )
         want_samples = track_offset <= view_idx < track_end
         if want_samples:
             sample_tracks += 1
@@ -1808,7 +1905,7 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
 
         elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
         for nsl, *_rest in stations:
-            st = _STATIONS.get((nsl[0], nsl[1]))
+            st = _station_at(nsl[0], nsl[1], nsl[2])
             if st is not None:
                 bazis[nsl] = float(od.azimuth(st[0], st[1], elat, elon))
 
@@ -1946,8 +2043,8 @@ def _fig_cake_rays(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
     allrays: List[Any] = []
     distances: List[float] = []
     zstop = 0.0
-    for _net, _sta, dist_deg, elev in _cake_stations():
-        rdepth = max(0.0, -float(elev)) if use_station_depth else 0.0
+    for _net, _sta, dist_deg, depth in _cake_stations():
+        rdepth = float(depth) if use_station_depth else 0.0
         allrays.extend(
             mod.arrivals(phases=wanted, distances=[dist_deg], zstart=edepth, zstop=rdepth)
         )
@@ -2112,9 +2209,11 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
 
     stations = []
     if _STATIONS:
-        for (net, sta), (slat, slon, sele) in _STATIONS.items():
+        for (net, sta), (slat, slon, sele, sdep) in _stations_by_name().items():
             stations.append(
-                model.Station(network=net, station=sta, lat=slat, lon=slon, elevation=sele)
+                model.Station(
+                    network=net, station=sta, lat=slat, lon=slon, elevation=sele, depth=sdep
+                )
             )
     else:  # snuffler's fallback: two symmetric synthetic stations
         for lat, lon in [(5.0, 0.0), (-5.0, 0.0)]:
@@ -2879,8 +2978,11 @@ def _set_active_event(req: data_pb2.SetActiveEventRequest) -> data_pb2.ActiveEve
         # Hand-made event marker: derive lat/lon from the marker's single station if
         # it is bound to one, else keep the previous active event's location (Qt).
         lat = lon = 0.0
-        if req.HasField("nslc") and (req.nslc.net, req.nslc.sta) in _STATIONS:
-            lat, lon, _elev = _STATIONS[(req.nslc.net, req.nslc.sta)]
+        bound = (
+            _station_at(req.nslc.net, req.nslc.sta, req.nslc.loc) if req.HasField("nslc") else None
+        )
+        if bound is not None:
+            lat, lon, _elev, _depth = bound
         elif _ACTIVE_EVENT is not None:
             lat, lon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
         ev = model.Event(time=float(req.t), lat=lat, lon=lon, depth=0.0)
@@ -2917,7 +3019,12 @@ def _station_url(req: data_pb2.StationRequest) -> str:
 
 def _parse_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse FDSN station 'text' format (#Net|Sta|Lat|Lon|Elev|Site|Start|End)
-    and remember coordinates for distance/azimuth sorting."""
+    and remember coordinates for distance/azimuth sorting.
+
+    Station-level text carries neither a location code nor a sensor depth, so every
+    channel of a station shares one position — which is all this format can say.
+    A StationXML fetch (``level=response``) resolves both.
+    """
     global _STATIONS
     n = 0
     for line in text.splitlines():
@@ -2928,7 +3035,7 @@ def _parse_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
         if len(c) < 5:
             continue
         try:
-            _STATIONS[(c[0], c[1])] = (float(c[2]), float(c[3]), float(c[4]))
+            _STATIONS[(c[0], c[1])] = (float(c[2]), float(c[3]), float(c[4]), 0.0)
             n += 1
         except Exception:
             pass
@@ -2964,10 +3071,14 @@ def _load_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
     n = 0
     for st in stations:
         try:
-            _STATIONS[(st.network, st.station)] = (
+            _add_station(
+                st.network,
+                st.station,
+                st.location,
                 float(st.lat),
                 float(st.lon),
                 float(st.elevation),
+                float(st.depth),
             )
             n += 1
         except Exception:  # noqa: BLE001 — skip malformed entries
@@ -2987,7 +3098,7 @@ def _station_distances_result() -> data_pb2.StationDistanceList:
     from pyrocko import orthodrome as od
 
     elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
-    for (net, sta), (slat, slon, _elev) in _STATIONS.items():
+    for (net, sta), (slat, slon, _elev, _depth) in _stations_by_name().items():
         entry = result.stations.add()
         entry.net = net
         entry.sta = sta
@@ -3096,10 +3207,14 @@ def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResul
     # the channel-derived position, epoch handling and all.
     for st in _STATIONXML.get_pyrocko_stations():
         try:
-            _STATIONS[(st.network, st.station)] = (
+            _add_station(
+                st.network,
+                st.station,
+                st.location,
                 float(st.lat),
                 float(st.lon),
                 float(st.elevation),
+                float(st.depth),
             )
         except Exception:  # noqa: BLE001 — skip malformed entries
             pass
@@ -3310,7 +3425,7 @@ def _map_data_result(plates: Optional[List[data_pb2.PlateBoundary]] = None) -> d
     """Station + event coordinates for the Map overlay (no network — reads what
     the FDSN fetches already loaded), plus optional plate boundaries."""
     msg = data_pb2.MapData()
-    for (net, sta), (lat, lon, _elev) in _STATIONS.items():
+    for (net, sta), (lat, lon, _elev, _depth) in _stations_by_name().items():
         station = msg.stations.add()
         station.label = "%s.%s" % (net, sta)
         station.lat = lat
@@ -3677,7 +3792,7 @@ def _cake_wanted_phases(cake: Any, names: List[str]) -> Tuple[List[Any], List[st
 
 
 def _cake_stations() -> List[Tuple[str, str, float, float]]:
-    """``(net, sta, dist_deg, elevation_m)`` for stations that have loaded traces.
+    """``(net, sta, dist_deg, depth_m)`` for stations that have loaded traces.
 
     Distances are great-circle degrees from the active event (which is what
     ``cake.arrivals`` wants). Requires ``_ACTIVE_EVENT`` + ``_STATIONS``.
@@ -3687,10 +3802,10 @@ def _cake_stations() -> List[Tuple[str, str, float, float]]:
     elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
     have = {(tr.nslc_id[0], tr.nslc_id[1]) for tr in _TRACES}
     out: List[Tuple[str, str, float, float]] = []
-    for (net, sta), (slat, slon, elev) in _STATIONS.items():
+    for (net, sta), (slat, slon, _elev, depth) in _stations_by_name().items():
         if have and (net, sta) not in have:
             continue
-        out.append((net, sta, _dist_deg(elat, elon, slat, slon), elev))
+        out.append((net, sta, _dist_deg(elat, elon, slat, slon), depth))
     return out
 
 
@@ -3722,12 +3837,12 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
     result = snuffling_pb2.SnufflingResult(show_window=True)
     lines = ["%-14s %-8s %12s %8s %8s" % ("station", "phase", "t-rel[s]", "inc[deg]", "tko[deg]")]
     nstations = 0
-    for net, sta, dist_deg, elev in _cake_stations():
+    for net, sta, dist_deg, depth in _cake_stations():
         nstations += 1
-        # _STATIONS stores elevation, not instrument depth; approximate a
-        # borehole depth from a negative elevation when the user opts in (Qt
-        # uses station.depth, which the web app does not track).
-        rdepth = max(0.0, -float(elev)) if use_station_depth else 0.0
+        # `station.depth`, which is what Qt's "Use station depth" means
+        # (cake_phase.py). This used to approximate a borehole from a negative
+        # elevation because the station table carried no depth; it does now.
+        rdepth = float(depth) if use_station_depth else 0.0
         rays = mod.arrivals(phases=wanted, distances=[dist_deg], zstart=edepth, zstop=rdepth)
         for ray in rays:
             name = ray.given_phase().name

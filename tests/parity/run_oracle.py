@@ -100,6 +100,10 @@ def run_scenario(
 
 def run(args: argparse.Namespace) -> int:
     corpus_build.verify()
+    # Before any scenario: the upstream behaviours the port copies on purpose. A pin
+    # bump that changes one of them would otherwise surface as a scattering of small
+    # numeric disagreements with nothing naming the cause.
+    qt_oracle.assert_upstream_geometry()
     register = gaps.Register.load()
 
     # An explicit selection names exactly what runs; the grid is selectable under

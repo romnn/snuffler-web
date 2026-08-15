@@ -97,11 +97,51 @@ class QtSnapshot:
     scales: Dict[Tuple[float, float], Tuple[float, float, float]] = field(default_factory=dict)
     # nslc -> the scaling-group key snuffler filed it under for this scenario.
     scaling_keys: Dict[NslcId, Any] = field(default_factory=dict)
-    # (net, sta) -> event-relative geometry, as `set_origin` computed it.
-    station_geometry: Dict[Tuple[str, str], Dict[str, Optional[float]]] = field(
+    # (net, sta, loc) and (net, sta) -> event-relative geometry, as `set_origin`
+    # computed it. Both of snuffler's station keys, because co-located instruments
+    # have their own positions and so their own distances.
+    station_geometry: Dict[Tuple[str, ...], Dict[str, Optional[float]]] = field(
         default_factory=dict
     )
     png: Optional[bytes] = None
+
+
+def assert_upstream_geometry() -> None:
+    """Fail if upstream stops computing the vertical leg the way the port copies it.
+
+    ``bridge._sort_distance`` mirrors ``Station.set_event_relative_data``, elevation
+    bug and all, because parity with the Qt application is what this suite measures —
+    see ``vertical-leg-follows-qt`` in ``known_gaps.toml``. The day pyrocko starts
+    folding in the elevation, that mirroring turns from parity into a divergence, and
+    the only symptom would be every distance sort disagreeing by tens of metres.
+
+    So the formula is asserted directly, on a station carrying *both* an elevation and
+    a borehole depth: the three candidate vertical legs give three different answers
+    there, and the check names which one upstream still uses. Doing it here rather
+    than through a scenario means a ``PYROCKO_REF`` bump trips it even if no corpus
+    station happens to have both.
+    """
+    station = model.Station(network="XX", station="CAL", lat=0.0, lon=0.0, elevation=1700.0)
+    station.depth = 145.0
+    event = model.Event(lat=0.0, lon=0.0, depth=50000.0)
+    station.set_event_relative_data(event, distance_3d=True)
+    # Co-located with the event, so the surface leg is zero and `dist_m` *is* the
+    # vertical leg — no geodesy in the way of the one term being asserted.
+    qt_leg = float(station.dist_m)
+    expected = abs(event.depth - station.depth)
+    if abs(qt_leg - expected) > 1e-6:
+        honest = abs(event.depth + station.elevation - station.depth)
+        which = (
+            "the honest elevation-aware term" if abs(qt_leg - honest) < 1e-6 else "something else"
+        )
+        raise SystemExit(
+            "upstream pyrocko changed the 3D vertical leg: "
+            f"set_event_relative_data gave {qt_leg:.1f} m where "
+            f"`event.depth - station.depth` is {expected:.1f} m ({which}).\n"
+            "web/bridge.py:_sort_distance deliberately mirrors the old formula — see "
+            "`vertical-leg-follows-qt` in tests/parity/known_gaps.toml. Follow upstream "
+            "there and retire that entry, or pin pyrocko back."
+        )
 
 
 _APP: Optional[qw.QApplication] = None
@@ -367,17 +407,21 @@ class QtViewer:
             png=_pixmap_png(pixmap) if want_png else None,
         )
 
-    def station_geometry(self) -> Dict[Tuple[str, str], Dict[str, Optional[float]]]:
-        """Copy out what ``set_origin`` computed, keyed the way the web keys it.
+    def station_geometry(self) -> Dict[Tuple[str, ...], Dict[str, Optional[float]]]:
+        """Copy out what ``set_origin`` computed, under both of snuffler's keys.
+
+        The viewer files every station under ``(net, sta, loc)`` *and* ``(net, sta)``
+        (``add_stations``, pile_viewer.py:1406) and resolves a trace against them in
+        that order, so both belong in the snapshot: the three-element key is the only
+        place a borehole sensor's own distance is recorded, and the two-element one is
+        the fallback for a trace whose location no station file names.
 
         Plain floats rather than the ``Station`` objects: the snapshot outlives the
         viewer, and nothing downstream should be reaching back into a closed widget.
         """
-        out: Dict[Tuple[str, str], Dict[str, Optional[float]]] = {}
+        out: Dict[Tuple[str, ...], Dict[str, Optional[float]]] = {}
         for key, station in self.view.stations.items():
-            if len(key) != 2:
-                continue
-            out[(key[0], key[1])] = {
+            out[tuple(key)] = {
                 "dist_m": None if station.dist_m is None else float(station.dist_m),
                 "azimuth": None if station.azimuth is None else float(station.azimuth),
                 "backazimuth": (

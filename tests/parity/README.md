@@ -40,11 +40,13 @@ deltat × length × passband over `_decon_freq_limits` against `PileViewer.get_f
 — the one pair whose docstring claims to be a copy. It runs with the full suite, or
 alone as `task test:parity -- decon-freq-limits`.
 
-The `eifel` scenarios are the same comparison at deployment scale: 1061 recorded
-traces over 354 real stations, sorted by distance with every track's printed
+The `eifel` and `bonin-2015-05-30-m7.8-multiloc` scenarios are the same comparison on
+recordings nobody generated: 1061 traces over 354 real stations at deployment
+scale, and 42 traces over six GSN stations that each record the same ground
+motion two or three times over. Both sort by distance with every track's printed
 "N.N km" label held against the metres Qt's own `set_origin` computed. Real
 integer counts survive the float32 bridge exactly, so their `max_rel_rms` is 0 —
-on that dataset *any* nonzero residual is a finding, not noise.
+on those datasets *any* nonzero residual is a finding, not noise.
 
 ### Reading a result
 
@@ -145,16 +147,31 @@ drift is never ignorable.
 | `multiloc` | co-located sensors: two location codes at a site, the second an order of magnitude quieter |
 | `oddrate` | 5 Hz, 7 Hz and 50 Hz in one pile: Nyquist clamping and mixed-rate selection |
 | `eifel` | real recordings: 354 stations, six networks, three rates, a yaml event catalog, per-network StationXML |
+| `bonin-2015-05-30-m7.8-multiloc` | real recordings: six GSN stations carrying one channel at two and three location codes |
 
 Only `demo` uses an RNG, and only because it has to be that dataset; everything else is
 analytic and stable under any numpy. The task targets pin numpy for the same reason.
 
-`eifel` is the one checked-in exception (`corpus/eifel/`, the bytes as the datacenter
-delivered them), because its value is exactly that no generator made it. On its first
-run it found what only a real deployment carries: a dead channel pinned at −2²³, which
-the web port scaled to a `[0, 1]` range that left the flatline outside its own track
-where snuffler centres it. The manifest still pins these files, so a locally edited
-copy fails the same way a drifted generator does.
+The last two are checked in rather than generated (the bytes as the datacenter
+delivered them), because their value is exactly that no generator made them. They live
+in [`examples/`](../../examples/) rather than here, because the app ships them too —
+`File ▸ Examples` fetches each as one bundle — so the bytes a student downloads are the
+bytes this suite holds both frontends to. Each records the queries it came from in its
+own `example.toml`: provenance, not a generator, since StationXML is stamped with its
+creation time and a re-fetch drifts the manifest deliberately. The manifest pins these
+files too, so a locally edited copy fails the same way.
+
+`eifel` is a deployment: on its first run it found what only one carries, a dead channel
+pinned at −2²³, which the web port scaled to a `[0, 1]` range that left the flatline
+outside its own track where snuffler centres it. `bonin-2015-05-30-m7.8-multiloc` is the opposite
+shape — six stations, chosen because each records the same ground motion two or three
+times over. Co-located sensors are the only data on which "Grouped by Location" means
+anything, and real ones bring what the synthetic `multiloc` cannot arrange: 20 Hz beside
+40 Hz on one row, gains an order of magnitude apart, a −515 000-count offset beside a
+partner at −628, and sensor depths that differ where the coordinates do not. That last
+one is what found the station table's missing per-location position — invisible under
+every sort but the 3D distance one, where the depth reaches the gather key and pulls a
+merged row apart.
 
 To rebuild after changing a generator: `python tests/parity/corpus/build.py --force
 --update-manifest`, and review the parity deltas in the same commit.
@@ -263,7 +280,7 @@ python tests/parity/run_scenarios.py --no-qt     # reuse the last Qt snapshots
 
 ```
 corpus/build.py     deterministic corpus + sha256 manifest
-corpus/eifel/       the checked-in real-world dataset
+(the checked-in real-world datasets live in ../../examples/, shared with the app)
 scenarios/*.toml    declarative scenarios, shared by tiers 1 and 3
 scenario.py         the scenario and dataset model both tiers read
 harness.py          process scaffolding: environment, import paths, colours

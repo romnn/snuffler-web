@@ -1,0 +1,14 @@
+name = "bonin-subsort-nscl"
+title = "Co-located GSN sensors on a track each"
+dataset = "bonin-2015-05-30-m7.8-multiloc"
+tiers = [1]
+
+# The ungrouped twin, and the only thing that makes the grouped scenario mean
+# anything: `nscl` and `nsc_l` order the same four codes the same way and differ only
+# in whether the location joins the track key. On real data the difference is 42 rows
+# against 18.
+[state]
+subsort = "nscl"
+
+[compare]
+reason = "one row per location, ordered channel-major, as the ungrouped twin"

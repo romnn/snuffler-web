@@ -4,10 +4,10 @@ dataset = "multi"
 tiers = [1]
 load = ["stations", "events"]
 
+# The synthetic stations carry an elevation and no borehole, which is exactly the case
+# that tells the two candidate vertical terms apart: snuffler's `event.depth -
+# station.depth` ignores the elevation this corpus has. Both sides ignore it now — see
+# `vertical-leg-follows-qt` in known_gaps.toml for why the port copies that.
 [state]
 sort = "distance"
 distances_3d = true
-
-[compare]
-expect_divergence = ["distance-3d-vertical"]
-reason = "the vertical term: Qt uses the station's borehole depth, the web its elevation"

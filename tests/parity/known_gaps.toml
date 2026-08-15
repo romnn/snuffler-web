@@ -144,32 +144,6 @@ this entry to cover `samples` as well.
 """
 
 [[numeric]]
-key = "distance-3d-vertical"
-bucket = "soft"
-todo = true
-checks = ["annotations"]
-# The entry's own claim, turned into a scope: the two formulas agree exactly for a
-# station at sea level with no borehole, so AAA may not diverge — only the three
-# stations with elevation or depth carry this difference.
-subjects.annotations = ["XM.BBB.*", "XM.CCC.*", "XM.DDD.*"]
-title = "3D distance combines a different vertical term"
-why = """
-Qt's `Station.set_event_relative_data` forms the vertical leg as
-`event.depth - station.depth` — the station's borehole depth, ignoring its elevation.
-`bridge._sort_distance` forms it as `event_depth + station_elevation`. The two agree
-only for a station at sea level with no borehole.
-
-Left as a divergence rather than a defect because neither formula is simply wrong:
-Qt's ignores a station 3 km up a mountain, the web's ignores a borehole sensor. Which
-one the port should follow is a call for whoever owns the behaviour, and this entry
-exists so that call gets made rather than defaulted into.
-
-Now the only thing separating the two sides' distances: the surface term agrees
-exactly since the web moved to the same spheroid measurement Qt uses, so this entry
-is what the `multi-distance-3d` annotations still diverge by, on its own.
-"""
-
-[[numeric]]
 key = "allow-downsampling-meaning"
 bucket = "soft"
 todo = true
@@ -325,6 +299,38 @@ reach the FFT path (`bridge.py:828`).
 
 The port already evaluates the same `MultiplyResponse`, so this is a pipeline shape to
 correct rather than capability to add.
+"""
+
+[[manual]]
+key = "vertical-leg-follows-qt"
+bucket = "hard"
+title = "The 3D vertical leg is snuffler's, which is not the honest one"
+enforce = "`qt_oracle.assert_upstream_geometry`, run before every tier-1 scenario: it computes `set_event_relative_data` on a station with both an elevation and a borehole depth and fails if upstream stops forming the vertical leg as `event.depth - station.depth`"
+why = """
+`Station.set_event_relative_data` forms the vertical leg as `event.depth -
+station.depth` (`station.py:184`) — the station's borehole depth, with its elevation
+dropped. A station 1.7 km up a mountain is measured as though it stood at sea level.
+The geometrically honest term is `event.depth + station.elevation - station.depth`,
+and snuffler does not write it.
+
+`bridge._sort_distance` now writes snuffler's version, deliberately. It used to write
+`event_depth + station_elevation` — the mirror-image mistake, dropping the borehole
+instead of the mountain — and the two disagreed by 11 to 119 m on the GSN stations of
+`bonin-grouped-distance-3d`. Neither was defensible as *correct*; the difference was
+which one this port is supposed to be. Parity with the Qt application is the claim
+this whole suite makes, so the port follows snuffler into the error rather than
+quietly diverging into a better answer nobody can check it against. Correcting the
+formula is upstream's to make, and the fix belongs there for every pyrocko user at
+once, not here for the browser build alone.
+
+This is signed off rather than open work, so nothing here is waiting on a decision.
+What it is waiting on is upstream *changing its mind*: the day pyrocko starts adding
+the elevation, this port silently becomes the wrong one, and every distance sort
+diverges by tens of metres with no test naming why. That is what `enforce` above
+guards. The canary asserts the upstream formula directly rather than inferring it
+from a scenario, so it fires on a `PYROCKO_REF` bump even if no scenario in the suite
+happens to hold a station with both an elevation and a borehole — and it fails by
+this key, pointing whoever bumped the pin at this paragraph.
 """
 
 # --8<-- tier 2 --8<--
@@ -2184,11 +2190,12 @@ Read as a list of specific divergences, not a summary — each is independently 
 Cake Phase omits the major-arc branch: Qt computes arrivals at the epicentral distance
 *and* at 360 degrees minus it (`cake_phase.py:144`), so PKP and SKS-type late arrivals
 appear; the web passes only the direct distance (`bridge.py:3543`). One extra element in
-a list. Its "Use station depth" also means different things — `station.depth` in Qt,
-`max(0, -elevation)` in the web (`bridge.py:3538`), the same elevation-versus-borehole
-confusion `distance-3d-vertical` records for the distance sort and should be decided
-alongside it. And Qt restricts to stations with data within an hour of the event where
-the web takes any station with any loaded trace.
+a list. "Use station depth" now means `station.depth` on both sides — it used to
+approximate a borehole as `max(0, -elevation)` here, because the station table carried
+no depth to read, and it does since the table went per-location. What remains is which
+stations get rays at all: Qt takes one per `Station` object, so a borehole and a surface
+sensor at one site are two, and restricts to stations with data within an hour of the
+event; the web takes one per `(net, sta)` with any loaded trace.
 
 STA/LTA: Qt renames detector traces into location `cg` keeping the channel and adds a
 `.SUM.cg.` mean trace (`stalta.py:190`); the web suffixes the channel with `-STALTA`,

@@ -1,0 +1,19 @@
+name = "bonin-grouped-scaling-common"
+title = "One amplitude scale for every track, over rows that hold several sensors"
+dataset = "bonin-2015-05-30-m7.8-multiloc"
+tiers = [1]
+
+# Grouping and a shared amplitude scale pull in opposite directions, and this dataset
+# is where that is visible. Snuffler projects per (track, scaling key), so merging two
+# locations onto one row does not merge their scales — but "Common" collapses the
+# scaling key to None, which asks every span in the stack to land on one range while
+# the spans within a row still differ by 20x in counts.
+#
+# The row that decides it is IU.COLA.BHZ: an STS-2 high-gain at 3.26e10 counts/(m/s)
+# beside a KS-54000 at 3.2e9, recording the same wavefield.
+[state]
+subsort = "nsc_l"
+scaling_group = "common"
+
+[compare]
+reason = "the group key collapses to None, so every span must land on one range no matter which row it is drawn in"
