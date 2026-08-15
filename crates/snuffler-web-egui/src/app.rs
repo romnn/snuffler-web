@@ -1273,7 +1273,7 @@ fn example_hover(example: &ExampleDataset) -> String {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    for item in &example.teaches {
+    for item in &example.characteristics {
         text.push_str("\n• ");
         text.push_str(item);
     }

@@ -221,7 +221,7 @@ message ExampleDataset {
   string slug = 1;
   string title = 2; // menu label
   string blurb = 3; // what the dataset is, shown before and after loading
-  repeated string teaches = 4; // what is unique about it, as characteristics of the recording
+  repeated string characteristics = 4; // what is unique about this recording
   string citation = 5; // whose data this is; real recordings have real owners
   string url = 6; // site-relative, resolved like every other bundled asset
   uint64 bytes = 7; // compressed size, so the menu can say what a click costs

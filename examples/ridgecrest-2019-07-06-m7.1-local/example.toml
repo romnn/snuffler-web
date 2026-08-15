@@ -1,27 +1,27 @@
-title = "Ridgecrest 2019 — an earthquake from close up"
+title = "Ridgecrest 2019 — a local earthquake"
 blurb = """
-Three minutes of the 2019-07-06 Ridgecrest Mw 7.1 across seven Southern California \
-Seismic Network stations between 5 and 89 km from the epicentre, at 100 samples per \
-second.
+Three minutes of the 2019-07-06 Ridgecrest Mw 7.1 on seven Southern California Seismic \
+Network strong-motion stations between 5 and 89 km from the epicentre, at 100 samples \
+per second.
 
-Everything else in this menu is teleseismic, where an earthquake is a wave that arrives. \
-Here it is a thing happening nearby. P reaches CI.CLC, 5 km away and on the fault, 0.67 s \
-after the origin, and CI.GSC at 89 km after 14.9 s — a moveout of about 6 km/s, the P \
-velocity of the crust, readable straight off the stack once it is sorted by distance. \
-The shaking then goes on for a minute and more, and the largest motion arrives well after \
-the first: what breaks buildings is not the first thing to arrive.
+At local distances the timescale is seconds rather than minutes. The first P onset \
+reaches CI.CLC, 5 km from the epicentre, 0.67 s after the catalogued origin, and CI.GSC \
+at 89 km after 14.9 s; sorted by distance, the onsets align with an apparent velocity \
+of about 6 km/s, consistent with crustal P. The strongest shaking arrives with the \
+S wave and later phases, well after the first onset, and continues for over a minute — \
+at this magnitude and range, the first motion and the peak motion are separated by \
+tens of seconds.
 
-These are accelerometers, and not by preference. At this range the broadband channels at \
-the same sites are far off scale — CI.GSC's peak at 4x10⁷ counts against its \
-accelerometer's 8x10⁴ — which is the point the Tohoku example makes, here as the reason \
-the dataset is what it is.
+The channels are accelerometers (HN). This close to a Mw 7.1, co-sited broadband \
+sensors are commonly driven off scale — the mechanism the Tohoku example isolates — so \
+the strong-motion channels are the reliable record of the largest amplitudes.
 """
-teaches = [
-  "a local earthquake: seconds, not minutes, and 100 Hz",
-  "P moveout at ~6 km/s across 5 to 89 km",
-  "strong shaking arriving long after the first onset",
-  "strong-motion records where broadbands are unusable",
-  "a local network close enough that distance order is the moveout",
+characteristics = [
+  "a local earthquake: onsets seconds apart, at 100 Hz",
+  "P moveout with an apparent velocity of about 6 km/s across 5 to 89 km",
+  "peak shaking arriving with the S wave and later phases, not the first onset",
+  "strong-motion (HN) channels where co-sited broadbands would clip",
+  "a distance sort that turns the stack into a record section",
 ]
 citation = """
 Southern California Seismic Network, operated by Caltech and the USGS (network CI, \

@@ -1,27 +1,30 @@
 title = "Bonin Islands 2015 — co-located sensors"
 blurb = """
-The 2015-05-30 Bonin Islands Mww 7.8 at 664 km depth — the deepest large earthquake on \
-record — recorded by six Global Seismographic Network stations, fifteen minutes from the \
-origin time.
+The 2015-05-30 Bonin Islands Mww 7.8, at 664 km depth among the deepest large \
+earthquakes ever recorded, on six Global Seismographic Network stations 56° to 104° \
+away: fifteen minutes covering the body-wave arrivals.
 
-Every station here runs more than one seismometer in the same place: a borehole or vault \
-instrument on location code 00 at 20 Hz, a second broadband on 10 at 40 Hz, and at KIP \
-and TUC a third on 60. This opens with the subsort already on "Network, Station, Channel \
-(by Location)", so 42 rows are drawn as 18 — each one every sensor at its site. Switch \
-back to "Network, Station, Location, Channel" to take them apart again.
+Every station here operates more than one broadband at the same site: one on location \
+code 00 sampled at 20 Hz, a second on 10 at 40 Hz, and at KIP and TUC a third on 60. \
+The dataset opens with the subsort on "Network, Station, Channel (by Location)", which \
+overlays co-located instruments so the 42 channels occupy 18 rows; "Network, Station, \
+Location, Channel" separates them again. Overlaid, the instruments record the same \
+waveform while differing by up to 20x in raw counts — which is what per-track amplitude \
+scaling is for, and what the instrument responses resolve by converting counts to \
+ground motion.
 
-The depth is what keeps it small. A 664 km source radiates almost no surface waves, so \
-the whole recording is the body-wave train: P, then the depth phases pP and sP about \
-three minutes behind it, arriving 9 to 13 minutes after the origin as the distance grows \
-from 56° at KIP to 104° at HRV.
+The depth shapes the seismogram. A source at 664 km excites surface waves only weakly, \
+so the record is dominated by body phases: P arrives 9 to 13 minutes after the origin \
+as the distance grows from 56° at KIP to 104° at HRV, followed about three minutes \
+later by the depth phases pP and sP — reflections from the surface above the source, \
+whose delay behind P is a direct measure of source depth.
 """
-teaches = [
-  "co-located sensors, two and three deep, on one row each",
+characteristics = [
+  "co-located sensors, two and three per site, overlaid on one row when grouped by location",
   "two sampling rates on one track, 20 Hz beside 40 Hz",
-  "amplitude scaling where sensors differ 20x in counts",
-  "distances that come from a real event catalogue",
-  "real instrument responses, so counts can become ground motion",
-  "depth phases: P, pP and sP from a 664 km source",
+  "instruments differing by up to 20x in counts, resolved by scaling and deconvolution",
+  "distance sort against a real event catalogue, 56° to 104°",
+  "depth phases pP and sP a few minutes behind P, from a 664 km source",
 ]
 citation = """
 Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU) and IRIS/IDA \

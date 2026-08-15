@@ -1,25 +1,35 @@
-title = "Eifel swarm 2023 — a dense deployment"
+title = "Eifel 2023 — a dense deployment"
 blurb = """
-Ninety seconds of the Eifel earthquake swarm, 2023-01-14, recorded by 354 stations \
-across six networks at 100, 125 and 200 Hz — a real temporary deployment rather than a \
-handful of permanent observatories.
+Ninety seconds of earthquakes at the Ochtendung Fault Zone in the East Eifel on \
+2023-01-14, recorded by 354 stations from six networks at 100, 125 and 200 Hz — a \
+temporary dense deployment rather than a set of permanent observatories.
 
-Three catalogued events fall inside the window (M2.1, M2.2 and M1.0, around 11 km deep), \
-so the same 90 seconds carries several ruptures at once. The catalogue beside it holds \
-717 events from the whole 2022-2023 sequence, which is what makes the distance sort and \
-the event navigation worth trying.
+The window sits at the start of a burst of small earthquakes: thirteen within forty \
+minutes, opening with an M2.1-M2.2 pair six seconds apart at about 11 km depth, the \
+rest M1.1 and below. Three of them fall inside these ninety seconds. The largest \
+events come first and the activity decays behind them — a mainshock-aftershock burst, \
+not one of the swarms the region also produces. What distinguishes the setting is \
+that it is an active volcanic field: Laacher See, 9 km away, last erupted about \
+13,000 years ago, and the Eifel still shows uplift, magmatic CO2 degassing and deep \
+low-frequency earthquakes beneath the volcano. How the fault-zone seismicity relates \
+to that system is the kind of question deployments like this one are fielded to \
+answer.
 
-This is the dataset for what scale actually feels like: pick a station and the stack is \
-1061 traces deep, so paging, sorting and filtering stop being instant and start being \
-decisions. It is also honest about real data — one channel sits dead at the digitizer \
-rail throughout.
+The scale is the characteristic. The catalogue delivered with the data holds 717 \
+events from the deployment's eleven months across the wider region, a realistic \
+population for the distance and azimuth sorts and the event navigation; the stack is \
+1061 traces deep, far more than one screen shows, so paging, sorting, filtering and \
+the ':' command line become the working method rather than conveniences. The data \
+also carries the defects of a real deployment: one channel sits at its digitizer \
+rail for the entire window.
 """
-teaches = [
-  "a real deployment: 354 stations, six networks, three sampling rates",
-  "a 1061-trace stack, far more than one screen holds",
-  "azimuthal coverage wide enough for azimuth order to mean something",
-  "several events inside one window",
-  "what a dead channel looks like next to live ones",
+characteristics = [
+  "a dense temporary deployment: 354 stations, six networks, three sampling rates",
+  "seismicity of an active volcanic field: the Ochtendung Fault Zone, 9 km from Laacher See",
+  "a 1061-trace stack, where paging, filtering and the ':' command line become the method",
+  "azimuthal coverage wide enough for the azimuth sort to be informative",
+  "several catalogued events inside one ninety-second window",
+  "a dead channel at the digitizer rail beside live ones",
 ]
 citation = """
 Eifel deployment networks 5X, 6E, 6X, 7X and 8X with the Bensberg Earthquake Network \

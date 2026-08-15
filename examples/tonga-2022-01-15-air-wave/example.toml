@@ -1,28 +1,30 @@
-title = "Tonga 2022 — a wave through the air"
+title = "Tonga 2022 — the atmospheric Lamb wave"
 blurb = """
 A day of the 2022-01-15 Hunga Tonga–Hunga Ha‘apai eruption on five Global Seismographic \
-Network stations between 829 and 17734 km away, each recording it twice: a seismometer \
-(LHZ) and, at the same site, a barometer (LDO).
+Network stations between 829 and 17734 km away, each with two co-sited instruments: a \
+seismometer (LHZ) and a barometer (LDO).
 
-The seismic part behaves the way the rest of this menu behaves. Surface waves peak seven \
-minutes after the origin at AFI and a hundred minutes after it at PAB in Spain — \
-kilometres per second, as always. Then, hours later, the barometers move. The eruption \
-put a pressure pulse into the atmosphere and it crossed the Pacific at the speed of \
-sound: the onset reaches AFI at 0.47 h, RAR at 1.19 h, KIP at 4.23 h, ANMO at 8.32 h and \
-PAB at 15.81 h. Those five points sit on a straight line of 306 m/s to within 27 km, \
-which is a wave you can watch cross a planet at walking-pace-times-a-thousand.
+The seismic records behave conventionally: surface waves peak at AFI about seven \
+minutes after the origin and at PAB in Spain after about a hundred, propagating at \
+kilometres per second. The pressure records carry the unusual signal. The eruption \
+excited an atmospheric Lamb wave — a pressure pulse guided along the Earth's surface, \
+travelling near the mean sound speed of the lower atmosphere. Its onset reaches AFI at \
+0.47 h, RAR at 1.19 h, KIP at 4.23 h, ANMO at 8.32 h and PAB at 15.81 h; a straight \
+line at 306 m/s fits all five onsets to within 27 km. Sorted by distance, the two \
+moveouts share the screen, three orders of magnitude apart in speed.
 
-PAB gets it twice. The pulse that travelled the other way round arrives at 19.83 h, \
-22341 km at 313 m/s, and it is not the weaker of the two: at 17734 km the wave is bigger \
-than at ANMO less than half as far, because a wave spreading over a sphere stops \
-spreading past the quarter point and converges again on the far side.
+PAB records the wave a second time: the pulse that left the source in the opposite \
+direction arrives along the major arc, 22341 km, at 19.83 h — 313 m/s again. The first \
+arrival at PAB (17734 km) is also larger than at ANMO at roughly half the distance. On \
+a sphere, geometric spreading weakens a wavefront only out to 90° from the source; \
+beyond that the front shortens again and the amplitude recovers toward the antipode.
 """
-teaches = [
-  "one source, two wavefields: ground at km/s, air at 306 m/s",
+characteristics = [
+  "one source in two media: seismic arrivals at km/s, an air wave at 306 m/s",
   "barometer channels (LDO) beside the seismometers at the same sites",
-  "a pressure onset that is a straight line from 829 to 17734 km",
-  "the same pulse reaching Spain the short way and the long way round",
-  "a day-long record whose events are hours apart",
+  "Lamb-wave onsets on a single straight line from 829 to 17734 km",
+  "the major-arc arrival at PAB, and amplitude recovering beyond 90°",
+  "a day-long window whose signals are hours apart, read with zoom and distance sort",
 ]
 citation = """
 Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU), distributed by \

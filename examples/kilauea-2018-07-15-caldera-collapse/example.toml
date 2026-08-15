@@ -1,28 +1,32 @@
-title = "Kīlauea 2018 — a caldera collapsing on schedule"
+title = "Kīlauea 2018 — caldera collapse"
 blurb = """
-One hour on 2018-07-15 at three stations around the Kīlauea summit, three components at \
-100 Hz, ending nineteen minutes after the caldera floor dropped again.
+One hour at three Hawaiian Volcano Observatory stations around the Kīlauea summit on \
+2018-07-15, three components at 100 Hz: forty-one minutes of precursory seismicity, a \
+caldera collapse event at 13:26:05, and nineteen minutes of the quiet that follows.
 
-The source is not a fault. Through the summer of 2018 the floor of Halema‘uma‘u subsided \
-in steps, and each step radiated as an earthquake: eleven of them between the 2nd and the \
-15th of July alone, every one Mw 5.2 or 5.3, all within a few kilometres of each other, \
-spaced 31 hours apart on average. An earthquake that repeats at the same size in the same \
-place is not something a fault does, and it is why this dataset is here.
+Through the summer of 2018 the floor of Halema‘uma‘u subsided in discrete steps as \
+magma drained from the summit reservoir, and each step radiated seismic waves. The \
+USGS catalogue lists eleven of these events between July 2 and July 15 alone, all \
+Mw 5.2 or 5.3, within a few kilometres of one another and 31 hours apart on average. \
+Tectonic sequences do not repeat at this magnitude with that regularity of size, \
+place and interval; the pattern reflects a caldera block dropping stepwise as pressure \
+rebuilt and released, not a fault accumulating strain over years.
 
-The 41 minutes before the collapse are full of small earthquakes — 28 STA/LTA triggers in \
-the hour at UWE, 17 of them beforehand — arriving in bursts rather than a ramp, with the \
-five-minute RMS swinging between 5500 and 102000 counts. The collapse itself, at 13:26:05, \
-puts 20.8 million counts peak to peak through UWE and brings WRM and SDH within a few \
-hundred counts of their 24-bit full scale. Then it stops: 5952 counts RMS over the next \
-five minutes. And then, over the following ten, 6887 and 9228. The next cycle has already \
-started.
+The forty-one minutes before the collapse hold dozens of small earthquakes arriving in \
+bursts — 28 STA/LTA triggers at UWE within the hour, 17 of them beforehand — with the \
+five-minute RMS varying between 5500 and 102000 counts. The collapse itself reaches \
+20.8 million counts peak to peak at UWE and brings WRM and SDH within a few hundred \
+counts of their digitizers' 24-bit range. Afterwards the seismicity drops sharply, to \
+5952 counts RMS over the next five minutes, then rebuilds at 6887 and 9228 over the \
+following ten as the next cycle's earthquakes begin. The density of small events makes \
+this a natural dataset for the STA/LTA trigger and the SeisBench phase picker.
 """
-teaches = [
-  "a volcanic source: a caldera floor dropping, not a fault slipping",
-  "an earthquake that repeats — same size, same place, every 31 hours",
-  "dozens of small events in one hour, for STA/LTA and the SeisBench picker",
-  "three components at 100 Hz on three stations a few kilometres apart",
-  "seismicity that stops dead at the collapse and starts rebuilding",
+characteristics = [
+  "a volcanic source: a caldera block dropping in steps, not tectonic faulting",
+  "a repeating sequence: Mw 5.2-5.3, the same place, 31 hours apart on average",
+  "dozens of small events in one hour, suited to STA/LTA and the SeisBench picker",
+  "three components at 100 Hz on stations a few kilometres apart",
+  "seismicity that stops abruptly at the collapse and rebuilds afterwards",
 ]
 citation = """
 Hawaiian Volcano Observatory Network (network HV, doi:10.7914/SN/HV), distributed by \

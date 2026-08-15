@@ -138,7 +138,7 @@ def build(out: Path, force: bool = False) -> List[Dict[str, Any]]:
             "slug": slug,
             "title": str(meta["title"]).strip(),
             "blurb": str(meta["blurb"]).strip(),
-            "teaches": [str(item) for item in meta.get("teaches", [])],
+            "characteristics": [str(item) for item in meta.get("characteristics", [])],
             "citation": str(meta.get("citation", "")).strip(),
             # The view that shows this dataset's point, applied on load. Only the
             # bundle carries it — the index describes what an example is, not how
@@ -154,7 +154,10 @@ def build(out: Path, force: bool = False) -> List[Dict[str, Any]]:
             changed = _write_if_changed(target, payload)
         index.append(
             {
-                **{key: entry[key] for key in ("slug", "title", "blurb", "teaches", "citation")},
+                **{
+                    key: entry[key]
+                    for key in ("slug", "title", "blurb", "characteristics", "citation")
+                },
                 "url": f"assets/examples/{slug}.zip",
                 "bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),

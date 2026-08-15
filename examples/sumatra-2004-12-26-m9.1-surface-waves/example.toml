@@ -1,26 +1,29 @@
-title = "Sumatra 2004 — surface waves going round"
+title = "Sumatra 2004 — multi-orbit surface waves"
 blurb = """
-Six hours of the 2004-12-26 Sumatra-Andaman Mw 9.1 on four Global Seismographic Network \
-stations between 86° and 136° away, sampled at 1 Hz.
+Six hours of the 2004-12-26 Sumatra-Andaman Mw 9.1 on four Global Seismographic \
+Network stations between 86° and 136° away, three components at 1 Hz (LH channels).
 
-This is the dataset for the other end of the spectrum. The channels are LH, one sample \
-per second, because the waves worth seeing here have periods of tens to hundreds of \
-seconds — and because six hours of 1 Hz is a megabyte where six hours of 20 Hz would be \
-twenty. The surface-wave train arrives around an hour after the origin and lasts tens of \
-minutes: not one arrival but a long ramp, the long periods first and the short ones \
-trailing, which is dispersion drawn directly.
+One sample per second suits this signal: the surface waves that dominate a great \
+earthquake at teleseismic distances carry periods of tens to hundreds of seconds, and \
+six hours of 1 Hz stays under a megabyte where 20 Hz would be twenty. The surface-wave \
+train arrives roughly an hour after the origin and is spread over tens of minutes, the \
+longer periods in front — group-velocity dispersion, visible directly in the \
+seismogram. In distance order the four stations form a record section, arrival times \
+growing down the screen.
 
-Then it comes back. The wave that travelled the other way around the planet arrives at \
-about a fifth of the first one's amplitude, and a third passage — once around the whole \
-Earth — is still there at under a tenth. Turn the gain up and read them off; they are \
-the reason a great earthquake is measured in hours, not seconds.
+The window is six hours long because of the later arrivals. The train that left the \
+source in the opposite direction arrives along the major arc (R2, in the naming used \
+for Rayleigh waves) at about a fifth of the first train's amplitude, and the direct \
+train returns after a full orbit as R3, below a tenth. Both become readable once the \
+gain is raised: surface waves from an earthquake of this size remain observable after \
+more than one passage around the Earth.
 """
-teaches = [
-  "long-period waves: LH at 1 Hz where a body wave needs 20",
-  "dispersion: the wavetrain spread over tens of minutes",
-  "surface waves returning the long way round, and again",
-  "arrivals an order of magnitude below the first, and hours later",
-  "four stations spread across 86° to 136°",
+characteristics = [
+  "long-period recording: LH channels at 1 Hz, matched to the signal band",
+  "group-velocity dispersion spreading the wavetrain over tens of minutes",
+  "multi-orbit surface waves: R2 along the major arc, R3 after a full orbit",
+  "late arrivals an order of magnitude below the first, where the gain control matters",
+  "four stations between 86° and 136°, in distance order",
 ]
 citation = """
 Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU) and IRIS/IDA \

@@ -3297,18 +3297,21 @@ def _bundle_about(manifest: Dict[str, Any]) -> Optional[data_pb2.BundleAbout]:
     files loads here, and one a user assembled has nothing to say about itself.
     """
     blurb = str(manifest.get("blurb", "")).strip()
-    teaches = [str(item) for item in manifest.get("teaches", []) if str(item).strip()]
+    characteristics = [
+        str(item) for item in manifest.get("characteristics", []) if str(item).strip()
+    ]
     citation = str(manifest.get("citation", "")).strip()
-    if not (blurb or teaches or citation):
+    if not (blurb or characteristics or citation):
         return None
     parts = []
     if blurb:
         parts.append(blurb)
-    if teaches:
+    if characteristics:
         # Not "what to try": these are the characteristics of the recording, and
         # the reason this dataset is in the menu rather than another one.
         parts.append(
-            "What is unique about this dataset:\n" + "\n".join("  • %s" % item for item in teaches)
+            "What is unique about this dataset:\n"
+            + "\n".join("  • %s" % item for item in characteristics)
         )
     if citation:
         parts.append("Data: %s" % citation)
@@ -3403,7 +3406,7 @@ async def _example_list() -> data_pb2.ExampleList:
             slug=str(entry.get("slug", "")),
             title=str(entry.get("title", "")),
             blurb=str(entry.get("blurb", "")),
-            teaches=[str(item) for item in entry.get("teaches", [])],
+            characteristics=[str(item) for item in entry.get("characteristics", [])],
             citation=str(entry.get("citation", "")),
             url=str(entry.get("url", "")),
             bytes=int(entry.get("bytes", 0)),

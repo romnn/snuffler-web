@@ -16,11 +16,11 @@ two jobs at once:
 | dataset | what it shows | bundle |
 | --- | --- | --- |
 | `bonin-2015-05-30-m7.8-multiloc` | six GSN stations each running two or three co-located sensors, 664 km deep source | 1.7 MB |
-| `tohoku-2011-03-11-m9.1-clipping` | one site, three instruments, and the sensitive one going off scale | 0.5 MB |
-| `sumatra-2004-12-26-m9.1-surface-waves` | six hours at 1 Hz: dispersion, and the wave coming back round | 0.8 MB |
+| `tohoku-2011-03-11-m9.1-clipping` | one site, three instruments: the broadband clips, the accelerometer stays on scale | 0.5 MB |
+| `sumatra-2004-12-26-m9.1-surface-waves` | six hours at 1 Hz: dispersion and multi-orbit surface waves (R2, R3) | 0.8 MB |
 | `ridgecrest-2019-07-06-m7.1-local` | a local earthquake at 100 Hz, 5 to 89 km away | 0.7 MB |
-| `tonga-2022-01-15-air-wave` | an eruption's pressure pulse crossing a planet at 306 m/s, on barometers | 1.4 MB |
-| `kilauea-2018-07-15-caldera-collapse` | a volcanic source that repeats: swarm, collapse, silence | 5.7 MB |
+| `tonga-2022-01-15-air-wave` | the eruption's atmospheric Lamb wave at 306 m/s, on co-sited barometers | 1.4 MB |
+| `kilauea-2018-07-15-caldera-collapse` | a caldera collapse event, with its precursory swarm and the quiet after | 5.7 MB |
 | `eifel` | a real deployment: 354 stations, six networks, three sampling rates | 20.0 MB |
 
 They are meant to differ from each other. Between them they cover teleseismic and
@@ -32,7 +32,7 @@ do not — so "load an example" is a real choice rather than a single canned dem
 
 ```
 <slug>/
-  example.toml     what it is, what it teaches, where the bytes came from
+  example.toml     what it is, its characteristics, where the bytes came from
   <slug>.mseed     waveforms
   catalog.yaml     pyrocko event catalogue
   meta/*.xml       StationXML, one file per network, response level
@@ -41,12 +41,15 @@ do not — so "load an example" is a real choice rather than a single canned dem
 `example.toml` describes the dataset; everything else *is* the dataset and goes into
 the bundle. Four of its tables matter:
 
-- `title`, `blurb`, `teaches`, `citation` — what the menu shows, and what the
-  `About this dataset` window shows once it is loaded. The blurb's first paragraph
-  is the menu tooltip. `teaches` is a list of *characteristics* — what is unique
-  about this recording — not a list of instructions: the window is headed "What is
-  unique about this dataset", and "Sort by Distance" does not answer that where
-  "distances from 86° to 136°" does.
+- `title`, `blurb`, `characteristics`, `citation` — what the menu shows, and what
+  the `About this dataset` window shows once it is loaded. The blurb's first
+  paragraph is the menu tooltip. `characteristics` is what is unique about this
+  recording, not a list of instructions: the window is headed "What is unique
+  about this dataset", and "Sort by Distance" does not answer that where
+  "distances from 86° to 136°" does. Naming the control that shows a
+  characteristic is welcome; the characteristic comes first. Keep the tone plain:
+  state what the data shows and why, in terms a student of geophysics can check,
+  and claim nothing the bytes in this directory cannot back.
 - `[state]` — the view to open in. An example exists to show something and the
   setting that shows it is part of the example: co-located sensors say nothing
   until `subsort = "nsc_l"` groups them onto one row. Only these bundles carry it;
@@ -84,8 +87,8 @@ downstream re-uploads.
 ## Adding one
 
 1. Write an `example.toml`: `[source]` for the queries, then `title`, `blurb`,
-   `teaches`, `citation`, and a `[state]` if the dataset has a view that makes its
-   point.
+   `characteristics`, `citation`, and a `[state]` if the dataset has a view that
+   makes its point.
 2. `uv run --no-project --python 3.12 --with numpy==2.4.3 --with ./sources/pyrocko
    python scripts/fetch-example.py <slug>`.
 3. **Check what you actually got**, and write the blurb from that rather than from

@@ -1,28 +1,30 @@
-title = "Tohoku 2011 — an instrument going off scale"
+title = "Tohoku 2011 — clipping and strong motion"
 blurb = """
-Ten minutes of the 2011-03-11 Tohoku Mww 9.1 at IU.MAJO (Matsushiro, Japan), 440 km \
-from the rupture, recorded three times over by instruments that disagree about what \
-happened.
+Ten minutes of the 2011-03-11 Tohoku Mww 9.1 at IU.MAJO (Matsushiro, Japan), about \
+440 km from the epicentre: one site recording the same shaking with two broadband \
+seismometers and an accelerometer.
 
-All three sensors sit at the same place. Location 00 is an STS-1 broadband, 10 an STS-2 \
-whose sensitivity is 5.43x higher, and 20 an EpiSensor accelerometer four orders of \
-magnitude coarser than either. Before the wave arrives the two broadbands keep the \
-ratio they must — around five, the ratio of their sensitivities. From 05:48 that ratio \
-falls to between 1.4 and 2.3 and stays low through the strongest shaking: the sensitive \
-instrument has stopped following the ground, so more ground motion no longer produces \
-proportionally more signal. Divide peak counts by sensitivity and the two disagree by a \
-factor of four and a half about the same wavefield, which co-located sensors cannot both \
-be right about.
+Location 00 is an STS-1 broadband, 10 an STS-2 with 5.43x its sensitivity, and 20 an \
+EpiSensor accelerometer, a far less sensitive instrument built to stay on scale during \
+strong shaking. Before the arrival the two broadbands differ by the ratio of their \
+sensitivities, about five, as co-located velocity sensors should. From about 05:48 the \
+ratio drops to between 1.4 and 2.3 and stays low through the strongest shaking: the \
+STS-2 is clipping, and its output no longer grows in proportion to the ground motion. \
+Scaled by their sensitivities, the two peak amplitudes differ by a factor of about 4.5 \
+for the same ground motion — the measurable signature of saturation.
 
-The accelerometer is the one still measuring, peaking at 0.13 m/s². This is why strong \
-motion is recorded on separate, deliberately insensitive instruments, and why "the trace \
-looks huge" and "the trace is usable" are different questions.
+The accelerometer stays within its range throughout, peaking near 0.13 m/s², and is \
+the usable record of the peak motion. This division of labour is why observatories \
+operate strong-motion instruments beside their broadbands. The dataset opens grouped \
+by location so the three instruments share rows, and with the responses loaded, \
+deconvolution converts each to its own physical unit: m/s for the broadbands, m/s² for \
+the accelerometer.
 """
-teaches = [
-  "what saturation looks like: amplitude that stops growing with the ground",
-  "why the same site carries a broadband and an accelerometer",
-  "co-located sensors as a cross-check on each other",
-  "responses for all three, so the same shaking reads in counts or in m/s",
+characteristics = [
+  "clipping: output that stops growing in proportion to the ground motion",
+  "why a broadband and an accelerometer share one site",
+  "co-located sensors as a cross-check, on one row when grouped by location",
+  "deconvolution to physical units: m/s for the broadbands, m/s² for the accelerometer",
   "100 Hz strong motion beside 20 and 40 Hz broadbands",
 ]
 citation = """
