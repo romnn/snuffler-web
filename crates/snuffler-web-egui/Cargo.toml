@@ -57,6 +57,11 @@ web-sys = { version = "0.3", features = [
     "WebSocket",
     # `?a11y=` flag parsing in `src/a11y.rs`.
     "Location",
+    # `?example=` deep links in `src/deep_link.rs`: read the slug, and rewrite the
+    # address bar to the link that reproduces what is loaded.
+    "Url",
+    "UrlSearchParams",
+    "History",
 ] }
 console_error_panic_hook = "0.1"
 png = "0.18"

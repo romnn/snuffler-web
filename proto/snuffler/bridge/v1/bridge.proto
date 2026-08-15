@@ -71,6 +71,8 @@ message BridgeResult {
     FigureResult figure = 11; // renderFigure (a real pyrocko/matplotlib figure as PNG)
     StationDistanceList station_distances = 12; // stationDistances
     ActiveEventResult active_event = 13; // setActiveEvent
+    ExampleList examples = 14; // listExamples
+    BundleResult bundle = 15; // loadBundle (a scene plus the metadata that came with it)
   }
 }
 
@@ -98,6 +100,8 @@ service BridgeService {
   rpc EmptyScene(Empty) returns (SceneMeta);
   rpc LoadBytes(LoadBytesRequest) returns (SceneMeta);
   rpc LoadUrl(LoadUrlRequest) returns (SceneMeta);
+  rpc ListExamples(Empty) returns (ExampleList);
+  rpc LoadBundle(LoadBundleRequest) returns (BundleResult);
   rpc IngestMiniSeed(IngestMiniSeedRequest) returns (SceneMeta);
   rpc GetView(ViewParams) returns (ViewMeta); // + out-of-band ys buffer
   rpc RenderFigure(FigureRequest) returns (FigureResult); // a real pyrocko/matplotlib figure, PNG

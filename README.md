@@ -10,7 +10,9 @@ We give snuffler a new outfit without touching its brain.
 > wiggle display **and a waterfall/spectrogram view**, adaptive time axis, NSLC
 > labels, highpass/lowpass/gain, **component rotation**, scaling & sorting,
 > pan/zoom, markers, an **amplitude-spectrum snuffling**, **light/dark/system
-> themes**, and a progress-bar loading screen.
+> themes**, and a progress-bar loading screen. **`File ▸ Examples`** loads real
+> recorded datasets on demand — each one a link you can hand out
+> (`?example=<slug>`), see [`examples/`](examples/).
 
 ## Two frontends
 
@@ -93,6 +95,7 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
 | `web/bridge_worker.js` | Pyodide boot, wheel install, protobuf RPC, buffer transfer |
 | `web/bridge.py` | type-checked pyrocko shim (`make_example`, `load_bytes`, `get_view`) |
 | `proto/` | protobuf schema for the Rust/Python bridge |
+| `examples/` | real recorded datasets: `File ▸ Examples` fetches each as one bundle, and the parity suite measures against the same bytes |
 | `crates/snuffler-web-core/` | shared session state and Pyodide bridge |
 | `crates/snuffler-web-render/` | toolkit-neutral drawing and SVG backend |
 | `crates/snuffler-web-egui/` | egui frontend, Trunk entry point, and frontend assets |

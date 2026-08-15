@@ -112,6 +112,20 @@ DATASETS: Dict[str, Dataset] = {
             "eifel/meta/BQ.NAST.xml",
         ),
     ),
+    # The GSN recording the 2015-05-30 Bonin Islands Mww 7.8 at 664 km depth: six
+    # stations that carry the same channel at two or three location codes, which is
+    # the one shape "Grouped by Location" can be observed on. Real co-location brings
+    # what the synthetic `multiloc` cannot — 20 Hz beside 40 Hz on one row, gains an
+    # order of magnitude apart, sensor depths that differ where the coordinates do
+    # not. Checked in rather than generated, for the same reason `eifel` is.
+    "bonin-2015-05-30-m7.8-multiloc": Dataset(
+        waveforms="bonin-2015-05-30-m7.8-multiloc/bonin-2015-05-30-m7.8-multiloc.mseed",
+        events="bonin-2015-05-30-m7.8-multiloc/catalog.yaml",
+        responses=(
+            "bonin-2015-05-30-m7.8-multiloc/meta/II.xml",
+            "bonin-2015-05-30-m7.8-multiloc/meta/IU.xml",
+        ),
+    ),
 }
 
 

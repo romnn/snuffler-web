@@ -1,0 +1,45 @@
+title = "Sumatra 2004 — surface waves going round"
+blurb = """
+Six hours of the 2004-12-26 Sumatra-Andaman Mw 9.1 on four Global Seismographic Network \
+stations between 86° and 136° away, sampled at 1 Hz.
+
+This is the dataset for the other end of the spectrum. The channels are LH, one sample \
+per second, because the waves worth seeing here have periods of tens to hundreds of \
+seconds — and because six hours of 1 Hz is a megabyte where six hours of 20 Hz would be \
+twenty. The surface-wave train arrives around an hour after the origin and lasts tens of \
+minutes: not one arrival but a long ramp, the long periods first and the short ones \
+trailing, which is dispersion drawn directly.
+
+Then it comes back. The wave that travelled the other way around the planet arrives at \
+about a fifth of the first one's amplitude, and a third passage — once around the whole \
+Earth — is still there at under a tenth. Turn the gain up and read them off; they are \
+the reason a great earthquake is measured in hours, not seconds.
+"""
+teaches = [
+  "long-period waves: LH at 1 Hz where a body wave needs 20",
+  "dispersion: the wavetrain spread over tens of minutes",
+  "surface waves returning the long way round, and again",
+  "Gain, for arrivals an order of magnitude below the first",
+  "Sort by Distance across 86° to 136°",
+]
+citation = """
+Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU) and IRIS/IDA \
+network II (doi:10.7914/SN/II), distributed by EarthScope; openly licensed. Event origin \
+from the USGS (usp000dbed).
+"""
+
+# Distance order, so the arrival time growing with distance is the shape of the
+# stack rather than something to work out station by station.
+[state]
+sort = "distance"
+
+[source]
+datacenter = "https://service.earthscope.org/fdsnws"
+networks = ["IU", "II"]
+stations = "ANMO,HRV,KIP,BFO"
+# HRV wrote an empty location code in 2004, where the others use 00.
+locations = "00,--"
+channels = "LH?"
+start = "2004-12-26T00:58:00"
+end = "2004-12-26T06:58:00"
+event_id = "usp000dbed"

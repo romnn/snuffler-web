@@ -11,6 +11,7 @@ import {
 } from "./proto/snuffler/bridge/v1/bridge_pb.js";
 import {
   AddCakeModelRequestSchema,
+  LoadBundleRequestSchema,
   LoadBytesRequestSchema,
   LoadEventsRequestSchema,
   LoadMarkersRequestSchema,
@@ -270,17 +271,40 @@ function resultText(env: Uint8Array): string {
   throw new Error(`unexpected bridge result: ${r.result.case}`);
 }
 
+// The rpcs that mean the app is up and the splash can go: whatever put the first
+// scene there, plus the example index, which is the first thing a `?example=` link
+// asks for and the one that reports a slug nobody has. Typed against the generated
+// ids, so renaming an rpc is a tsc error rather than a splash that never clears.
+let bootOverlayDone = false;
+const BOOT_DONE_METHODS: BridgeMethodId[] = [
+  BridgeMethod.makeExample,
+  BridgeMethod.loadBundle,
+  BridgeMethod.loadUrl,
+  BridgeMethod.loadBytes,
+  BridgeMethod.listExamples,
+];
+
 // The single transport seam Rust (src/bridge.rs) calls for every unary proto rpc:
 // forward (method, request) to the worker and return the BridgeResult envelope
 // bytes plus the optional out-of-band zero-copy ys buffer. The worker is a dumb
 // relay; bridge.py runs the rpc. The DOM-only browser glue keeps its own exports
 // below.
 export async function call(method: BridgeMethodId, request, data) {
-  const out = await rpcBufferResult(method, { request, data });
-  // Complete the loading overlay once the first scene (the synthetic example,
-  // the first call after boot) is in; the boot sequence stops at 0.97. Typed
-  // compare against the generated id so a rename of MakeExample is a tsc error.
-  if (method === BridgeMethod.makeExample) prog(1.0, "Ready");
+  let out;
+  try {
+    out = await rpcBufferResult(method, { request, data });
+  } finally {
+    // Complete the loading overlay once the first post-boot work has settled; the
+    // boot sequence itself stops at 0.97. Not just the synthetic example: an app
+    // opened on `?example=<slug>` loads a bundle instead, and keying the splash on
+    // one rpc left it up at 97% forever with the waveforms drawn underneath.
+    // In `finally`, because a load that *failed* must reveal the app too — the
+    // error it produced is in the status line behind the splash.
+    if (!bootOverlayDone && BOOT_DONE_METHODS.includes(method)) {
+      bootOverlayDone = true;
+      prog(1.0, "Ready");
+    }
+  }
   // After the FIRST view, not the first scene: the scene is only data, the view is
   // what gets painted, and warming ahead of it just moves the wait in front of the
   // frame the user is waiting for.
@@ -376,6 +400,27 @@ async function loadSource(name: string, data: Uint8Array, append: boolean, sourc
   return rpcBytes(rpc("loadBytes"), { request });
 }
 
+// A picked file may be a whole dataset rather than one waveform file. Zips go to
+// LoadBundle, which loads every member and returns the station/event results
+// alongside the scene; everything else keeps the plain per-file path and is
+// wrapped so `openFiles` has one return type either way.
+const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04];
+
+function isZip(data: Uint8Array) {
+  return data.length >= 4 && ZIP_MAGIC.every((byte, i) => data[i] === byte);
+}
+
+async function loadOne(name: string, data: Uint8Array, append: boolean, sourceId: string) {
+  if (isZip(data)) {
+    const request = toBinary(
+      LoadBundleRequestSchema,
+      create(LoadBundleRequestSchema, { name, content: data })
+    );
+    return rpcBytes(rpc("loadBundle"), { request });
+  }
+  return loadSource(name, data, append, sourceId);
+}
+
 export async function openFiles() {
   // Prefer showOpenFilePicker (Chromium): it yields re-readable handles so the
   // files can later be reloaded from disk. Fall back to a hidden <input> (File
@@ -387,24 +432,24 @@ export async function openFiles() {
     } catch {
       return new Uint8Array(0); // user cancelled
     }
-    let scene = new Uint8Array(0);
+    let result = new Uint8Array(0);
     for (const handle of handles) {
       const f = await handle.getFile();
       const data = new Uint8Array(await f.arrayBuffer());
       const sourceId = `src${_sourceCounter++}`;
       _openSources.set(sourceId, { handle, mtime: f.lastModified });
-      scene = await loadSource(f.name, data, true, sourceId);
+      result = await loadOne(f.name, data, true, sourceId);
     }
-    return scene;
+    return result;
   }
   const files = await pickFiles(true);
   if (files.length === 0) return new Uint8Array(0);
-  let scene = new Uint8Array(0);
+  let result = new Uint8Array(0);
   for (const f of files) {
     const data = new Uint8Array(await f.arrayBuffer());
-    scene = await loadSource(f.name, data, true, "");
+    result = await loadOne(f.name, data, true, "");
   }
-  return scene;
+  return result;
 }
 
 const WAVEFORM_EXT = /\.(mseed|msd|mss|seed|sac|gcf|datacube|kan|yaff|pyrocko)$/i;

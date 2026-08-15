@@ -50,6 +50,25 @@ mod wasm {
         }
     }
 
+    /// A file load that may have been a whole dataset.
+    ///
+    /// `openFiles` picks the rpc from the bytes it read — a zip is a bundle and
+    /// everything else is a waveform file — so the response is one of two envelope
+    /// variants. Both carry a scene; only a bundle also carries the station and
+    /// event results, which the caller applies exactly as a metadata load would.
+    pub fn scene_or_bundle_from_bytes(
+        bytes: &[u8],
+        what: &str,
+    ) -> Result<(pb::SceneMeta, Option<pb::SnufflingResult>), String> {
+        match bridge_oneof(bytes, what)? {
+            pb::bridge_result::Result::Scene(scene) => Ok((scene, None)),
+            pb::bridge_result::Result::Bundle(bundle) => {
+                Ok((bundle.scene.unwrap_or_default(), bundle.info))
+            }
+            _ => Err(unexpected(what)),
+        }
+    }
+
     pub fn markers_from_bytes(bytes: &[u8], what: &str) -> Result<pb::SnufMarkerList, String> {
         match bridge_oneof(bytes, what)? {
             pb::bridge_result::Result::Markers(m) => Ok(m),

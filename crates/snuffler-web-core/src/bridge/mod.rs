@@ -23,13 +23,17 @@ mod proto;
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    CakeSnufflingParams, CatalogRequest, CommandRequest, FigureRequest, IngestMiniSeedRequest,
-    MapData, MarkerFile, MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams,
-    RmsSnufflingParams, SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams,
-    SetActiveEventRequest, SnufflingParams, SnufflingRequestParams, SnufflingResult,
-    SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest,
-    ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
+    BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, ExampleDataset, FigureRequest,
+    IngestMiniSeedRequest, MapData, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
+    PolarizationSnufflingParams, RmsSnufflingParams, SceneMeta, SeisbenchSnufflingParams,
+    SeismosizerSnufflingParams, SetActiveEventRequest, SnufflingParams, SnufflingRequestParams,
+    SnufflingResult, SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams,
+    StationRequest, ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
+
+/// Local-file header of a zip archive, which is how a dataset bundle is
+/// recognized wherever one can arrive.
+const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
 /// Visible live waveform window once enough samples have arrived.
 pub const LIVE_FOLLOW_SECONDS: f64 = 300.0;
@@ -221,6 +225,15 @@ struct Inner {
     /// to close itself or show the error.
     command_outcome: Option<CommandOutcome>,
     live_seedlink_started_at: Option<f64>,
+    /// The datasets `File ▸ Examples` offers, fetched the first time that menu is
+    /// opened rather than compiled in — so a deployment can gain an example
+    /// without a new wasm build. `None` until it has been asked for.
+    examples: Option<Result<Vec<ExampleDataset>, String>>,
+    examples_in_flight: bool,
+    /// The view a just-loaded bundle asked for, for the frontend to apply — the
+    /// bridge does not own the sort state, so it parks it here the way a fetched
+    /// cake model waits in `pending_cake_model`.
+    pending_view: Option<BundleView>,
 }
 
 /// Schedules frontend redraws after asynchronous bridge work completes.
@@ -274,6 +287,15 @@ impl Bridge {
     #[must_use]
     pub fn status(&self) -> Status {
         self.inner.borrow().status.clone()
+    }
+
+    /// The example datasets on offer, or why they could not be listed.
+    ///
+    /// `None` means the index has not been fetched yet, which is what the menu
+    /// shows as "Loading…" while [`Bridge::list_examples`] is in flight.
+    #[must_use]
+    pub fn examples(&self) -> Option<Result<Vec<ExampleDataset>, String>> {
+        self.inner.borrow().examples.clone()
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -416,6 +438,12 @@ impl Bridge {
     #[must_use]
     pub fn take_pending_cake_model(&self) -> Option<String> {
         self.inner.borrow_mut().pending_cake_model.take()
+    }
+
+    /// Takes the view a just-loaded bundle asked to be opened in, if it asked.
+    #[must_use]
+    pub fn take_pending_view(&self) -> Option<BundleView> {
+        self.inner.borrow_mut().pending_view.take()
     }
 
     /// Returns the latest station and event coordinates for the map.
@@ -1251,6 +1279,13 @@ mod web {
 
         /// Replaces the current pile with waveform bytes supplied by the frontend.
         pub fn load_file(&self, name: String, data: Vec<u8>, fmt: String) {
+            // A dropped file may be a whole dataset. Deciding on the bytes rather
+            // than the extension means a bundle behaves the same however it arrives
+            // — dropped, picked, or fetched from the Examples menu.
+            if data.starts_with(ZIP_MAGIC) {
+                self.load_bundle_bytes(name, data);
+                return;
+            }
             let repaint = self.repaint.clone();
             self.inner.borrow_mut().status = Status::Loading(format!("Loading {name}…"));
             let inner = self.inner.clone();
@@ -1297,6 +1332,126 @@ mod web {
                             i.scene_gen += 1;
                             i.status = Status::Ready;
                             clear_view(&mut i);
+                        }
+                        Err(e) => i.status = Status::Error(e),
+                    }
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// Fetch the example index, once.
+        ///
+        /// The menu calls this on every frame it is open, so "once" has to mean
+        /// once: a *failed* fetch is remembered too, or a datacenter that is down
+        /// would be retried at the frame rate. `force` is the user asking again,
+        /// from the retry the menu offers in its place.
+        pub fn list_examples(&self, force: bool) {
+            {
+                let mut i = self.inner.borrow_mut();
+                if i.examples_in_flight || (i.examples.is_some() && !force) {
+                    return;
+                }
+                i.examples_in_flight = true;
+            }
+            let repaint = self.repaint.clone();
+            let inner = self.inner.clone();
+            spawn_local(async move {
+                let parsed = client().list_examples().await;
+                {
+                    let mut i = inner.borrow_mut();
+                    i.examples_in_flight = false;
+                    i.examples = Some(parsed.map(|list| list.examples));
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// Replaces the current pile with a whole dataset fetched as one archive:
+        /// waveforms, station metadata and an event catalogue in a single request.
+        ///
+        /// The station and event results come back with the scene and are applied
+        /// through the same path a separate metadata load would use, so the event
+        /// markers appear exactly as if the catalogue had been opened by hand.
+        pub fn load_bundle(&self, url: String, sha256: String, title: String) {
+            let request = pb::LoadBundleRequest {
+                url,
+                sha256,
+                content: Vec::new(),
+                name: title.clone(),
+            };
+            self.dispatch_bundle(request, title);
+        }
+
+        /// Load an example by slug, fetching the index first if it has not been
+        /// read yet. This is what `?example=<slug>` resolves to: a link someone can
+        /// hand out that opens the app on a named dataset.
+        ///
+        /// An unknown slug is an error the user has to see — they followed a link
+        /// that promised data — so it lands in the status line rather than only in
+        /// the console.
+        pub fn open_example(&self, slug: String) {
+            let bridge = self.clone();
+            self.inner.borrow_mut().status = Status::Loading(format!("Looking up {slug}…"));
+            let repaint = self.repaint.clone();
+            spawn_local(async move {
+                let known = bridge.inner.borrow().examples.clone();
+                let listed = match known {
+                    Some(Ok(examples)) => Ok(examples),
+                    _ => client().list_examples().await.map(|list| list.examples),
+                };
+                match listed {
+                    Ok(examples) => {
+                        let found = examples.iter().find(|e| e.slug == slug).cloned();
+                        bridge.inner.borrow_mut().examples = Some(Ok(examples));
+                        match found {
+                            Some(example) => {
+                                bridge.load_bundle(example.url, example.sha256, example.title)
+                            }
+                            None => {
+                                bridge.inner.borrow_mut().status =
+                                    Status::Error(format!("no example dataset called {slug:?}"));
+                            }
+                        }
+                    }
+                    Err(error) => bridge.inner.borrow_mut().status = Status::Error(error),
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// The same load for an archive that is already in hand — dropped on the
+        /// window, or picked from disk — rather than fetched.
+        pub(super) fn load_bundle_bytes(&self, name: String, data: Vec<u8>) {
+            let request = pb::LoadBundleRequest {
+                url: String::new(),
+                sha256: String::new(),
+                content: data,
+                name: name.clone(),
+            };
+            self.dispatch_bundle(request, name);
+        }
+
+        fn dispatch_bundle(&self, request: pb::LoadBundleRequest, label: String) {
+            let repaint = self.repaint.clone();
+            self.inner.borrow_mut().status = Status::Loading(format!("Loading {label}…"));
+            let inner = self.inner.clone();
+            let repaint = repaint.clone();
+            spawn_local(async move {
+                let parsed = client().load_bundle(request).await;
+                {
+                    let mut i = inner.borrow_mut();
+                    match parsed {
+                        Ok(bundle) => {
+                            i.scene = Some(bundle.scene.unwrap_or_default());
+                            i.scene_gen += 1;
+                            i.status = Status::Ready;
+                            clear_view(&mut i);
+                            i.pending_view = bundle.view;
+                            if let Some(info) = bundle.info {
+                                i.snuffling = Some(info);
+                                i.snuffling_gen += 1;
+                            }
                         }
                         Err(e) => i.status = Status::Error(e),
                     }
@@ -1723,15 +1878,24 @@ mod web {
                     match res {
                         Ok(v) => match js_bytes(v, "open_files") {
                             Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => match proto::scene_from_bytes(&bytes, "open_files") {
-                                Ok(scene) => {
-                                    i.scene = Some(scene);
-                                    i.scene_gen += 1;
-                                    i.status = Status::Ready;
-                                    clear_view(&mut i);
+                            Ok(bytes) => {
+                                match proto::scene_or_bundle_from_bytes(&bytes, "open_files") {
+                                    Ok((scene, info)) => {
+                                        i.scene = Some(scene);
+                                        i.scene_gen += 1;
+                                        i.status = Status::Ready;
+                                        clear_view(&mut i);
+                                        // A picked bundle also loaded stations and
+                                        // events; its markers reach the app the
+                                        // same way `load_events` delivers them.
+                                        if let Some(info) = info {
+                                            i.snuffling = Some(info);
+                                            i.snuffling_gen += 1;
+                                        }
+                                    }
+                                    Err(e) => i.status = Status::Error(e),
                                 }
-                                Err(e) => i.status = Status::Error(e),
-                            },
+                            }
                             Err(e) => i.status = Status::Error(e),
                         },
                         Err(e) => i.status = Status::Error(jsval_to_string(e)),

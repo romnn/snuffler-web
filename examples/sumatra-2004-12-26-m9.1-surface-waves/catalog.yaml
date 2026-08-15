@@ -1,0 +1,11 @@
+%YAML 1.1
+--- !pf.Event
+lat: 3.295
+lon: 95.982
+time: '2004-12-26 00:58:53.450000048'
+depth: 30000.0
+name: 'usp000dbed'
+magnitude: 9.1
+magnitude_type: 'mw'
+region: '2004 Sumatra - Andaman Islands Earthquake'
+catalog: 'USGS'

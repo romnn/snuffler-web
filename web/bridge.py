@@ -3113,6 +3113,157 @@ def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResul
     )
 
 
+# One archive carrying a whole dataset — waveforms, station metadata and an event
+# catalogue as the datacenter delivered them. `File ▸ Examples` fetches these, but
+# nothing below is specific to the ones this app ships: members are dispatched by
+# what they are, so a zip someone assembled by hand loads exactly the same way. That
+# is the point of using a zip at all — a dataset is never one file, and handing out
+# one file is the difference between a teaching aid and a set of instructions.
+_ZIP_MAGIC = b"PK\x03\x04"
+
+# What the shipped bundles carry so a downloaded copy still says what it is.
+_BUNDLE_MANIFEST = "snuffler.json"
+
+# Prose a bundle may carry beside its data, which no loader wants.
+_BUNDLE_SKIP_SUFFIXES = (".json", ".md", ".txt", ".py", ".cfg", ".toml")
+
+
+def _bundle_role(name: str, payload: bytes) -> str:
+    """Which loader a bundle member belongs to, decided by its name and — where the
+    name is ambiguous — by its first bytes.
+
+    Waveforms are the default rather than a listed set of extensions, because
+    ``io.load(format='detect')`` reads a dozen formats and a member this function
+    has never heard of is far more likely to be one of them than to be prose.
+    """
+    lowered = name.lower()
+    if lowered.endswith(".xml"):
+        return "stationxml"
+    if lowered.endswith(".stations"):
+        return "stations"
+    if lowered.endswith((".yaml", ".yml")):
+        # pyrocko writes stations and events in the same guts yaml; only the tag
+        # says which, and guessing wrong loads a catalogue as coordinates.
+        head = payload[:4096].decode("utf-8", "replace")
+        if "!pf.Station" in head:
+            return "stations"
+        if "!pf.Event" in head:
+            return "events"
+        return "skip"
+    if lowered.endswith(".events"):
+        return "events"
+    if lowered.endswith(_BUNDLE_SKIP_SUFFIXES):
+        return "skip"
+    return "waveforms"
+
+
+def _bundle_summary(manifest: Dict[str, Any], loaded: List[str]) -> str:
+    """What the load report says: what happened, then what the dataset is for.
+
+    The second half only exists for the bundles that describe themselves, and it is
+    the whole reason the examples are worth shipping — someone who opens one should
+    learn what to try, not just watch traces appear.
+    """
+    parts = ["\n".join(loaded)]
+    blurb = str(manifest.get("blurb", "")).strip()
+    if blurb:
+        parts.append(blurb)
+    teaches = [str(item) for item in manifest.get("teaches", []) if str(item).strip()]
+    if teaches:
+        parts.append("Worth trying here:\n" + "\n".join("  • %s" % item for item in teaches))
+    citation = str(manifest.get("citation", "")).strip()
+    if citation:
+        parts.append("Data: %s" % citation)
+    return "\n\n".join(parts)
+
+
+def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
+    """Load every data file in one archive, in the order the loaders depend on.
+
+    Waveforms first, since they define the scene and replace whatever was loaded
+    before; then station metadata; then events, because choosing the active event
+    enables a distance sort that reads the coordinates the StationXML just brought.
+    """
+    import json
+    import zipfile
+
+    if raw[:4] != _ZIP_MAGIC:
+        raise ValueError("%s is not a zip archive" % (label or "bundle"))
+
+    archive = zipfile.ZipFile(io.BytesIO(raw))
+    manifest: Dict[str, Any] = {}
+    groups: Dict[str, List[Tuple[str, bytes]]] = {}
+    for entry in sorted(archive.infolist(), key=lambda info: info.filename):
+        if entry.is_dir():
+            continue
+        if entry.filename.rsplit("/", 1)[-1] == _BUNDLE_MANIFEST:
+            try:
+                manifest = dict(json.loads(archive.read(entry.filename)))
+            except (ValueError, TypeError):
+                manifest = {}
+            continue
+        payload = archive.read(entry.filename)
+        groups.setdefault(_bundle_role(entry.filename, payload), []).append(
+            (entry.filename, payload)
+        )
+
+    waveforms = groups.get("waveforms", [])
+    if not waveforms:
+        raise ValueError("%s contains no waveform files" % (label or "bundle"))
+
+    scene = scene_pb2.SceneMeta()
+    for index, (name, payload) in enumerate(waveforms):
+        scene = _load_path_scene(name, _stage_bytes(name, payload), "detect", append=index > 0)
+
+    loaded = [
+        "%d trace(s) from %d file(s)" % (len(scene.tracks), len(waveforms)),
+    ]
+    info = snuffling_pb2.SnufflingResult(show_window=True)
+
+    responses = [
+        payload.decode("utf-8", "replace") for _name, payload in groups.get("stationxml", [])
+    ]
+    if responses:
+        loaded.append(_load_responses_result(responses).text)
+    for _name, payload in groups.get("stations", []):
+        loaded.append(_load_stations_result(payload.decode("utf-8", "replace")).text)
+    for _name, payload in groups.get("events", []):
+        events = _load_events_result(payload.decode("utf-8", "replace"))
+        info.markers.extend(events.markers)
+        loaded.append(events.text)
+
+    title = str(manifest.get("title", "")).strip() or label
+    info.text = ("%s\n\n%s" % (title, _bundle_summary(manifest, loaded))).strip()
+    state = manifest.get("state") or {}
+    view = data_pb2.BundleView(
+        sort=str(state.get("sort", "")),
+        subsort=str(state.get("subsort", "")),
+    )
+    return data_pb2.BundleResult(scene=scene, info=info, view=view)
+
+
+async def _example_list() -> data_pb2.ExampleList:
+    """The example index, fetched rather than compiled in, so a deployment can gain
+    a dataset without a new wasm build."""
+    import json
+
+    raw = await _fetch_bytes(_asset_url("assets/examples/examples.json"))
+    doc = json.loads(raw)
+    result = data_pb2.ExampleList()
+    for entry in doc.get("examples", []):
+        result.examples.add(
+            slug=str(entry.get("slug", "")),
+            title=str(entry.get("title", "")),
+            blurb=str(entry.get("blurb", "")),
+            teaches=[str(item) for item in entry.get("teaches", [])],
+            citation=str(entry.get("citation", "")),
+            url=str(entry.get("url", "")),
+            bytes=int(entry.get("bytes", 0)),
+            sha256=str(entry.get("sha256", "")),
+        )
+    return result
+
+
 _PLATES: Optional[List[data_pb2.PlateBoundary]] = None
 
 
@@ -4004,6 +4155,33 @@ class _BridgeServicer:
         name = request.url.rsplit("/", 1)[-1] or "data"
         raw = await _fetch_bytes(_asset_url(request.url))
         return _load_path_scene(name, _stage_bytes(name, raw), request.fmt, False)
+
+    async def list_examples(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.ExampleList:
+        return await _example_list()
+
+    async def load_bundle(
+        self, request: data_pb2.LoadBundleRequest, data: Any
+    ) -> data_pb2.BundleResult:
+        if request.content:
+            raw = bytes(request.content)
+            label = request.name or "bundle"
+        else:
+            label = request.name or request.url.rsplit("/", 1)[-1] or "bundle"
+            raw = await _fetch_bytes(_asset_url(request.url))
+        if request.sha256:
+            import hashlib
+
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != request.sha256:
+                # Without this the failure surfaces as a parse error from deep
+                # inside pyrocko, which reads as "this dataset is broken" rather
+                # than "the download did not finish".
+                raise ValueError(
+                    "%s does not match the checksum in the index (expected %s…, got %s…): "
+                    "the download was truncated, or the index is stale"
+                    % (label, request.sha256[:12], digest[:12])
+                )
+        return _load_bundle_result(raw, label)
 
     def get_view(
         self, request: view_pb2.ViewParams, data: Any

@@ -212,3 +212,57 @@ message MarkerFile {
 message SnufMarkerList {
   repeated SnufMarker markers = 1;
 }
+
+// One entry of `assets/examples/examples.json`: a dataset the app can fetch on
+// demand. Only this description is cheap enough to load with the menu — the
+// dataset's own bytes cross the network when someone picks it, which is why the
+// examples cost nothing to ship.
+message ExampleDataset {
+  string slug = 1;
+  string title = 2; // menu label
+  string blurb = 3; // what the dataset is, shown before and after loading
+  repeated string teaches = 4; // the features it is worth opening for
+  string citation = 5; // whose data this is; real recordings have real owners
+  string url = 6; // site-relative, resolved like every other bundled asset
+  uint64 bytes = 7; // compressed size, so the menu can say what a click costs
+  string sha256 = 8; // of the archive, checked after download
+}
+
+message ExampleList {
+  repeated ExampleDataset examples = 1;
+}
+
+// Load a bundle: one archive carrying a whole dataset — waveforms, station
+// metadata and an event catalogue — instead of the four to thirteen separate
+// files it is made of.
+message LoadBundleRequest {
+  string url = 1;
+  // From the index. A truncated download is otherwise a confusing parse error
+  // somewhere deep in pyrocko rather than "the download did not finish".
+  string sha256 = 2;
+  // A bundle picked from disk instead of fetched, so a lecturer can hand one out.
+  // Exactly one of `url` and `content` is set.
+  bytes content = 3;
+  string name = 4; // filename, for the summary the load reports
+}
+
+// The view a bundle asks to be opened in, in the same vocabulary the frontend
+// state uses. Optional, and deliberately short: an example exists to show
+// something, and arriving in the state that shows it is the whole difference
+// between a dataset and a lesson — co-located sensors say nothing until the
+// subsort groups them. An empty string means "leave that setting alone", and an
+// unknown value is ignored rather than failing the load.
+message BundleView {
+  string sort = 1;
+  string subsort = 2;
+}
+
+// A bundle load is three results at once: the scene the waveforms make, the
+// station/event side-effects that would each have been their own load, and the
+// view the bundle asks for. `info` carries the event markers exactly as
+// `LoadEvents` does, so the frontend applies it through the same path.
+message BundleResult {
+  SceneMeta scene = 1;
+  SnufflingResult info = 2;
+  BundleView view = 3;
+}

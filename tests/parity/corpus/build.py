@@ -11,11 +11,15 @@ because it has to: it is byte-for-byte the dataset ``qt/make_demo.py`` writes an
 ``bridge._make_example_scene`` synthesizes, so the corpus really is "the demo both
 frontends already show". Everything else is analytic and stable under any numpy.
 
-The ``eifel`` dataset is the exception to generation: real recordings, checked in
-under ``corpus/eifel`` as the bytes came from the datacenter, because no generator
-can reproduce the mess a real deployment has — hundreds of stations, mixed rates,
-epoch-ridden StationXML. The manifest covers it too, so a locally edited copy
-fails the same way a drifted generator does.
+Two datasets are the exception to generation: real recordings, which live in the
+repository's ``examples/`` directory rather than here, because they are not only
+test input — the app ships them as the bundles behind ``File ▸ Examples`` (see
+``examples/README.md``). No generator can reproduce what a real deployment carries:
+eifel's hundreds of stations, mixed rates and epoch-ridden StationXML, or the GSN's
+co-located sensors, which record one ground motion two and three times over at
+different rates, depths and gains. The manifest covers them too, so a locally edited
+copy fails the same way a drifted generator does — and so the bytes a student
+downloads are the bytes both frontends are proven to agree on.
 
 Run directly to (re)build::
 
@@ -39,6 +43,8 @@ from pyrocko.io import stationxml
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 MANIFEST = HERE / "manifest.json"
+# The checked-in real-world datasets, shared with the app's example bundles.
+EXAMPLES = HERE.parents[2] / "examples"
 
 # Every dataset starts here, so no scenario ever needs a wall clock. 2023-11-14
 # 22:13:20 UTC — the same epoch qt/make_demo.py uses.
@@ -355,11 +361,18 @@ BUILDERS: Dict[str, Callable[[Path], List[Path]]] = {
     "oddrate": build_oddrate,
 }
 
-# Checked-in datasets, as corpus-relative paths. These are not generated and cannot
-# be: they are real recordings, and their value is exactly that no generator made
-# them. Git carries the bytes; the manifest still pins them so a locally modified
-# copy fails the run instead of quietly moving the numbers.
+# Checked-in datasets, as paths relative to `examples/`. These are not generated and
+# cannot be: they are real recordings, and their value is exactly that no generator
+# made them. Git carries the bytes; the manifest still pins them so a locally modified
+# copy fails the run instead of quietly moving the numbers. Each dataset records the
+# queries its bytes came from in its own `example.toml` — provenance, not a
+# generator: StationXML is stamped with its creation time, so a re-fetch drifts the
+# manifest.
 CHECKED_IN: Tuple[str, ...] = (
+    "bonin-2015-05-30-m7.8-multiloc/bonin-2015-05-30-m7.8-multiloc.mseed",
+    "bonin-2015-05-30-m7.8-multiloc/catalog.yaml",
+    "bonin-2015-05-30-m7.8-multiloc/meta/II.xml",
+    "bonin-2015-05-30-m7.8-multiloc/meta/IU.xml",
     "eifel/eifel.mseed",
     "eifel/catalog.yaml",
     "eifel/meta/5X.xml",
@@ -380,7 +393,7 @@ def build(force: bool = False) -> Dict[str, str]:
     """Write every generated dataset and return the full ``{path: sha256}`` manifest.
 
     Generated files are keyed by bare filename (they all live flat in ``data/``),
-    checked-in files by their corpus-relative path.
+    checked-in files by their path under ``examples/``.
     """
     DATA.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
@@ -392,10 +405,10 @@ def build(force: bool = False) -> Dict[str, str]:
         written.extend(builder(DATA))
     manifest = {path.name: _sha256(path) for path in sorted(set(written))}
     for rel in CHECKED_IN:
-        target = HERE / rel
+        target = EXAMPLES / rel
         if not target.exists():
             raise SystemExit(
-                f"checked-in corpus file missing: tests/parity/corpus/{rel}\n"
+                f"checked-in dataset file missing: examples/{rel}\n"
                 "It is not generated — restore it from git."
             )
         manifest[rel] = _sha256(target)
@@ -430,10 +443,10 @@ def verify(update: bool = False) -> Dict[str, str]:
 def path(name: str) -> Path:
     """Absolute path to one corpus file, building the corpus if it is missing.
 
-    Checked-in files resolve against the corpus directory itself, generated ones
-    against ``data/`` — the same corpus-relative names ``scenario.DATASETS`` uses.
+    Checked-in files resolve against ``examples/``, generated ones against
+    ``data/`` — the same names ``scenario.DATASETS`` uses.
     """
-    checked_in = HERE / name
+    checked_in = EXAMPLES / name
     if checked_in.exists():
         return checked_in
     target = DATA / name

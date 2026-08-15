@@ -64,6 +64,12 @@ PYROCKO_REF = "64ae99fb2c65fbd32836d83d00de05cf405a4ff9"
 description = "Clone pyrocko at the pinned commit into sources/ (gitignored)"
 run = "./pybuild/fetch-pyrocko.sh"
 
+# Runs as part of every build (scripts/trunk-post-build.sh); here for inspecting
+# what the Examples menu will offer without building the app.
+[tasks.build-examples]
+description = "Pack examples/ into the dataset bundles the app fetches on demand"
+run = "python3 scripts/build-examples.py"
+
 # trunk canonicalizes every `[watch] ignore` path when the watcher starts and
 # aborts if one is missing — so the serve tasks depend on this. (`trunk build`
 # never resolves the list, which is why CI does not hit it.) The one ignored dir

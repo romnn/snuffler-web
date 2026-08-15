@@ -1,0 +1,26 @@
+%YAML 1.1
+--- !pf.Event
+lat: 27.8386
+lon: 140.4931
+time: '2015-05-30 11:23:02.109999895'
+depth: 664000.0
+name: 'us20002ki3'
+magnitude: 7.8
+magnitude_type: 'mww'
+region: 'Bonin Islands, Japan region'
+catalog: 'us'
+moment_tensor: !pf.MomentTensor
+  mnn: -9.9e+19
+  mee: 4.05e+20
+  mdd: -3.06e+20
+  mne: -1.23e+20
+  mnd: -2.193e+20
+  med: -5.469e+20
+  strike1: 41.471765250047724
+  dip1: 24.40075679704122
+  rake1: -35.05342339246847
+  strike2: 164.0474958823428
+  dip2: 76.27457209518806
+  rake2: -110.37268665143998
+  moment: 7.043096620095452e+20
+  magnitude: 7.865175764175653

@@ -1,0 +1,51 @@
+title = "Bonin Islands 2015 — co-located sensors"
+blurb = """
+The 2015-05-30 Bonin Islands Mww 7.8 at 664 km depth — the deepest large earthquake on \
+record — recorded by six Global Seismographic Network stations, fifteen minutes from the \
+origin time.
+
+Every station here runs more than one seismometer in the same place: a borehole or vault \
+instrument on location code 00 at 20 Hz, a second broadband on 10 at 40 Hz, and at KIP \
+and TUC a third on 60. This opens with the subsort already on "Network, Station, Channel \
+(by Location)", so 42 rows are drawn as 18 — each one every sensor at its site. Switch \
+back to "Network, Station, Location, Channel" to take them apart again.
+
+The depth is what keeps it small. A 664 km source radiates almost no surface waves, so \
+the whole recording is the body-wave train: P, then the depth phases pP and sP about \
+three minutes behind it, arriving 9 to 13 minutes after the origin as the distance grows \
+from 56° at KIP to 104° at HRV.
+"""
+teaches = [
+  "Grouped by Location: co-located sensors sharing one row",
+  "two sampling rates on one track, 20 Hz beside 40 Hz",
+  "amplitude scaling where sensors differ 20x in counts",
+  "Sort by Distance against a real event catalog",
+  "Deconvolution against real instrument responses",
+  "depth phases: P, pP and sP from a 664 km source",
+]
+citation = """
+Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU) and IRIS/IDA \
+network II (doi:10.7914/SN/II), distributed by EarthScope. Every channel here is openly \
+licensed. Event origin from the USGS (us20002ki3).
+"""
+
+# Where the bytes came from; `scripts/fetch-example.py` replays it. EarthScope
+# serves both GSN halves (IU is IRIS/USGS, II is IRIS/IDA) and every channel here
+# is `restrictedStatus="open"`.
+[source]
+datacenter = "https://service.earthscope.org/fdsnws"
+networks = ["IU", "II"]
+stations = "ANMO,COLA,HRV,KIP,PFO,TUC"
+locations = "00,10,60"
+channels = "BH?"
+start = "2015-05-30T11:23:00"
+end = "2015-05-30T11:38:00"
+event_id = "us20002ki3"
+
+# Open showing the thing this dataset exists for. Ungrouped, the co-located sensors
+# are merely adjacent rows and nothing about them stands out; grouped, each row
+# carries every instrument at its site. Distance order puts the moveout of the P
+# arrival on screen at the same time.
+[state]
+sort = "distance"
+subsort = "nsc_l"

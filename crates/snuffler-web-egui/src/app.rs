@@ -4,7 +4,7 @@ use crate::snufflings::Action as SnufflingAction;
 use crate::view::marker_table::markers_to_file;
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
-use snuffler_web_core::bridge::{Repaint, Status};
+use snuffler_web_core::bridge::{ExampleDataset, Repaint, Status};
 use snuffler_web_core::markers::Marker;
 use snuffler_web_core::session::Session;
 use snuffler_web_core::state::{
@@ -143,7 +143,13 @@ impl App {
             move || repaint_now.request_repaint(),
             move |delay| repaint_after.request_repaint_after(delay),
         ));
-        session.bridge.load_example();
+        // A `?example=<slug>` link is what the app was opened *for*, so it takes the
+        // place of the synthetic demo rather than replacing it a second later. Both
+        // are issued before the worker has booted; the transport queues them.
+        match crate::deep_link::requested_example() {
+            Some(slug) => session.bridge.open_example(slug),
+            None => session.bridge.load_example(),
+        }
         Self {
             session,
             snuffling_panels: crate::snufflings::SnufflingPanels::default(),
@@ -341,12 +347,19 @@ impl App {
                 ui.close();
             }
             ui.separator();
-            ui.label("Drag & drop SAC / MiniSEED files to load");
+            ui.label("Drag & drop SAC / MiniSEED files, or a .zip bundle, to load");
         });
     }
 
     fn file_open_items(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Open files…").clicked() {
+        if ui
+            .button("Open files…")
+            .on_hover_text(
+                "Waveform files, or a .zip bundle holding a whole dataset \
+                 (waveforms + StationXML + events), loaded in one go.",
+            )
+            .clicked()
+        {
             self.session.bridge.open_files();
             ui.close();
         }
@@ -384,7 +397,58 @@ impl App {
         }
     }
 
+    /// `File ▸ Examples`: real recorded datasets, each one fetch away.
+    ///
+    /// Nothing here ships in the app. The index is fetched when this submenu is
+    /// first opened and a dataset's bytes only when someone picks it, so a menu
+    /// full of examples costs a page load nothing — which is the point, since the
+    /// people who most need example data are the ones who have none of their own.
+    fn file_examples_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Examples", |ui| {
+            // A submenu sizes itself to its content, and these labels are a title
+            // plus a download size — without a floor they wrap to one word per
+            // line in a column narrow enough to be unreadable.
+            ui.set_min_width(320.0);
+            self.session.bridge.list_examples(false);
+            match self.session.bridge.examples() {
+                None => {
+                    ui.label("Loading…");
+                }
+                Some(Err(error)) => {
+                    ui.label(format!("Unavailable: {error}"));
+                    if ui.button("Retry").clicked() {
+                        self.session.bridge.list_examples(true);
+                    }
+                }
+                Some(Ok(examples)) if examples.is_empty() => {
+                    ui.label("No examples in this build");
+                }
+                Some(Ok(examples)) => {
+                    for example in examples {
+                        let label = format!("{} ({})", example.title, download_size(example.bytes));
+                        if ui
+                            .button(label)
+                            .on_hover_text(example_hover(&example))
+                            .clicked()
+                        {
+                            self.session.bridge.load_bundle(
+                                example.url.clone(),
+                                example.sha256.clone(),
+                                example.title.clone(),
+                            );
+                            // Point the address bar at what is now loaded, so
+                            // sharing it is copying the URL.
+                            crate::deep_link::remember_example(&example.slug);
+                            ui.close();
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     fn file_data_items(&mut self, ui: &mut egui::Ui) {
+        self.file_examples_menu(ui);
         if ui.button("Synthetic example").clicked() {
             self.session.bridge.load_example();
             ui.close();
@@ -670,6 +734,24 @@ impl App {
                 ui.close();
             }
         });
+    }
+
+    /// Open a just-loaded bundle in the view it asked for.
+    ///
+    /// A dataset shipped as an example exists to show something, and the setting
+    /// that shows it is part of the example — co-located sensors say nothing until
+    /// the subsort groups them onto one row. Unknown values are ignored, so a
+    /// bundle built against a later version cannot wedge this one.
+    fn apply_pending_view(&mut self) {
+        let Some(view) = self.session.bridge.take_pending_view() else {
+            return;
+        };
+        if let Some(sort) = SortMode::from_wire(&view.sort) {
+            self.session.state.sort = sort;
+        }
+        if let Some(subsort) = Subsort::from_wire(&view.subsort) {
+            self.session.state.subsort = subsort;
+        }
     }
 
     fn load_dropped_files(&mut self, ctx: &egui::Context) {
@@ -1102,6 +1184,35 @@ impl App {
     }
 }
 
+/// What a click will cost, to one decimal, in integer arithmetic — printing one
+/// digit is no reason to route a byte count through `f64`.
+fn download_size(bytes: u64) -> String {
+    if bytes < 1_000_000 {
+        return format!("{} kB", bytes.div_ceil(1000));
+    }
+    let tenths = (bytes + 50_000) / 100_000; // rounded, not truncated
+    format!("{}.{} MB", tenths / 10, tenths % 10)
+}
+
+/// Tooltip for one example: what it is, then what it is worth opening for.
+///
+/// Only the blurb's opening paragraph — enough to choose by. The whole thing is
+/// shown after the load, in a window that has room for it.
+fn example_hover(example: &ExampleDataset) -> String {
+    let mut text = example
+        .blurb
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    for item in &example.teaches {
+        text.push_str("\n• ");
+        text.push_str(item);
+    }
+    text
+}
+
 fn guess_fmt(name: &str) -> String {
     let ext = std::path::Path::new(name)
         .extension()
@@ -1130,6 +1241,7 @@ impl eframe::App for App {
         let visible_bins = self.view_sample_bins(ui);
         self.session.sync(ctx.input(|input| input.time));
         self.load_dropped_files(&ctx);
+        self.apply_pending_view();
 
         let scene = self.session.bridge.scene();
         let total_tracks = scene.as_ref().map_or(0, |scene| scene.tracks.len());

@@ -1,0 +1,48 @@
+title = "Tohoku 2011 — an instrument going off scale"
+blurb = """
+Ten minutes of the 2011-03-11 Tohoku Mww 9.1 at IU.MAJO (Matsushiro, Japan), 440 km \
+from the rupture, recorded three times over by instruments that disagree about what \
+happened.
+
+All three sensors sit at the same place. Location 00 is an STS-1 broadband, 10 an STS-2 \
+whose sensitivity is 5.43x higher, and 20 an EpiSensor accelerometer four orders of \
+magnitude coarser than either. Before the wave arrives the two broadbands keep the \
+ratio they must — around five, the ratio of their sensitivities. From 05:48 that ratio \
+falls to between 1.4 and 2.3 and stays low through the strongest shaking: the sensitive \
+instrument has stopped following the ground, so more ground motion no longer produces \
+proportionally more signal. Divide peak counts by sensitivity and the two disagree by a \
+factor of four and a half about the same wavefield, which co-located sensors cannot both \
+be right about.
+
+The accelerometer is the one still measuring, peaking at 0.13 m/s². This is why strong \
+motion is recorded on separate, deliberately insensitive instruments, and why "the trace \
+looks huge" and "the trace is usable" are different questions.
+"""
+teaches = [
+  "what saturation looks like: amplitude that stops growing with the ground",
+  "why the same site carries a broadband and an accelerometer",
+  "co-located sensors as a cross-check on each other",
+  "counts against ground motion: Options ▸ Deconvolution on all three",
+  "100 Hz strong motion beside 20 and 40 Hz broadbands",
+]
+citation = """
+Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU), distributed by \
+EarthScope; openly licensed. Event origin from the USGS \
+(usp000hvnu).
+"""
+
+# Grouped by location, so the three instruments at Matsushiro are drawn as one row
+# per channel and the disagreement between them is a comparison rather than a hunt
+# across the stack.
+[state]
+subsort = "nsc_l"
+
+[source]
+datacenter = "https://service.earthscope.org/fdsnws"
+networks = ["IU"]
+stations = "MAJO"
+locations = "00,10,20"
+channels = "BH?,HN?"
+start = "2011-03-11T05:46:00"
+end = "2011-03-11T05:56:00"
+event_id = "usp000hvnu"

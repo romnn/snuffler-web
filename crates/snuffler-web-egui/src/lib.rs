@@ -10,6 +10,9 @@
 mod a11y;
 #[cfg(target_arch = "wasm32")]
 mod app;
+// `?example=<slug>` links: read one on boot, publish one after a load.
+#[cfg(target_arch = "wasm32")]
+mod deep_link;
 // Progress overlay shown while an off-thread job runs (threaded build).
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod job;

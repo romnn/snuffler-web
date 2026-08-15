@@ -1,0 +1,11 @@
+%YAML 1.1
+--- !pf.Event
+lat: 38.297
+lon: 142.373
+time: '2011-03-11 05:46:24.119999886'
+depth: 29000.0
+name: 'usp000hvnu'
+magnitude: 9.1
+magnitude_type: 'mww'
+region: '2011 Great Tohoku Earthquake, Japan'
+catalog: 'USGS'

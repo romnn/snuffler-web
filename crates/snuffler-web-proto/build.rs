@@ -22,6 +22,8 @@ fn variant_for(output: &str) -> Option<&'static str> {
         "CommandResult" => Some("Command"),
         "SnufMarkerList" => Some("Markers"),
         "StringValue" => Some("Text"),
+        "ExampleList" => Some("Examples"),
+        "BundleResult" => Some("Bundle"),
         _ => None,
     }
 }

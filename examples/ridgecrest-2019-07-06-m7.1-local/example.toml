@@ -1,0 +1,47 @@
+title = "Ridgecrest 2019 — an earthquake from close up"
+blurb = """
+Three minutes of the 2019-07-06 Ridgecrest Mw 7.1 across seven Southern California \
+Seismic Network stations between 5 and 89 km from the epicentre, at 100 samples per \
+second.
+
+Everything else in this menu is teleseismic, where an earthquake is a wave that arrives. \
+Here it is a thing happening nearby. P reaches CI.CLC, 5 km away and on the fault, 0.67 s \
+after the origin, and CI.GSC at 89 km after 14.9 s — a moveout of about 6 km/s, the P \
+velocity of the crust, readable straight off the stack once it is sorted by distance. \
+The shaking then goes on for a minute and more, and the largest motion arrives well after \
+the first: what breaks buildings is not the first thing to arrive.
+
+These are accelerometers, and not by preference. At this range the broadband channels at \
+the same sites are far off scale — CI.GSC's peak at 4x10⁷ counts against its \
+accelerometer's 8x10⁴ — which is the point the Tohoku example makes, here as the reason \
+the dataset is what it is.
+"""
+teaches = [
+  "a local earthquake: seconds, not minutes, and 100 Hz",
+  "P moveout at ~6 km/s across 5 to 89 km",
+  "strong shaking arriving long after the first onset",
+  "strong-motion records where broadbands are unusable",
+  "Sort by Distance on a local network",
+]
+citation = """
+Southern California Seismic Network, operated by Caltech and the USGS (network CI, \
+doi:10.7914/SN/CI), distributed by the Southern California Earthquake Data Center. Event \
+origin from the USGS (ci38457511).
+"""
+
+# Distance order, so the P moveout across the network is the picture rather than a
+# station-by-station comparison.
+[state]
+sort = "distance"
+
+[source]
+# The close-in stations are archived at SCEDC; EarthScope carries only the two most
+# distant of these, which would leave the moveout with nothing to move across.
+datacenter = "https://service.scedc.caltech.edu/fdsnws"
+networks = ["CI"]
+stations = "CLC,WRC2,CCC,WMF,DTP,ISA,GSC"
+locations = "*"
+channels = "HN?"
+start = "2019-07-06T03:19:45"
+end = "2019-07-06T03:22:45"
+event_id = "ci38457511"

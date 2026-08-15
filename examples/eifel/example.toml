@@ -1,0 +1,32 @@
+title = "Eifel swarm 2023 — a dense deployment"
+blurb = """
+Ninety seconds of the Eifel earthquake swarm, 2023-01-14, recorded by 354 stations \
+across six networks at 100, 125 and 200 Hz — a real temporary deployment rather than a \
+handful of permanent observatories.
+
+Three catalogued events fall inside the window (M2.1, M2.2 and M1.0, around 11 km deep), \
+so the same 90 seconds carries several ruptures at once. The catalogue beside it holds \
+717 events from the whole 2022-2023 sequence, which is what makes the distance sort and \
+the event navigation worth trying.
+
+This is the dataset for what scale actually feels like: pick a station and the stack is \
+1061 traces deep, so paging, sorting and filtering stop being instant and start being \
+decisions. It is also honest about real data — one channel sits dead at the digitizer \
+rail throughout.
+"""
+teaches = [
+  "a real deployment: 354 stations, six networks, three sampling rates",
+  "sorting and paging a 1061-trace stack",
+  "Sort by Distance and by Azimuth over a large catalogue",
+  "several events inside one window",
+  "what a dead channel looks like next to live ones",
+]
+citation = """
+Eifel deployment networks 5X, 6E, 6X, 7X and 8X with the Bensberg Earthquake Network \
+(BQ, University of Cologne, doi:10.7914/SN/BQ), as delivered by the datacenter.
+"""
+
+# With 354 stations the name order is an alphabet, not a picture. Distance order
+# turns the same stack into the moveout of a local event across a network.
+[state]
+sort = "distance"

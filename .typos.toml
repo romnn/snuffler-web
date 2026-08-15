@@ -1,11 +1,19 @@
 # The SeisBench weights are float32 tensors, not text: typos decodes stretches of
 # them as words and flags the ones that land near an English misspelling ("Yor"),
 # which is unfixable by definition — the bytes are the model.
-# The eifel parity corpus is checked-in real-world data pinned by sha256: its
-# station codes ("NAST", "ACN") read as misspellings and may not be corrected —
-# the bytes are the dataset.
+# The datasets under examples/ are checked-in real-world recordings, pinned by
+# sha256 and shipped to users as bundles: their station codes ("NAST", "ACN"),
+# equipment strings ("PTD25-10-VH") and the datacenter's own restriction keys
+# (".SPACIFIC") read as misspellings and may not be corrected — the bytes are the
+# dataset. Only the data is excluded; the prose beside it (example.toml, fetch.py,
+# README.md) is ours to spell correctly.
 [files]
-extend-exclude = ["web/assets/models/*.onnx", "tests/parity/corpus/eifel/"]
+extend-exclude = [
+  "web/assets/models/*.onnx",
+  "examples/*/meta/",
+  "examples/*/*.mseed",
+  "examples/*/catalog.yaml",
+]
 
 # numpy's np.arange is not a misspelling of "arrange".
 [default.extend-words]

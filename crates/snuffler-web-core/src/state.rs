@@ -189,6 +189,21 @@ impl SortMode {
     pub fn needs_coords(self) -> bool {
         !matches!(self, SortMode::Name)
     }
+
+    /// The inverse of [`SortMode::as_str`], for an order that arrives as a string —
+    /// an example bundle asking to be opened the way it makes sense in.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        [
+            SortMode::Name,
+            SortMode::Distance,
+            SortMode::Azimuth,
+            SortMode::AzimuthBlocks,
+            SortMode::Backazimuth,
+        ]
+        .into_iter()
+        .find(|mode| mode.as_str() == value)
+    }
 }
 
 /// Subsort of the NSLC key (snuffler's subsort radio group,
@@ -238,6 +253,22 @@ impl Subsort {
             Subsort::NscGroupL => "Network, Station, Channel (by Location)",
             Subsort::SncGroupL => "Station, Network, Channel (by Location)",
         }
+    }
+
+    /// The inverse of [`Subsort::as_str`]. See [`SortMode::from_wire`].
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        [
+            Subsort::Nslc,
+            Subsort::Nscl,
+            Subsort::Sncl,
+            Subsort::Lnsc,
+            Subsort::Cnsl,
+            Subsort::NscGroupL,
+            Subsort::SncGroupL,
+        ]
+        .into_iter()
+        .find(|subsort| subsort.as_str() == value)
     }
 }
 

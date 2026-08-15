@@ -112,7 +112,7 @@ tasks:
   format:py:
     desc: "format Python bridge code"
     cmds:
-      - uvx --from ruff==0.14.8 ruff format --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
+      - uvx --from ruff==0.14.8 ruff format --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py scripts/build-examples.py scripts/fetch-example.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
 
   format:js:
     desc: "format JavaScript bridge code"
@@ -159,7 +159,7 @@ tasks:
     desc: "lint Python bridge with ruff"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
+      - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py scripts/build-examples.py scripts/fetch-example.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
 
   test:seisbench:
     desc: "validate exported SeisBench ONNX models against pinned seisbench"

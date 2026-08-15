@@ -254,6 +254,27 @@ patch_trunk_loader_progress() {
     fi
 }
 
+# The example datasets behind `File ▸ Examples`, packed from examples/ into one
+# archive each. Staged like the SeisBench weights and for the same reason: the app
+# fetches them only when someone picks one, so they cost a page load nothing and
+# never enter the wasm bundle. The builder is deterministic and rewrites a bundle
+# only when its contents change, so copy_if_newer stays quiet across rebuilds.
+stage_examples() {
+    local built="$repo_dir/target/examples"
+
+    if ! python3 "$repo_dir/scripts/build-examples.py" --out "$built"; then
+        echo "[examples] ERROR: could not pack examples/ — the Examples menu would 404" >&2
+        exit 1
+    fi
+
+    for dir in "${build_dirs[@]}"; do
+        mkdir -p "$dir/assets/examples"
+        copy_tree_if_newer "$built" "$dir/assets/examples"
+    done
+
+    echo "[examples] dataset bundles staged"
+}
+
 stage_threaded_pyodide() {
     local src="$repo_dir/docker/pyodide-mt/served"
 
@@ -273,6 +294,7 @@ stage_threaded_pyodide() {
 stage_bridge_module
 stage_ort_runtime
 stage_seisbench_models
+stage_examples
 optimize_app_wasm
 patch_rayon_worker_import
 patch_trunk_loader_progress
