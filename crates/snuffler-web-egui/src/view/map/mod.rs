@@ -138,8 +138,6 @@ pub struct MapState {
     /// Station/event counts the view last auto-fitted to, so a fit happens when
     /// the data changes and not when the user has merely panned away.
     fitted_counts: (usize, usize),
-    /// When the user first zoomed; `None` while the gesture hint is still up.
-    zoomed_at: Option<f64>,
     show_plates: bool,
     tiles: TileCache,
     /// True until the window has drawn a real frame. The first fit cuts instead
@@ -156,7 +154,6 @@ impl Default for MapState {
             source: Basemap::OpenStreetMap,
             last_poll: -1.0e9,
             fitted_counts: (usize::MAX, usize::MAX),
-            zoomed_at: None,
             show_plates: true,
             tiles: TileCache::default(),
             opening: true,
@@ -222,7 +219,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
     if response.dragged() {
         st.camera.pan(response.drag_delta(), rect);
     }
-    apply_wheel(ui, st, rect, now);
+    apply_wheel(ui, st, rect);
     if st.camera.advance(dt, rect) {
         ctx.request_repaint();
     }
@@ -254,7 +251,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
         && let Some(target) = hit.and_then(|hit| hit.position(d))
     {
         st.camera.focus_on(target, FOCUS_ZOOM, rect);
-        st.zoomed_at.get_or_insert(now);
     }
 
     if st.show_plates {
@@ -263,19 +259,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
     overlay::stations(&painter, d, rect, st.source.label_style(), hit, &project);
     overlay::events(&painter, d, rect, hit, &project);
 
-    let hint_alpha = overlay::hint_alpha(st.zoomed_at, now);
-    overlay::footer(&painter, rect, hint_alpha, st.source.attribution());
-    if st.zoomed_at.is_some() && hint_alpha > 0.0 {
-        // Keep the frames coming while the hint fades, even if nothing else moves.
-        ctx.request_repaint();
-    }
+    overlay::footer(&painter, rect, st.source.attribution());
 
     let levels = overlay::zoom_buttons(ui, rect);
     if levels != 0.0 {
         // No focus: the buttons zoom the middle of the view, since there is no
         // gesture position to zoom towards.
         st.camera.nudge_zoom(levels, None, rect);
-        st.zoomed_at.get_or_insert(now);
     }
 }
 
@@ -324,7 +314,7 @@ fn toolbar(
 }
 
 /// Turns wheel and pinch input into a new zoom target aimed at the cursor.
-fn apply_wheel(ui: &egui::Ui, st: &mut MapState, rect: Rect, now: f64) {
+fn apply_wheel(ui: &egui::Ui, st: &mut MapState, rect: Rect) {
     // `Ui::rect_contains_pointer` rather than the response's own hover flag: it
     // asks whether the pointer is over this rectangle in this window, without
     // caring that the `+`/`−` buttons are stacked on part of it. Scrolling over
@@ -351,5 +341,4 @@ fn apply_wheel(ui: &egui::Ui, st: &mut MapState, rect: Rect, now: f64) {
         return;
     }
     st.camera.nudge_zoom(levels, cursor, rect);
-    st.zoomed_at.get_or_insert(now);
 }

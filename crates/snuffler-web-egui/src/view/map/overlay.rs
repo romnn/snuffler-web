@@ -13,9 +13,10 @@ const BUTTON: f32 = 26.0;
 /// Inset of the corner furniture from the map's edges.
 const MARGIN: f32 = 8.0;
 
-/// How long the gesture hint takes to fade once the user has zoomed once and so
-/// demonstrably does not need it.
-const HINT_FADE_SECONDS: f64 = 0.9;
+/// How opaque the footer pills are. Dimmed, because they sit over the map
+/// permanently and are there to be read when looked for, not to compete with the
+/// stations and events above them.
+const FOOTER_ALPHA: f32 = 0.75;
 
 /// Markers this far outside the viewport are still drawn, so one sitting on the
 /// edge keeps its label instead of vanishing a few points early.
@@ -374,23 +375,26 @@ pub fn zoom_buttons(ui: &mut Ui, rect: Rect) -> f64 {
 /// The bottom strip: the gesture hint on the left, provider attribution on the
 /// right. Both are painted, not laid out as widgets, so they never take a click
 /// away from the map.
-pub fn footer(painter: &egui::Painter, rect: Rect, hint_alpha: f32, attribution: &str) {
+///
+/// The hint stays up for the life of the window rather than retiring once the
+/// user has zoomed: the gestures it names are not all discoverable, and the map
+/// is visited rarely enough that having done it once is no guarantee of
+/// remembering next time.
+pub fn footer(painter: &egui::Painter, rect: Rect, attribution: &str) {
     let baseline = rect.bottom() - MARGIN;
-    if hint_alpha > 0.0 {
-        pill(
-            painter,
-            egui::pos2(rect.left() + MARGIN, baseline),
-            Align2::LEFT_BOTTOM,
-            "Scroll to zoom  ·  drag to pan  ·  double-click a station or event",
-            hint_alpha,
-        );
-    }
+    pill(
+        painter,
+        egui::pos2(rect.left() + MARGIN, baseline),
+        Align2::LEFT_BOTTOM,
+        "Scroll to zoom  ·  drag to pan  ·  double-click a station or event",
+        FOOTER_ALPHA,
+    );
     pill(
         painter,
         egui::pos2(rect.right() - MARGIN, baseline),
         Align2::RIGHT_BOTTOM,
         attribution,
-        0.75,
+        FOOTER_ALPHA,
     );
 }
 
@@ -400,20 +404,6 @@ pub fn footer(painter: &egui::Painter, rect: Rect, hint_alpha: f32, attribution:
 /// basemap, a dark one, and the flat background before any tile has arrived.
 pub fn notice(painter: &egui::Painter, rect: Rect, text: &str) {
     pill(painter, rect.center(), Align2::CENTER_CENTER, text, 1.0);
-}
-
-/// How opaque the gesture hint should be: fully, until the user has zoomed once
-/// and thereby shown they know how, then fading out for good.
-#[must_use]
-pub fn hint_alpha(zoomed_at: Option<f64>, now: f64) -> f32 {
-    zoomed_at.map_or(1.0, |at| {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the elapsed fraction is clamped to 0..=1 before it becomes an alpha"
-        )]
-        let alpha = (1.0 - (now - at) / HINT_FADE_SECONDS).clamp(0.0, 1.0) as f32;
-        alpha
-    })
 }
 
 /// Where the camera puts a geographic coordinate on screen, as the closure the
