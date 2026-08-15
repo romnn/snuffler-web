@@ -214,10 +214,14 @@ pub fn show(
     // each take their own interaction sub-rect so they never fight over drags.
     let (bg, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
     let full_rect = bg.rect;
+    // Ground the whole canvas before anything else draws on it. `paint` covers
+    // the waveform rect and the scrollbar its own strip, and those two leave the
+    // corner between them beside the time axis; the central panel carries no
+    // frame, so that sliver would show eframe's clear color instead of the theme's.
+    painter.rect_filled(full_rect, 0.0, pal.bg);
     let track_area_h = (full_rect.height() - AXIS_H).max(1.0);
 
     let Some(view) = view else {
-        painter.rect_filled(full_rect, 0.0, pal.bg);
         painter.text(
             full_rect.center(),
             Align2::CENTER_CENTER,
