@@ -390,12 +390,8 @@ fn borrow_labels(plans: &mut [Plan<'_>], label_gap: f64) {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tests fail loudly when a fixture does not produce the expected plan"
-    )]
-
     use accesskit::{NodeId, Rect, Tree, TreeId};
+    use color_eyre::eyre::{self, eyre};
 
     use super::*;
 
@@ -431,12 +427,18 @@ mod tests {
         plans.iter().find(|plan| plan.id == id)
     }
 
+    /// [`find`] for the tests that require the node to have been projected, so a
+    /// missing plan surfaces as an error rather than as an unwrap.
+    fn plan_for<'p, 'a>(plans: &'p [Plan<'a>], id: u64) -> eyre::Result<&'p Plan<'a>> {
+        find(plans, id).ok_or_else(|| eyre!("no plan was projected for node {id}"))
+    }
+
     /// A nameless control is linked to the text immediately to its left on the same
     /// row, the way a sighted user pairs them.
     /// The projection only competes with the canvas for presses where it was asked
     /// to: a control that hit-tests takes the drag the toolkit needs to see.
     #[test]
-    fn a_control_hit_tests_only_where_pointer_proxies_are_asked_for() {
+    fn a_control_hit_tests_only_where_pointer_proxies_are_asked_for() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1]);
         let mut slider = Node::new(Role::Slider);
         slider.set_label("Gain");
@@ -449,7 +451,7 @@ mod tests {
         let update = update_of(vec![(0, root), (1, slider)], 0);
 
         let plans = plan(&update, CANVAS_AREA, &Options::default());
-        let proxy = &find(&plans, 1).unwrap().proxy;
+        let proxy = &plan_for(&plans, 1)?.proxy;
         assert!(proxy.interactive, "it is still focusable and activatable");
         assert!(!proxy.hit_testable, "but the press belongs to the canvas");
 
@@ -461,11 +463,12 @@ mod tests {
                 ..Options::default()
             },
         );
-        assert!(find(&plans, 1).unwrap().proxy.hit_testable);
+        assert!(plan_for(&plans, 1)?.proxy.hit_testable);
+        Ok(())
     }
 
     #[test]
-    fn borrows_the_label_beside_a_control() {
+    fn borrows_the_label_beside_a_control() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1, 2]);
         let label = label_at(
             "Highpass [Hz]:",
@@ -487,12 +490,13 @@ mod tests {
         let update = update_of(vec![(0, root), (1, label), (2, field)], 0);
         let plans = plan(&update, CANVAS_AREA, &Options::default());
 
-        assert_eq!(find(&plans, 2).unwrap().proxy.labelled_by, Some(1));
+        assert_eq!(plan_for(&plans, 2)?.proxy.labelled_by, Some(1));
+        Ok(())
     }
 
     /// Text on a different row never names a control, however close it sits.
     #[test]
-    fn does_not_borrow_across_rows() {
+    fn does_not_borrow_across_rows() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1, 2]);
         let label = label_at(
             "Highpass [Hz]:",
@@ -514,13 +518,14 @@ mod tests {
         let update = update_of(vec![(0, root), (1, label), (2, field)], 0);
         let plans = plan(&update, CANVAS_AREA, &Options::default());
 
-        assert_eq!(find(&plans, 2).unwrap().proxy.labelled_by, None);
+        assert_eq!(plan_for(&plans, 2)?.proxy.labelled_by, None);
+        Ok(())
     }
 
     /// A container stays anonymous and carries no text of its own: its children are
     /// projected too, so any words it took from them would be announced twice.
     #[test]
-    fn containers_stay_anonymous() {
+    fn containers_stay_anonymous() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1]);
         let group = with_children(Role::Group, &[2]);
         let label = label_at(
@@ -536,19 +541,20 @@ mod tests {
         let update = update_of(vec![(0, root), (1, group), (2, label)], 0);
         let plans = plan(&update, CANVAS_AREA, &Options::default());
 
-        let group = find(&plans, 1).unwrap();
+        let group = plan_for(&plans, 1)?;
         assert_eq!(group.proxy.name, "");
         assert!(!group.proxy.text_content);
         // The label itself still owns its words, as element text.
-        let label = find(&plans, 2).unwrap();
+        let label = plan_for(&plans, 2)?;
         assert_eq!(label.proxy.name, "Options");
         assert!(label.proxy.text_content);
+        Ok(())
     }
 
     /// Children of a node that is not projected reattach to the nearest projected
     /// ancestor instead of vanishing with their parent.
     #[test]
-    fn hoists_children_of_hidden_nodes() {
+    fn hoists_children_of_hidden_nodes() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1]);
         let mut pane = with_children(Role::Pane, &[2]);
         pane.set_hidden();
@@ -560,13 +566,14 @@ mod tests {
 
         assert!(find(&plans, 1).is_none());
         // The root stands for the overlay, so the hoisted button lands at top level.
-        assert_eq!(find(&plans, 2).unwrap().parent, None);
+        assert_eq!(plan_for(&plans, 2)?.parent, None);
+        Ok(())
     }
 
     /// A clickable node covering more than the configured share of the canvas is
     /// published for reading but never takes pointer input.
     #[test]
-    fn oversized_clickables_become_regions() {
+    fn oversized_clickables_become_regions() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1]);
         let mut waveform = Node::new(Role::Button);
         waveform.set_label("waveform");
@@ -581,7 +588,7 @@ mod tests {
         let update = update_of(vec![(0, root), (1, waveform)], 0);
         let plans = plan(&update, CANVAS_AREA, &Options::default());
 
-        let region = find(&plans, 1).unwrap();
+        let region = plan_for(&plans, 1)?;
         assert!(!region.proxy.hit_testable);
         assert!(!region.proxy.interactive);
         // Even where proxies are allowed to hit-test, a region never does.
@@ -590,17 +597,18 @@ mod tests {
             ..Options::default()
         };
         let plans = plan(&update, CANVAS_AREA, &opened);
-        assert!(!find(&plans, 1).unwrap().proxy.hit_testable);
+        assert!(!plan_for(&plans, 1)?.proxy.hit_testable);
         // Demotion also swaps the element type: a `<button>` would stay focusable
         // and clickable no matter which ARIA attributes are written on it.
         assert_eq!(region.proxy.role, Some("group"));
         assert_eq!(region.proxy.tag, "div");
+        Ok(())
     }
 
     /// A value change re-describes a proxy without re-placing it, and a move does
     /// the reverse — the split that keeps a slider drag from rewriting geometry.
     #[test]
-    fn signatures_separate_description_from_geometry() {
+    fn signatures_separate_description_from_geometry() -> eyre::Result<()> {
         let viewport = Viewport {
             left: 0.0,
             top: 0.0,
@@ -624,20 +632,21 @@ mod tests {
             let root = with_children(Role::Window, &[1]);
             let update = update_of(vec![(0, root), (1, slider(value, x0))], 0);
             let plans = plan(&update, CANVAS_AREA, &Options::default());
-            let plan = find(&plans, 1).unwrap();
-            (
+            let plan = plan_for(&plans, 1)?;
+            eyre::Ok((
                 plan.description_signature(),
                 plan.geometry_signature(&viewport),
-            )
+            ))
         };
 
-        let (description, geometry) = signatures(1.0, 0.0);
-        let (moved_description, moved_geometry) = signatures(1.0, 50.0);
-        let (valued_description, valued_geometry) = signatures(2.0, 0.0);
+        let (description, geometry) = signatures(1.0, 0.0)?;
+        let (moved_description, moved_geometry) = signatures(1.0, 50.0)?;
+        let (valued_description, valued_geometry) = signatures(2.0, 0.0)?;
 
         assert_eq!(description, moved_description);
         assert_ne!(geometry, moved_geometry);
         assert_ne!(description, valued_description);
         assert_eq!(geometry, valued_geometry);
+        Ok(())
     }
 }
