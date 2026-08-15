@@ -629,7 +629,12 @@ pub fn paint(
             target.line(r.right_top(), r.right_bottom(), 1.0, pal.sep);
             target.line(r.right_bottom(), r.left_bottom(), 1.0, pal.sep);
             target.line(r.left_bottom(), r.left_top(), 1.0, pal.sep);
-        } else if !state.show_boxes && k > 0 && state.track_separators() {
+        }
+
+        // Independent of the bands, and most useful alongside them: a band is keyed
+        // on station, so the three channels of one station share a colour and the
+        // boundaries between them are exactly where nothing else marks a row.
+        if k > 0 && state.track_separators() {
             target.line(
                 pos2(rect.left(), top),
                 pos2(rect.right(), top),

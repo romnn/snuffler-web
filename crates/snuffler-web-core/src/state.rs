@@ -134,8 +134,8 @@ impl WiggleTheme {
         }
     }
 
-    /// Whether this theme draws a rule between rows when the trace boxes are off,
-    /// absent an explicit choice from the user. Snuffler draws none.
+    /// Whether this theme draws a rule between rows, absent an explicit choice from
+    /// the user. Snuffler draws none, boxes or no boxes.
     #[must_use]
     pub const fn default_track_separators(self) -> bool {
         matches!(self, WiggleTheme::SnufflerWeb)
@@ -516,14 +516,12 @@ pub struct AppState {
     pub show_scale_axes: bool,
     /// Whether each row displays its zero-amplitude line.
     pub show_zero_lines: bool,
-    /// Whether a rule is drawn between rows when the trace boxes are off.
+    /// Whether a rule is drawn between rows, bands or no bands.
     ///
     /// `None` follows the theme — off under Snuffler Qt, which separates rows with
-    /// nothing at all once its boxes are off, and on under Snuffler Web, where
-    /// turning the bands off should not leave rows running into one another. `Some`
-    /// is the user overriding that, and is honoured under *both* themes: parity is
-    /// about what the port does by default, not about refusing to draw a rule
-    /// somebody asked for.
+    /// nothing at all, and on under Snuffler Web. `Some` is the user overriding
+    /// that, and is honoured under *both* themes: parity is about what the port does
+    /// by default, not about refusing to draw a rule somebody asked for.
     pub show_track_separators: Option<bool>,
     /// Whether the time ticks extend into a full-height grid across the tracks.
     ///
