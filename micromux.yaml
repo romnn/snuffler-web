@@ -26,6 +26,12 @@ services:
       - 17684
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17684/health"]
+      # A debug binary is rescanned by macOS XProtect on its first exec after
+      # every relink, which on a busy machine can stall the launch for minutes
+      # before `main` runs. The default 30 retries (60s) expires first, and
+      # because `web` waits on this service being healthy, one slow start takes
+      # the whole stack down with it. Five minutes of grace outlasts the scan.
+      retries: 150
 
   web:
     name: Trunk dev server
