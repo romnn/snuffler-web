@@ -91,7 +91,7 @@ async function installTreeAccumulator(page: Page): Promise<void> {
 /// since the two flags are mutually exclusive and only `pointer` makes the proxies the
 /// hit target. The DOM overlay the walk reads exists in both.
 async function boot(page: Page, mode: "debug" | "pointer" = "debug"): Promise<void> {
-  await page.goto(url({ a11y: mode }), { waitUntil: "load" });
+  await page.goto(url({ a11y: mode, demo: "1" }), { waitUntil: "load" });
   await page
     .getByText("Importing pyrocko...")
     .first()
@@ -360,10 +360,15 @@ function overlaySignature(): string {
 /// the marker explicitly rather than relying on the pick having selected it keeps the
 /// probe measuring the keys and not the picking path, which tier 3 covers.
 async function probeSetup(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "File", exact: true }).first().click();
-  await page.waitForTimeout(400);
-  await page.getByRole("button", { name: "Synthetic example" }).first().click();
-  await page.waitForTimeout(5000);
+  // The synthetic pile arrives with the page (`?demo=1`); the File menu no longer
+  // offers it, because the app opens on a real recording. Wait on the status line
+  // rather than a constant — the load is queued before the worker boots, so how long
+  // it takes is a property of the machine.
+  await page
+    .getByText(/Ready · \d+ traces/)
+    .first()
+    .waitFor({ state: "visible", timeout: BOOT_TIMEOUT_MS });
+  await page.waitForTimeout(500);
   await page.getByRole("button", { name: "View", exact: true }).first().click();
   await page.waitForTimeout(400);
   await page.getByRole("checkbox", { name: "Marker editor", exact: true }).first().click();

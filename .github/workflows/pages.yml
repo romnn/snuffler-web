@@ -104,7 +104,8 @@ jobs:
           key: "pyodide314-artifacts-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'docker/pyodide-pthread/libomp/**', 'pybuild/setup.py', 'pybuild/pyproject.toml') }}-pyrocko-${{ steps.pyodide-disc.outputs.pyrocko }}"
 
       # pyrocko source is needed by the build (on a cache miss) and by trunk
-      # (index.html ships test.mseed + the cake earthmodels from it), so always.
+      # (index.html ships the cake earthmodels and the plate boundaries from it),
+      # so always.
       - name: Fetch pyrocko (pinned)
         run: mise run fetch-pyrocko
 

@@ -3,8 +3,9 @@
 #
 # pyrocko is NOT vendored in this repo (sources/ is gitignored). This clones the
 # exact, known-good commit (PYROCKO_REF) of pyrocko into sources/pyrocko, which
-# the wheel build (build-wheel.sh) and the bundled demo data (test.mseed,
-# referenced by index.html) need. The pin lives in mise.toml ([env]); run via
+# the wheel build (build-wheel.sh) and the bundled data assets (the cake
+# earthmodels and the map's plate boundaries, both referenced by index.html)
+# need. The pin lives in mise.toml ([env]); run via
 # `mise run fetch-pyrocko` so PYROCKO_REPO/PYROCKO_REF are set.
 #
 # Idempotent: a no-op once the pinned commit is already checked out.

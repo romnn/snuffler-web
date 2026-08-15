@@ -11,6 +11,9 @@ use snuffler_web_core::state::{
     AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
 };
 
+/// The dataset the app opens on when the URL asks for nothing in particular.
+const BOOT_EXAMPLE: &str = "sumatra-2004-12-26-m9.1-surface-waves";
+
 /// How often the displayed frame rate is allowed to change. The measurement is
 /// smoothed every frame; only the number on screen is held still, because one
 /// that rewrites itself at 60 Hz is unreadable.
@@ -154,12 +157,17 @@ impl App {
             move || repaint_now.request_repaint(),
             move |delay| repaint_after.request_repaint_after(delay),
         ));
-        // A `?example=<slug>` link is what the app was opened *for*, so it takes the
-        // place of the synthetic demo rather than replacing it a second later. Both
-        // are issued before the worker has booted; the transport queues them.
+        // What the app opens on. A `?example=<slug>` link is what it was opened *for*,
+        // so it takes that place rather than replacing something a second later;
+        // `?demo=1` asks for the synthetic pile the parity harness needs; and failing
+        // both, a real earthquake. Sumatra 2004 because it is the one that reads as
+        // seismology at a glance — surface waves circling the planet twice, visible
+        // without touching a single control. All are issued before the worker has
+        // booted; the transport queues them.
         match crate::deep_link::requested_example() {
             Some(slug) => session.bridge.open_example(slug),
-            None => session.bridge.load_example(),
+            None if crate::deep_link::wants_demo() => session.bridge.load_example(),
+            None => session.bridge.open_example(BOOT_EXAMPLE.to_owned()),
         }
         Self {
             session,
@@ -461,16 +469,6 @@ impl App {
 
     fn file_data_items(&mut self, ui: &mut egui::Ui) {
         self.file_examples_menu(ui);
-        if ui.button("Synthetic example").clicked() {
-            self.session.bridge.load_example();
-            ui.close();
-        }
-        if ui.button("Load bundled test.mseed").clicked() {
-            self.session
-                .bridge
-                .load_url("test.mseed".into(), "mseed".into());
-            ui.close();
-        }
         if ui
             .button("Open StationXML files…")
             .on_hover_text(

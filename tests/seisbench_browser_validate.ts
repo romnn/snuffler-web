@@ -70,6 +70,15 @@ const manifest = JSON.parse(
 const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
 const MODEL_BASE_URL = process.env.SNUFFLER_ONNX_MODEL_BASE_URL || "assets/models/";
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
+
+/// `?demo=1` appended to whatever base URL was configured, which may already carry a
+/// query string.
+function demoUrl(base: string): string {
+  const url = new URL(base);
+  url.searchParams.set("demo", "1");
+  return url.href;
+}
+
 const TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 const PICK_THRESHOLD = Number(process.env.SNUFFLER_BROWSER_PICK_THRESHOLD || 0.02);
 
@@ -246,7 +255,11 @@ async function runBrowserPass({
         consoleErrors.push(`pageerror: ${error.message}`);
       });
       try {
-        await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+        // `?demo=1` keeps the boot load synthetic. The scene under test is built by
+        // calling MakeExample below, so what the UI holds is irrelevant — but the app
+        // now opens on a recorded dataset by default, and fetching megabytes of
+        // waveforms would only take CPU away from the inference being measured.
+        await page.goto(demoUrl(BASE_URL), { waitUntil: "domcontentloaded" });
         await page.waitForLoadState("load");
         await page.waitForTimeout(500);
         const moduleUrl = await bridgeModuleUrl(page);
