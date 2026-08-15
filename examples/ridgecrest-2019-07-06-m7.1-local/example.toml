@@ -21,7 +21,7 @@ teaches = [
   "P moveout at ~6 km/s across 5 to 89 km",
   "strong shaking arriving long after the first onset",
   "strong-motion records where broadbands are unusable",
-  "Sort by Distance on a local network",
+  "a local network close enough that distance order is the moveout",
 ]
 citation = """
 Southern California Seismic Network, operated by Caltech and the USGS (network CI, \

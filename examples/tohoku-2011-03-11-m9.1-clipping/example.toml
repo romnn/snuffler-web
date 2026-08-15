@@ -22,7 +22,7 @@ teaches = [
   "what saturation looks like: amplitude that stops growing with the ground",
   "why the same site carries a broadband and an accelerometer",
   "co-located sensors as a cross-check on each other",
-  "counts against ground motion: Options ▸ Deconvolution on all three",
+  "responses for all three, so the same shaking reads in counts or in m/s",
   "100 Hz strong motion beside 20 and 40 Hz broadbands",
 ]
 citation = """

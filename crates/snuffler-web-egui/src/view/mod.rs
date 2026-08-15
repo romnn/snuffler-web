@@ -3,6 +3,7 @@
 pub mod about;
 pub mod command;
 pub mod controls;
+pub mod dataset_note;
 pub mod draw;
 pub mod figure;
 pub mod forms;

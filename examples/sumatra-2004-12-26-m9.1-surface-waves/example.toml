@@ -19,8 +19,8 @@ teaches = [
   "long-period waves: LH at 1 Hz where a body wave needs 20",
   "dispersion: the wavetrain spread over tens of minutes",
   "surface waves returning the long way round, and again",
-  "Gain, for arrivals an order of magnitude below the first",
-  "Sort by Distance across 86° to 136°",
+  "arrivals an order of magnitude below the first, and hours later",
+  "four stations spread across 86° to 136°",
 ]
 citation = """
 Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU) and IRIS/IDA \

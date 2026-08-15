@@ -552,6 +552,11 @@ pub struct AppState {
     /// Whether the text-output window is open.
     pub show_snuffling: bool,
 
+    /// Whether the window showing what the loaded dataset says about itself is
+    /// open. It opens itself once, when a dataset that says something loads; the
+    /// text lives in the bridge, with the scene it describes.
+    pub show_dataset_note: bool,
+
     /// Vertical track layout. `track_height` (pixels per row, `0.0` until the
     /// first layout auto-fits [`DEFAULT_NTRACKS_SHOWN`]) and `snap_tracks` (align
     /// rows to perfect trace boundaries) are the user-facing controls;
@@ -717,6 +722,7 @@ impl Default for AppState {
             wf_color_scale: ColorScale::Log,
             snuffling_text: String::new(),
             show_snuffling: false,
+            show_dataset_note: false,
             // 0.0 = auto-fit DEFAULT_NTRACKS_SHOWN on the first layout.
             track_height: 0.0,
             snap_tracks: true,

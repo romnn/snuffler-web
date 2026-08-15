@@ -62,8 +62,14 @@ function url(params: Record<string, string>): string {
 
 // No a11y param by default: the layer must come up for a plain visit, so the
 // whole suite doubles as the proof that accessibility is on by default.
+//
+// `demo=1` for the data, though. What this suite measures is the projection —
+// where proxies land, what they are named, whether a press reaches the canvas —
+// and the app otherwise opens on a recorded dataset that introduces itself in a
+// window, which is a legitimate thing for a window to do and would make the
+// canvas-reachability probe a measurement of that window instead.
 async function boot(page: Page, params: Record<string, string> = {}): Promise<void> {
-  await page.goto(url(params), { waitUntil: "load" });
+  await page.goto(url({ demo: "1", ...params }), { waitUntil: "load" });
   // The boot overlay covers the app until Pyodide has imported pyrocko.
   await page
     .getByText("Importing pyrocko...")

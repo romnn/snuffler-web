@@ -769,6 +769,19 @@ impl App {
                 self.session.state.show_help = true;
                 ui.close();
             }
+            // Only for a dataset that came with a description — the shipped
+            // examples, and any bundle whose author wrote one. Waveforms opened
+            // from disk have nothing to say about themselves, and an entry that
+            // opened an empty window would be worse than no entry.
+            if self.session.bridge.has_dataset_note()
+                && ui
+                    .button("About this dataset")
+                    .on_hover_text("What the loaded dataset is, and what is unique about it.")
+                    .clicked()
+            {
+                self.session.state.show_dataset_note = true;
+                ui.close();
+            }
             if ui.button("About").clicked() {
                 self.session.state.show_about = true;
                 ui.close();
@@ -1186,6 +1199,13 @@ impl App {
             .then(|| self.session.bridge.runtime_info())
             .flatten();
         crate::view::about::show(ctx, &mut self.session.state, runtime.as_ref());
+        // Cloned out of the bridge only while the window is open, like the
+        // runtime info above.
+        if self.session.state.show_dataset_note
+            && let Some(note) = self.session.bridge.dataset_note()
+        {
+            crate::view::dataset_note::show(ctx, &mut self.session.state, &note);
+        }
         let downloads = crate::view::forms::download(ctx, &mut self.session.state);
         if let Some(request) = downloads.waveforms {
             self.session.bridge.download_waveforms(request);
@@ -1289,6 +1309,10 @@ impl eframe::App for App {
         self.session.sync(ctx.input(|input| input.time));
         self.load_dropped_files(&ctx);
         self.apply_pending_view();
+        // A dataset that describes itself introduces itself, once.
+        if self.session.bridge.take_unseen_dataset_note() {
+            self.session.state.show_dataset_note = true;
+        }
 
         let scene = self.session.bridge.scene();
         let total_tracks = scene.as_ref().map_or(0, |scene| scene.tracks.len());

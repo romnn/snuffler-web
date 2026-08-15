@@ -27,8 +27,8 @@ pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, ExampleDataset, FigureRequest,
-    IngestMiniSeedRequest, MapData, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
+    BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, ExampleDataset,
+    FigureRequest, IngestMiniSeedRequest, MapData, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
     PolarizationSnufflingParams, RmsSnufflingParams, SceneMeta, SeisbenchSnufflingParams,
     SeismosizerSnufflingParams, SetActiveEventRequest, SnufflingParams, SnufflingRequestParams,
     SnufflingResult, SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams,
@@ -294,6 +294,20 @@ struct Inner {
     /// bridge does not own the sort state, so it parks it here the way a fetched
     /// cake model waits in `pending_cake_model`.
     pending_view: Option<BundleView>,
+    /// What the loaded dataset says about itself, paired with the scene generation
+    /// it arrived with.
+    ///
+    /// Unlike the view, this is not spent on arrival — `Help ▸ About this dataset`
+    /// shows it again later — so it needs invalidating, and the generation does
+    /// that on its own: any later load bumps `scene_gen`, and prose about the
+    /// previous pile stops being about what is on screen without a single call
+    /// site having to remember to clear it.
+    dataset_note: Option<(u64, BundleAbout)>,
+    /// Whether that note has yet to be put on screen. A dataset introduces itself
+    /// once, when it arrives — which is a fact known here, at the arrival, rather
+    /// than something the frontend should have to infer by watching for the
+    /// generation to change.
+    dataset_note_unseen: bool,
 }
 
 /// Schedules frontend redraws after asynchronous bridge work completes.
@@ -504,6 +518,35 @@ impl Bridge {
     #[must_use]
     pub fn take_pending_view(&self) -> Option<BundleView> {
         self.inner.borrow_mut().pending_view.take()
+    }
+
+    /// Whether a dataset has just introduced itself and has not been shown yet.
+    /// True once per load, for the frontend to open the window with.
+    #[must_use]
+    pub fn take_unseen_dataset_note(&self) -> bool {
+        std::mem::take(&mut self.inner.borrow_mut().dataset_note_unseen)
+    }
+
+    /// Whether the dataset now on screen says anything about itself — for the
+    /// menu entry that only needs to exist or not, without cloning the prose.
+    #[must_use]
+    pub fn has_dataset_note(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner
+            .dataset_note
+            .as_ref()
+            .is_some_and(|(described, _)| *described == inner.scene_gen)
+    }
+
+    /// What the dataset now on screen says about itself, if it says anything.
+    #[must_use]
+    pub fn dataset_note(&self) -> Option<BundleAbout> {
+        let inner = self.inner.borrow();
+        inner
+            .dataset_note
+            .as_ref()
+            .filter(|(described, _)| *described == inner.scene_gen)
+            .map(|(_, about)| about.clone())
     }
 
     /// Returns the latest station and event coordinates for the map.
@@ -1569,6 +1612,8 @@ mod web {
                             i.status = Status::Ready;
                             clear_view(&mut i);
                             i.pending_view = bundle.view;
+                            i.dataset_note_unseen = bundle.about.is_some();
+                            i.dataset_note = bundle.about.map(|about| (i.scene_gen, about));
                             if let Some(info) = bundle.info {
                                 i.snuffling = Some(info);
                                 i.snuffling_gen += 1;

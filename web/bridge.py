@@ -3223,8 +3223,7 @@ def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResul
     )
     return snuffling_pb2.SnufflingResult(
         show_window=True,
-        text="%d channel response(s) loaded from %s — enable Options ▸ Deconvolution"
-        % (nchan, source_label),
+        text="%d channel response(s) loaded from %s" % (nchan, source_label),
     )
 
 
@@ -3272,24 +3271,37 @@ def _bundle_role(name: str, payload: bytes) -> str:
     return "waveforms"
 
 
-def _bundle_summary(manifest: Dict[str, Any], loaded: List[str]) -> str:
-    """What the load report says: what happened, then what the dataset is for.
+def _bundle_about(manifest: Dict[str, Any]) -> Optional[data_pb2.BundleAbout]:
+    """What the dataset is, for the bundles that describe themselves.
 
-    The second half only exists for the bundles that describe themselves, and it is
-    the whole reason the examples are worth shipping — someone who opens one should
-    learn what to try, not just watch traces appear.
+    This is the whole reason the examples are worth shipping — someone who opens one
+    should learn what they are looking at, not just watch traces appear. It is not a
+    load report: it says nothing about this particular load, so it stays true while
+    the dataset is open and the frontend can show it again on demand.
+
+    ``None`` for an archive carrying no prose, which is most of them: any zip of data
+    files loads here, and one a user assembled has nothing to say about itself.
     """
-    parts = ["\n".join(loaded)]
     blurb = str(manifest.get("blurb", "")).strip()
+    teaches = [str(item) for item in manifest.get("teaches", []) if str(item).strip()]
+    citation = str(manifest.get("citation", "")).strip()
+    if not (blurb or teaches or citation):
+        return None
+    parts = []
     if blurb:
         parts.append(blurb)
-    teaches = [str(item) for item in manifest.get("teaches", []) if str(item).strip()]
     if teaches:
-        parts.append("Worth trying here:\n" + "\n".join("  • %s" % item for item in teaches))
-    citation = str(manifest.get("citation", "")).strip()
+        # Not "what to try": these are the characteristics of the recording, and
+        # the reason this dataset is in the menu rather than another one.
+        parts.append(
+            "What is unique about this dataset:\n" + "\n".join("  • %s" % item for item in teaches)
+        )
     if citation:
         parts.append("Data: %s" % citation)
-    return "\n\n".join(parts)
+    return data_pb2.BundleAbout(
+        title=str(manifest.get("title", "")).strip(),
+        body="\n\n".join(parts),
+    )
 
 
 def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
@@ -3347,14 +3359,21 @@ def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
         info.markers.extend(events.markers)
         loaded.append(events.text)
 
+    about = _bundle_about(manifest)
     title = str(manifest.get("title", "")).strip() or label
-    info.text = ("%s\n\n%s" % (title, _bundle_summary(manifest, loaded))).strip()
+    info.text = ("%s\n\n%s" % (title, "\n".join(loaded))).strip()
+    # A described dataset opens one window, and it is the description: the counts
+    # are already in the status line, and burying the prose under them was how the
+    # same three lines about instrument responses ended up in front of every reader
+    # of every example. An undescribed archive still reports, since otherwise
+    # nothing at all would say what it did.
+    info.show_window = about is None
     state = manifest.get("state") or {}
     view = data_pb2.BundleView(
         sort=str(state.get("sort", "")),
         subsort=str(state.get("subsort", "")),
     )
-    return data_pb2.BundleResult(scene=scene, info=info, view=view)
+    return data_pb2.BundleResult(scene=scene, info=info, view=view, about=about)
 
 
 async def _example_list() -> data_pb2.ExampleList:

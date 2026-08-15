@@ -16,11 +16,11 @@ three minutes behind it, arriving 9 to 13 minutes after the origin as the distan
 from 56° at KIP to 104° at HRV.
 """
 teaches = [
-  "Grouped by Location: co-located sensors sharing one row",
+  "co-located sensors, two and three deep, on one row each",
   "two sampling rates on one track, 20 Hz beside 40 Hz",
   "amplitude scaling where sensors differ 20x in counts",
-  "Sort by Distance against a real event catalog",
-  "Deconvolution against real instrument responses",
+  "distances that come from a real event catalogue",
+  "real instrument responses, so counts can become ground motion",
   "depth phases: P, pP and sP from a 664 km source",
 ]
 citation = """

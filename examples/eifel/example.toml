@@ -16,8 +16,8 @@ rail throughout.
 """
 teaches = [
   "a real deployment: 354 stations, six networks, three sampling rates",
-  "sorting and paging a 1061-trace stack",
-  "Sort by Distance and by Azimuth over a large catalogue",
+  "a 1061-trace stack, far more than one screen holds",
+  "azimuthal coverage wide enough for azimuth order to mean something",
   "several events inside one window",
   "what a dead channel looks like next to live ones",
 ]
