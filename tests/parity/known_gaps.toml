@@ -542,6 +542,33 @@ web = "scaling [ n.s.l.c ] vmin vmax scaling"
 # run as stale — so this list can only ever describe the present.
 
 [[feature]]
+qt = "File/Print"
+bucket = "soft"
+title = "No Print item: the only print a page can ask for is not the one Qt performs"
+why = """
+Qt's `File ▸ Print` opens a printer dialog and then re-paints the seismogram view
+*alone*, laid out afresh at the printer's page size in landscape
+(`pile_viewer.py:2846`). The one thing a page can do is `window.print()`, which hands
+the browser the whole document at screen layout — menu bar, control strip, status line
+and all — and there is no print stylesheet anywhere in this tree to narrow that down.
+
+The port used to carry a `File ▸ Print…` item that called exactly that, so it wore Qt's
+name over a materially different command. It is now removed rather than corrected, on
+two counts. Every browser already binds Ctrl/Cmd+P and carries Print in its own menu, so
+an item whose whole body is `window.print()` is a second name for host chrome the user
+reaches anyway — and one that a menu-bar screenshot on paper makes look broken. And the
+half Qt's command has that the host's does not — the seismogram view by itself, sized to
+a page — is already a command here: `File ▸ Save image (SVG)…` renders the view and
+nothing around it through `waveform::render_svg` (`app.rs:1050`), and printing that file
+is one browser step away.
+
+So this is signed off as a command deliberately not offered, not as one out of reach.
+What stays open is the *shape* of that export — the web renders at the current waveform
+rect where Qt sizes a fixed page canvas — and that is `export-geometry`, which since this
+removal describes the SVG alone.
+"""
+
+[[feature]]
 qt = "File/Close"
 bucket = "soft"
 title = "No 'close the viewer' command"
@@ -730,13 +757,15 @@ title = "No Ctrl accelerators for the File menu"
 why = """
 Qt gives five File-menu commands accelerators: Open (Ctrl+O, `pile_viewer.py:874`),
 Save markers (Ctrl+S, `:902`), Save selected markers (Ctrl+Shift+S, `:908`), Print
-(Ctrl+P, `:915`) and Save as SVG/PNG (Ctrl+E, `:921`). The web port has all five
-commands in its File menu and none of the accelerators.
+(Ctrl+P, `:915`) and Save as SVG/PNG (Ctrl+E, `:921`). Four of those commands are in the
+web port's File menu with none of the accelerators; the fifth, Print, is not there at
+all — see the `File/Print` entry — so Ctrl+P is the one chord here with nothing left to
+bind.
 
-Ctrl+O, Ctrl+S and Ctrl+P are all claimed by the browser itself, so binding them means
-either fighting the host for them or shadowing something the user expects. That is a
-reason to choose different accelerators, not a reason to have none — this is unclaimed
-surface rather than a platform wall.
+Ctrl+O and Ctrl+S are both claimed by the browser itself, so binding them means either
+fighting the host for them or shadowing something the user expects. That is a reason to
+choose different accelerators, not a reason to have none — this is unclaimed surface
+rather than a platform wall.
 
 Ctrl+E was previously recorded here as doing *something* undocumented, cause unknown.
 It is the page, not the browser: the web reads bare key codes with no modifier test, so
@@ -2513,20 +2542,19 @@ deployed site should advertise what it cannot do.
 key = "export-geometry"
 bucket = "soft"
 todo = true
-title = "Print sends the page, and the SVG is window-shaped rather than page-shaped"
+title = "The exported SVG is window-shaped rather than page-shaped, under a fixed name"
 enforce = "a byte-level check of the exported SVG header (width, height, viewBox)"
 why = """
-Qt prints the seismogram view alone, re-laid-out at the printer's page size in landscape
-(`pile_viewer.py:2846`); the web calls `window.print()` (`app.rs:375`), so what lands on
-paper is the whole document at screen layout, menu bar included. A page cannot drive a
-printer any other way — but the port already has a vector renderer for exactly this
-shape, `waveform::render_svg`, used by File ▸ Save image, so printing a print-laid-out
-view is reachable rather than blocked.
-
 Qt's SVG is a deliberate 842x595 print canvas with a 2.5 % margin (`pile_viewer.py:2865`);
-the web renders at the current waveform rect (`app.rs:913`). That substitution is a free
+the web renders at the current waveform rect (`app.rs:1050`). That substitution is a free
 choice and the print-shaped canvas is the better default for a file you are going to put
 in a paper.
+
+This entry used to open on a print half — Qt re-lays the view out at the printer's page
+size, the web called `window.print()` and sent the whole document. That item no longer
+exists: the `File/Print` feature entry signs off its absence, and points here, because a
+page-shaped SVG is what the port has instead of Qt's print. Which makes the geometry
+above the more load-bearing of the two, not less.
 
 The fixed download names (`snuffler.png`, `snuffler.svg`, `markers.txt`) were justified
 as "there is no save picker without File System Access". True, and it does no work:

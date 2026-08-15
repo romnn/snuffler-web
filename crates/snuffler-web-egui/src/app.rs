@@ -405,16 +405,6 @@ impl App {
             self.session.bridge.reload_files();
             ui.close();
         }
-        if ui
-            .button("Print…")
-            .on_hover_text("Open the browser print dialog for the current view (also → PDF).")
-            .clicked()
-        {
-            if let Some(window) = web_sys::window() {
-                let _ = window.print();
-            }
-            ui.close();
-        }
     }
 
     /// `File ▸ Examples`: real recorded datasets, each one fetch away.
