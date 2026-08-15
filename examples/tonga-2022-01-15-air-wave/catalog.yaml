@@ -1,0 +1,11 @@
+%YAML 1.1
+--- !pf.Event
+lat: -20.546
+lon: -175.39
+time: '2022-01-15 04:14:45'
+depth: 0.0
+name: 'us7000gc8r'
+magnitude: 5.8
+magnitude_type: 'ms_20'
+region: "68 km NNW of Nuku\u2018alofa, Tonga"
+catalog: 'us'

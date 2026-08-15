@@ -1,0 +1,1326 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+
+ <FDSNStationXML xmlns="http://www.fdsn.org/xml/station/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:iris="http://www.fdsn.org/xml/station/1/iris" xsi:schemaLocation="http://www.fdsn.org/xml/station/1 http://www.fdsn.org/xml/station/fdsn-station-1.1.xsd" schemaVersion="1.1">
+  <Source>EarthScope</Source>
+  <Sender>EarthScope</Sender>
+  <Module>EarthScope WEB SERVICE: fdsnws-station | version: 1.1.56</Module>
+  <ModuleURI>https://service.earthscope.org/fdsnws/station/1/query?net=IU&amp;sta=AFI%2CRAR%2CKIP%2CANMO%2CPAB&amp;loc=00%2C31&amp;cha=LHZ%2CLDO&amp;starttime=2022-01-15T01%3A30%3A00&amp;endtime=2022-01-16T02%3A00%3A00&amp;level=response&amp;format=xml</ModuleURI>
+  <Created>2026-08-15T18:13:13.8544</Created>
+  <Network code="IU" startDate="1988-01-01T00:00:00.0000" restrictedStatus="open">
+   <Description>Global Seismograph Network (GSN - IRIS/USGS) (GSN)</Description>
+   <Identifier type="DOI">10.7914/SN/IU
+   </Identifier>
+   <TotalNumberStations>117</TotalNumberStations>
+   <SelectedNumberStations>5</SelectedNumberStations>
+   <Station code="AFI" startDate="1993-08-24T00:00:00.0000" restrictedStatus="open" iris:alternateNetworkCodes="_FDSN,_FDSN-ALL,_GSN,_GSN-BROADBAND,.SPACIFIC,_STS-1,.UNRESTRICTED">
+    <Description>(GSN) IRIS/USGS (IU) and Samoa Met. Div.</Description>
+    <Latitude>-13.90853</Latitude>
+    <Longitude>-171.78265</Longitude>
+    <Elevation>706.0</Elevation>
+    <Site>
+     <Name>Afiamalu, Samoa</Name>
+    </Site>
+    <CreationDate>1993-08-24T00:00:00.0000</CreationDate>
+    <TotalNumberChannels>301</TotalNumberChannels>
+    <SelectedNumberChannels>2</SelectedNumberChannels>
+    <Channel code="LHZ" locationCode="00" startDate="2018-03-26T00:00:00.0000" endDate="2023-12-13T00:00:00.0000" restrictedStatus="open">
+     <Comment>
+      <Value>[SENSOR::STS-6A::176214], [SENSOR::EPISENSOR ES-T::4349], [LOGGER::Q330HR::3739]</Value>
+      <BeginEffectiveTime>2018-03-26T00:00:00.0000</BeginEffectiveTime>
+      <EndEffectiveTime>2023-12-13T00:00:00.0000</EndEffectiveTime>
+     </Comment>
+     <Latitude>-13.90853</Latitude>
+     <Longitude>-171.78265</Longitude>
+     <Elevation>705</Elevation>
+     <Depth>1</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>-90</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>GEOPHYSICAL</Type>
+     <SampleRate>1E00</SampleRate>
+     <Sensor>
+      <Type>STRECKEISEN</Type>
+      <Description>Velocity Sensor</Description>
+      <Manufacturer>STRECKEISEN</Manufacturer>
+      <Model>STS-6A</Model>
+      <SerialNumber>176214</SerialNumber>
+     </Sensor>
+     <DataLogger>
+      <Type>QUANTERRA</Type>
+      <Manufacturer>QUANTERRA</Manufacturer>
+      <Model>Q330HR</Model>
+      <SerialNumber>3739</SerialNumber>
+     </DataLogger>
+     <Response>
+     <InstrumentSensitivity>
+       <Value>1.97537E9</Value>
+       <Frequency>0.02</Frequency>
+       <InputUnits>
+         <Name>m/s</Name>
+         <Description>Velocity in meters per second</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Count in Digital counts</Description>
+       </OutputUnits>
+     </InstrumentSensitivity>
+      <Stage number="1">
+      <PolesZeros name="ASL_STS6-Calibrated">
+        <Description>Calibrated update of ASL_STS6-360-1200</Description>
+        <InputUnits>
+          <Name>m/s</Name>
+          <Description>Velocity in meters per second</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>V</Name>
+          <Description>Voltage in Volts</Description>
+        </OutputUnits>
+        <PzTransferFunctionType>LAPLACE (RADIANS/SECOND)</PzTransferFunctionType>
+        <NormalizationFactor>5.03773E14</NormalizationFactor>
+        <NormalizationFrequency>0.02</NormalizationFrequency>
+        <Zero number="0">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="1">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="2">
+          <Real>-22.005</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="3">
+          <Real>-22.005</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="4">
+          <Real>-373.776</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="5">
+          <Real>-412.2</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="6">
+          <Real>-464.915</Real>
+          <Imaginary>-759.775</Imaginary>
+        </Zero>
+        <Zero number="7">
+          <Real>-464.915</Real>
+          <Imaginary>759.775</Imaginary>
+        </Zero>
+        <Pole number="0">
+          <Real>-0.01229</Real>
+          <Imaginary>-0.0124</Imaginary>
+        </Pole>
+        <Pole number="1">
+          <Real>-0.01229</Real>
+          <Imaginary>0.0124</Imaginary>
+        </Pole>
+        <Pole number="2">
+          <Real>-22.41</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="3">
+          <Real>-22.41</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="4">
+          <Real>-256.478</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="5">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="6">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="7">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="8">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="9">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="10">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="11">
+          <Real>-93.102</Real>
+          <Imaginary>-913.905</Imaginary>
+        </Pole>
+        <Pole number="12">
+          <Real>-93.102</Real>
+          <Imaginary>913.905</Imaginary>
+        </Pole>
+      </PolesZeros>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1183.0</Value>
+        <Frequency>0.02</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="2">
+      <PolesZeros name="AnaPAZ_IUV_NZ0_NP0_PHd41d8cd_AN1_FN1::NRL:Gain_SG1_FN1">
+        <Description>IRIS-NRL</Description>
+        <InputUnits>
+          <Name>V</Name>
+          <Description>Voltage in Volts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>V</Name>
+          <Description>Voltage in Volts</Description>
+        </OutputUnits>
+        <PzTransferFunctionType>LAPLACE (RADIANS/SECOND)</PzTransferFunctionType>
+        <NormalizationFactor>1.0</NormalizationFactor>
+        <NormalizationFrequency>0.02</NormalizationFrequency>
+      </PolesZeros>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>1.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="3">
+      <Coefficients>
+        <InputUnits>
+          <Name>V</Name>
+          <Description>Voltage in Volts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Count in Digital counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1677720.0</Value>
+        <Frequency>1.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="4">
+      <FIR name="Dec_IR1_OR1_NS1-DC31-1_NH7da3cf9_1">
+        <Description>IRIS-NRL</Description>
+        <InputUnits>
+          <Name>counts</Name>
+          <Description>Digital Count in Digital counts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Count in Digital counts</Description>
+        </OutputUnits>
+        <Symmetry>NONE</Symmetry>
+        <NumeratorCoefficient i="1">7.49714E-17</NumeratorCoefficient>
+        <NumeratorCoefficient i="2">-2.89483E-12</NumeratorCoefficient>
+        <NumeratorCoefficient i="3">-1.34317E-7</NumeratorCoefficient>
+        <NumeratorCoefficient i="4">-4.46866E-6</NumeratorCoefficient>
+        <NumeratorCoefficient i="5">4.35223E-5</NumeratorCoefficient>
+        <NumeratorCoefficient i="6">0.0029715</NumeratorCoefficient>
+        <NumeratorCoefficient i="7">0.00190289</NumeratorCoefficient>
+        <NumeratorCoefficient i="8">-0.00681509</NumeratorCoefficient>
+        <NumeratorCoefficient i="9">0.0121438</NumeratorCoefficient>
+        <NumeratorCoefficient i="10">-0.0132326</NumeratorCoefficient>
+        <NumeratorCoefficient i="11">0.00458328</NumeratorCoefficient>
+        <NumeratorCoefficient i="12">0.0171621</NumeratorCoefficient>
+        <NumeratorCoefficient i="13">-0.0505713</NumeratorCoefficient>
+        <NumeratorCoefficient i="14">0.0876903</NumeratorCoefficient>
+        <NumeratorCoefficient i="15">-0.114244</NumeratorCoefficient>
+        <NumeratorCoefficient i="16">0.0987204</NumeratorCoefficient>
+        <NumeratorCoefficient i="17">0.805761</NumeratorCoefficient>
+        <NumeratorCoefficient i="18">0.24646</NumeratorCoefficient>
+        <NumeratorCoefficient i="19">-0.154031</NumeratorCoefficient>
+        <NumeratorCoefficient i="20">0.0873649</NumeratorCoefficient>
+        <NumeratorCoefficient i="21">-0.034847</NumeratorCoefficient>
+        <NumeratorCoefficient i="22">-3.11305E-4</NumeratorCoefficient>
+        <NumeratorCoefficient i="23">0.0169725</NumeratorCoefficient>
+        <NumeratorCoefficient i="24">-0.0188862</NumeratorCoefficient>
+        <NumeratorCoefficient i="25">0.0126865</NumeratorCoefficient>
+        <NumeratorCoefficient i="26">-0.00495478</NumeratorCoefficient>
+        <NumeratorCoefficient i="27">-2.65618E-4</NumeratorCoefficient>
+        <NumeratorCoefficient i="28">0.00379619</NumeratorCoefficient>
+        <NumeratorCoefficient i="29">-8.9993E-5</NumeratorCoefficient>
+        <NumeratorCoefficient i="30">-5.09801E-6</NumeratorCoefficient>
+        <NumeratorCoefficient i="31">4.54207E-8</NumeratorCoefficient>
+      </FIR>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>15.0</Delay>
+        <Correction>15.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+     </Response>
+    </Channel>
+    <Channel code="LDO" locationCode="31" startDate="2013-07-31T00:00:00.0000" restrictedStatus="open">
+     <Comment>
+      <Value>Overall polynomial (SIS computed) changed. Old value: ASL:opoly-IU.AFI.LDO.31.2013-07-31 00:00:00, new value: ASL:opoly-IU.AFI.LDO.31.2013-07-31 00:00:00.</Value>
+      <BeginEffectiveTime>2013-07-31T00:00:00.0000</BeginEffectiveTime>
+     </Comment>
+     <Comment>
+      <Value>[SENSOR::MODEL 270::AFIloc30], [SENSOR::MODEL 270::43161342210], [LOGGER::QEP::43161342210]</Value>
+      <BeginEffectiveTime>2013-07-31T00:00:00.0000</BeginEffectiveTime>
+     </Comment>
+     <Latitude>-13.90853</Latitude>
+     <Longitude>-171.78265</Longitude>
+     <Elevation>706</Elevation>
+     <Depth>0</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>0</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>GEOPHYSICAL</Type>
+     <SampleRate>1E00</SampleRate>
+     <Sensor>
+      <Type>SETRA</Type>
+      <Description>Pressure</Description>
+      <Manufacturer>SETRA</Manufacturer>
+      <Model>MODEL 270</Model>
+      <SerialNumber>43161342210</SerialNumber>
+     </Sensor>
+     <DataLogger>
+      <Type>QUANTERRA</Type>
+      <Manufacturer>QUANTERRA</Manufacturer>
+      <Model>QEP</Model>
+      <SerialNumber>43161342210</SerialNumber>
+     </DataLogger>
+     <Response>
+     <InstrumentPolynomial name="opoly-IU.AFI.LDO.31.2013-07-31 00:00:00">
+       <InputUnits>
+         <Name>Pa</Name>
+         <Description>Pressure in Pascals</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Count in Digital counts</Description>
+       </OutputUnits>
+       <ApproximationType>MACLAURIN</ApproximationType>
+       <FrequencyLowerBound>0.0</FrequencyLowerBound>
+       <FrequencyUpperBound>0.5</FrequencyUpperBound>
+       <ApproximationLowerBound>80000.0</ApproximationLowerBound>
+       <ApproximationUpperBound>110000.0</ApproximationUpperBound>
+       <MaximumError>0.0</MaximumError>
+       <Coefficient number="1">80000.0</Coefficient>
+       <Coefficient number="2">0.007362</Coefficient>
+     </InstrumentPolynomial>
+      <Stage number="1">
+      <Polynomial name="SETRA 270 Low Elevation with QEP">
+        <InputUnits>
+          <Name>Pa</Name>
+          <Description>Pressure in Pascals</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Count in Digital counts</Description>
+        </OutputUnits>
+        <ApproximationType>MACLAURIN</ApproximationType>
+        <FrequencyLowerBound>0.0</FrequencyLowerBound>
+        <FrequencyUpperBound>0.5</FrequencyUpperBound>
+        <ApproximationLowerBound>80000.0</ApproximationLowerBound>
+        <ApproximationUpperBound>110000.0</ApproximationUpperBound>
+        <MaximumError>0.0</MaximumError>
+        <Coefficient number="0">80000.0</Coefficient>
+        <Coefficient number="1">0.007362</Coefficient>
+      </Polynomial>
+
+      </Stage>
+      <Stage number="2">
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>1.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="3">
+      <Coefficients>
+        <InputUnits>
+          <Name>counts</Name>
+          <Description>Digital Count in Digital counts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Count in Digital counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+     </Response>
+    </Channel>
+   </Station>
+   <Station code="ANMO" startDate="2002-11-19T21:07:00.0000" restrictedStatus="open" iris:alternateNetworkCodes="_ANSS-BB,_CARIBE-EWS,_CEUSN,.CEUSN-CONTRIB,.EARTHSCOPE,_FDSN,_FDSN-ALL,.GREG,_GSN,_GSN-BROADBAND,.TEST,.UNRESTRICTED,_US-ALL,_US-REF,_US-TA">
+    <Description>(GSN) IRIS/USGS (IU) and ANSS</Description>
+    <Latitude>34.94591</Latitude>
+    <Longitude>-106.4572</Longitude>
+    <Elevation>1820.0</Elevation>
+    <Site>
+     <Name>Albuquerque, New Mexico, USA</Name>
+    </Site>
+    <CreationDate>2002-11-19T21:07:00.0000</CreationDate>
+    <TotalNumberChannels>362</TotalNumberChannels>
+    <SelectedNumberChannels>2</SelectedNumberChannels>
+    <Channel code="LHZ" locationCode="00" startDate="2018-07-09T20:45:00.0000" restrictedStatus="open">
+     <Latitude>34.94591</Latitude>
+     <Longitude>-106.4572</Longitude>
+     <Elevation>1632.7</Elevation>
+     <Depth>188</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>-90</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>GEOPHYSICAL</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>Streckeisen STS-6A VBB Seismometer</Description>
+     </Sensor>
+     <Response>
+     <InstrumentSensitivity>
+       <Value>1.97536E9</Value>
+       <Frequency>0.02</Frequency>
+       <InputUnits>
+         <Name>m/s</Name>
+         <Description>Velocity in Meters Per Second</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+     </InstrumentSensitivity>
+      <Stage number="1">
+      <PolesZeros>
+        <InputUnits>
+          <Name>m/s</Name>
+          <Description>Velocity in Meters Per Second</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </OutputUnits>
+        <PzTransferFunctionType>LAPLACE (RADIANS/SECOND)</PzTransferFunctionType>
+        <NormalizationFactor>5.03773E14</NormalizationFactor>
+        <NormalizationFrequency>0.02</NormalizationFrequency>
+        <Zero number="0">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="1">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="2">
+          <Real>-22.005</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="3">
+          <Real>-22.005</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="4">
+          <Real>-373.776</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="5">
+          <Real>-412.2</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="6">
+          <Real>-464.915</Real>
+          <Imaginary>-759.775</Imaginary>
+        </Zero>
+        <Zero number="7">
+          <Real>-464.915</Real>
+          <Imaginary>759.775</Imaginary>
+        </Zero>
+        <Pole number="0">
+          <Real>-0.01229</Real>
+          <Imaginary>-0.0124</Imaginary>
+        </Pole>
+        <Pole number="1">
+          <Real>-0.01229</Real>
+          <Imaginary>0.0124</Imaginary>
+        </Pole>
+        <Pole number="2">
+          <Real>-22.41</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="3">
+          <Real>-22.41</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="4">
+          <Real>-256.478</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="5">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="6">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="7">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="8">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="9">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="10">
+          <Real>-806.079</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="11">
+          <Real>-93.102</Real>
+          <Imaginary>-913.905</Imaginary>
+        </Pole>
+        <Pole number="12">
+          <Real>-93.102</Real>
+          <Imaginary>913.905</Imaginary>
+        </Pole>
+      </PolesZeros>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1183.0</Value>
+        <Frequency>0.02</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="2">
+      <Coefficients>
+        <InputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1677720.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="3">
+      <Coefficients>
+        <InputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+        <Numerator number="0">1.21993E-16</Numerator>
+        <Numerator number="1">3.16192E-10</Numerator>
+        <Numerator number="2">-4.31465E-8</Numerator>
+        <Numerator number="3">-5.63556E-7</Numerator>
+        <Numerator number="4">-1.26701E-4</Numerator>
+        <Numerator number="5">0.00365814</Numerator>
+        <Numerator number="6">1.67531E-4</Numerator>
+        <Numerator number="7">-0.00540451</Numerator>
+        <Numerator number="8">0.0127861</Numerator>
+        <Numerator number="9">-0.0180357</Numerator>
+        <Numerator number="10">0.0147312</Numerator>
+        <Numerator number="11">0.00322694</Numerator>
+        <Numerator number="12">-0.0385969</Numerator>
+        <Numerator number="13">0.0888353</Numerator>
+        <Numerator number="14">-0.148243</Numerator>
+        <Numerator number="15">0.217766</Numerator>
+        <Numerator number="16">0.809914</Numerator>
+        <Numerator number="17">0.124596</Numerator>
+        <Numerator number="18">-0.123041</Numerator>
+        <Numerator number="19">0.0889975</Numerator>
+        <Numerator number="20">-0.0485016</Numerator>
+        <Numerator number="21">0.0142591</Numerator>
+        <Numerator number="22">0.00689639</Numerator>
+        <Numerator number="23">-0.0144434</Numerator>
+        <Numerator number="24">0.0124286</Numerator>
+        <Numerator number="25">-0.00656873</Numerator>
+        <Numerator number="26">0.00152204</Numerator>
+        <Numerator number="27">0.00314209</Numerator>
+        <Numerator number="28">3.65627E-5</Numerator>
+        <Numerator number="29">-2.15299E-6</Numerator>
+        <Numerator number="30">-2.59783E-7</Numerator>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>15.93</Delay>
+        <Correction>15.93</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+     </Response>
+    </Channel>
+    <Channel code="LDO" locationCode="31" startDate="2012-09-21T00:00:00.0000" restrictedStatus="open">
+     <Latitude>34.94591</Latitude>
+     <Longitude>-106.4572</Longitude>
+     <Elevation>1820.7</Elevation>
+     <Depth>0</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>0</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>WEATHER</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>CI/PAS pressure sensor</Description>
+     </Sensor>
+     <Response>
+     <InstrumentPolynomial>
+       <InputUnits>
+         <Name>Pa</Name>
+         <Description>Pressure in Pascals</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+       <ApproximationType>MACLAURIN</ApproximationType>
+       <FrequencyLowerBound>0.0</FrequencyLowerBound>
+       <FrequencyUpperBound>0.5</FrequencyUpperBound>
+       <ApproximationLowerBound>60000.0</ApproximationLowerBound>
+       <ApproximationUpperBound>110000.0</ApproximationUpperBound>
+       <MaximumError>0.0</MaximumError>
+       <Coefficient number="0">60000.0</Coefficient>
+       <Coefficient number="1">0.01227</Coefficient>
+     </InstrumentPolynomial>
+     </Response>
+    </Channel>
+   </Station>
+   <Station code="KIP" startDate="1988-08-15T00:00:00.0000" restrictedStatus="open" iris:alternateNetworkCodes="_ANSS-BB,_FDSN,_FDSN-ALL,_GSN,_GSN-BROADBAND,_HAWAII,.SPACIFIC,_STS-1,.UNRESTRICTED">
+    <Description>(GSN) IRIS/USGS (IU), GEOSCOPE (G), and NOAA</Description>
+    <Latitude>21.42</Latitude>
+    <Longitude>-158.0112</Longitude>
+    <Elevation>110.0</Elevation>
+    <Site>
+     <Name>Kipapa, Hawaii, USA</Name>
+    </Site>
+    <CreationDate>1988-08-15T00:00:00.0000</CreationDate>
+    <TotalNumberChannels>437</TotalNumberChannels>
+    <SelectedNumberChannels>2</SelectedNumberChannels>
+    <Channel code="LHZ" locationCode="00" startDate="2021-10-08T16:45:00.0000" endDate="2022-03-22T20:00:00.0000" restrictedStatus="open">
+     <Latitude>21.42</Latitude>
+     <Longitude>-158.0112</Longitude>
+     <Elevation>77</Elevation>
+     <Depth>33</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>-90</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>GEOPHYSICAL</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>Streckeisen STS-1VBB w/E300</Description>
+     </Sensor>
+     <Response>
+     <InstrumentSensitivity>
+       <Value>1.48569E9</Value>
+       <Frequency>0.02</Frequency>
+       <InputUnits>
+         <Name>m/s</Name>
+         <Description>Velocity in Meters Per Second</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+     </InstrumentSensitivity>
+      <Stage number="1">
+      <PolesZeros>
+        <InputUnits>
+          <Name>m/s</Name>
+          <Description>Velocity in Meters Per Second</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </OutputUnits>
+        <PzTransferFunctionType>LAPLACE (RADIANS/SECOND)</PzTransferFunctionType>
+        <NormalizationFactor>5516.01</NormalizationFactor>
+        <NormalizationFrequency>0.02</NormalizationFrequency>
+        <Zero number="0">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="1">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Pole number="0">
+          <Real>-0.0124453</Real>
+          <Imaginary>-0.0116552</Imaginary>
+        </Pole>
+        <Pole number="1">
+          <Real>-0.0124453</Real>
+          <Imaginary>0.0116552</Imaginary>
+        </Pole>
+        <Pole number="2">
+          <Real>-33.2854</Real>
+          <Imaginary>-66.3365</Imaginary>
+        </Pole>
+        <Pole number="3">
+          <Real>-33.2854</Real>
+          <Imaginary>66.3365</Imaginary>
+        </Pole>
+      </PolesZeros>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>3559.0</Value>
+        <Frequency>0.02</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="2">
+      <Coefficients>
+        <InputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>419430.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="3">
+      <Coefficients>
+        <InputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+        <Numerator number="0">1.21993E-16</Numerator>
+        <Numerator number="1">3.16192E-10</Numerator>
+        <Numerator number="2">-4.31465E-8</Numerator>
+        <Numerator number="3">-5.63556E-7</Numerator>
+        <Numerator number="4">-1.26701E-4</Numerator>
+        <Numerator number="5">0.00365814</Numerator>
+        <Numerator number="6">1.67531E-4</Numerator>
+        <Numerator number="7">-0.00540451</Numerator>
+        <Numerator number="8">0.0127861</Numerator>
+        <Numerator number="9">-0.0180357</Numerator>
+        <Numerator number="10">0.0147312</Numerator>
+        <Numerator number="11">0.00322694</Numerator>
+        <Numerator number="12">-0.0385969</Numerator>
+        <Numerator number="13">0.0888353</Numerator>
+        <Numerator number="14">-0.148243</Numerator>
+        <Numerator number="15">0.217766</Numerator>
+        <Numerator number="16">0.809914</Numerator>
+        <Numerator number="17">0.124596</Numerator>
+        <Numerator number="18">-0.123041</Numerator>
+        <Numerator number="19">0.0889975</Numerator>
+        <Numerator number="20">-0.0485016</Numerator>
+        <Numerator number="21">0.0142591</Numerator>
+        <Numerator number="22">0.00689639</Numerator>
+        <Numerator number="23">-0.0144434</Numerator>
+        <Numerator number="24">0.0124286</Numerator>
+        <Numerator number="25">-0.00656873</Numerator>
+        <Numerator number="26">0.00152204</Numerator>
+        <Numerator number="27">0.00314209</Numerator>
+        <Numerator number="28">3.65627E-5</Numerator>
+        <Numerator number="29">-2.15299E-6</Numerator>
+        <Numerator number="30">-2.59783E-7</Numerator>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>15.93</Delay>
+        <Correction>15.93</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+     </Response>
+    </Channel>
+    <Channel code="LDO" locationCode="31" startDate="2012-11-28T00:00:00.0000" restrictedStatus="open">
+     <Latitude>21.42</Latitude>
+     <Longitude>-158.0112</Longitude>
+     <Elevation>110</Elevation>
+     <Depth>0</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>0</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>WEATHER</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>CI/PAS pressure sensor</Description>
+     </Sensor>
+     <Response>
+     <InstrumentPolynomial>
+       <InputUnits>
+         <Name>Pa</Name>
+         <Description>Pressure in Pascals</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+       <ApproximationType>MACLAURIN</ApproximationType>
+       <FrequencyLowerBound>0.0</FrequencyLowerBound>
+       <FrequencyUpperBound>0.5</FrequencyUpperBound>
+       <ApproximationLowerBound>80000.0</ApproximationLowerBound>
+       <ApproximationUpperBound>110000.0</ApproximationUpperBound>
+       <MaximumError>0.0</MaximumError>
+       <Coefficient number="0">80000.0</Coefficient>
+       <Coefficient number="1">0.007362</Coefficient>
+     </InstrumentPolynomial>
+     </Response>
+    </Channel>
+   </Station>
+   <Station code="PAB" startDate="2009-08-14T00:00:00.0000" restrictedStatus="open" iris:alternateNetworkCodes="_CARIBE-EWS,_FDSN,_FDSN-ALL,_GSN,_GSN-BROADBAND,_STS-1,.UNRESTRICTED">
+    <Description>(GSN) IRIS/USGS (IU) and IGN</Description>
+    <Latitude>39.5446</Latitude>
+    <Longitude>-4.3499</Longitude>
+    <Elevation>950.0</Elevation>
+    <Site>
+     <Name>San Pablo, Spain</Name>
+    </Site>
+    <CreationDate>2009-08-14T00:00:00.0000</CreationDate>
+    <TotalNumberChannels>147</TotalNumberChannels>
+    <SelectedNumberChannels>2</SelectedNumberChannels>
+    <Channel code="LHZ" locationCode="00" startDate="2016-06-14T20:30:35.0000" endDate="2022-08-03T00:00:00.0000" restrictedStatus="open">
+     <Latitude>39.5446</Latitude>
+     <Longitude>-4.3499</Longitude>
+     <Elevation>950</Elevation>
+     <Depth>0</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>-90</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>GEOPHYSICAL</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>Streckeisen STS-1VBB w/E300</Description>
+     </Sensor>
+     <Response>
+     <InstrumentSensitivity>
+       <Value>5.65055E9</Value>
+       <Frequency>0.02</Frequency>
+       <InputUnits>
+         <Name>m/s</Name>
+         <Description>Velocity in Meters Per Second</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+     </InstrumentSensitivity>
+      <Stage number="1">
+      <PolesZeros>
+        <InputUnits>
+          <Name>m/s</Name>
+          <Description>Velocity in Meters Per Second</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </OutputUnits>
+        <PzTransferFunctionType>LAPLACE (RADIANS/SECOND)</PzTransferFunctionType>
+        <NormalizationFactor>5030.66</NormalizationFactor>
+        <NormalizationFrequency>0.02</NormalizationFrequency>
+        <Zero number="0">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="1">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Pole number="0">
+          <Real>-0.012225</Real>
+          <Imaginary>-0.0119245</Imaginary>
+        </Pole>
+        <Pole number="1">
+          <Real>-0.012225</Real>
+          <Imaginary>0.0119245</Imaginary>
+        </Pole>
+        <Pole number="2">
+          <Real>-39.1344</Real>
+          <Imaginary>-59.127</Imaginary>
+        </Pole>
+        <Pole number="3">
+          <Real>-39.1344</Real>
+          <Imaginary>59.127</Imaginary>
+        </Pole>
+      </PolesZeros>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>3384.0</Value>
+        <Frequency>0.02</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="2">
+      <Coefficients>
+        <InputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1677720.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="3">
+      <Coefficients>
+        <InputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+        <Numerator number="0">1.21993E-16</Numerator>
+        <Numerator number="1">3.16192E-10</Numerator>
+        <Numerator number="2">-4.31465E-8</Numerator>
+        <Numerator number="3">-5.63556E-7</Numerator>
+        <Numerator number="4">-1.26701E-4</Numerator>
+        <Numerator number="5">0.00365814</Numerator>
+        <Numerator number="6">1.67531E-4</Numerator>
+        <Numerator number="7">-0.00540451</Numerator>
+        <Numerator number="8">0.0127861</Numerator>
+        <Numerator number="9">-0.0180357</Numerator>
+        <Numerator number="10">0.0147312</Numerator>
+        <Numerator number="11">0.00322694</Numerator>
+        <Numerator number="12">-0.0385969</Numerator>
+        <Numerator number="13">0.0888353</Numerator>
+        <Numerator number="14">-0.148243</Numerator>
+        <Numerator number="15">0.217766</Numerator>
+        <Numerator number="16">0.809914</Numerator>
+        <Numerator number="17">0.124596</Numerator>
+        <Numerator number="18">-0.123041</Numerator>
+        <Numerator number="19">0.0889975</Numerator>
+        <Numerator number="20">-0.0485016</Numerator>
+        <Numerator number="21">0.0142591</Numerator>
+        <Numerator number="22">0.00689639</Numerator>
+        <Numerator number="23">-0.0144434</Numerator>
+        <Numerator number="24">0.0124286</Numerator>
+        <Numerator number="25">-0.00656873</Numerator>
+        <Numerator number="26">0.00152204</Numerator>
+        <Numerator number="27">0.00314209</Numerator>
+        <Numerator number="28">3.65627E-5</Numerator>
+        <Numerator number="29">-2.15299E-6</Numerator>
+        <Numerator number="30">-2.59783E-7</Numerator>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>15.93</Delay>
+        <Correction>15.93</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+     </Response>
+    </Channel>
+    <Channel code="LDO" locationCode="31" startDate="2021-03-01T19:58:00.0000" restrictedStatus="open">
+     <Latitude>39.5446</Latitude>
+     <Longitude>-4.3499</Longitude>
+     <Elevation>950</Elevation>
+     <Depth>0</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>0</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>WEATHER</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>CI/PAS pressure sensor</Description>
+     </Sensor>
+     <Response>
+     <InstrumentPolynomial>
+       <InputUnits>
+         <Name>Pa</Name>
+         <Description>Pressure in Pascals</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+       <ApproximationType>MACLAURIN</ApproximationType>
+       <FrequencyLowerBound>0.0</FrequencyLowerBound>
+       <FrequencyUpperBound>0.5</FrequencyUpperBound>
+       <ApproximationLowerBound>80000.0</ApproximationLowerBound>
+       <ApproximationUpperBound>110000.0</ApproximationUpperBound>
+       <MaximumError>0.0</MaximumError>
+       <Coefficient number="0">80000.0</Coefficient>
+       <Coefficient number="1">0.007362</Coefficient>
+     </InstrumentPolynomial>
+     </Response>
+    </Channel>
+   </Station>
+   <Station code="RAR" startDate="1992-03-07T00:00:00.0000" restrictedStatus="open" iris:alternateNetworkCodes="_FDSN,_FDSN-ALL,_GSN,_GSN-BROADBAND,.SPACIFIC,_STS-1,.UNRESTRICTED">
+    <Description>(GSN) IRIS/USGS (IU) and GNS Science</Description>
+    <Latitude>-21.2125</Latitude>
+    <Longitude>-159.7733</Longitude>
+    <Elevation>28.0</Elevation>
+    <Site>
+     <Name>Rarotonga, Cook Islands</Name>
+    </Site>
+    <CreationDate>1992-03-07T00:00:00.0000</CreationDate>
+    <TotalNumberChannels>210</TotalNumberChannels>
+    <SelectedNumberChannels>2</SelectedNumberChannels>
+    <Channel code="LHZ" locationCode="00" startDate="2018-03-28T00:00:00.0000" restrictedStatus="open">
+     <Latitude>-21.2125</Latitude>
+     <Longitude>-159.7733</Longitude>
+     <Elevation>-73</Elevation>
+     <Depth>101</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>-90</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>GEOPHYSICAL</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>Streckeisen STS-6A VBB Seismometer</Description>
+     </Sensor>
+     <Response>
+     <InstrumentSensitivity>
+       <Value>1.97536E9</Value>
+       <Frequency>0.02</Frequency>
+       <InputUnits>
+         <Name>m/s</Name>
+         <Description>Velocity in Meters Per Second</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+     </InstrumentSensitivity>
+      <Stage number="1">
+      <PolesZeros>
+        <InputUnits>
+          <Name>m/s</Name>
+          <Description>Velocity in Meters Per Second</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </OutputUnits>
+        <PzTransferFunctionType>LAPLACE (RADIANS/SECOND)</PzTransferFunctionType>
+        <NormalizationFactor>5.40446E-20</NormalizationFactor>
+        <NormalizationFrequency>0.02</NormalizationFrequency>
+        <Zero number="0">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="1">
+          <Real>0.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="2">
+          <Real>-4.1654</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="3">
+          <Real>-4.1654</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="4">
+          <Real>-4963010.0</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Zero number="5">
+          <Real>-0.648848</Real>
+          <Imaginary>-7752660.0</Imaginary>
+        </Zero>
+        <Zero number="6">
+          <Real>-0.648848</Real>
+          <Imaginary>7752660.0</Imaginary>
+        </Zero>
+        <Zero number="7">
+          <Real>-1.06399E7</Real>
+          <Imaginary>0.0</Imaginary>
+        </Zero>
+        <Pole number="0">
+          <Real>-0.012411</Real>
+          <Imaginary>-0.0121727</Imaginary>
+        </Pole>
+        <Pole number="1">
+          <Real>-0.012411</Real>
+          <Imaginary>0.0121727</Imaginary>
+        </Pole>
+        <Pole number="2">
+          <Real>-4.3</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="3">
+          <Real>-4.3</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="4">
+          <Real>-349.159</Real>
+          <Imaginary>0.0</Imaginary>
+        </Pole>
+        <Pole number="5">
+          <Real>-490.671</Real>
+          <Imaginary>-469.042</Imaginary>
+        </Pole>
+        <Pole number="6">
+          <Real>-490.671</Real>
+          <Imaginary>469.042</Imaginary>
+        </Pole>
+      </PolesZeros>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1183.0</Value>
+        <Frequency>0.02</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="2">
+      <Coefficients>
+        <InputUnits>
+          <Name>V</Name>
+          <Description>Volts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>0.0</Delay>
+        <Correction>0.0</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1677720.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+      <Stage number="3">
+      <Coefficients>
+        <InputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </InputUnits>
+        <OutputUnits>
+          <Name>counts</Name>
+          <Description>Digital Counts</Description>
+        </OutputUnits>
+        <CfTransferFunctionType>DIGITAL</CfTransferFunctionType>
+        <Numerator number="0">1.21993E-16</Numerator>
+        <Numerator number="1">3.16192E-10</Numerator>
+        <Numerator number="2">-4.31465E-8</Numerator>
+        <Numerator number="3">-5.63556E-7</Numerator>
+        <Numerator number="4">-1.26701E-4</Numerator>
+        <Numerator number="5">0.00365814</Numerator>
+        <Numerator number="6">1.67531E-4</Numerator>
+        <Numerator number="7">-0.00540451</Numerator>
+        <Numerator number="8">0.0127861</Numerator>
+        <Numerator number="9">-0.0180357</Numerator>
+        <Numerator number="10">0.0147312</Numerator>
+        <Numerator number="11">0.00322694</Numerator>
+        <Numerator number="12">-0.0385969</Numerator>
+        <Numerator number="13">0.0888353</Numerator>
+        <Numerator number="14">-0.148243</Numerator>
+        <Numerator number="15">0.217766</Numerator>
+        <Numerator number="16">0.809914</Numerator>
+        <Numerator number="17">0.124596</Numerator>
+        <Numerator number="18">-0.123041</Numerator>
+        <Numerator number="19">0.0889975</Numerator>
+        <Numerator number="20">-0.0485016</Numerator>
+        <Numerator number="21">0.0142591</Numerator>
+        <Numerator number="22">0.00689639</Numerator>
+        <Numerator number="23">-0.0144434</Numerator>
+        <Numerator number="24">0.0124286</Numerator>
+        <Numerator number="25">-0.00656873</Numerator>
+        <Numerator number="26">0.00152204</Numerator>
+        <Numerator number="27">0.00314209</Numerator>
+        <Numerator number="28">3.65627E-5</Numerator>
+        <Numerator number="29">-2.15299E-6</Numerator>
+        <Numerator number="30">-2.59783E-7</Numerator>
+      </Coefficients>
+      <Decimation>
+        <InputSampleRate>1.0</InputSampleRate>
+        <Factor>1</Factor>
+        <Offset>0</Offset>
+        <Delay>15.93</Delay>
+        <Correction>15.93</Correction>
+      </Decimation>
+      <StageGain>
+        <Value>1.0</Value>
+        <Frequency>0.0</Frequency>
+      </StageGain>
+
+      </Stage>
+     </Response>
+    </Channel>
+    <Channel code="LDO" locationCode="31" startDate="2018-03-31T00:00:00.0000" restrictedStatus="open">
+     <Latitude>-21.2125</Latitude>
+     <Longitude>-159.7733</Longitude>
+     <Elevation>28</Elevation>
+     <Depth>0</Depth>
+     <Azimuth>0</Azimuth>
+     <Dip>0</Dip>
+     <Type>CONTINUOUS</Type>
+     <Type>WEATHER</Type>
+     <SampleRate>1E00</SampleRate>
+     <ClockDrift>0E00</ClockDrift>
+     <Sensor>
+      <Description>CI/PAS pressure sensor</Description>
+     </Sensor>
+     <Response>
+     <InstrumentPolynomial>
+       <InputUnits>
+         <Name>Pa</Name>
+         <Description>Pressure in Pascals</Description>
+       </InputUnits>
+       <OutputUnits>
+         <Name>counts</Name>
+         <Description>Digital Counts</Description>
+       </OutputUnits>
+       <ApproximationType>MACLAURIN</ApproximationType>
+       <FrequencyLowerBound>0.0</FrequencyLowerBound>
+       <FrequencyUpperBound>0.5</FrequencyUpperBound>
+       <ApproximationLowerBound>80000.0</ApproximationLowerBound>
+       <ApproximationUpperBound>110000.0</ApproximationUpperBound>
+       <MaximumError>0.0</MaximumError>
+       <Coefficient number="0">80000.0</Coefficient>
+       <Coefficient number="1">0.014305</Coefficient>
+     </InstrumentPolynomial>
+     </Response>
+    </Channel>
+   </Station>
+  </Network>
+ </FDSNStationXML>

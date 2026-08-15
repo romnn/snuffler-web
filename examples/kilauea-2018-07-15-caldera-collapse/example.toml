@@ -1,0 +1,42 @@
+title = "Kīlauea 2018 — a caldera collapsing on schedule"
+blurb = """
+One hour on 2018-07-15 at three stations around the Kīlauea summit, three components at \
+100 Hz, ending nineteen minutes after the caldera floor dropped again.
+
+The source is not a fault. Through the summer of 2018 the floor of Halema‘uma‘u subsided \
+in steps, and each step radiated as an earthquake: eleven of them between the 2nd and the \
+15th of July alone, every one Mw 5.2 or 5.3, all within a few kilometres of each other, \
+spaced 31 hours apart on average. An earthquake that repeats at the same size in the same \
+place is not something a fault does, and it is why this dataset is here.
+
+The 41 minutes before the collapse are full of small earthquakes — 28 STA/LTA triggers in \
+the hour at UWE, 17 of them beforehand — arriving in bursts rather than a ramp, with the \
+five-minute RMS swinging between 5500 and 102000 counts. The collapse itself, at 13:26:05, \
+puts 20.8 million counts peak to peak through UWE and brings WRM and SDH within a few \
+hundred counts of their 24-bit full scale. Then it stops: 5952 counts RMS over the next \
+five minutes. And then, over the following ten, 6887 and 9228. The next cycle has already \
+started.
+"""
+teaches = [
+  "a volcanic source: a caldera floor dropping, not a fault slipping",
+  "an earthquake that repeats — same size, same place, every 31 hours",
+  "dozens of small events in one hour, for STA/LTA and the SeisBench picker",
+  "three components at 100 Hz on three stations a few kilometres apart",
+  "seismicity that stops dead at the collapse and starts rebuilding",
+]
+citation = """
+Hawaiian Volcano Observatory Network (network HV, doi:10.7914/SN/HV), distributed by \
+EarthScope; openly licensed. Event origin from the USGS (hv70426597).
+"""
+
+[source]
+datacenter = "https://service.earthscope.org/fdsnws"
+networks = ["HV"]
+stations = "UWE,WRM,SDH"
+locations = "--"
+# Three components, because the events filling this hour are what a picker is for.
+channels = "HH?"
+# Forty-one minutes of the build-up, the collapse at 13:26:05, and the quiet after.
+start = "2018-07-15T12:45:00"
+end = "2018-07-15T13:45:00"
+event_id = "hv70426597"

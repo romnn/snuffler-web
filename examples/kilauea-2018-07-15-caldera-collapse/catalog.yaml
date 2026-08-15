@@ -1,0 +1,26 @@
+%YAML 1.1
+--- !pf.Event
+lat: 19.4036667
+lon: -155.2901667
+time: '2018-07-15 13:26:05.130000114'
+depth: 1350.0
+name: 'hv70426597'
+magnitude: 5.3
+magnitude_type: 'mw'
+region: '7 km SW of Volcano, Hawaii'
+catalog: 'HV'
+moment_tensor: !pf.MomentTensor
+  mnn: 4.6447e+16
+  mee: 5.122e+16
+  mdd: -9.7667e+16
+  mne: -3.8671e+16
+  mnd: 2.1382e+16
+  med: -1.2274e+16
+  strike1: 227.07887905355713
+  dip1: 52.26667779679612
+  rake1: -85.5041869066148
+  strike2: 39.757618651374
+  dip2: 37.9605660900038
+  rake2: -95.78422502407403
+  moment: 9.624507670525283e+16
+  magnitude: 5.2889190153104675

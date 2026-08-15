@@ -1,0 +1,52 @@
+title = "Tonga 2022 — a wave through the air"
+blurb = """
+A day of the 2022-01-15 Hunga Tonga–Hunga Ha‘apai eruption on five Global Seismographic \
+Network stations between 829 and 17734 km away, each recording it twice: a seismometer \
+(LHZ) and, at the same site, a barometer (LDO).
+
+The seismic part behaves the way the rest of this menu behaves. Surface waves peak seven \
+minutes after the origin at AFI and a hundred minutes after it at PAB in Spain — \
+kilometres per second, as always. Then, hours later, the barometers move. The eruption \
+put a pressure pulse into the atmosphere and it crossed the Pacific at the speed of \
+sound: the onset reaches AFI at 0.47 h, RAR at 1.19 h, KIP at 4.23 h, ANMO at 8.32 h and \
+PAB at 15.81 h. Those five points sit on a straight line of 306 m/s to within 27 km, \
+which is a wave you can watch cross a planet at walking-pace-times-a-thousand.
+
+PAB gets it twice. The pulse that travelled the other way round arrives at 19.83 h, \
+22341 km at 313 m/s, and it is not the weaker of the two: at 17734 km the wave is bigger \
+than at ANMO less than half as far, because a wave spreading over a sphere stops \
+spreading past the quarter point and converges again on the far side.
+"""
+teaches = [
+  "one source, two wavefields: ground at km/s, air at 306 m/s",
+  "barometer channels (LDO) beside the seismometers at the same sites",
+  "a pressure onset that is a straight line from 829 to 17734 km",
+  "the same pulse reaching Spain the short way and the long way round",
+  "a day-long record whose events are hours apart",
+]
+citation = """
+Global Seismographic Network: IRIS/USGS network IU (doi:10.7914/SN/IU), distributed by \
+EarthScope; openly licensed. Event origin from the USGS (us7000gc8r).
+"""
+
+# Distance order, so the air wave's moveout is the shape of the stack: it steps down
+# the screen station by station over sixteen hours, which is the whole point.
+[state]
+sort = "distance"
+
+[source]
+# Two instruments per site: the seismometer (LHZ, location 00) and the barometer
+# (LDO, location 31) that GSN stations run beside it. The dataset only says
+# anything with both — one event recorded by two different physics at two very
+# different speeds.
+datacenter = "https://service.earthscope.org/fdsnws"
+networks = ["IU"]
+stations = "AFI,RAR,KIP,ANMO,PAB"
+locations = "00,31"
+channels = "LHZ,LDO"
+# From 2h45m before the eruption, so there is quiet on screen to measure against,
+# to 21h45m after it — long enough for the air wave to reach Spain the short way
+# round and then again the long way.
+start = "2022-01-15T01:30:00"
+end = "2022-01-16T02:00:00"
+event_id = "us7000gc8r"
