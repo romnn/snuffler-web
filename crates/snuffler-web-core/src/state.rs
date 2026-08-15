@@ -117,12 +117,11 @@ impl ViewMode {
 /// Visual treatment applied to time-domain traces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WiggleTheme {
-    /// Colored trace boxes matching the Qt frontend.
+    /// Snuffler's own look, reproduced: white canvas, Tango trace boxes, its
+    /// `graph_colors` strokes. Light only — see [`Self::forces_light`].
     SnufflerQt,
-    /// Colored trace strokes without row tinting.
-    ColorLines,
-    /// Alternating color-tinted row bands.
-    NightBands,
+    /// This frontend's own, designed for both light and dark.
+    SnufflerWeb,
 }
 
 impl WiggleTheme {
@@ -131,17 +130,33 @@ impl WiggleTheme {
     pub fn label(self) -> &'static str {
         match self {
             WiggleTheme::SnufflerQt => "Snuffler Qt",
-            WiggleTheme::ColorLines => "Color lines",
-            WiggleTheme::NightBands => "Night bands",
+            WiggleTheme::SnufflerWeb => "Snuffler Web",
         }
     }
 
+    /// Whether this theme draws a rule between rows when the trace boxes are off,
+    /// absent an explicit choice from the user. Snuffler draws none.
+    #[must_use]
+    pub const fn default_track_separators(self) -> bool {
+        matches!(self, WiggleTheme::SnufflerWeb)
+    }
+
+    /// Whether this theme pins the canvas to light regardless of the app's
+    /// light/dark preference.
+    ///
+    /// Snuffler has no dark mode: its canvas is `QPalette.Base`, its traces
+    /// `aluminium5`, its boxes the light Tango fills at alpha 100 — a palette built
+    /// for white and only coherent on it. A dark variant of this theme would not be
+    /// snuffler rendered differently, it would be a different theme wearing the
+    /// name. So the theme owns the canvas, and the light/dark control belongs to
+    /// [`Self::SnufflerWeb`], which was designed for both.
+    #[must_use]
+    pub const fn forces_light(self) -> bool {
+        matches!(self, WiggleTheme::SnufflerQt)
+    }
+
     /// Themes in menu order.
-    pub const ALL: [WiggleTheme; 3] = [
-        WiggleTheme::SnufflerQt,
-        WiggleTheme::ColorLines,
-        WiggleTheme::NightBands,
-    ];
+    pub const ALL: [WiggleTheme; 2] = [WiggleTheme::SnufflerQt, WiggleTheme::SnufflerWeb];
 }
 
 /// Station sort order (snuffler's "Sorting" station radio group,
@@ -501,6 +516,22 @@ pub struct AppState {
     pub show_scale_axes: bool,
     /// Whether each row displays its zero-amplitude line.
     pub show_zero_lines: bool,
+    /// Whether a rule is drawn between rows when the trace boxes are off.
+    ///
+    /// `None` follows the theme — off under Snuffler Qt, which separates rows with
+    /// nothing at all once its boxes are off, and on under Snuffler Web, where
+    /// turning the bands off should not leave rows running into one another. `Some`
+    /// is the user overriding that, and is honoured under *both* themes: parity is
+    /// about what the port does by default, not about refusing to draw a rule
+    /// somebody asked for.
+    pub show_track_separators: Option<bool>,
+    /// Whether the time ticks extend into a full-height grid across the tracks.
+    ///
+    /// Web-only, and off by default because snuffler has no such grid: `TimeAx.drawit`
+    /// (`pile_viewer.py:539`) marks each tick with a 10 px stroke at the axis and draws
+    /// nothing across the rows. Reading a long window is easier with one, so the port
+    /// offers it — as something the user switches on, not as a difference it imposes.
+    pub show_time_grid: bool,
 
     // --- waterfall colorbar ---
     /// Matplotlib colormap used by pyrocko for waterfall cells.
@@ -677,6 +708,8 @@ impl Default for AppState {
             show_scale_ranges: false,
             show_scale_axes: false,
             show_zero_lines: false,
+            show_track_separators: None,
+            show_time_grid: false,
             wf_cmap: Colormap::Viridis,
             wf_clip: (0.0, 1.0),
             wf_symmetry: false,
@@ -740,6 +773,14 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Whether a rule is drawn between rows: the user's choice if they made one,
+    /// otherwise whatever the current theme does by default.
+    #[must_use]
+    pub fn track_separators(&self) -> bool {
+        self.show_track_separators
+            .unwrap_or_else(|| self.wiggle_theme.default_track_separators())
+    }
+
     /// Whether markers of this kind are currently drawn/selectable (the
     /// `:markers` command). Raw-kind comparison so kind>=8 hides under
     /// `markers all`, matching pyrocko `pile_viewer.py`.

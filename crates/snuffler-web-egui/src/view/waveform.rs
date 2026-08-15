@@ -26,7 +26,7 @@ use snuffler_web_core::state::{
 };
 use snuffler_web_render::layout::{AXIS_H, compute_layout, track_geometry};
 use snuffler_web_render::paint::{marker_row_spans, paint};
-use snuffler_web_render::palette::{Theme, palette};
+use snuffler_web_render::palette::{Theme, canvas_theme, palette};
 
 /// Width of the vertical track scrollbar carved off the right edge.
 const SCROLLBAR_W: f32 = 12.0;
@@ -155,7 +155,10 @@ pub fn render_svg(
     size: egui::Vec2,
     theme: egui::Theme,
 ) -> String {
-    let theme = Theme::from_dark(theme == egui::Theme::Dark);
+    let theme = canvas_theme(
+        Theme::from_dark(theme == egui::Theme::Dark),
+        state.wiggle_theme,
+    );
     let pal = palette(theme, state.wiggle_theme);
     let rect = Rect::from_min_size(egui::Pos2::ZERO, size);
     let lay = compute_layout(state, view, rect);
@@ -200,7 +203,10 @@ pub fn show(
     view_epoch: u64,
     scene_range: Option<(f64, f64)>,
 ) -> egui::Response {
-    let theme = Theme::from_dark(ui.ctx().theme() == egui::Theme::Dark);
+    let theme = canvas_theme(
+        Theme::from_dark(ui.ctx().theme() == egui::Theme::Dark),
+        state.wiggle_theme,
+    );
     let pal = palette(theme, state.wiggle_theme);
     ui.ctx()
         .options_mut(|o| o.tessellation_options.feathering = state.antialiasing);
@@ -330,7 +336,10 @@ fn draw_scrollbar(
     row_h: f32,
 ) {
     let painter = ui.painter();
-    let theme = Theme::from_dark(ui.ctx().theme() == egui::Theme::Dark);
+    let theme = canvas_theme(
+        Theme::from_dark(ui.ctx().theme() == egui::Theme::Dark),
+        state.wiggle_theme,
+    );
     let total_f = total.max(1) as f32;
     let area = strip.height().max(1.0);
     let fits = (area / row_h.max(1.0)).max(1.0);

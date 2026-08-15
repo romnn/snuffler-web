@@ -41,21 +41,35 @@ pub struct Palette {
     pub cursor: Color32,
 }
 
+/// The canvas polarity a wiggle theme actually renders on.
+///
+/// Usually the app's own light/dark preference, but a theme may pin it: Snuffler Qt
+/// is white-canvas because snuffler is, and the frontend disables the light/dark
+/// control while it is selected rather than letting the two disagree.
+#[must_use]
+pub fn canvas_theme(preference: Theme, wiggle: WiggleTheme) -> Theme {
+    if wiggle.forces_light() {
+        Theme::Light
+    } else {
+        preference
+    }
+}
+
 /// Selects the waveform palette for the frontend color scheme and user theme.
+///
+/// The Snuffler Qt theme is snuffler's own surface, and only exists on white — the
+/// dark arm is unreachable through the UI (`WiggleTheme::forces_light`) and returns
+/// the same white palette rather than inventing one.
+///
+/// Snuffler Web is one design at two luminance levels, not two designs. Both arms
+/// share a slightly blue-cool neutral ramp; each picks the step that puts the same
+/// contrast between canvas, chrome and ink. The canvases are held just off the
+/// extremes (250 rather than 255, 20 rather than 0) because a waveform against pure
+/// white or pure black is harsher than it needs to be for hours of reading.
 #[must_use]
 pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
     match (theme, wiggle) {
-        (Theme::Dark, WiggleTheme::SnufflerQt) => Palette {
-            bg: Color32::from_rgb(12, 15, 18),
-            trace: Color32::from_rgb(206, 212, 218),
-            grid: Color32::from_rgb(42, 49, 56),
-            zero: Color32::from_rgb(32, 37, 43),
-            axis_text: Color32::from_rgb(188, 196, 204),
-            sep: Color32::from_rgb(48, 55, 62),
-            label_bg: Color32::from_rgba_unmultiplied(12, 15, 18, 218),
-            cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 55),
-        },
-        (Theme::Light, WiggleTheme::SnufflerQt) => Palette {
+        (_, WiggleTheme::SnufflerQt) => Palette {
             bg: Color32::from_rgb(255, 255, 255),
             trace: Color32::from_rgb(85, 87, 83),
             grid: Color32::from_rgb(224, 224, 224),
@@ -65,45 +79,25 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
             label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
             cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
         },
-        (Theme::Dark, WiggleTheme::ColorLines) => Palette {
-            bg: Color32::from_rgb(22, 24, 27),
-            trace: Color32::from_rgb(222, 224, 228),
-            grid: Color32::from_rgb(48, 51, 56),
-            zero: Color32::from_rgb(40, 43, 48),
-            axis_text: Color32::from_rgb(196, 200, 206),
-            sep: Color32::from_rgb(54, 57, 62),
-            label_bg: Color32::from_rgba_unmultiplied(16, 18, 20, 205),
-            cursor: Color32::from_rgba_unmultiplied(255, 255, 255, 50),
+        (Theme::Light, WiggleTheme::SnufflerWeb) => Palette {
+            bg: Color32::from_rgb(250, 250, 251),
+            trace: Color32::from_rgb(38, 42, 51),
+            grid: Color32::from_rgb(226, 228, 233),
+            zero: Color32::from_rgb(235, 237, 241),
+            axis_text: Color32::from_rgb(90, 96, 108),
+            sep: Color32::from_rgb(223, 226, 232),
+            label_bg: Color32::from_rgba_unmultiplied(250, 250, 251, 214),
+            cursor: Color32::from_rgba_unmultiplied(38, 42, 51, 46),
         },
-        (Theme::Light, WiggleTheme::ColorLines) => Palette {
-            bg: Color32::from_rgb(250, 250, 250),
-            trace: Color32::from_rgb(45, 48, 52),
-            grid: Color32::from_rgb(224, 224, 224),
-            zero: Color32::from_rgb(236, 236, 236),
-            axis_text: Color32::from_rgb(64, 64, 64),
-            sep: Color32::from_rgb(214, 214, 214),
-            label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 216),
-            cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
-        },
-        (Theme::Dark, WiggleTheme::NightBands) => Palette {
-            bg: Color32::from_rgb(6, 12, 16),
-            trace: Color32::from_rgb(213, 230, 226),
-            grid: Color32::from_rgb(28, 45, 52),
-            zero: Color32::from_rgb(21, 34, 40),
-            axis_text: Color32::from_rgb(176, 206, 207),
-            sep: Color32::from_rgb(35, 56, 64),
-            label_bg: Color32::from_rgba_unmultiplied(6, 12, 16, 225),
-            cursor: Color32::from_rgba_unmultiplied(137, 230, 211, 72),
-        },
-        (Theme::Light, WiggleTheme::NightBands) => Palette {
-            bg: Color32::from_rgb(248, 250, 247),
-            trace: Color32::from_rgb(39, 58, 62),
-            grid: Color32::from_rgb(216, 225, 219),
-            zero: Color32::from_rgb(230, 236, 231),
-            axis_text: Color32::from_rgb(52, 76, 78),
-            sep: Color32::from_rgb(202, 215, 207),
-            label_bg: Color32::from_rgba_unmultiplied(248, 250, 247, 220),
-            cursor: Color32::from_rgba_unmultiplied(0, 76, 72, 44),
+        (Theme::Dark, WiggleTheme::SnufflerWeb) => Palette {
+            bg: Color32::from_rgb(20, 22, 28),
+            trace: Color32::from_rgb(226, 229, 236),
+            grid: Color32::from_rgb(46, 50, 60),
+            zero: Color32::from_rgb(38, 42, 51),
+            axis_text: Color32::from_rgb(150, 157, 172),
+            sep: Color32::from_rgb(45, 49, 59),
+            label_bg: Color32::from_rgba_unmultiplied(20, 22, 28, 214),
+            cursor: Color32::from_rgba_unmultiplied(226, 229, 236, 52),
         },
     }
 }

@@ -8,7 +8,7 @@ use snuffler_web_core::bridge::{ExampleDataset, Repaint, Status};
 use snuffler_web_core::markers::Marker;
 use snuffler_web_core::session::Session;
 use snuffler_web_core::state::{
-    ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
+    AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
 };
 
 /// How often the displayed frame rate is allowed to change. The measurement is
@@ -72,12 +72,23 @@ pub struct App {
     /// The frame rate the top bar is currently showing, and when it last changed.
     frame_stats_shown_fps: Option<u32>,
     frame_stats_shown_at_s: f64,
+    /// The light/dark preference to restore when leaving a theme that pins the
+    /// canvas. Snuffler Qt takes the *whole* frontend light, not just the waveform:
+    /// a white canvas inside dark chrome is neither theme, it just looks broken.
+    theme_before_pinning: Option<egui::ThemePreference>,
 }
 
 fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::TextStyle;
-    ctx.set_theme(egui::ThemePreference::System);
+    // The default wiggle theme decides the boot preference: Snuffler Qt pins the whole
+    // frontend light, so following the system into dark here would show white
+    // waveforms in dark chrome for the first frames and then snap.
+    ctx.set_theme(if AppState::default().wiggle_theme.forces_light() {
+        egui::ThemePreference::Light
+    } else {
+        egui::ThemePreference::System
+    });
 
     // egui's bundled proportional face is Ubuntu-Light, which renders very thin.
     // Register Ubuntu Regular as the primary proportional font (same typeface, one
@@ -167,6 +178,7 @@ impl App {
             frame_stats_ms: None,
             frame_stats_shown_fps: None,
             frame_stats_shown_at_s: 0.0,
+            theme_before_pinning: None,
         }
     }
 
@@ -559,10 +571,33 @@ impl App {
         });
     }
 
+    /// Take the whole frontend light for a canvas-pinning theme, and give the user's
+    /// own preference back when they leave it.
+    fn apply_theme_pinning(&mut self, ctx: &egui::Context, theme: WiggleTheme) {
+        if theme.forces_light() {
+            let current = ctx.options(|o| o.theme_preference);
+            if current != egui::ThemePreference::Light {
+                self.theme_before_pinning = Some(current);
+            }
+            ctx.set_theme(egui::ThemePreference::Light);
+        } else if let Some(restored) = self.theme_before_pinning.take() {
+            ctx.set_theme(restored);
+        }
+    }
+
     fn view_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("View", |ui| {
             ui.label("Theme");
-            egui::global_theme_preference_buttons(ui);
+            // Snuffler Qt owns its canvas: snuffler is white-only, so a dark variant
+            // of that theme would be a different theme wearing the name. The control
+            // stays visible and says why rather than vanishing under some themes.
+            let pinned = self.session.state.wiggle_theme.forces_light();
+            ui.add_enabled_ui(!pinned, egui::global_theme_preference_buttons)
+                .response
+                .on_disabled_hover_text(
+                    "Only the Snuffler Web theme has light and dark. Snuffler itself \
+                     draws on white, so the Snuffler Qt theme stays there.",
+                );
             ui.separator();
 
             ui.label("Visible length");
@@ -595,7 +630,14 @@ impl App {
 
             ui.label("Wiggle theme");
             for theme in WiggleTheme::ALL {
-                ui.selectable_value(&mut self.session.state.wiggle_theme, theme, theme.label());
+                let previous = self.session.state.wiggle_theme;
+                if ui
+                    .selectable_value(&mut self.session.state.wiggle_theme, theme, theme.label())
+                    .clicked()
+                    && theme != previous
+                {
+                    self.apply_theme_pinning(ui.ctx(), theme);
+                }
             }
             ui.separator();
 
@@ -610,6 +652,16 @@ impl App {
             );
             ui.checkbox(&mut self.session.state.show_scale_axes, "Show scale axes");
             ui.checkbox(&mut self.session.state.show_zero_lines, "Show zero lines");
+            ui.checkbox(&mut self.session.state.show_time_grid, "Show time grid");
+            // Backed by an Option: the checkbox shows what the theme is actually
+            // doing, and clicking it records a choice that outlives a theme switch.
+            let mut separators = self.session.state.track_separators();
+            if ui
+                .checkbox(&mut separators, "Show track separators")
+                .changed()
+            {
+                self.session.state.show_track_separators = Some(separators);
+            }
             ui.separator();
             ui.checkbox(&mut self.session.state.show_controls, "Show main controls");
             ui.checkbox(&mut self.session.state.show_marker_editor, "Marker editor");
