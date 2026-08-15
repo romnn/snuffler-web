@@ -80,6 +80,7 @@ def fetch(slug: str, dry_run: bool) -> List[Path]:
     out = directory / f"{slug}.mseed"
     if not dry_run:
         out.write_bytes(waveforms)
+        _drop_empty_records(out)
     written.append(out)
 
     # One StationXML per network at response level, the way a datacenter hands it
@@ -101,6 +102,64 @@ def fetch(slug: str, dry_run: bool) -> List[Path]:
     if event_id:
         written.append(_fetch_catalog(directory, str(event_id), dry_run))
     return written
+
+
+def _drop_empty_records(path: Path) -> None:
+    """Rewrite ``path`` without the MiniSEED records that carry no samples.
+
+    Datacenters ship them — the Sumatra window came back with nine, spread over three
+    LHZ channels — and they are not waveforms: zero samples, and a sample rate of zero
+    with them. pyrocko reads each as a trace, which costs a viewer a blank row per
+    record, and pyrocko's ``pile`` cannot index them at all: ``dispatch_key`` takes
+    ``log(deltatmin)``, and a deltat of zero raises. Snuffler therefore cannot open a
+    file that contains one, which is not a state to hand a reader an example in.
+
+    Records are copied, not re-encoded: dropping a record is deleting its bytes and
+    concatenating the rest, so every sample and every start time in what remains is
+    the datacenter's own. Re-encoding through ``io.save`` would have been three lines,
+    but MiniSEED keeps times in units of 0.0001 s and these start on the 47th
+    microsecond, so a round trip moves them — a small lie in a file whose point is
+    that it is real.
+
+    Each record declares its own length in blockette 1000, which is how a file mixing
+    4096-byte data records with 512-byte empty ones is walked at all. A record without
+    that blockette leaves the next boundary unknowable, so this refuses rather than
+    guesses. Only rewrites when there is something to drop.
+    """
+    raw = path.read_bytes()
+    keep: List[bytes] = []
+    dropped = 0
+    offset = 0
+    while offset < len(raw):
+        nsamples = int.from_bytes(raw[offset + 30 : offset + 32], "big")
+        nblockettes = raw[offset + 39]
+        cursor = int.from_bytes(raw[offset + 46 : offset + 48], "big")
+        length = None
+        for _ in range(nblockettes):
+            if cursor == 0 or offset + cursor + 7 > len(raw):
+                break
+            kind = int.from_bytes(raw[offset + cursor : offset + cursor + 2], "big")
+            if kind == 1000:
+                length = 1 << raw[offset + cursor + 6]
+                break
+            cursor = int.from_bytes(raw[offset + cursor + 2 : offset + cursor + 4], "big")
+        if length is None:
+            raise SystemExit(
+                f"{path.name}: record at byte {offset} has no blockette 1000, so its "
+                "length is unknown and the file cannot be walked safely"
+            )
+        if nsamples:
+            keep.append(raw[offset : offset + length])
+        else:
+            dropped += 1
+        offset += length
+
+    if not dropped:
+        return
+    if not keep:
+        raise SystemExit(f"{path.name}: every record is empty; nothing to write")
+    path.write_bytes(b"".join(keep))
+    print(f"          dropped {dropped} empty record(s), {len(keep)} kept")
 
 
 def _fetch_catalog(directory: Path, event_id: str, dry_run: bool) -> Path:

@@ -26,6 +26,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     Iterator,
     List,
     Mapping,
@@ -100,6 +101,19 @@ def _mark_traces_changed() -> None:
     global _DATA_GEN
     _DATA_GEN += 1
     _clear_view_cache()
+
+
+def _without_empty(traces: Iterable[ptrace.Trace]) -> List[ptrace.Trace]:
+    """Drop the sampleless "traces" a MiniSEED file can carry.
+
+    Datacenters ship records with no samples and a sample rate of zero, and pyrocko
+    hands each one back as a trace. Nothing can be drawn from it, so keeping it costs
+    a blank row that looks like a dead channel — which is a thing this viewer is
+    supposed to be able to show, and so a row that lies. pyrocko's own ``pile`` refuses
+    such a file outright (``dispatch_key`` takes ``log(deltatmin)``), so there is no
+    upstream behaviour to match here: it is this or a traceback.
+    """
+    return [tr for tr in traces if tr.deltat > 0.0 and tr.ydata is not None and tr.ydata.size]
 
 
 def _set_traces(traces: List[ptrace.Trace], append: bool = False) -> None:
@@ -352,7 +366,7 @@ def _load_path_scene(
     a ``source_id`` the load replaces that source's previous traces (reload)."""
     del name
     fmt2 = "detect" if fmt in (None, "", "detect") else fmt
-    traces = list(pio.load(path, format=fmt2))
+    traces = _without_empty(pio.load(path, format=fmt2))
     if source_id:
         _replace_source(source_id, traces)
     else:
