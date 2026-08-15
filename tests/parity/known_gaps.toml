@@ -882,7 +882,7 @@ payload rather than derived from what is on screen.
 key = "qt-theme-residual-chrome"
 bucket = "soft"
 todo = true
-title = "The Snuffler Qt theme's one remaining difference: a font weight"
+title = "What the Snuffler Qt theme still does not copy, on the time axis"
 enforce = "a pixel check on the wiggle canvas against a `qt_oracle` PNG of the same scenario — the oracle already renders one (`want_png`), and nothing yet diffs it"
 why = """
 The Snuffler Qt theme is the one that claims fidelity, so what it still gets wrong
@@ -894,6 +894,29 @@ belongs written down rather than assumed cosmetic. Verified against a rendered
 them at `AXIS_PT` in the default weight. One line to change, left until something
 actually compares the rendering, because guessing at font metrics without a pixel diff
 is how the axis layout drifts.
+
+**The axis labels are laid out differently below the ticks.** Three parts, all of them
+in `TimeAx.drawit`. Snuffler draws its second and third rows — the day, the year —
+*centred under the tick they belong to*, once per tick that earns one; the port draws a
+single context label pinned to the left edge of the axis. Snuffler abbreviates a label
+that will not fit its own tick spacing, stepping `l0` to `l0_brief` to nothing by
+measuring against `pinc_approx*0.9`; the port has no abbreviation ladder and instead
+drops any label that would collide with the axis ends. And snuffler shifts a label by
+`ushift`, half a tick interval, for the formats it centres *between* ticks rather than
+on them.
+
+The vertical offsets are no longer part of this: they were guessed constants and are
+now derived from snuffler's own baseline arithmetic, which puts the tick label's
+glyphs `ticklen` below the axis top and stacks the row under it by that label's height.
+What remains is horizontal placement and the abbreviation policy, both of which need
+font metrics to be compared honestly — which is the same pixel check this entry has
+always been waiting for.
+
+Recorded because it was *found*, not because it was designed: it turned up on a direct
+question about whether this theme was fully at parity, in a part of the rendering no
+tier looks at. Treat the list above as what has been examined rather than as what
+differs — the track label chip, the marker drawing, the scale annotations and the whole
+waterfall path have never been held against snuffler at all.
 
 **Scope: light only, and that is now structural.** This entry used to carry a second
 half about a dark variant of this theme. There is no such thing any more.

@@ -568,9 +568,15 @@ pub fn paint(
     // time grid + axis labels
     let tinc = timeaxis::nice_tinc(window, f64::from((rect.width() / 90.0).max(2.0)));
     let axis_top = track_area.bottom();
-    // Clear of the tick marks, as snuffler pads its labels past them (`pad`, `TimeAx`).
-    let tick_label_y = axis_top + QT_TICK_LEN + 2.0;
-    let context_label_y = axis_top + QT_TICK_LEN + 21.0;
+    // Both offsets are snuffler's, rearranged rather than guessed. `TimeAx.drawit`
+    // gives the tick label a *baseline* at `vmin + rect0.height() + ticklen`, which
+    // puts the top of its glyphs exactly `ticklen` below the top of the axis area;
+    // the row under it gets `+ rect1.height()` more, i.e. it stacks directly beneath
+    // by the height of the label above. Measuring a digit stands in for
+    // `QFontMetrics.boundingRect`, whose height for these labels is the digit height.
+    let tick_label_h = target.measure("0", AXIS_PT).y;
+    let tick_label_y = axis_top + QT_TICK_LEN;
+    let context_label_y = tick_label_y + tick_label_h;
     let axis_pad = 10.0;
     for tick in timeaxis::ticks(view_tmin, view_tmax, tinc) {
         let x = x_of(tick);
