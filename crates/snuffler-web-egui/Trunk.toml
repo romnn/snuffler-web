@@ -120,8 +120,9 @@ command_arguments = [
 # post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a
 # gitignored build artifact (docker/pyodide-mt/stage-web.sh) and so is absent on a
 # fresh checkout — where the build still succeeds but the app cannot boot past
-# "Downloading Python runtime…" until docker/pyodide-mt/build-all.sh has run. The
-# copy is skipped per file when unchanged, to keep rebuilds cheap.
+# "Downloading Python runtime…" until `mise run fetch-pyodide` has downloaded the
+# deployed runtime (or build-all.sh has built one). The copy is skipped per file
+# when unchanged, to keep rebuilds cheap.
 [[hooks]]
 stage = "post_build"
 command = "bash"

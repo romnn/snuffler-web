@@ -65,7 +65,8 @@ if missing_files:
 if missing_names or missing_files:
     sys.exit(
         "  Truncated or stale py-mt build — refusing to stage/ship it.\n"
-        "  Rebuild with docker/pyodide-mt/build-all.sh (or bust the CI cache)."
+        "  Re-fetch with docker/pyodide-mt/fetch-web.sh, or rebuild with\n"
+        "  build-all.sh (or bust the CI cache)."
     )
 print(f"OK: boot closure of {len(closure)} packages present, with wheels")
 PY

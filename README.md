@@ -61,7 +61,7 @@ Everything is pinned in `mise.toml` + `rust-toolchain.toml`. With
 
 ```sh
 mise install                    # node, bun, uv, trunk, binaryen, protoc (all pinned)
-docker/pyodide-mt/build-all.sh  # build the custom Pyodide 314 (both wheels + py-mt)
+mise run fetch-pyodide          # download the deployed custom Pyodide 314 into py-mt
 mise run serve                  # trunk serve → http://127.0.0.1:17683
 micromux                        # optional full local stack: proxy + trunk serve
 ```
@@ -79,6 +79,12 @@ switching profiles recompiles the whole dependency graph (including `std`, which
 **pyrocko is not vendored.** `mise run fetch-pyrocko` clones it at a pinned,
 known-good commit (`PYROCKO_REF` in `mise.toml`) into the gitignored `sources/`
 (`build-all.sh` and `serve` depend on it, so it is pulled on demand).
+
+**The runtime can be downloaded instead of built.** Pages publishes exactly the
+directory `stage-web.sh` assembles, so `mise run fetch-pyodide` pulls the deployed
+runtime into `docker/pyodide-mt/served/` in seconds — no Docker, no emsdk, no
+hour. Build it with `build-all.sh` when the runtime itself is what you are
+changing: a patch, a package pin, or `pybuild/setup.py`.
 
 **Both Pyodide paths run our custom Pyodide 314** (py3.14 / emscripten 5.0.3),
 built in `docker/pyodide-mt` (`build-all.sh`, the multi-hour but cacheable step):

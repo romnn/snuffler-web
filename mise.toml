@@ -2,7 +2,7 @@
 #
 #   mise install                    # node, bun, uv, trunk, binaryen, protoc (pinned)
 #   mise run fetch-pyrocko          # clone pyrocko (pinned) into sources/
-#   docker/pyodide-mt/build-all.sh  # build the custom Pyodide 314 (both wheels + py-mt)
+#   mise run fetch-pyodide          # download the deployed Pyodide 314 into py-mt
 #   mise run serve                  # trunk serve
 #
 # pyrocko is NOT vendored: `fetch-pyrocko` clones it (pinned to PYROCKO_REF) into
@@ -12,6 +12,8 @@
 # emscripten 5.0.3, pthread + OpenMP + SIMD), built in docker (docker/pyodide-mt)
 # — NOT via a host emsdk or xbuildenv — and produced by build-all.sh. (A
 # single-threaded wheel for a future non-threaded build is opt-in: BUILD_CDN=1.)
+# Building it takes an hour and needs Docker, so `fetch-pyodide` downloads the one
+# Pages deploys instead; build-pyodide is for changing the runtime itself.
 # So mise here pins only the *web* tooling around Rust (trunk/binaryen for the
 # wasm app, node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — the
 # Rust toolchain itself is pinned by rust-toolchain.toml.
@@ -84,6 +86,13 @@ run = "mkdir -p docker/pyodide-mt/.work"
 description = "Build the custom threaded Pyodide 314 (py-mt; BUILD_CDN=1 also builds the single-threaded wheel)"
 depends = ["fetch-pyrocko"]
 run = "./docker/pyodide-mt/build-all.sh"
+
+# The runtime the app needs, without the hour and the Docker toolchain that
+# build-pyodide wants: Pages publishes exactly the directory stage-web.sh
+# assembles, so it can simply be downloaded.
+[tasks.fetch-pyodide]
+description = "Download the deployed Pyodide 314 runtime into py-mt (seconds, against build-pyodide's hour)"
+run = "./docker/pyodide-mt/fetch-web.sh"
 
 # The web app is built THREADED: the egui wasm runs the heavy resvg PNG export on
 # a wasm-bindgen-rayon worker pool (the `threads` feature) so a big export never

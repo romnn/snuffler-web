@@ -4,7 +4,9 @@
 # directory the app loads from py-mt/ (see web/bridge_worker.js, which sets
 # PYODIDE_BASE to py-mt/). Trunk's post_build hook copies this dir to dist/py-mt/.
 # The app is MT-only, so this runtime must be present for the app to boot — build
-# it with docker/pyodide-mt/build-all.sh (a fresh checkout has no Pyodide until then).
+# it with docker/pyodide-mt/build-all.sh (a fresh checkout has no Pyodide until
+# then), or download the deployed one with fetch-web.sh, which produces this same
+# directory without the build.
 #
 # Sources (both produced by the docker/pyodide-mt build steps):
 #   - core runtime (relinked MT + OpenMP + SIMD main) from build.sh's   .work/pyodide/dist/
