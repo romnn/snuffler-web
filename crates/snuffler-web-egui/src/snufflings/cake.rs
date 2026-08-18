@@ -19,7 +19,15 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
             .show_ui(ui, |ui| {
                 let models = config.models.clone();
                 for m in &models {
-                    ui.selectable_value(&mut config.chosen_model, m.clone(), m);
+                    // Qt prefixes the shipped models "Cake builtin: <name>"
+                    // (cake_phase.py), distinguishing them from GF-store and
+                    // user-loaded models over an otherwise identical set.
+                    let label = if m.starts_with("GF store:") || m.starts_with("Cake builtin:") {
+                        m.clone()
+                    } else {
+                        format!("Cake builtin: {m}")
+                    };
+                    ui.selectable_value(&mut config.chosen_model, m.clone(), label);
                 }
             });
         if ui.button("Add Model…").clicked() {

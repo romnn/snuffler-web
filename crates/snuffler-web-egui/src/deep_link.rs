@@ -22,6 +22,27 @@ pub fn requested_example() -> Option<String> {
         .filter(|slug| !slug.is_empty())
 }
 
+/// A `?url=` waveform to open on boot — the browser twin of snuffler's
+/// positional path arguments — with the optional `?format=` override beside it,
+/// the twin of `--format` (pyrocko's sniffer knows ten of its seventeen
+/// loadable formats; segy, seisan, kan, gcf and css need naming).
+pub fn requested_url() -> Option<(String, String)> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let pairs: Vec<&str> = search.trim_start_matches('?').split('&').collect();
+    let url = pairs
+        .iter()
+        .find_map(|pair| pair.strip_prefix("url="))
+        .map(decode)
+        .filter(|url| !url.is_empty())?;
+    let format = pairs
+        .iter()
+        .find_map(|pair| pair.strip_prefix("format="))
+        .map(decode)
+        .filter(|format| !format.is_empty())
+        .unwrap_or_else(|| "detect".to_owned());
+    Some((url, format))
+}
+
 /// Whether `?demo=1` asked for the synthetic demo instead of a recorded dataset.
 ///
 /// The demo is no longer in the File menu — real recordings teach better, and one of
@@ -46,6 +67,10 @@ pub fn wants_demo() -> bool {
 ///
 /// `replaceState` rather than `pushState`: loading a dataset is not navigation, and
 /// making the back button undo a load would be a lie about what it does.
+///
+/// The competing startup parameters go: booting prefers `url`/`format` over
+/// `example` and `example` over `demo`, so leaving any of them behind would make
+/// the rewritten address reopen the *old* dataset when copied or reloaded.
 pub fn remember_example(slug: &str) {
     let Some(window) = web_sys::window() else {
         return;
@@ -53,6 +78,9 @@ pub fn remember_example(slug: &str) {
     let Ok(url) = web_sys::Url::new(&window.location().href().unwrap_or_default()) else {
         return;
     };
+    for stale in ["url", "format", "demo"] {
+        url.search_params().delete(stale);
+    }
     url.search_params().set("example", slug);
     if let Ok(history) = window.history() {
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url.href()));

@@ -132,7 +132,9 @@ mod tests {
     use prost::Message as _;
 
     use super::{CallError, TransportError};
-    use crate::bridge::v1::{BridgeResult, BridgeServiceClient, BridgeTransport, bridge_result};
+    use crate::bridge::v1::{
+        BridgeResult, BridgeServiceClient, BridgeTransport, MapRequest, bridge_result,
+    };
 
     /// A transport that answers every rpc with one canned envelope, so the
     /// generated client's envelope handling can be exercised without a browser.
@@ -203,10 +205,9 @@ mod tests {
     /// The wire id the sample rpc is addressed by, which the errors have to name.
     const MAP_DATA: &str = "/snuffler.bridge.v1.BridgeService/MapData";
 
-    /// `MapData` is the sample rpc throughout: it takes `Empty`, so a call is one
-    /// expression and the assertions stay about the envelope.
+    /// Uses `MapData` as the sample RPC throughout.
     fn call(bytes: Vec<u8>) -> eyre::Result<CallError> {
-        match now(BridgeServiceClient::new(Canned(bytes)).map_data())? {
+        match now(BridgeServiceClient::new(Canned(bytes)).map_data(MapRequest::default()))? {
             Ok(payload) => bail!("expected a failure, got {payload:?}"),
             Err(error) => Ok(error),
         }
@@ -310,7 +311,8 @@ mod tests {
 
     #[test]
     fn a_dead_worker_never_looks_like_a_remote_failure() -> eyre::Result<()> {
-        let Err(error) = now(BridgeServiceClient::new(Dead).map_data())? else {
+        let Err(error) = now(BridgeServiceClient::new(Dead).map_data(MapRequest::default()))?
+        else {
             bail!("a dead transport cannot produce a payload")
         };
         let CallError::Transport(transport) = &error else {

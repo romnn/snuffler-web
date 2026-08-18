@@ -987,6 +987,11 @@ async function handleRequest(msg, workerRecvMs: number) {
     // Re-fetch bridge.py (the snuffling logic) and importlib.reload it, preserving
     // the loaded pile + catalog/station/command state across the reload so the
     // session is not lost (snuffler's Shift+R reloads code, not data).
+    // The list of what survives lives in bridge.py itself (`_RELOAD_KEEP` behind
+    // `_reload_snapshot`/`_reload_restore`) — a TypeScript copy of Python global
+    // names went stale once and silently dropped session state.
+    // The hasattr guard only bridges a dev session whose in-memory module
+    // predates the snapshot functions.
     for (const mod of ["seisbench_infer.py"]) {
       const modSrc = await (await fetchOk(resolveUrl(mod))).text();
       py.FS.writeFile(`/${mod}`, modSrc);
@@ -998,15 +1003,15 @@ import importlib, bridge
 for _m in ('seisbench_infer',):
     if _m in importlib.sys.modules:
         importlib.reload(importlib.sys.modules[_m])
-_keep = ('_TRACES','_EVENTS','_STATIONS','_ACTIVE_EVENT','_ACTIVE_MT','_EVENT_REGISTRY',
-         '_STATIONXML','_HIDDEN','_REDUCE','_SCALING_HOOKS','_SOURCE_TRACES','_PLATES',
-         '_GF_STORES','_DATA_GEN','_RESPONSE_GEN','_SEISBENCH_MODEL_URLS')
-_saved = {k: getattr(bridge, k) for k in _keep if hasattr(bridge, k)}
+_saved = bridge._reload_snapshot() if hasattr(bridge, '_reload_snapshot') else {}
 importlib.invalidate_caches()
-importlib.reload(bridge)
-for _k, _v in _saved.items():
-    setattr(bridge, _k, _v)
-bridge._mark_traces_changed()
+try:
+    importlib.reload(bridge)
+finally:
+    # The snapshot detached the session state from the module dict, so restore
+    # must run even when the reload raised — skipping it would lose the pile.
+    if hasattr(bridge, '_reload_restore'):
+        bridge._reload_restore(_saved)
 `);
     return { text: "ok" };
   }

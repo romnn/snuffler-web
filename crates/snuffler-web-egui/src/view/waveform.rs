@@ -22,11 +22,18 @@ use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 use snuffler_web_core::markers::{Marker, PHASE_KEYS};
 use snuffler_web_core::state::{
     ActiveEventReq, AppState, DEFAULT_NTRACKS_SHOWN, MAX_TRACK_H, MIN_TRACK_H, PickingState,
-    ViewDrag, ViewMode,
+    ScalingGroup, SortMode, ViewDrag, ViewMode,
 };
 use snuffler_web_render::layout::{AXIS_H, compute_layout, track_geometry};
-use snuffler_web_render::paint::{marker_row_spans, paint};
+use snuffler_web_render::paint::{marker_matches_track, marker_row_spans, paint};
 use snuffler_web_render::palette::{Theme, canvas_theme, palette};
+
+/// Qt clamps the floating pick to the system's working time range
+/// (`update_picking`, `pile_viewer.py:4192`) — on a modern host that probe lands
+/// on years 100..3900.
+const WORKING_TMIN: f64 = -59_011_459_200.0;
+/// Upper bound of the working time range (see [`WORKING_TMIN`]).
+const WORKING_TMAX: f64 = 60_904_915_200.0;
 
 /// Width of the vertical track scrollbar carved off the right edge.
 const SCROLLBAR_W: f32 = 12.0;
@@ -147,13 +154,15 @@ fn maybe_log_paint_perf(
 
 /// Render the current wiggle/waterfall view to a standalone SVG string at the
 /// given pixel size, reusing the exact [`paint`] geometry (vector traces/axes,
-/// the waterfall heatmap embedded as a PNG).
+/// the waterfall heatmap embedded as a PNG). `margin` frames the canvas by
+/// widening the `viewBox`, for the print-shaped export.
 pub fn render_svg(
     ctx: &egui::Context,
     state: &AppState,
     view: &ViewData,
     size: egui::Vec2,
     theme: egui::Theme,
+    margin: f32,
 ) -> String {
     let theme = canvas_theme(
         Theme::from_dark(theme == egui::Theme::Dark),
@@ -186,7 +195,8 @@ pub fn render_svg(
                 .size()
         })
     });
-    paint(&mut target, state, view, &pal, &lay, theme, waterfall);
+    target.set_margin(margin);
+    paint(&mut target, state, view, &pal, &lay, theme, waterfall, true);
     target.finish()
 }
 
@@ -202,6 +212,7 @@ pub fn show(
     wf: &mut WaterfallCache,
     view_epoch: u64,
     scene_range: Option<(f64, f64)>,
+    deltatmin: f64,
 ) -> egui::Response {
     let theme = canvas_theme(
         Theme::from_dark(ui.ctx().theme() == egui::Theme::Dark),
@@ -229,7 +240,16 @@ pub fn show(
             FontId::proportional(16.0),
             pal.axis_text,
         );
-        handle_keyboard(ui, state, 0, track_area_h, scene_range);
+        handle_keyboard(
+            ui,
+            state,
+            &[],
+            0,
+            track_area_h,
+            full_rect.width(),
+            scene_range,
+            deltatmin,
+        );
         // Still return a click-sensing response so an empty/loading canvas is
         // right-clickable (Qt's context menu works with no data too).
         return ui.interact(full_rect, bg.id.with("wave"), Sense::click_and_drag());
@@ -241,7 +261,16 @@ pub fn show(
     }
 
     let total = view.meta.tracks.len();
-    handle_keyboard(ui, state, total, track_area_h, scene_range);
+    handle_keyboard(
+        ui,
+        state,
+        &view.meta.tracks,
+        total,
+        track_area_h,
+        full_rect.width(),
+        scene_range,
+        deltatmin,
+    );
 
     // Resolve the controls into row geometry and cache the on-screen window so the
     // next view request fetches exactly the visible (possibly partial) tracks.
@@ -263,7 +292,16 @@ pub fn show(
     let lay = compute_layout(state, view, wave_rect);
     let mut target = EguiTarget::new(painter.clone(), &wf.textures);
     let paint_t0 = js_sys::Date::now();
-    paint(&mut target, state, view, &pal, &lay, theme, waterfall);
+    paint(
+        &mut target,
+        state,
+        view,
+        &pal,
+        &lay,
+        theme,
+        waterfall,
+        false,
+    );
     maybe_log_paint_perf(
         waterfall,
         js_sys::Date::now() - paint_t0,
@@ -280,6 +318,13 @@ pub fn show(
         );
         draw_scrollbar(ui, bg.id.with("scrollbar"), strip, state, total, lay.row_h);
     }
+
+    // The hovered track row, for the only-label-the-hovered-row rule snuffler
+    // applies when rows get too short for every label (pile_viewer.py:3530).
+    state.hover_track_row = wave_resp.hover_pos().and_then(|p| {
+        (lay.track_area.contains(p) && lay.row_h > 0.0)
+            .then(|| lay.off + ((p.y - lay.top0) / lay.row_h).max(0.0) as usize)
+    });
 
     // Transient hover crosshair — drawn only on screen, never in an export.
     if let Some(p) = wave_resp.hover_pos()
@@ -405,6 +450,12 @@ fn draw_scrollbar(
     clippy::too_many_arguments,
     reason = "marker hit-testing needs the view and projection context to map a click to a marker"
 )]
+/// Qt's `marker_under_cursor` (`pile_viewer.py:2146`): a hit lands within
+/// `click_tolerance` — 5 px worth of time — of either *endpoint*, never across
+/// the span between them, so a wide span marker can be clicked through to
+/// reach what lies behind it. The first marker in list order wins, as Qt's
+/// loop returns it; the row under the pointer must be one the marker's
+/// patterns take.
 fn marker_hit_at(
     state: &AppState,
     visible: &[ViewTrack],
@@ -420,8 +471,8 @@ fn marker_hit_at(
         return None;
     }
     let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
-    let tol = 7.0;
-    for (idx, marker) in state.markers.iter().enumerate().rev() {
+    let tol = 5.0;
+    for (idx, marker) in state.markers.iter().enumerate() {
         if !state.marker_kind_visible(marker.kind) {
             continue;
         }
@@ -431,15 +482,7 @@ fn marker_hit_at(
         if !row_hit {
             continue;
         }
-        let x0 = x_of(marker.tmin);
-        if marker.is_span() {
-            let x1 = x_of(marker.tmax);
-            let left = x0.min(x1) - tol;
-            let right = x0.max(x1) + tol;
-            if pos.x >= left && pos.x <= right {
-                return Some(idx);
-            }
-        } else if (pos.x - x0).abs() <= tol {
+        if (pos.x - x_of(marker.tmin)).abs() < tol || (pos.x - x_of(marker.tmax)).abs() < tol {
             return Some(idx);
         }
     }
@@ -496,11 +539,66 @@ fn handle_interaction(
         }
     }
 
-    // Batch/interactive picking (Escape). A floating pick follows the cursor;
-    // press → (drag) → release commits a marker (instant if no drag), and batch
-    // mode re-arms a new pick inheriting kind/phase/polarity. The wheel-scroll
-    // block above stays live so the user can scroll stations mid-batch; pan/zoom,
-    // place-on-double-click and marker-select below are suppressed while picking.
+    // Every channel gathered onto the row under the cursor — what Qt's
+    // `get_nslc_ids_for_track` hands the pick, so a pick on a grouped row binds
+    // to each concrete location on it. A row with no data in the window falls
+    // back to its identity pattern.
+    let track_nslc = |y: f32| -> Vec<(String, String, String, String)> {
+        let rel = y - top0;
+        if rel < 0.0 || row_h <= 0.0 {
+            return Vec::new();
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rel>=0 and row_h>0, so the row index is a non-negative whole number; \
+                      truncation to the containing row is the intended mapping"
+        )]
+        let idx = (rel / row_h) as usize;
+        let Some(t) = visible.get(idx) else {
+            return Vec::new();
+        };
+        let mut ids: Vec<(String, String, String, String)> = t
+            .spans
+            .iter()
+            .map(|s| (t.net.clone(), t.sta.clone(), s.loc.clone(), t.cha.clone()))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() {
+            ids.push((t.net.clone(), t.sta.clone(), t.loc.clone(), t.cha.clone()));
+        }
+        ids
+    };
+    // Unclamped pixel→time, for the floating pick and its auto-pan: `t_at_x`
+    // clamps to the view, but Qt's `time_projection.rev` runs straight through
+    // the edge — that overshoot *is* the auto-pan signal.
+    let t_at_x_unclamped =
+        |x: f32| view_tmin + f64::from((x - rect.left()) / rect.width().max(1.0)) * window;
+
+    // The hovered marker — snuffler's `alerted` state, maintained by `hoovering`
+    // only while no drag or pick is in flight (pile_viewer.py:2126): it feeds
+    // the brightened shade, the grey dashed guides, and the status-line
+    // metadata readout.
+    state.hovered_marker = if state.picking.is_none()
+        && state.view_drag.is_none()
+        && state.uncertainty_drag_last_y.is_none()
+    {
+        resp.hover_pos().and_then(|p| {
+            marker_hit_at(
+                state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
+            )
+        })
+    } else {
+        None
+    };
+
+    // Interactive picking, armed by a double-click (single-shot) or Escape
+    // (batch). A floating pick follows the cursor; press → (drag) → release
+    // commits a marker (instant if no drag), and batch mode re-arms a new pick
+    // inheriting kind/phase/polarity. The wheel-scroll block above stays live so
+    // the user can scroll stations mid-batch; pan/zoom and marker-select below
+    // are suppressed while picking.
     if state.picking.is_some() {
         let (pressed, released, ipos) = ui.input(|i| {
             (
@@ -510,51 +608,67 @@ fn handle_interaction(
             )
         });
         let cursor = resp.hover_pos().or(ipos);
-        let track_nslc = |y: f32| -> Option<(String, String, String, String)> {
-            let rel = y - top0;
-            if rel < 0.0 || row_h <= 0.0 {
-                return None;
+        let clamp_t = |t: f64| t.clamp(WORKING_TMIN, WORKING_TMAX);
+        // Dragging the pick past the window edge pans the view after it, by up
+        // to a tenth of the window per 50 ms timer tick in Qt
+        // (`animate_picking`, pile_viewer.py:4133) — here per frame, scaled by
+        // the frame time so the rate matches.
+        if let Some(p) = cursor {
+            let mouset = t_at_x_unclamped(p.x);
+            let over = if mouset < state.tmin {
+                mouset - state.tmin
+            } else if mouset > state.tmax {
+                mouset - state.tmax
+            } else {
+                0.0
+            };
+            if over != 0.0 {
+                let frame_dt = f64::from(ui.input(|i| i.stable_dt)).clamp(0.0, 0.2);
+                let dt = over.clamp(-window / 10.0, window / 10.0) * (frame_dt / 0.05);
+                state.tmin += dt;
+                state.tmax += dt;
+                // Keep panning while the pointer rests beyond the edge.
+                ui.ctx().request_repaint();
             }
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "rel>=0 and row_h>0, so the row index is a non-negative whole number; \
-                          truncation to the containing row is the intended mapping"
-            )]
-            let idx = (rel / row_h) as usize;
-            visible
-                .get(idx)
-                .map(|t| (t.net.clone(), t.sta.clone(), t.loc.clone(), t.cha.clone()))
-        };
+        }
         if let Some(pk) = state.picking.as_mut() {
             if pressed && let Some(p) = ipos {
-                let t = t_at_x(p.x);
+                let t = clamp_t(t_at_x_unclamped(p.x));
                 pk.down_t = Some(t);
                 pk.tmin = t;
                 pk.tmax = t;
-                pk.nslc = track_nslc(p.y);
+                pk.nslc_ids = track_nslc(p.y);
             } else if let Some(down) = pk.down_t {
                 if let Some(p) = cursor {
-                    let cur = t_at_x(p.x);
+                    let cur = clamp_t(t_at_x_unclamped(p.x));
                     pk.tmin = down.min(cur);
                     pk.tmax = down.max(cur);
+                    // Qt re-reads the track under the cursor on every motion
+                    // (`update_picking` refreshes `nslc_ids`), so a drag that
+                    // ends on another row scopes the pick to that row.
+                    pk.nslc_ids = track_nslc(p.y);
                 }
             } else if let Some(p) = cursor {
-                let t = t_at_x(p.x);
+                let t = clamp_t(t_at_x_unclamped(p.x));
                 pk.tmin = t;
                 pk.tmax = t;
-                pk.nslc = track_nslc(p.y);
+                pk.nslc_ids = track_nslc(p.y);
             }
         }
         if released
             && let Some(pk) = state.picking.clone()
             && pk.down_t.is_some()
         {
-            let rel_nslc = cursor.and_then(|p| track_nslc(p.y)).or(pk.nslc.clone());
+            let mut rel_nslc = cursor.map(|p| track_nslc(p.y)).unwrap_or_default();
+            if rel_nslc.is_empty() {
+                rel_nslc.clone_from(&pk.nslc_ids);
+            }
             let mut m = Marker::new(pk.tmin, pk.tmax, pk.kind);
             m.phase.clone_from(&pk.phase);
             m.polarity = pk.polarity;
-            m.nslc = rel_nslc;
+            m.event_hash.clone_from(&pk.event_hash);
+            m.event_time = pk.event_time;
+            m.nslc_ids = rel_nslc;
             m.selected = true;
             for existing in &mut state.markers {
                 existing.selected = false;
@@ -568,14 +682,52 @@ fn handle_interaction(
                 kind: pk.kind,
                 phase: pk.phase.clone(),
                 polarity: pk.polarity,
-                nslc: None,
+                event_hash: pk.event_hash.clone(),
+                event_time: pk.event_time,
+                nslc_ids: Vec::new(),
             });
+            if state.picking.is_some() {
+                // Qt's batch re-arm passes through `start_picking`, whose
+                // `deselect_all` covers the marker just committed — only a
+                // single-shot pick stays selected.
+                for existing in &mut state.markers {
+                    existing.selected = false;
+                }
+            }
         }
         return;
     }
 
+    // Pressing *on* a marker selects it there and then, and must not arm the
+    // pan/zoom drag — Qt's press handler is an if/elif chain
+    // (pile_viewer.py:2042), so a hand tremor while clicking a marker cannot
+    // rezoom the view. Shift adds to the selection instead of replacing it.
+    let pressed_marker = ui
+        .input(|i| {
+            i.pointer
+                .primary_pressed()
+                .then(|| i.pointer.interact_pos())
+        })
+        .flatten()
+        .and_then(|p| {
+            marker_hit_at(
+                state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
+            )
+        });
+    if let Some(hit) = pressed_marker {
+        if !modifiers.shift {
+            for m in &mut state.markers {
+                m.selected = false;
+            }
+        }
+        if let Some(m) = state.markers.get_mut(hit) {
+            m.selected = true;
+        }
+    }
+
     if resp.drag_started_by(egui::PointerButton::Primary)
         && !modifiers.shift
+        && pressed_marker.is_none()
         && let Some(p) = resp.interact_pointer_pos()
     {
         state.view_drag = Some(ViewDrag {
@@ -646,36 +798,31 @@ fn handle_interaction(
         state.uncertainty_drag_last_y = None;
     }
 
-    if resp.double_clicked() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let t = t_at_x(p.x);
-            // Selected, and the only one selected — snuffler's `stop_picking` ends
-            // with `floating_marker.selected = True` after a `deselect_all`, so the
-            // marker just placed is the one every following keystroke acts on.
-            // Leaving it unselected makes the whole marker-editing vocabulary
-            // (kind digits, phase keys, backspace) do nothing until the user picks
-            // it out by hand.
-            for m in &mut state.markers {
-                m.selected = false;
-            }
-            let mut m = Marker::new(t, t, state.marker_kind);
-            m.selected = true;
-            state.markers.push(m);
-        }
-    } else if resp.clicked()
+    // A double-click *arms* single-shot picking (Qt's `mouseDoubleClickEvent` →
+    // `start_picking`, pile_viewer.py:2089): a floating pick follows the cursor
+    // and the next press-drag-release commits it, scoped to the track under the
+    // cursor, fresh at kind 0 with everything deselected on entry. (Qt swallows
+    // the release that follows its double-click press; egui reports the double
+    // click only after that release, so there is nothing to swallow here.)
+    if resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Some(hit) = marker_hit_at(
-            state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
-        )
     {
-        if !modifiers.shift {
-            for m in &mut state.markers {
-                m.selected = false;
-            }
+        for m in &mut state.markers {
+            m.selected = false;
         }
-        if let Some(m) = state.markers.get_mut(hit) {
-            m.selected = true;
-        }
+        let t = t_at_x(p.x);
+        state.picking = Some(PickingState {
+            batch: false,
+            down_t: None,
+            tmin: t,
+            tmax: t,
+            kind: 0,
+            phase: None,
+            polarity: None,
+            event_hash: None,
+            event_time: None,
+            nslc_ids: track_nslc(p.y),
+        });
     }
 }
 
@@ -731,8 +878,13 @@ fn zoom_tracks(state: &mut AppState, area_h: f32, anchor: f32, notches: f32) {
     let area = area_h.max(1.0);
     let cur_h = resolved_height(state, area);
     let cur_n = (area / cur_h).max(1.0);
-    let new_n = (cur_n + notches).max(1.0);
-    let new_h = (area / new_n).clamp(MIN_TRACK_H, MAX_TRACK_H);
+    // Qt changes the shown count by max(1, shown/5) per notch
+    // (pile_viewer.py:2622) — a fixed step of 1 made zooming a 100-track stack
+    // interminable. The height cap grows with the area so a single-track view
+    // stays reachable, as Qt's count clamp to [1, ntracks] keeps it.
+    let amount = (cur_n / 5.0).max(1.0);
+    let new_n = (cur_n + amount * notches).max(1.0);
+    let new_h = (area / new_n).clamp(MIN_TRACK_H, MAX_TRACK_H.max(area));
     let idx_at_cursor = state.track_scroll + anchor.clamp(0.0, 1.0) * cur_n;
     state.track_scroll = (idx_at_cursor - anchor.clamp(0.0, 1.0) * (area / new_h)).max(0.0);
     state.track_height = new_h;
@@ -742,12 +894,20 @@ fn zoom_tracks(state: &mut AppState, area_h: f32, anchor: f32, notches: f32) {
     clippy::too_many_lines,
     reason = "cohesive draw/update routine; splitting would obscure the control flow"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one keyboard pass over one view context; the extra track slice is what \
+              Tab's active-event walk orders by"
+)]
 fn handle_keyboard(
     ui: &egui::Ui,
     state: &mut AppState,
+    tracks: &[ViewTrack],
     total: usize,
     track_area_h: f32,
+    canvas_w: f32,
     scene_range: Option<(f64, f64)>,
+    deltatmin: f64,
 ) {
     // Don't fire single-key shortcuts while a text field (FDSN forms, command
     // line) has the keyboard — otherwise typing "n" would jump markers.
@@ -764,18 +924,83 @@ fn handle_keyboard(
     if ui.ctx().text_edit_focused() || ui.ctx().any_popup_open() {
         return;
     }
+    // Read before entering the input closure: `ui.input` holds the egui context
+    // lock while its closure runs, so asking the context anything from inside
+    // (`memory()`, another `input()`) self-deadlocks — on the web that surfaced
+    // as an `Instant::now` panic out of the lock's debug timeout.
+    let widget_focused = ui.ctx().memory(|memory| memory.focused().is_some());
     ui.input(|i| {
         let win = (state.tmax - state.tmin).max(1e-9);
         let shift = i.modifiers.shift;
-        if i.key_pressed(Key::Q) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        let any_key_pressed = i
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }));
+        // Qt dispatches its letter commands on the typed text, so a Ctrl, Cmd or
+        // Alt chord produces a control character and matches nothing
+        // (pile_viewer.py:2225); its accelerators are separate QActions. Same
+        // split here: the accelerators first, single-key commands only when no
+        // chord modifier is down — without this, Ctrl+P jumped to the previous
+        // marker with the browser's own binding suppressed.
+        if i.modifiers.ctrl || i.modifiers.command || i.modifiers.alt {
+            if (i.modifiers.ctrl || i.modifiers.command) && !i.modifiers.alt {
+                // Snuffler's File accelerators (pile_viewer.py:874-921). Ctrl+O
+                // and Ctrl+S shadow browser chords, deliberately: egui consumes
+                // the handled key, and snuffler muscle memory outweighs the
+                // host's Open-file and Save-page here.
+                if i.key_pressed(Key::O) {
+                    state.open_files_requested = true;
+                }
+                if i.key_pressed(Key::S) {
+                    state.save_markers_requested = Some(shift);
+                }
+                if i.key_pressed(Key::E) {
+                    state.export_image_requested = true;
+                }
+            }
+            return;
         }
+        // Snuffler's two-stroke chords, bound there as QKeySequences
+        // (pile_viewer.py:935, :987): a bare `s` arms the chord and the next
+        // keypress completes or cancels it, whatever it is — a Qt sequence
+        // swallows its second key the same way.
+        if state.pending_s_chord {
+            if !any_key_pressed {
+                return;
+            }
+            state.pending_s_chord = false;
+            if i.key_pressed(Key::I) {
+                state.scaling_group = ScalingGroup::Individual;
+            } else if i.key_pressed(Key::C) {
+                state.scaling_group = ScalingGroup::Common;
+            } else if i.key_pressed(Key::S) {
+                state.scaling_group = ScalingGroup::PerStation;
+            } else if i.key_pressed(Key::N) {
+                state.sort = SortMode::Name;
+            } else if i.key_pressed(Key::D) {
+                state.sort = SortMode::Distance;
+            }
+            return;
+        }
+        if i.key_pressed(Key::S) && !shift {
+            state.pending_s_chord = true;
+            return;
+        }
+        // Arrows and Space are the keys egui's focused widgets also act on: a
+        // focused slider plus Left would both move the slider and nudge the
+        // selected markers, a focused checkbox plus Space would toggle and page.
+        // Qt's sliders decline those keys (`QSliderNoWheel.keyPressEvent`), so
+        // the viewer sees them; here the widget keeps them while it has focus
+        // (`widget_focused`, read before this closure took the context lock).
+        // The browser's Fullscreen API needs a real user gesture and a DOM call —
+        // eframe's viewport command is unhandled on the web — so the app performs
+        // the toggle. Snuffler binds `f` (View ▸ Fullscreen); its `q`/`x` Close
+        // pair is deliberately not bound: a page cannot close a tab it did not
+        // open, and an inert key is worse than an absent one.
         if i.key_pressed(Key::F) {
-            state.fullscreen = !state.fullscreen;
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(state.fullscreen));
+            state.fullscreen_toggle_requested = true;
         }
-        if i.key_pressed(Key::Space) {
+        if i.key_pressed(Key::Space) && !widget_focused {
             state.tmin += win;
             state.tmax += win;
         }
@@ -789,13 +1014,21 @@ fn handle_keyboard(
         // "more"; bare Equals (no shift) is the reset (auto-fit sentinel).
         let cur_h = resolved_height(state, track_area_h);
         let cur_n = (track_area_h.max(1.0) / cur_h).round().max(1.0);
+        // Qt clamps the shown *count* to [1, ntracks] (pile_viewer.py:2717), so a
+        // single-track view must be reachable however tall the canvas is: the
+        // height cap grows with the track area rather than stopping at 400 px.
+        let max_track_h = MAX_TRACK_H.max(track_area_h);
         if i.key_pressed(Key::Plus) || (i.key_pressed(Key::Equals) && shift) {
             state.track_height =
-                (track_area_h.max(1.0) / (cur_n + 1.0)).clamp(MIN_TRACK_H, MAX_TRACK_H);
+                (track_area_h.max(1.0) / (cur_n + 1.0)).clamp(MIN_TRACK_H, max_track_h);
         }
-        if i.key_pressed(Key::Minus) {
+        if i.key_pressed(Key::Minus) && !shift {
             state.track_height =
-                (track_area_h.max(1.0) / (cur_n - 1.0).max(1.0)).clamp(MIN_TRACK_H, MAX_TRACK_H);
+                (track_area_h.max(1.0) / (cur_n - 1.0).max(1.0)).clamp(MIN_TRACK_H, max_track_h);
+        }
+        // Shift+Minus is `_`, snuffler's Demean toggle (its menu shortcut).
+        if i.key_pressed(Key::Minus) && shift {
+            state.demean = !state.demean;
         }
         if i.key_pressed(Key::Equals) && !shift {
             state.track_height = 0.0;
@@ -808,12 +1041,12 @@ fn handle_keyboard(
             state.track_scroll = (state.track_scroll - cur_n).max(0.0);
         }
         if i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete) {
-            state.markers.retain(|m| !m.selected);
+            state.remove_selected_markers();
         }
 
         // Selection navigation (snuffler keyPressEvent, pile_viewer.py:2258-2368).
         if i.key_pressed(Key::Tab) {
-            cycle_selection(state, !shift);
+            cycle_selection(state, !shift, tracks, cur_n, scene_range, deltatmin);
         }
         if i.key_pressed(Key::N) {
             select_relative(state, true, shift); // Shift+N: events only
@@ -822,13 +1055,22 @@ fn handle_keyboard(
             select_relative(state, false, shift); // Shift+P: events only
         }
         if i.key_pressed(Key::A) {
+            // Both forms skip hidden kinds (pile_viewer.py:2381-2392). 'A' is
+            // additive — it only ever *sets* selected; 'a' is absolute, keeping
+            // exactly the markers with an endpoint inside the view, so a span
+            // wider than the screen is dropped, as Qt drops it.
+            let kinds = state.visible_marker_kinds.clone();
             if shift {
                 for m in &mut state.markers {
-                    m.selected = true;
+                    if kinds.contains(&m.kind) {
+                        m.selected = true;
+                    }
                 }
             } else {
                 for m in &mut state.markers {
-                    m.selected = m.tmin <= state.tmax && m.tmax >= state.tmin; // overlaps view
+                    m.selected = ((state.tmin <= m.tmin && m.tmin <= state.tmax)
+                        || (state.tmin <= m.tmax && m.tmax <= state.tmax))
+                        && kinds.contains(&m.kind);
                 }
             }
         }
@@ -838,7 +1080,7 @@ fn handle_keyboard(
             }
         }
         if i.key_pressed(Key::G) {
-            go_to_selection(state, shift, scene_range); // Shift+G: tight
+            go_to_selection(state, shift, scene_range, deltatmin); // Shift+G: tight
         }
         if i.key_pressed(Key::M) {
             state.show_marker_editor = !state.show_marker_editor;
@@ -882,8 +1124,8 @@ fn handle_keyboard(
                 });
             } else {
                 // Candidates for activation are selected markers that are already
-                // events (catalog events carry a magnitude label in `phase`) or
-                // plain markers that can convert — never a selected phase pick.
+                // events or plain markers that can convert — never a selected
+                // phase pick.
                 let candidates: Vec<usize> = state
                     .markers
                     .iter()
@@ -892,32 +1134,56 @@ fn handle_keyboard(
                     .map(|(idx, _)| idx)
                     .collect();
                 if let &[idx] = candidates.as_slice() {
+                    // Qt snapshots the marker's station before conversion removes
+                    // its track scope, then uses that station to locate the event.
+                    let station_nslc = state.markers.get(idx).and_then(|marker| {
+                        (marker.nslc_ids.len() == 1)
+                            .then(|| marker.nslc_ids.first().cloned())
+                            .flatten()
+                    });
                     for m in &mut state.markers {
                         m.active = false;
                     }
                     if let Some(m) = state.markers.get_mut(idx) {
                         if !m.is_event {
-                            // Converting a plain marker to an event (not an already-
-                            // labelled catalog event, whose phase label must stay).
+                            // Converting a plain marker to an event collapses the
+                            // span to its start and drops the channel scope, as
+                            // Qt's `convert_to_event_marker` does (marker.py:495)
+                            // — an event is an instant that belongs to no track.
                             m.is_event = true;
                             m.phase = None;
                             m.uncertainty = None;
+                            m.polarity = None;
+                            m.tmax = m.tmin;
+                            m.nslc_ids.clear();
+                        }
+                        // Every Qt event has an identity — `get_event_hash`
+                        // falls back to hashing the event's own fields — and
+                        // the picks' association rides on it, so a locally
+                        // created event synthesizes one from its origin time.
+                        if m.event_hash.is_none() {
+                            m.event_hash = Some(format!("local:{:x}", m.tmin.to_bits()));
                         }
                         m.active = true;
                     }
-                    let (hash, t, nslc) = state.markers.get(idx).map_or((None, 0.0, None), |m| {
-                        (m.event_hash.clone(), m.tmin, m.nslc.clone())
-                    });
+                    // Qt derives a hand-made event's coordinates from the
+                    // marker's single station only when it has exactly one
+                    // channel (`len(nslcs) == 1`, pile_viewer.py:2416).
+                    let (hash, t) = state
+                        .markers
+                        .get(idx)
+                        .map_or((None, 0.0), |m| (m.event_hash.clone(), m.tmin));
                     for m in &mut state.markers {
                         if m.selected && m.phase.is_some() {
                             m.event_hash.clone_from(&hash);
+                            m.event_time = Some(t);
                         }
                     }
                     state.set_active_event_request = Some(ActiveEventReq {
                         deactivate: false,
                         event_hash: hash,
                         t,
-                        nslc,
+                        nslc: station_nslc,
                     });
                 } else {
                     for &idx in &candidates {
@@ -925,29 +1191,34 @@ fn handle_keyboard(
                             m.is_event = true;
                             m.phase = None;
                             m.uncertainty = None;
+                            m.polarity = None;
+                            m.tmax = m.tmin;
+                            m.nslc_ids.clear();
                         }
                     }
                 }
             }
         }
 
-        // First-motion polarity on selected phase picks (pile_viewer.py:2233-2251).
-        if i.key_pressed(Key::ArrowUp) {
-            set_polarity_selected(state, if shift { Some(0) } else { Some(1) });
+        // First-motion polarity on the floating pick or the selected phase
+        // picks (pile_viewer.py:2233-2251).
+        if i.key_pressed(Key::ArrowUp) && !widget_focused {
+            set_polarity(state, true, shift);
         }
-        if i.key_pressed(Key::ArrowDown) {
-            set_polarity_selected(state, if shift { Some(0) } else { Some(-1) });
+        if i.key_pressed(Key::ArrowDown) && !widget_focused {
+            set_polarity(state, false, shift);
         }
 
-        // Nudge selected picks (pile_viewer.py:2484-2491); Shift = ×10.
-        if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowRight) {
+        // Nudge selected picks by exactly one screen pixel of time, as snuffler
+        // quantises it (pile_viewer.py:2533); Shift = ×10.
+        if (i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowRight)) && !widget_focused {
             let dir = if i.key_pressed(Key::ArrowLeft) {
                 -1.0
             } else {
                 1.0
             };
             let amount = if shift { 10.0 } else { 1.0 };
-            let dt = dir * amount * win * 0.002;
+            let dt = dir * amount * win / f64::from(canvas_w.max(1.0));
             for m in &mut state.markers {
                 if m.selected && !m.is_event {
                     m.tmin += dt;
@@ -958,10 +1229,14 @@ fn handle_keyboard(
 
         // Escape toggles batch picking (snuffler): enters batch mode, or aborts an
         // in-progress pick / exits the mode — take() discards the floating pick.
+        // `start_picking` deselects everything on entry, so nothing but the
+        // floating pick can be acted on, and a fresh pick is always kind 0.
         if i.key_pressed(Key::Escape) && state.picking.take().is_none() {
+            for m in &mut state.markers {
+                m.selected = false;
+            }
             state.picking = Some(PickingState {
                 batch: true,
-                kind: state.marker_kind,
                 ..Default::default()
             });
         }
@@ -979,10 +1254,11 @@ fn handle_keyboard(
         for (n, key) in num_keys.iter().enumerate() {
             if i.key_pressed(*key) {
                 let kind = n as u8;
-                state.marker_kind = kind;
                 // While picking, number/F keys retarget the floating pick so the
                 // choice carries into the next re-armed pick (snuffler's
-                // floating_or_selected_markers); otherwise they edit the selection.
+                // floating_or_selected_markers); otherwise they recolour the
+                // selection. A digit never latches a kind for future picks —
+                // Qt's fresh picks are always kind 0.
                 if let Some(pk) = state.picking.as_mut() {
                     pk.kind = kind;
                 } else {
@@ -1009,27 +1285,55 @@ fn handle_keyboard(
         ];
         for (n, key) in f_keys.iter().enumerate() {
             if i.key_pressed(*key) && n == 9 {
+                // F10 demotes phase picks back to plain markers (Qt's
+                // `convert_to_marker` in `set_phase_kind`, pile_viewer.py:2654),
+                // dropping name, polarity, uncertainty and the event
+                // association; plain markers and events pass through untouched.
                 if let Some(pk) = state.picking.as_mut() {
                     pk.phase = None;
                     pk.polarity = None;
+                    pk.event_hash = None;
+                    pk.event_time = None;
                 } else {
                     for m in &mut state.markers {
-                        if m.selected {
+                        if m.selected && m.phase.is_some() {
                             m.phase = None;
                             m.polarity = None;
-                            m.uncertainty = None; // clearing the phase resets uncertainty
+                            m.uncertainty = None;
+                            m.event_hash = None;
+                            m.event_time = None;
                         }
                     }
                 }
             } else if i.key_pressed(*key)
                 && let Some(phase) = PHASE_KEYS.get(n)
             {
+                // F1-F9 name the pick and associate it with the active event —
+                // `set_event(self.get_active_event())` on a phase pick, and
+                // `convert_to_phase_marker(event, name, None, False)` on a
+                // plain marker, which also resets its polarity. Events are
+                // never given a phase (pile_viewer.py:2654).
+                let active_event = state
+                    .markers
+                    .iter()
+                    .find(|m| m.active)
+                    .map(|m| (m.event_hash.clone(), m.tmin));
                 if let Some(pk) = state.picking.as_mut() {
+                    if pk.phase.is_none() {
+                        pk.polarity = None;
+                    }
                     pk.phase = Some((*phase).to_string());
+                    pk.event_hash = active_event.as_ref().and_then(|(hash, _)| hash.clone());
+                    pk.event_time = active_event.as_ref().map(|(_, time)| *time);
                 } else {
                     for m in &mut state.markers {
-                        if m.selected {
+                        if m.selected && !m.is_event {
+                            if m.phase.is_none() {
+                                m.polarity = None;
+                            }
                             m.phase = Some((*phase).to_string());
+                            m.event_hash = active_event.as_ref().and_then(|(hash, _)| hash.clone());
+                            m.event_time = active_event.as_ref().map(|(_, time)| *time);
                         }
                     }
                 }
@@ -1038,53 +1342,84 @@ fn handle_keyboard(
     });
 }
 
-/// Toggle/assign polarity on selected non-event markers, matching snuffler's
-/// Up/Down logic: a repeated press in the same direction clears it again.
-fn set_polarity_selected(state: &mut AppState, target: Option<i8>) {
+/// Up/Down first-motion polarity, Qt's exact gate (`pile_viewer.py:2233`): only
+/// *phase* markers take one — a repeated press in the same direction clears it
+/// again, Shift forces "undecided" — and the floating pick takes precedence
+/// over the selection (`floating_or_selected_markers`), so a polarity chosen
+/// mid-pick carries into the next batch pick.
+fn set_polarity(state: &mut AppState, up: bool, shift: bool) {
+    let flip = |cur: Option<i8>| -> Option<i8> {
+        if shift {
+            Some(0)
+        } else {
+            let want = if up { 1 } else { -1 };
+            if cur == Some(want) { None } else { Some(want) }
+        }
+    };
+    if let Some(pk) = state.picking.as_mut() {
+        if pk.phase.is_some() {
+            pk.polarity = flip(pk.polarity);
+        }
+        return;
+    }
     for m in &mut state.markers {
-        if m.selected && !m.is_event {
-            m.polarity = match target {
-                Some(0) => Some(0),
-                t if m.polarity == t => None,
-                t => t,
-            };
+        if m.selected && m.phase.is_some() {
+            m.polarity = flip(m.polarity);
         }
     }
 }
 
 /// Recenter the view on selected markers, or on the full scene if nothing is
 /// selected (snuffler's `go_to_selection` fallback).
-fn go_to_selection(state: &mut AppState, tight: bool, scene_range: Option<(f64, f64)>) {
+fn go_to_selection(
+    state: &mut AppState,
+    tight: bool,
+    scene_range: Option<(f64, f64)>,
+    deltatmin: f64,
+) {
     let sel: Vec<&Marker> = state.markers.iter().filter(|m| m.selected).collect();
     let (tmin, tmax) = if sel.is_empty() {
-        let Some(range) = scene_range else {
-            return;
-        };
-        range
+        if tight {
+            // Snuffler's tight case with nothing selected zooms *in* to one
+            // trace-visibility length around the view centre (pile_viewer.py:2814).
+            let center = f64::midpoint(state.tmin, state.tmax);
+            (center, center)
+        } else {
+            // With nothing selected, `g` shows the whole pile (pile_viewer.py:2817).
+            let Some(range) = scene_range else {
+                return;
+            };
+            range
+        }
     } else {
         (
             sel.iter().map(|m| m.tmin).fold(f64::INFINITY, f64::min),
             sel.iter().map(|m| m.tmax).fold(f64::NEG_INFINITY, f64::max),
         )
     };
-    let win = (state.tmax - state.tmin).max(1e-9);
-    if tight && tmax > tmin {
-        let pad = (tmax - tmin) * 0.1;
-        state.tmin = tmin - pad;
-        state.tmax = tmax + pad;
-    } else {
-        let mid = f64::midpoint(tmin, tmax);
-        state.tmin = mid - win * 0.5;
-        state.tmax = mid + win * 0.5;
-    }
+    let (tmin, tmax) = snuffler_web_core::session::good_looking_time_range(
+        state.visible_length.samples(),
+        deltatmin,
+        (state.tmin, state.tmax),
+        tmin,
+        tmax,
+        tight,
+    );
+    state.tmin = tmin;
+    state.tmax = tmax;
 }
 
 /// Select the next/previous marker by time and recenter (snuffler's `n`/`p`,
-/// or `N`/`P` to step through event markers only).
+/// or `N`/`P` to step through event markers only), skipping hidden kinds.
 fn select_relative(state: &mut AppState, forward: bool, events_only: bool) {
     let win = (state.tmax - state.tmin).max(1e-9);
     let center = f64::midpoint(state.tmin, state.tmax);
-    let reference = state
+    // Qt's reference quirk (pile_viewer.py:2325): only lowercase `n` takes the
+    // *maximum* selected time; `p`, `P` — and `N`, whose guard is
+    // lowercase-only upstream — take the minimum. An upstream slip, reproduced
+    // deliberately: the same keystrokes land on the same marker on both sides.
+    let take_max = forward && !events_only;
+    let selected_ref = state
         .markers
         .iter()
         .filter(|m| m.selected)
@@ -1092,16 +1427,17 @@ fn select_relative(state: &mut AppState, forward: bool, events_only: bool) {
         .fold(None, |acc: Option<f64>, t| {
             Some(match acc {
                 None => t,
-                Some(a) if forward => a.max(t),
+                Some(a) if take_max => a.max(t),
                 Some(a) => a.min(t),
             })
-        })
-        .unwrap_or(center);
+        });
+    let reference = selected_ref.unwrap_or(center);
 
     let pick = state
         .markers
         .iter()
         .enumerate()
+        .filter(|(_, m)| state.marker_kind_visible(m.kind))
         .filter(|(_, m)| !events_only || m.is_event)
         .filter(|(_, m)| {
             if forward {
@@ -1120,32 +1456,75 @@ fn select_relative(state: &mut AppState, forward: bool, events_only: bool) {
         })
         .map(|(idx, m)| (idx, m.tmin));
 
+    // With a selection but no further marker, Qt still re-centres on the
+    // reference time — `tgo` was already set before the search.
+    let mut tgo = selected_ref;
     if let Some((target, t)) = pick {
         for (i, m) in state.markers.iter_mut().enumerate() {
             m.selected = i == target;
         }
+        tgo = Some(t);
+    }
+    if let Some(t) = tgo {
         state.tmin = t - win * 0.5;
         state.tmax = t + win * 0.5;
     }
 }
 
-/// Tab/Shift+Tab cycle through markers in time order, selecting one at a time
-/// and recentering when it falls outside the view (snuffler's Tab/Backtab).
-fn cycle_selection(state: &mut AppState, forward: bool) {
-    if state.markers.is_empty() {
+/// Tab/Backtab walk *the phase picks of the active event* and nothing else
+/// (`pile_viewer.py:2258`): kind-visible picks ordered by track row then
+/// mid-time (Backtab reverses), one selected at a time, the view recentring
+/// when the target sits off screen and the track stack scrolling to show its
+/// row. With no active event the keys do nothing; a pick whose channel has no
+/// row falls back to `go_to_selection`.
+fn cycle_selection(
+    state: &mut AppState,
+    forward: bool,
+    tracks: &[ViewTrack],
+    cur_n: f32,
+    scene_range: Option<(f64, f64)>,
+    deltatmin: f64,
+) {
+    let Some(active_hash) = state
+        .markers
+        .iter()
+        .find(|m| m.active)
+        .and_then(|m| m.event_hash.clone())
+    else {
         return;
-    }
-    // (index, tmin) pairs sorted in time order — avoids indexing back into markers.
-    let mut order: Vec<(usize, f64)> = state
+    };
+    // Qt's `marker_to_itrack`: the row the pick's channel gathers into, -1 when
+    // it has none (an unscoped pick, or a channel with no row).
+    let itrack_of = |m: &Marker| -> i64 {
+        // Qt's `one_nslc()` raises unless the pick has exactly one channel, and
+        // the walk treats that as "no row" (-1).
+        let [n] = m.nslc_ids.as_slice() else {
+            return -1;
+        };
+        tracks
+            .iter()
+            .position(|t| marker_matches_track(n, t))
+            .map_or(-1, |k| k as i64)
+    };
+    let mut order: Vec<(usize, i64, f64)> = state
         .markers
         .iter()
         .enumerate()
-        .map(|(i, m)| (i, m.tmin))
+        .filter(|(_, m)| {
+            m.phase.is_some()
+                && m.event_hash.as_deref() == Some(active_hash.as_str())
+                && state.marker_kind_visible(m.kind)
+        })
+        .map(|(i, m)| (i, itrack_of(m), f64::midpoint(m.tmin, m.tmax)))
         .collect();
-    order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+    });
     if !forward {
         order.reverse();
     }
+    // Qt steps past the highest-placed selected pick, or starts at the first.
     let last_selected_pos = order
         .iter()
         .enumerate()
@@ -1155,7 +1534,7 @@ fn cycle_selection(state: &mut AppState, forward: bool) {
         })
         .max();
     let next_pos = last_selected_pos.map_or(0, |pos| pos + 1);
-    let Some(target) = order.get(next_pos).map(|entry| entry.0) else {
+    let Some(&(target, itrack, _)) = order.get(next_pos) else {
         return;
     };
 
@@ -1172,5 +1551,18 @@ fn cycle_selection(state: &mut AppState, forward: bool) {
         let win = (state.tmax - state.tmin).max(1e-9);
         state.tmin = t - win * 0.5;
         state.tmax = t + win * 0.5;
+    }
+    if itrack >= 0 {
+        // Scroll the stack until the pick's row is on screen (Qt's
+        // `scroll_tracks` calls): up to put it first, down to put it last.
+        let itrack = itrack as f32;
+        let low = state.track_scroll.floor();
+        if itrack < low {
+            state.track_scroll = itrack;
+        } else if itrack >= low + cur_n {
+            state.track_scroll = (itrack + 1.0 - cur_n).max(0.0);
+        }
+    } else {
+        go_to_selection(state, false, scene_range, deltatmin);
     }
 }

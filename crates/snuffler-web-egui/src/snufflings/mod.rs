@@ -45,22 +45,44 @@ impl Panel {
 
 pub use snuffler_web_core::snufflings::Action;
 
+/// The set of open snuffling panels. Qt gives every snuffling its own dock
+/// widget alongside the others (snuffling.py:226), so panels coexist here too:
+/// opening one never closes another.
 #[derive(Default)]
 pub struct SnufflingPanels {
-    active_panel: Option<Panel>,
+    open_panels: Vec<Panel>,
 }
 
 impl SnufflingPanels {
+    fn open(&mut self, panel: Panel) {
+        if !self.open_panels.contains(&panel) {
+            self.open_panels.push(panel);
+        }
+    }
+
     /// Open the Cake Phase config panel (used by the Data-menu shortcut).
     pub fn open_cake_panel(&mut self) {
-        self.active_panel = Some(Panel::Cake);
+        self.open(Panel::Cake);
     }
 }
 
-pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut ViewMode) {
+/// The Snufflings menu. Each entry *runs* the snuffling with its current
+/// parameters — Qt's menu item calls `check_call` (snuffling.py:1524) — and
+/// opens its panel so the parameters are at hand; the returned action is the
+/// run to dispatch.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one menu, one entry per snuffling; splitting it hides the order"
+)]
+pub fn menu(
+    ui: &mut egui::Ui,
+    panels: &mut SnufflingPanels,
+    state: &mut AppState,
+) -> Option<Action> {
+    let mut action = None;
     ui.menu_button("Snufflings", |ui| {
         if ui.button("Waterfall (inline spectrogram)").clicked() {
-            *view_mode = ViewMode::Waterfall;
+            state.view_mode = ViewMode::Waterfall;
             ui.close();
         }
         if ui
@@ -71,20 +93,24 @@ pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut Vie
             )
             .clicked()
         {
-            panels.active_panel = Some(Panel::Spectrogram);
+            panels.open(Panel::Spectrogram);
+            action = Some(Action::Spectrogram);
             ui.close();
         }
         if ui.button("Amplitude spectrum").clicked() {
-            panels.active_panel = Some(Panel::AmplitudeSpectrum);
+            panels.open(Panel::AmplitudeSpectrum);
+            action = Some(Action::Spectrum);
             ui.close();
         }
         ui.separator();
         if ui.button("Minimum / Maximum (peak-to-peak)").clicked() {
-            panels.active_panel = Some(Panel::MinMax);
+            panels.open(Panel::MinMax);
+            action = Some(Action::Run("minmax"));
             ui.close();
         }
         if ui.button("STA/LTA detector").clicked() {
-            panels.active_panel = Some(Panel::Stalta);
+            panels.open(Panel::Stalta);
+            action = Some(Action::Run("stalta"));
             ui.close();
         }
         if ui
@@ -95,7 +121,8 @@ pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut Vie
             )
             .clicked()
         {
-            panels.active_panel = Some(Panel::Polarization);
+            panels.open(Panel::Polarization);
+            action = Some(Action::Polarization);
             ui.close();
         }
         if ui
@@ -106,7 +133,8 @@ pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut Vie
             )
             .clicked()
         {
-            panels.active_panel = Some(Panel::Rms);
+            panels.open(Panel::Rms);
+            action = Some(Action::Rms);
             ui.close();
         }
         ui.separator();
@@ -118,7 +146,8 @@ pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut Vie
             )
             .clicked()
         {
-            panels.active_panel = Some(Panel::Cake);
+            panels.open(Panel::Cake);
+            action = Some(Action::Run("cake"));
             ui.close();
         }
         if ui
@@ -129,9 +158,38 @@ pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut Vie
             )
             .clicked()
         {
-            panels.active_panel = Some(Panel::Seismosizer);
+            panels.open(Panel::Seismosizer);
+            action = Some(Action::Run("seismosizer"));
             ui.close();
         }
+        ui.separator();
+        // Qt's `Reload Snufflings` menu item. Its Qt semantic — re-scanning the
+        // user's `snuffling_paths` by mtime — has nothing to reload here (a
+        // browser page carries no user snuffling directory), so the entry
+        // reloads the Python side the way Shift+R does.
+        if ui
+            .button("Reload Snufflings")
+            .on_hover_text("Reload the Python snuffling code (same as Shift+R).")
+            .clicked()
+        {
+            action = Some(Action::ReloadSnufflings);
+            ui.close();
+        }
+        // Qt's four one-click GEOFON event queries (`Get GEOFON Events`),
+        // served over FDSN instead of the eqinfo scrape a browser cannot reach.
+        ui.menu_button("Get GEOFON Events", |ui| {
+            for (label, minmag) in [
+                ("All events", 0.0),
+                ("Events, M ≥ 6", 6.0),
+                ("Events, M ≥ 7", 7.0),
+                ("Events, M ≥ 8", 8.0),
+            ] {
+                if ui.button(label).clicked() {
+                    action = Some(Action::GeofonPreset(minmag));
+                    ui.close();
+                }
+            }
+        });
         ui.separator();
         if ui
             .button("SeisBench picker (models)")
@@ -142,10 +200,20 @@ pub fn menu(ui: &mut egui::Ui, panels: &mut SnufflingPanels, view_mode: &mut Vie
             )
             .clicked()
         {
-            panels.active_panel = Some(Panel::SeisbenchPicker);
+            panels.open(Panel::SeisbenchPicker);
+            action = Some(Action::Run("seisbench_picker"));
             ui.close();
         }
+        ui.separator();
+        // Qt files its panel togglers — Markers, Main Controls, every
+        // snuffling dock — under this same menu (`toggle_panel_menu`,
+        // pile_viewer.py:860 with snuffler_app.py:667): the two built-in
+        // panels are `add_panel` peers of the snuffling docks. Checkboxes
+        // rather than Qt's show-only actions: `m` and `c` still toggle.
+        ui.checkbox(&mut state.show_controls, "Main Controls");
+        ui.checkbox(&mut state.show_marker_editor, "Markers");
     });
+    action
 }
 
 pub fn show_panel(
@@ -154,36 +222,53 @@ pub fn show_panel(
     configs: &mut SnufflingConfigs,
     main_highpass: Option<f64>,
     main_lowpass: Option<f64>,
+    nyquist: Option<f64>,
     seisbench_runtime: &SeisbenchRuntimeStatus,
 ) -> Option<Action> {
-    let panel = panels.active_panel?;
-    let mut open = true;
+    // Every open panel draws, its own window each (Qt's tabified docks). One
+    // frame carries at most one click, so the first action is the only one.
     let mut action = None;
-    egui::Window::new(panel.title())
-        .open(&mut open)
-        .default_width(450.0)
-        .show(ctx, |ui| {
-            action = match panel {
-                Panel::AmplitudeSpectrum => amplitude_spectrum::panel(ui, &mut configs.spectrum),
-                Panel::Spectrogram => spectrogram::panel(ui, &mut configs.spectrogram),
-                Panel::MinMax => minmax::panel(ui),
-                Panel::Stalta => {
-                    stalta::panel(ui, &mut configs.stalta, main_highpass, main_lowpass)
+    panels.open_panels.retain(|&panel| {
+        let mut open = true;
+        egui::Window::new(panel.title())
+            .open(&mut open)
+            .default_width(450.0)
+            .show(ctx, |ui| {
+                let panel_action = match panel {
+                    Panel::AmplitudeSpectrum => {
+                        amplitude_spectrum::panel(ui, &mut configs.spectrum)
+                    }
+                    Panel::Spectrogram => spectrogram::panel(ui, &mut configs.spectrogram, nyquist),
+                    Panel::MinMax => minmax::panel(ui),
+                    Panel::Stalta => stalta::panel(
+                        ui,
+                        &mut configs.stalta,
+                        main_highpass,
+                        main_lowpass,
+                        nyquist,
+                    ),
+                    Panel::Polarization => polarization::panel(
+                        ui,
+                        &mut configs.polarization,
+                        main_highpass,
+                        main_lowpass,
+                        nyquist,
+                    ),
+                    Panel::Rms => {
+                        rms::panel(ui, &mut configs.rms, main_highpass, main_lowpass, nyquist)
+                    }
+                    Panel::Cake => cake::panel(ui, &mut configs.cake),
+                    Panel::Seismosizer => seismosizer::panel(ui, &mut configs.seismosizer),
+                    Panel::SeisbenchPicker => {
+                        seisbench::panel(ui, &mut configs.seisbench, seisbench_runtime)
+                    }
+                };
+                if action.is_none() {
+                    action = panel_action;
                 }
-                Panel::Polarization => {
-                    polarization::panel(ui, &mut configs.polarization, main_highpass, main_lowpass)
-                }
-                Panel::Rms => rms::panel(ui, &mut configs.rms, main_highpass, main_lowpass),
-                Panel::Cake => cake::panel(ui, &mut configs.cake),
-                Panel::Seismosizer => seismosizer::panel(ui, &mut configs.seismosizer),
-                Panel::SeisbenchPicker => {
-                    seisbench::panel(ui, &mut configs.seisbench, seisbench_runtime)
-                }
-            };
-        });
-    if !open {
-        panels.active_panel = None;
-    }
+            });
+        open
+    });
     action
 }
 

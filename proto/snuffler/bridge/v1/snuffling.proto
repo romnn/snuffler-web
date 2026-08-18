@@ -75,7 +75,40 @@ message SeismosizerSnufflingParams {
   double seis_strike = 8;
   double seis_dip = 9;
   double seis_rake = 10;
-  double seis_stf_duration = 11; // half-sinusoid source-time-function duration [s]
+  double seis_stf_duration = 11; // source-time-function duration [s]
+  // Qt's four STF choices (seismosizer.py:35): "half sin" (default),
+  // "triangular", "boxcar", "None". Empty = "half sin". A zero duration still
+  // passes a zero-duration STF object, exactly as Qt's `get_stf` does.
+  string seis_stf_type = 12;
+  // Which of Qt's five Seismosizer source snufflings this run is
+  // (seismosizer.py:280-560): "DCSource" (default when empty), "MTSource",
+  // "SFSource", "RectangularSource", "PseudoDynamicRupture". The fields below
+  // belong to the non-DC sources and are read per type.
+  string seis_source_type = 13;
+  // MTSource: relative moment-tensor components, normalized then scaled to the
+  // magnitude's moment (`get_m6`, seismosizer.py:385).
+  double seis_rmnn = 14;
+  double seis_rmee = 15;
+  double seis_rmdd = 16;
+  double seis_rmne = 17;
+  double seis_rmnd = 18;
+  double seis_rmed = 19;
+  // SFSource: force components [N].
+  double seis_fn = 20;
+  double seis_fe = 21;
+  double seis_fd = 22;
+  // RectangularSource / PseudoDynamicRupture geometry.
+  double seis_length_km = 23;
+  double seis_width_km = 24;
+  double seis_nucleation_x = 25;
+  double seis_nucleation_y = 26;
+  double seis_velocity = 27; // rupture velocity [m/s]
+  // PseudoDynamicRupture.
+  double seis_slip = 28;
+  double seis_gamma = 29;
+  uint32 seis_nx = 30;
+  uint32 seis_ny = 31;
+  bool seis_tapered = 32;
 }
 
 message SeisbenchSnufflingParams {
@@ -84,6 +117,9 @@ message SeisbenchSnufflingParams {
   optional double p_threshold = 3;
   optional double s_threshold = 4;
   string model_base_url = 5;
+  bool show_annotation_traces = 6;
+  bool use_predefined_filters = 7;
+  double scale_factor = 8;
 }
 
 message SnufflingParams {
@@ -100,6 +136,19 @@ message SnufflingParams {
 message SnufflingRequestParams {
   ViewParams view = 1;
   SnufflingParams snufflings = 2;
+  // The selected non-event markers, which are the run scope Qt gives every
+  // snuffling (`chopper_selected_traces`, snuffling.py:1000): each span is a
+  // chop window plus a trace filter from the marker's channel patterns. Empty =
+  // fall back to the visible window.
+  repeated SnufflingSpan selected_spans = 3;
+}
+
+// One selected marker's extent, as a snuffling's processing scope.
+message SnufflingSpan {
+  double tmin = 1;
+  double tmax = 2;
+  // The marker's channel patterns (may hold shell wildcards); empty = every trace.
+  repeated Nslc nslc_ids = 3;
 }
 
 message SnufMarker {
@@ -108,7 +157,10 @@ message SnufMarker {
   optional string phase = 3;
   uint32 kind = 4;
   bool is_event = 5;
-  Nslc nslc = 6;
+  // The channels the marker applies to — a *list*, as pyrocko's `nslc_ids` is
+  // (marker.py:168): a Qt pick binds to every channel gathered onto the clicked
+  // track, and a loaded file legally carries several. Empty = every track.
+  repeated Nslc nslc_ids = 6;
   optional int32 polarity = 7;
   // Focal mechanism for an event marker sourced from a catalog moment tensor,
   // plus the Kagan angle (degrees) to the active event and the event's catalog
@@ -124,6 +176,28 @@ message SnufMarker {
   optional double depth = 13;
   optional double lat = 14;
   optional double lon = 15;
+  // `PhaseMarker._automatic`: machine-made picks save `True` and wear an `@` in
+  // their label; hand picks save `False` (marker.py:707).
+  optional bool automatic = 16;
+  // `PhaseMarker` incidence/take-off angles — the SeisBench picker rides the pick
+  // probability on incidence, exactly as Qt's does (seisbench_picker.py:341).
+  optional double incidence_angle = 17;
+  optional double takeoff_angle = 18;
+  // The catalog Event's own identity fields, which Qt writes into a saved event
+  // row (`EventMarker.get_attributes`) and composes its caption from.
+  optional string event_name = 19;
+  optional string region = 20;
+  optional string catalog = 21;
+  // The associated event's origin time — the association fallback pyrocko's
+  // `associate_phases_to_events` re-links on when the hash is absent.
+  optional double event_time = 22;
+  // Distance from this *event* to the active event, in km — the marker table's
+  // `Dist [km]` column (marker_editor.py:502), precomputed with pyrocko's
+  // orthodrome. Absent on non-events and while nothing is active.
+  optional double dist_active_km = 23;
+  // Whether Python auto-activated this event (largest magnitude on catalog
+  // load) — the activation must be *visible*, so the marker carries it.
+  bool active = 24;
 }
 
 message SnufflingResult {
@@ -131,6 +205,12 @@ message SnufflingResult {
   string text = 2;
   repeated SnufMarker markers = 3;
   SceneMeta scene = 4;
+  // Which snuffling produced this result. A re-run first removes the markers
+  // the previous run with the same origin added — Qt's `cleanup()` contract
+  // (snuffling.py:1689), without which Cake/STA-LTA/SeisBench stack duplicates.
+  // Empty = the markers accumulate (marker-file loads, catalog searches).
+  string origin = 5;
+  ActiveEventResult event_state = 6;
 }
 
 message NamedSnufflingRequest {

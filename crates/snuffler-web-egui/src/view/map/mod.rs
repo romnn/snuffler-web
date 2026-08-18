@@ -12,7 +12,7 @@ mod tiles;
 
 use egui::{Color32, Rect, Sense};
 
-use snuffler_web_core::bridge::{Bridge, MapData};
+use snuffler_web_core::bridge::{Bridge, MapData, MapRequest};
 use snuffler_web_core::state::AppState;
 use snuffler_web_render::map::{Camera, GeoBounds};
 use strum::{EnumIter, IntoEnumIterator as _};
@@ -135,10 +135,15 @@ pub struct MapState {
     last_zoom: f64,
     source: Basemap,
     last_poll: f64,
-    /// Station/event counts the view last auto-fitted to, so a fit happens when
-    /// the data changes and not when the user has merely panned away.
-    fitted_counts: (usize, usize),
+    /// Fingerprint of the coordinates the view last auto-fitted to
+    /// ([`fit_fingerprint`]), so a fit happens when the data changes and not
+    /// when the user has merely panned away. `None` forces the next fit.
+    fitted_key: Option<u64>,
     show_plates: bool,
+    /// Qt's "Only active event" switch (map/__init__.py:242).
+    only_active_event: bool,
+    /// Event-marker projection used for the last coordinate request.
+    last_request: Option<MapRequest>,
     tiles: TileCache,
     /// True until the window has drawn a real frame. The first fit cuts instead
     /// of easing: there is nothing on screen yet to animate away from, and easing
@@ -153,10 +158,12 @@ impl Default for MapState {
             last_zoom: Camera::default().zoom(),
             source: Basemap::OpenStreetMap,
             last_poll: -1.0e9,
-            fitted_counts: (usize::MAX, usize::MAX),
+            fitted_key: None,
             show_plates: true,
             tiles: TileCache::default(),
             opening: true,
+            only_active_event: false,
+            last_request: None,
         }
     }
 }
@@ -173,12 +180,42 @@ pub fn window(ctx: &egui::Context, map: &mut MapState, state: &mut AppState, bri
     egui::Window::new("Map — stations & events")
         .open(&mut open)
         .default_size([640.0, 480.0])
-        .show(ctx, |ui| show(ui, map, bridge, ctx));
+        .show(ctx, |ui| show(ui, map, bridge, ctx, state));
     state.show_map = open;
 }
 
-pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::Context) {
-    let data = toolbar(ui, st, bridge, ctx);
+/// A fingerprint of what the auto-fit would frame: every station and event
+/// coordinate, hashed, with the station count separating the two lists.
+/// Counting alone missed real changes — switching between two selected events,
+/// or swapping datasets with equal counts, moves the coordinates without
+/// changing either count and left the newly framed data offscreen. `None`
+/// while there is nothing to frame, so an empty poll never latches as fitted.
+fn fit_fingerprint(d: &MapData) -> Option<u64> {
+    use std::hash::Hasher;
+    if d.stations.is_empty() && d.events.is_empty() {
+        return None;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write_usize(d.stations.len());
+    for s in &d.stations {
+        h.write_u64(s.lat.to_bits());
+        h.write_u64(s.lon.to_bits());
+    }
+    for e in &d.events {
+        h.write_u64(e.lat.to_bits());
+        h.write_u64(e.lon.to_bits());
+    }
+    Some(h.finish())
+}
+
+pub fn show(
+    ui: &mut egui::Ui,
+    st: &mut MapState,
+    bridge: &Bridge,
+    ctx: &egui::Context,
+    state: &AppState,
+) {
+    let data = toolbar(ui, st, bridge, ctx, state);
 
     let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let rect = response.rect;
@@ -194,8 +231,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
         return;
     };
 
-    let counts = (d.stations.len(), d.events.len());
-    if counts != st.fitted_counts && counts != (0, 0) {
+    let key = fit_fingerprint(d);
+    if key.is_some() && key != st.fitted_key {
         let points = d
             .stations
             .iter()
@@ -208,7 +245,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut MapState, bridge: &Bridge, ctx: &egui::C
                 st.camera.fit(bounds, rect);
             }
         }
-        st.fitted_counts = counts;
+        st.fitted_key = key;
     }
     // Whether or not there was anything to frame, the window has now seen its
     // data; a later fit is a deliberate move and should ease.
@@ -275,8 +312,10 @@ fn toolbar(
     st: &mut MapState,
     bridge: &Bridge,
     ctx: &egui::Context,
+    state: &AppState,
 ) -> Option<MapData> {
     let previous_source = st.source;
+    let mut refresh = false;
     ui.horizontal(|ui| {
         egui::ComboBox::from_label("Basemap")
             .selected_text(st.source.name())
@@ -286,12 +325,15 @@ fn toolbar(
                 }
             });
         if ui.button("Refresh data").clicked() {
-            bridge.fetch_map_data();
+            refresh = true;
         }
         if ui.button("Fit").clicked() {
-            st.fitted_counts = (usize::MAX, usize::MAX);
+            st.fitted_key = None;
         }
         ui.checkbox(&mut st.show_plates, "Plate boundaries");
+        refresh |= ui
+            .checkbox(&mut st.only_active_event, "Only active event")
+            .changed();
         ui.label(format!("zoom {:.1}", st.camera.zoom()));
     });
 
@@ -303,14 +345,52 @@ fn toolbar(
         bridge.clear_tiles();
     }
 
+    let request = map_request(state, st.only_active_event);
+    if st.last_request.as_ref() != Some(&request) {
+        refresh = true;
+        st.last_request = Some(request.clone());
+    }
+    refresh |= !bridge.map_request_is_current(&request);
     let data = bridge.map_data();
     let now = ctx.input(|i| i.time);
-    if now - st.last_poll > POLL_SECONDS {
-        bridge.fetch_map_data();
+    if refresh || now - st.last_poll > POLL_SECONDS {
+        bridge.fetch_map_data(request);
         st.last_poll = now;
     }
     ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
     data
+}
+
+/// Selects the event-marker projection Qt hands to its map snuffling.
+fn map_request(state: &AppState, only_active_event: bool) -> MapRequest {
+    let any_selected = state.markers.iter().any(|marker| marker.selected);
+    let active_event = state
+        .markers
+        .iter()
+        .find(|marker| marker.is_event && marker.active);
+    let mut event_hashes = Vec::new();
+    for marker in &state.markers {
+        let included = marker.is_event
+            && if only_active_event {
+                marker.active
+            } else if any_selected {
+                marker.selected
+            } else {
+                marker.tmin >= state.tmin && marker.tmax <= state.tmax
+            };
+        if included
+            && let Some(event_hash) = &marker.event_hash
+            && !event_hashes.contains(event_hash)
+        {
+            event_hashes.push(event_hash.clone());
+        }
+    }
+    MapRequest {
+        event_hashes,
+        only_active_event,
+        active_event_hash: active_event.and_then(|marker| marker.event_hash.clone()),
+        active_event_time: active_event.map(|marker| marker.tmin),
+    }
 }
 
 /// Turns wheel and pinch input into a new zoom target aimed at the cursor.
@@ -341,4 +421,45 @@ fn apply_wheel(ui: &egui::Ui, st: &mut MapState, rect: Rect) {
         return;
     }
     st.camera.nudge_zoom(levels, cursor, rect);
+}
+
+#[cfg(test)]
+mod tests {
+    use snuffler_web_core::markers::Marker;
+
+    use super::*;
+
+    #[test]
+    fn map_projection_uses_selection_then_visible_range() {
+        let mut state = AppState {
+            tmin: 10.0,
+            tmax: 20.0,
+            ..AppState::default()
+        };
+        for (time, hash) in [(15.0, "visible"), (30.0, "outside")] {
+            let mut marker = Marker::new(time, time, 0);
+            marker.is_event = true;
+            marker.event_hash = Some(hash.to_owned());
+            state.markers.push(marker);
+        }
+
+        assert_eq!(map_request(&state, false).event_hashes, ["visible"]);
+
+        for marker in &mut state.markers {
+            marker.selected = marker.event_hash.as_deref() == Some("outside");
+        }
+        assert_eq!(map_request(&state, false).event_hashes, ["outside"]);
+
+        for marker in &mut state.markers {
+            marker.active = marker.event_hash.as_deref() == Some("visible");
+        }
+        let active = map_request(&state, true);
+        assert_eq!(active.event_hashes, ["visible"]);
+        assert_eq!(active.active_event_hash.as_deref(), Some("visible"));
+        assert!(
+            active
+                .active_event_time
+                .is_some_and(|time| (time - 15.0).abs() < f64::EPSILON)
+        );
+    }
 }

@@ -27,14 +27,13 @@ fn main() {
                 clippy::cast_sign_loss,
                 reason = "hardware_concurrency is a small non-negative integer core count"
             )]
-            let cores = web_sys::window()
-                .map(|w| w.navigator().hardware_concurrency() as usize)
-                .unwrap_or(0);
+            let cores =
+                web_sys::window().map_or(0, |w| w.navigator().hardware_concurrency() as usize);
             // Cap the pool: spawning one Worker per core (e.g. 48) at page load —
             // each re-instantiating the wasm — costs far more than it buys for the
             // workloads we run today, where 4 is ample. Raise the cap if a future
             // workload actually needs wider parallelism.
-            let threads = cores.min(4).max(1);
+            let threads = cores.clamp(1, 4);
             wasm_bindgen_futures::spawn_local(async move {
                 let ready = wasm_bindgen_futures::JsFuture::from(
                     snuffler_web_egui::init_thread_pool(threads),

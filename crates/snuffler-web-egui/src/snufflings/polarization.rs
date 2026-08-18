@@ -10,28 +10,19 @@ pub fn panel(
     config: &mut Config,
     main_highpass: Option<f64>,
     main_lowpass: Option<f64>,
+    nyquist: Option<f64>,
 ) -> Option<Action> {
+    // Qt re-narrows the corner ranges to the loaded band on every pile change
+    // (`adjust_controls`): a corner above Nyquist is silently discarded
+    // downstream, so the slider must not offer one.
+    let fmax = nyquist.unwrap_or(1000.0).clamp(0.002, 1000.0);
     ui.label("Analyze 3-component polarization around selected marker anchors.");
     ui.add_space(6.0);
     param_row(ui, "Length [s]", &mut config.length, 0.001, 1000.0);
     param_row(ui, "Offset (relative)", &mut config.offset, -5.0, 5.0);
     param_row(ui, "Delta Azimuth", &mut config.azimuth, -180.0, 180.0);
-    optional_freq_row(
-        ui,
-        "Highpass [Hz]",
-        &mut config.highpass,
-        0.001,
-        1000.0,
-        true,
-    );
-    optional_freq_row(
-        ui,
-        "Lowpass [Hz]",
-        &mut config.lowpass,
-        0.001,
-        1000.0,
-        false,
-    );
+    optional_freq_row(ui, "Highpass [Hz]", &mut config.highpass, 0.001, fmax, true);
+    optional_freq_row(ui, "Lowpass [Hz]", &mut config.lowpass, 0.001, fmax, false);
     param_row(ui, "Dot Position", &mut config.dot_position, 0.0, 1.0);
     checkbox_row(ui, &mut config.rotate_to_rt, "Rotate to RT");
     checkbox_row(ui, &mut config.show_eigensystem_2d, "Show 2D Eigensystems");

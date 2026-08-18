@@ -25,7 +25,9 @@ class Event:
     lon: float
     depth: float | None
     magnitude: float | None
-    name: str
+    name: str | None
+    region: str | None
+    catalog: str | None
     moment_tensor: Any
     def __init__(
         self,
@@ -34,11 +36,15 @@ class Event:
         lon: float = ...,
         depth: float = ...,
         magnitude: float | None = ...,
-        name: str = ...,
+        name: str | None = ...,
+        region: str | None = ...,
+        catalog: str | None = ...,
         moment_tensor: Any = ...,
     ) -> None: ...
+    def get_hash(self) -> str: ...
 
 def load_stations(filename: str) -> Sequence[Station]: ...
+def dump_stations(stations: Sequence[Station], filename: str) -> None: ...
 def load_events(filename: str) -> Sequence[Event]: ...
 
 # Re-exported from pyrocko.model.station. Reads a bound that may be left open:

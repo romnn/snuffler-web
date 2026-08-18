@@ -10,23 +10,14 @@ pub fn panel(
     config: &mut Config,
     main_highpass: Option<f64>,
     main_lowpass: Option<f64>,
+    nyquist: Option<f64>,
 ) -> Option<Action> {
-    optional_freq_row(
-        ui,
-        "Highpass [Hz]",
-        &mut config.highpass,
-        0.001,
-        1000.0,
-        true,
-    );
-    optional_freq_row(
-        ui,
-        "Lowpass [Hz]",
-        &mut config.lowpass,
-        0.001,
-        1000.0,
-        false,
-    );
+    // Qt re-narrows the corner ranges to the loaded band on every pile change
+    // (`adjust_controls`): a corner above Nyquist is silently discarded
+    // downstream, so the slider must not offer one.
+    let fmax = nyquist.unwrap_or(1000.0).clamp(0.002, 1000.0);
+    optional_freq_row(ui, "Highpass [Hz]", &mut config.highpass, 0.001, fmax, true);
+    optional_freq_row(ui, "Lowpass [Hz]", &mut config.lowpass, 0.001, fmax, false);
     param_row(
         ui,
         "Short Window [s]",

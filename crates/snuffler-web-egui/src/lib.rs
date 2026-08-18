@@ -16,6 +16,9 @@ mod deep_link;
 // Progress overlay shown while an off-thread job runs (threaded build).
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod job;
+// Settings that survive a reload (the browser's `snuffler.pf`).
+#[cfg(target_arch = "wasm32")]
+mod persist;
 #[cfg(target_arch = "wasm32")]
 mod snufflings;
 #[cfg(target_arch = "wasm32")]

@@ -58,11 +58,16 @@ web-sys = { version = "0.3", features = [
     "WebSocket",
     # `?a11y=` flag parsing in `src/a11y.rs`.
     "Location",
+    # Persisted settings in `src/persist.rs` (the browser's `snuffler.pf`).
+    "Storage",
     # `?example=` deep links in `src/deep_link.rs`: read the slug, and rewrite the
     # address bar to the link that reproduces what is loaded.
     "Url",
     "UrlSearchParams",
     "History",
+    # The `f` key / View ▸ Fullscreen: eframe's viewport command is unhandled on
+    # the web, so the app calls the Fullscreen API on the document element.
+    "Element",
 ] }
 console_error_panic_hook = "0.1"
 png = "0.18"

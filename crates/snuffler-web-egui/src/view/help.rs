@@ -3,7 +3,6 @@
 use snuffler_web_core::state::AppState;
 
 const HELP_KEY_ROWS: &[(&str, &str)] = &[
-    ("q", "Quit / close viewer"),
     (
         "r",
         "Reload opened files changed on disk (Chromium file access)",
@@ -13,6 +12,16 @@ const HELP_KEY_ROWS: &[(&str, &str)] = &[
         "Reload the Python snuffling code (bridge.py), keeping the loaded pile",
     ),
     ("f", "Toggle full screen mode"),
+    ("_", "Toggle Demean"),
+    (
+        "s i, s c, s s",
+        "Scaling: individual / common / per station",
+    ),
+    ("s n, s d", "Sort by names / by distance"),
+    ("<ctrl> + o", "Open files"),
+    ("<ctrl> + s", "Save markers"),
+    ("<ctrl> + <shift> + s", "Save selected markers"),
+    ("<ctrl> + e", "Save image (PNG)"),
     ("m", "Toggle marker sidebar"),
     ("c", "Toggle main controls"),
     (":", "Enter command"),
@@ -21,7 +30,11 @@ const HELP_KEY_ROWS: &[(&str, &str)] = &[
         "Step through the command history",
     ),
     ("<space>", "Forward one page in time"),
-    ("b", "Backward one page in time"),
+    ("b, B", "Backward one page in time"),
+    (
+        "<left>, <right>",
+        "Nudge selected markers by one pixel of time (<shift>: ten)",
+    ),
     ("<pagedown>", "Scroll tracks one page down"),
     ("<pageup>", "Scroll tracks one page up"),
     ("+", "Shorter tracks (show one more)"),
@@ -43,7 +56,7 @@ const HELP_KEY_ROWS: &[(&str, &str)] = &[
     ("e", "Convert to event marker / set active event"),
     ("E", "Deactivate event"),
     ("<f10>", "Convert phase marker to normal marker"),
-    ("<backspace>", "Delete marker"),
+    ("<backspace>, <delete>", "Delete marker"),
     (
         "<up>, <down>",
         "Set first motion polarity on selected marker",
@@ -70,10 +83,17 @@ const HELP_MOUSE_ROWS: &[(&str, &str)] = &[
         "Right-click",
         "Context menu (File / Data / View / Options / Scaling / Sorting / Snufflings / Help)",
     ),
-    ("Double-click", "Enter picking mode / place pick"),
     (
-        "Shift and left-click",
-        "Uncertainty selection for current phase marker (native only)",
+        "Double-click",
+        "Arm picking: a floating pick follows the cursor; press-drag-release places it",
+    ),
+    (
+        "<shift> + drag",
+        "Adjust pick uncertainty of the selected phase markers",
+    ),
+    (
+        "Hover near a marker",
+        "Highlight it and show its metadata in the status line",
     ),
 ];
 
@@ -106,7 +126,81 @@ const HELP_COMMAND_ROWS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Draws the help window when the shared state asks for it.
+/// What each built-in snuffling does — Qt renders every snuffling's docstring
+/// under Help ▸ Snuffling Help; this is the same index for the ported set.
+const SNUFFLING_HELP: &[(&str, &str)] = &[
+    (
+        "Amplitude spectrum",
+        "Amplitude spectra of the traces in the selected span (or visible \
+         window) on log-log axes, with optional Konno-Ohmachi smoothing.",
+    ),
+    (
+        "Spectrogram",
+        "Windowed STFT spectrogram per channel on an absolute window grid, \
+         with a shared PSD colour scale and colorbar.",
+    ),
+    (
+        "Minimum / Maximum",
+        "Raw minimum, maximum and peak-to-peak of each channel over the \
+         selected span — unfiltered pile values, as snuffler reports them.",
+    ),
+    (
+        "STA/LTA detector",
+        "Short-/long-term-average ratio detection with level-crossing markers; \
+         level traces appear in location 'cg' plus a .SUM.cg. mean trace.",
+    ),
+    (
+        "Polarization",
+        "Covariance-eigenvalue polarization analysis per 3-component station \
+         over the selected markers' windows: hodograms, eigensystems, azimuth \
+         and incidence.",
+    ),
+    (
+        "RMS",
+        "Blockwise root-mean-square amplitude as derived low-rate traces \
+         (channel suffix -RMS), optionally grouped over components.",
+    ),
+    (
+        "Cake Phase",
+        "Theoretical arrivals through a 1D earth model (pyrocko.cake) as phase \
+         markers with incidence/take-off angles, plus model and ray-path plots.",
+    ),
+    (
+        "Seismosizer",
+        "Synthetic seismograms from a pyrocko.gf point or finite source (DC, \
+         MT, single-force, rectangular, pseudo-dynamic rupture) through a \
+         mounted Green's-function store.",
+    ),
+    (
+        "SeisBench picker",
+        "Deep-learning P/S phase picker: exported SeisBench models run \
+         in-browser; picks carry their probability on the incidence angle.",
+    ),
+];
+
+/// The Help ▸ Snuffling Help window: what each built-in snuffling does.
+/// Draws the snuffling-help window when the shared state asks for it.
+pub fn show_snuffling_help(ctx: &egui::Context, state: &mut AppState) {
+    if !state.show_snuffling_help {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Snuffling Help")
+        .open(&mut open)
+        .default_size([520.0, 420.0])
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (name, text) in SNUFFLING_HELP {
+                    ui.strong(*name);
+                    ui.label(*text);
+                    ui.add_space(6.0);
+                }
+            });
+        });
+    state.show_snuffling_help = open;
+}
+
+/// Draws the controls-help window when the shared state asks for it.
 pub fn show(ctx: &egui::Context, state: &mut AppState) {
     if !state.show_help {
         return;

@@ -11,7 +11,7 @@ pub mod stalta;
 use crate::bridge::SnufflingParams;
 
 /// Cross-boundary intent emitted by a snuffling configuration panel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     /// Renders an amplitude-spectrum figure.
     Spectrum,
@@ -21,6 +21,11 @@ pub enum Action {
     Polarization,
     /// Runs a named text/marker-producing snuffling.
     Run(&'static str),
+    /// One of Qt's four one-click GEOFON event queries over the visible time
+    /// range, with this minimum magnitude (0 = all events).
+    GeofonPreset(f64),
+    /// Qt's `Reload Snufflings` menu item, mapped to the Shift+R reload.
+    ReloadSnufflings,
     /// Adds derived RMS traces.
     Rms,
     /// Renders the selected Cake velocity model.

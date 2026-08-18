@@ -85,6 +85,14 @@ fn canvas() -> Option<web_sys::HtmlCanvasElement> {
         .ok()
 }
 
+/// Publishes machine-readable application readiness without coupling automation
+/// to the visible status wording.
+pub fn publish_ready(ready: bool) {
+    if let Some(canvas) = canvas() {
+        let _ = canvas.set_attribute("data-snuffler-ready", if ready { "true" } else { "false" });
+    }
+}
+
 /// Turn on AccessKit and keep the DOM overlay in sync with each pass.
 pub fn install(ctx: &egui::Context) {
     if !enabled() {

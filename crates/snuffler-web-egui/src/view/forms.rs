@@ -14,6 +14,8 @@ pub struct DownloadRequests {
     pub stations: Option<StationRequest>,
     /// Response query submitted by the user.
     pub responses: Option<StationRequest>,
+    /// Save the loaded waveforms + station table (Qt's Save trigger).
+    pub save: bool,
 }
 
 /// Intent submitted from the live `SeedLink` window.
@@ -22,9 +24,16 @@ pub enum SeedlinkIntent {
     Start(SeedlinkParams),
     /// Stops the active stream.
     Stop,
+    /// Downloads the live buffer as `MiniSEED` — the browser twin of Qt's
+    /// continuous stream-to-disk recording, on demand instead of silently.
+    SaveBuffer,
 }
 
 /// Draws the FDSN waveform window and returns requests triggered this frame.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one form, drawn top to bottom; splitting the rows hides the layout"
+)]
 pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
     if !state.show_download {
         return DownloadRequests::default();
@@ -34,6 +43,7 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
     let mut fetch_waveforms = false;
     let mut fetch_stations = false;
     let mut fetch_responses = false;
+    let mut save = false;
     egui::Window::new("Download waveforms (FDSN)")
         .open(&mut open)
         .default_width(420.0)
@@ -77,10 +87,33 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
                         ui.end_row();
                     }
                 });
+            // Qt's primary download workflow searches by radius around the
+            // selected event's epicentre (download.py:28); the code selectors
+            // above still narrow the result.
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.dl_around_event, "Around active event");
+                if state.dl_around_event {
+                    ui.add(
+                        egui::Slider::new(&mut state.dl_radius_deg, 0.1..=30.0).text("radius [°]"),
+                    );
+                }
+            });
             ui.horizontal(|ui| {
                 fetch_waveforms = ui.button("Fetch waveforms").clicked();
                 fetch_stations = ui.button("Fetch station coords").clicked();
                 fetch_responses = ui.button("Fetch responses").clicked();
+            });
+            ui.horizontal(|ui| {
+                // Qt's Save trigger writes MiniSEED plus a station file
+                // (download.py:147); the browser twin hands both over as
+                // downloads.
+                save = ui
+                    .button("Save (MiniSEED + stations)")
+                    .on_hover_text(
+                        "Download the loaded waveforms as MiniSEED and the \
+                         station coordinates as a pyrocko station file.",
+                    )
+                    .clicked();
             });
             ui.small(
                 "Wildcards * and ? allowed (e.g. channel BH? = BHZ/BHN/BHE). \
@@ -94,7 +127,11 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
         datacenter: datacenter.clone(),
         net: state.dl_net.clone(),
         sta: state.dl_sta.clone(),
+        loc: state.dl_loc.clone(),
         cha: state.dl_cha.clone(),
+        start: state.dl_start.clone(),
+        end: state.dl_end.clone(),
+        radius_deg: state.dl_around_event.then_some(state.dl_radius_deg),
     };
     DownloadRequests {
         waveforms: fetch_waveforms.then(|| WaveformDownloadRequest {
@@ -106,8 +143,9 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
             start: state.dl_start.clone(),
             end: state.dl_end.clone(),
         }),
-        stations: fetch_stations.then(station_request),
-        responses: fetch_responses.then(station_request),
+        stations: fetch_stations.then(&station_request),
+        responses: fetch_responses.then(&station_request),
+        save,
     }
 }
 
@@ -138,6 +176,25 @@ pub fn seedlink(ctx: &egui::Context, state: &mut AppState, active: bool) -> Opti
                         ui.text_edit_singleline(value);
                         ui.end_row();
                     }
+                    // Qt takes the follow window from `--follow N` and keeps
+                    // every sample; the browser's bounded heap needs a keep
+                    // limit, so both numbers are on the form instead.
+                    ui.label("Follow [s]");
+                    ui.add(
+                        egui::DragValue::new(&mut state.live_seedlink_follow_s)
+                            .range(10.0..=86_400.0),
+                    );
+                    ui.end_row();
+                    ui.label("Keep [s]");
+                    ui.add(
+                        egui::DragValue::new(&mut state.live_seedlink_retain_s)
+                            .range(60.0..=86_400.0),
+                    )
+                    .on_hover_text(
+                        "Live data older than this is discarded — the browser tab's \
+                         memory is one bounded block.",
+                    );
+                    ui.end_row();
                 });
             ui.horizontal(|ui| {
                 if ui
@@ -150,12 +207,31 @@ pub fn seedlink(ctx: &egui::Context, state: &mut AppState, active: bool) -> Opti
                         net: state.live_seedlink_net.clone(),
                         sta: state.live_seedlink_sta.clone(),
                         selectors: state.live_seedlink_selectors.clone(),
+                        follow_s: state.live_seedlink_follow_s,
+                        retain_s: state.live_seedlink_retain_s,
                     }));
                 }
                 if ui.add_enabled(active, egui::Button::new("Stop")).clicked() {
                     intent = Some(SeedlinkIntent::Stop);
                 }
+                // Qt records the stream to disk continuously; a browser cannot
+                // write silently, so the buffer saves on demand instead.
+                if ui
+                    .button("Save buffer (MiniSEED)")
+                    .on_hover_text("Download the received live data as MiniSEED.")
+                    .clicked()
+                {
+                    intent = Some(SeedlinkIntent::SaveBuffer);
+                }
             });
+            // The WebSocket route to a SeedLink server exists only through the
+            // local proxy; saying so beats a connect error with no context.
+            ui.small(
+                "Live streaming tunnels through snuffler-web-proxy on \
+                 127.0.0.1:17684 (run `micromux`), so it works only for a \
+                 locally served app — the deployed site cannot reach SeedLink \
+                 servers.",
+            );
         });
     state.show_live_seedlink = open;
     intent
@@ -176,7 +252,7 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
             egui::ComboBox::from_label("Catalog")
                 .selected_text(state.cat_datacenter.clone())
                 .show_ui(ui, |ui| {
-                    for datacenter in ["usgs", "geofon", "earthscope", "iris", "ingv"] {
+                    for datacenter in ["geofon", "usgs", "earthscope", "iris", "ingv"] {
                         ui.selectable_value(
                             &mut state.cat_datacenter,
                             datacenter.to_owned(),
@@ -195,7 +271,9 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
                     ui.end_row();
                 }
             });
-            ui.add(egui::Slider::new(&mut state.cat_minmag, 0.0..=9.0).text("Min magnitude"));
+            // Qt's magnitude range runs to 10 (catalogs.py) — a cap at 9
+            // silently excludes the largest events there are.
+            ui.add(egui::Slider::new(&mut state.cat_minmag, 0.0..=10.0).text("Min magnitude"));
             ui.checkbox(
                 &mut state.cat_with_mt,
                 "Fetch moment tensors (beachball / Kagan)",

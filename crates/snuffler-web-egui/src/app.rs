@@ -79,6 +79,11 @@ pub struct App {
     /// canvas. Snuffler Qt takes the *whole* frontend light, not just the waveform:
     /// a white canvas inside dark chrome is neither theme, it just looks broken.
     theme_before_pinning: Option<egui::ThemePreference>,
+    /// The persisted-settings snapshot last written to `localStorage`, so a
+    /// frame that changed none of them writes nothing.
+    settings_saved: Option<crate::persist::Snapshot>,
+    /// Last readiness value published on the canvas, so unchanged frames do no DOM work.
+    published_ready: Option<bool>,
 }
 
 fn configure_look(ctx: &egui::Context) {
@@ -153,21 +158,29 @@ impl App {
         crate::a11y::install(&cc.egui_ctx);
         let repaint_now = cc.egui_ctx.clone();
         let repaint_after = cc.egui_ctx.clone();
-        let session = Session::new(Repaint::new(
+        let mut session = Session::new(Repaint::new(
             move || repaint_now.request_repaint(),
             move |delay| repaint_after.request_repaint_after(delay),
         ));
-        // What the app opens on. A `?example=<slug>` link is what it was opened *for*,
-        // so it takes that place rather than replacing something a second later;
-        // `?demo=1` asks for the synthetic pile the parity harness needs; and failing
-        // both, a real earthquake. Sumatra 2004 because it is the one that reads as
-        // seismology at a glance — surface waves circling the planet twice, visible
-        // without touching a single control. All are issued before the worker has
-        // booted; the transport queues them.
-        match crate::deep_link::requested_example() {
-            Some(slug) => session.bridge.open_example(slug),
-            None if crate::deep_link::wants_demo() => session.bridge.load_example(),
-            None => session.bridge.open_example(BOOT_EXAMPLE.to_owned()),
+        // The settings a reload keeps (the browser's `snuffler.pf`), applied
+        // over the defaults before anything reads them.
+        crate::persist::restore(&mut session.state);
+        // What the app opens on. A `?url=` (with optional `?format=`) or a
+        // `?example=<slug>` link is what it was opened *for*, so it takes that
+        // place rather than replacing something a second later; `?demo=1` asks
+        // for the synthetic pile the parity harness needs; and failing all
+        // three, a real earthquake. Sumatra 2004 because it is the one that
+        // reads as seismology at a glance — surface waves circling the planet
+        // twice, visible without touching a single control. All are issued
+        // before the worker has booted; the transport queues them.
+        if let Some((url, format)) = crate::deep_link::requested_url() {
+            session.bridge.load_url(url, format);
+        } else {
+            match crate::deep_link::requested_example() {
+                Some(slug) => session.bridge.open_example(slug),
+                None if crate::deep_link::wants_demo() => session.bridge.load_example(),
+                None => session.bridge.open_example(BOOT_EXAMPLE.to_owned()),
+            }
         }
         Self {
             session,
@@ -187,6 +200,16 @@ impl App {
             frame_stats_shown_fps: None,
             frame_stats_shown_at_s: 0.0,
             theme_before_pinning: None,
+            settings_saved: None,
+            published_ready: None,
+        }
+    }
+
+    fn publish_readiness(&mut self) {
+        let ready = self.session.bridge.view_is_settled();
+        if self.published_ready != Some(ready) {
+            crate::a11y::publish_ready(ready);
+            self.published_ready = Some(ready);
         }
     }
 
@@ -282,7 +305,7 @@ impl App {
             let Some(view) = self.session.bridge.view() else {
                 return;
             };
-            waveform::render_svg(ctx, &self.session.state, &view, size, theme)
+            waveform::render_svg(ctx, &self.session.state, &view, size, theme, 0.0)
         };
 
         #[cfg(feature = "threads")]
@@ -297,7 +320,7 @@ impl App {
                     PNG_EXPORT_SCALE,
                 ));
             });
-            self.export_rx = Some((rx, "snuffler.png".to_owned()));
+            self.export_rx = Some((rx, export_filename("png")));
             return;
         }
 
@@ -306,7 +329,7 @@ impl App {
         {
             self.session
                 .bridge
-                .save_image_png(png, "snuffler.png".to_owned());
+                .save_image_png(png, export_filename("png"));
         }
     }
 
@@ -343,11 +366,11 @@ impl App {
         self.options_menu(ui);
         self.scaling_menu(ui);
         self.sorting_menu(ui);
-        crate::snufflings::menu(
-            ui,
-            &mut self.snuffling_panels,
-            &mut self.session.state.view_mode,
-        );
+        if let Some(action) =
+            crate::snufflings::menu(ui, &mut self.snuffling_panels, &mut self.session.state)
+        {
+            self.apply_snuffling_action(action);
+        }
         self.help_menu(ui);
     }
 
@@ -357,6 +380,18 @@ impl App {
             self.file_data_items(ui);
             ui.separator();
             self.file_marker_items(ui);
+            ui.separator();
+            // The way out of any loaded pile — including the boot example: an
+            // empty viewer, which is what Qt opens with no arguments.
+            if ui
+                .button("Close all")
+                .on_hover_text("Discard the loaded data and markers, leaving an empty viewer.")
+                .clicked()
+            {
+                self.clear_annotation_caches();
+                self.session.close_all();
+                ui.close();
+            }
             ui.separator();
             if ui.button("Save image (PNG)…").clicked() {
                 self.screenshot_request = true;
@@ -573,6 +608,36 @@ impl App {
         }
     }
 
+    /// Acts on the requests the keyboard handler and menus can only flag:
+    /// actions that need the bridge, the export machinery, or a DOM call.
+    fn consume_keyboard_requests(&mut self) {
+        if std::mem::take(&mut self.session.state.open_files_requested) {
+            self.session.bridge.open_files();
+        }
+        if let Some(selected) = self.session.state.save_markers_requested.take() {
+            let markers: Vec<Marker> = if selected {
+                self.session
+                    .state
+                    .markers
+                    .iter()
+                    .filter(|marker| marker.selected)
+                    .cloned()
+                    .collect()
+            } else {
+                self.session.state.markers.clone()
+            };
+            if !(selected && markers.is_empty()) {
+                self.session.bridge.save_markers(markers_to_file(&markers));
+            }
+        }
+        if std::mem::take(&mut self.session.state.export_image_requested) {
+            self.screenshot_request = true;
+        }
+        if std::mem::take(&mut self.session.state.fullscreen_toggle_requested) {
+            toggle_fullscreen();
+        }
+    }
+
     fn view_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("View", |ui| {
             ui.label("Theme");
@@ -588,20 +653,29 @@ impl App {
                 );
             ui.separator();
 
-            ui.label("Visible length");
-            for vl in VisibleLength::ALL {
-                if ui
-                    .selectable_value(&mut self.session.state.visible_length, vl, vl.label())
-                    .clicked()
-                {
-                    let max = vl.seconds();
-                    if self.session.state.tmax - self.session.state.tmin > max {
-                        let c = f64::midpoint(self.session.state.tmin, self.session.state.tmax);
-                        self.session.state.tmin = c - max / 2.0;
-                        self.session.state.tmax = c + max / 2.0;
-                    }
-                }
+            if ui
+                .button("Fullscreen")
+                .on_hover_text("Toggle full screen (also on `f`; the browser owns F11)")
+                .clicked()
+            {
+                self.session.state.fullscreen_toggle_requested = true;
+                ui.close();
             }
+            ui.separator();
+
+            // Waterfall mode disables the wiggle-only options, exactly Qt's
+            // interlock set (`viewmode_change`, pile_viewer.py:3956): the
+            // visible-length group and the five draw toggles below.
+            let waterfall = self.session.state.view_mode == ViewMode::Waterfall;
+            ui.label("Visible length");
+            ui.add_enabled_ui(!waterfall, |ui| {
+                for vl in VisibleLength::ALL {
+                    // A target sample count, not a time cap: picking one never moves
+                    // the window. It feeds `min_deltat_allow` in the bridge, exactly
+                    // as snuffler's radio group feeds `prepare_cutout2`.
+                    ui.selectable_value(&mut self.session.state.visible_length, vl, vl.label());
+                }
+            });
             ui.separator();
 
             ui.selectable_value(
@@ -629,17 +703,32 @@ impl App {
             }
             ui.separator();
 
-            ui.checkbox(&mut self.session.state.clip_traces, "Clip traces");
+            ui.add_enabled(
+                !waterfall,
+                egui::Checkbox::new(&mut self.session.state.clip_traces, "Clip traces"),
+            );
             ui.checkbox(&mut self.session.state.show_boxes, "Show boxes");
-            ui.checkbox(&mut self.session.state.color_traces, "Color traces");
+            ui.add_enabled(
+                !waterfall,
+                egui::Checkbox::new(&mut self.session.state.color_traces, "Color traces"),
+            );
             ui.checkbox(&mut self.session.state.antialiasing, "Antialiasing");
             ui.separator();
-            ui.checkbox(
-                &mut self.session.state.show_scale_ranges,
-                "Show scale ranges",
+            ui.add_enabled(
+                !waterfall,
+                egui::Checkbox::new(
+                    &mut self.session.state.show_scale_ranges,
+                    "Show scale ranges",
+                ),
             );
-            ui.checkbox(&mut self.session.state.show_scale_axes, "Show scale axes");
-            ui.checkbox(&mut self.session.state.show_zero_lines, "Show zero lines");
+            ui.add_enabled(
+                !waterfall,
+                egui::Checkbox::new(&mut self.session.state.show_scale_axes, "Show scale axes"),
+            );
+            ui.add_enabled(
+                !waterfall,
+                egui::Checkbox::new(&mut self.session.state.show_zero_lines, "Show zero lines"),
+            );
             ui.checkbox(&mut self.session.state.show_time_grid, "Show time grid");
             // Backed by an Option: the checkbox shows what the theme is actually
             // doing, and clicking it records a choice that outlives a theme switch.
@@ -651,8 +740,8 @@ impl App {
                 self.session.state.show_track_separators = Some(separators);
             }
             ui.separator();
-            ui.checkbox(&mut self.session.state.show_controls, "Show main controls");
-            ui.checkbox(&mut self.session.state.show_marker_editor, "Marker editor");
+            // The Main Controls and Markers togglers live in the Snufflings
+            // menu, where Qt files all of its panel togglers.
             if ui.button("Reset view to full extent").clicked() {
                 if let Some(scene) = self.session.bridge.scene() {
                     self.session.state.tmin = scene.tmin;
@@ -683,7 +772,10 @@ impl App {
             ui.checkbox(&mut self.session.state.degap, "Allow degapping");
             ui.separator();
             ui.checkbox(&mut self.session.state.fft_filtering, "FFT filtering")
-                .on_hover_text("Brick-wall FFT filtering instead of Butterworth.");
+                .on_hover_text(
+                    "Filter in the frequency domain: the same 4th-order Butterworth \
+                     response, applied via FFT in one pass instead of recursively.",
+                );
             ui.checkbox(
                 &mut self.session.state.bandpass_lphp,
                 "Bandpass is Low- + Highpass",
@@ -692,7 +784,7 @@ impl App {
             ui.checkbox(&mut self.session.state.watch_files, "Watch Files")
                 .on_hover_text(
                     "Automatically reload opened files as they change on disk \
-                     (polls every 2 s; File System Access, Chromium).",
+                     (polls every 1 s; File System Access, Chromium).",
                 );
             ui.checkbox(
                 &mut self.session.state.liberal_fetch,
@@ -767,6 +859,13 @@ impl App {
         ui.menu_button("Help", |ui| {
             if ui.button("Snuffler controls").clicked() {
                 self.session.state.show_help = true;
+                ui.close();
+            }
+            // Qt's Help ▸ Snuffling Help: one page per snuffling, rendered from
+            // its docstring; here one window indexing the built-ins' own
+            // descriptions.
+            if ui.button("Snuffling Help").clicked() {
+                self.session.state.show_snuffling_help = true;
                 ui.close();
             }
             // Only for a dataset that came with a description — the shipped
@@ -903,6 +1002,59 @@ impl App {
             }
         };
         crate::a11y::announce_changes(ctx, &status, urgency);
+        if let Some(error) = self.session.bridge.diagnostic() {
+            ui.separator();
+            let label = ui.colored_label(
+                egui::Color32::from_rgb(0xC0, 0x60, 0x20),
+                format!("⚠ {error}"),
+            );
+            let label = match error.traceback() {
+                Some(traceback) => label.on_hover_text(traceback),
+                None => label,
+            };
+            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Urgent);
+        }
+        // Processing failures the view survived (a filter or restitution that
+        // threw, drawn unprocessed). Snuffler lets these exceptions reach the
+        // user; here the bridge sends them with the view they affected, and the
+        // status line is where the user is told rather than the worker console.
+        let notices = self
+            .session
+            .bridge
+            .view()
+            .map(|view| view.meta.notices.clone())
+            .unwrap_or_default();
+        if let Some(first) = notices.first() {
+            ui.separator();
+            let extra = notices.len().saturating_sub(1);
+            let text = if extra > 0 {
+                format!("⚠ {first} (+{extra} more)")
+            } else {
+                format!("⚠ {first}")
+            };
+            let label = ui.colored_label(egui::Color32::from_rgb(0xC0, 0x80, 0x20), text);
+            let label = if extra > 0 {
+                label.on_hover_text(notices.join("\n"))
+            } else {
+                label
+            };
+            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
+        }
+        // Qt's passband_check posts this to the window's permanent status area
+        // (pile_viewer.py:4023) — not to the controls panel, which `c` hides —
+        // and says what the app did about it: the highpass is dropped from
+        // processing while the corners stay inverted.
+        if let (Some(hp), Some(lp)) = (self.session.state.highpass, self.session.state.lowpass)
+            && hp >= lp
+        {
+            ui.separator();
+            let label = ui.colored_label(
+                egui::Color32::from_rgb(0xCF, 0x8E, 0x00),
+                "⚠ Corner frequency of highpass greater than corner frequency of lowpass. \
+                 Highpass deactivated.",
+            );
+            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
+        }
         if self.session.state.picking.is_some() {
             ui.separator();
             ui.colored_label(
@@ -913,6 +1065,21 @@ impl App {
                 "Batch picking: click/drag on a trace to place a pick; number/F keys \
                  set kind/phase and carry to the next pick.",
             );
+        }
+        // The hovered marker's metadata, as snuffler posts `hoover_message()` to
+        // its status bar (pile_viewer.py:2200) — an event's origin fields or a
+        // pick's polarity, readable without opening the marker table.
+        let hover_msg = self
+            .session
+            .state
+            .hovered_marker
+            .and_then(|idx| self.session.state.markers.get(idx))
+            .map(snuffler_web_core::markers::Marker::hover_message)
+            .filter(|msg| !msg.is_empty());
+        if let Some(msg) = hover_msg {
+            ui.separator();
+            let label = ui.label(msg);
+            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
         }
         self.show_cursor_time(ui, ctx);
     }
@@ -1020,9 +1187,16 @@ impl App {
         total_tracks: usize,
         scene_range: Option<(f64, f64)>,
     ) {
+        let deltatmin = self.session.scene_deltatmin();
         if self.session.state.show_controls {
+            let deltat_range = self.session.scene_deltat_range();
             egui::Panel::bottom("controls").show_inside(ui, |ui| {
-                controls::show(ui, &mut self.session.state, total_tracks.max(1));
+                controls::show(
+                    ui,
+                    &mut self.session.state,
+                    total_tracks.max(1),
+                    deltat_range,
+                );
             });
         }
         let central = egui::CentralPanel::default()
@@ -1037,6 +1211,7 @@ impl App {
                     &mut self.wf_cache,
                     epoch,
                     scene_range,
+                    deltatmin,
                 )
             });
         self.last_waveform_rect = central.response.rect;
@@ -1055,16 +1230,18 @@ impl App {
     fn handle_export_requests(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.svg_request) {
             let theme = ctx.theme();
-            let size = self.last_waveform_rect.size();
-            let svg = self
-                .session
-                .bridge
-                .view()
-                .map(|view| waveform::render_svg(ctx, &self.session.state, &view, size, theme));
+            // Qt's SVG export is a deliberate print canvas, not a window grab:
+            // 842x595 (A4 landscape in points) with a 2.5 % margin framed into
+            // the viewBox (`savesvg`, pile_viewer.py:2884).
+            let size = egui::vec2(842.0, 595.0);
+            let margin = size.max_elem() * 0.025;
+            let svg = self.session.bridge.view().map(|view| {
+                waveform::render_svg(ctx, &self.session.state, &view, size, theme, margin)
+            });
             if let Some(svg) = svg {
                 self.session
                     .bridge
-                    .save_image_svg(svg, "snuffler.svg".to_owned());
+                    .save_image_svg(svg, export_filename("svg"));
             }
         }
 
@@ -1118,7 +1295,7 @@ impl App {
         {
             self.session
                 .bridge
-                .save_image_png(png, "snuffler.png".to_owned());
+                .save_image_png(png, export_filename("png"));
         }
     }
 
@@ -1139,12 +1316,16 @@ impl App {
                 label: progress.label,
             }),
         };
+        // The pile's Nyquist, for Qt's corner-range narrowing; 0 deltat = no data.
+        let deltatmin = self.session.scene_deltatmin();
+        let nyquist = (deltatmin > 0.0).then(|| 0.5 / deltatmin);
         if let Some(action) = crate::snufflings::show_panel(
             ctx,
             &mut self.snuffling_panels,
             &mut self.session.snufflings,
             self.session.state.highpass,
             self.session.state.lowpass,
+            nyquist,
             &runtime,
         ) {
             self.apply_snuffling_action(action);
@@ -1168,6 +1349,24 @@ impl App {
                 self.figures.invalidate("polarization");
             }
             SnufflingAction::Run(name) => self.session.bridge.run_snuffling(name.into(), params),
+            SnufflingAction::ReloadSnufflings => {
+                self.session.state.reload_snufflings_requested = true;
+            }
+            SnufflingAction::GeofonPreset(minmag) => {
+                // The visible time range, as Qt's presets query it. FDSN wants
+                // ISO stamps; `format_full` writes a space, so swap in the 'T'.
+                let iso =
+                    |t: f64| snuffler_web_core::timeaxis::format_full(t).replacen(' ', "T", 1);
+                self.session
+                    .bridge
+                    .catalog_search(snuffler_web_core::bridge::CatalogRequest {
+                        datacenter: "geofon".to_owned(),
+                        start: iso(self.session.state.tmin),
+                        end: iso(self.session.state.tmax),
+                        minmag,
+                        with_mt: self.session.state.cat_with_mt,
+                    });
+            }
             SnufflingAction::Rms => self.session.bridge.rms_traces(params),
             SnufflingAction::CakePlotModel => {
                 self.session.snufflings.cake.open_model_plot();
@@ -1191,6 +1390,7 @@ impl App {
 
     fn show_auxiliary_windows(&mut self, ctx: &egui::Context) {
         crate::view::help::show(ctx, &mut self.session.state);
+        crate::view::help::show_snuffling_help(ctx, &mut self.session.state);
         // Only crosses the JS seam while the window is actually open.
         let runtime = self
             .session
@@ -1216,6 +1416,9 @@ impl App {
         if let Some(request) = downloads.responses {
             self.session.bridge.fetch_responses(request);
         }
+        if downloads.save {
+            self.session.bridge.save_waveforms_and_stations();
+        }
 
         let seedlink = crate::view::forms::seedlink(
             ctx,
@@ -1229,6 +1432,9 @@ impl App {
             }
             Some(crate::view::forms::SeedlinkIntent::Stop) => {
                 self.session.bridge.stop_seedlink();
+            }
+            Some(crate::view::forms::SeedlinkIntent::SaveBuffer) => {
+                self.session.bridge.save_waveforms();
             }
             None => {}
         }
@@ -1280,6 +1486,20 @@ fn example_hover(example: &ExampleDataset) -> String {
     text
 }
 
+/// A timestamped export name (`snuffler-20260816-142530.png`): a fixed name
+/// collides into `snuffler (1).png` on the second export, and the stamp says
+/// which session a file in the downloads folder came from.
+fn export_filename(ext: &str) -> String {
+    let now_s = js_sys::Date::now() / 1000.0;
+    let stamp: String = snuffler_web_core::timeaxis::format_full(now_s)
+        .chars()
+        .take_while(|&c| c != '.')
+        .filter(|c| c.is_ascii_digit() || *c == ' ')
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect();
+    format!("snuffler-{stamp}.{ext}")
+}
+
 fn guess_fmt(name: &str) -> String {
     let ext = std::path::Path::new(name)
         .extension()
@@ -1307,6 +1527,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         let visible_bins = self.view_sample_bins(ui);
         self.session.sync(ctx.input(|input| input.time));
+        self.consume_keyboard_requests();
         self.load_dropped_files(&ctx);
         self.apply_pending_view();
         // A dataset that describes itself introduces itself, once.
@@ -1326,9 +1547,33 @@ impl eframe::App for App {
         // After layout + input: the waveform panel just updated the track window
         // and pan/zoom state this request must reflect (see Session::request_view).
         self.session.request_view(visible_bins);
+        self.publish_readiness();
+        crate::persist::save_if_changed(&self.session.state, &mut self.settings_saved);
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(&mut *self)
     }
 }
+
+/// Toggle browser fullscreen on the document element.
+///
+/// The DOM call, not eframe's `ViewportCommand::Fullscreen`: the web backend
+/// drops that command in its unhandled arm, which is how the `f` key managed to
+/// be documented, bound and inert at the same time. `request_fullscreen` needs a
+/// user gesture, which the key press and the menu click both are.
+#[cfg(target_arch = "wasm32")]
+fn toggle_fullscreen() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    if document.fullscreen_element().is_some() {
+        document.exit_fullscreen();
+    } else if let Some(root) = document.document_element() {
+        let _ = root.request_fullscreen();
+    }
+}
+
+/// Host builds have no browser viewport; the request is acknowledged and dropped.
+#[cfg(not(target_arch = "wasm32"))]
+fn toggle_fullscreen() {}

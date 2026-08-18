@@ -37,7 +37,8 @@ Pyodide boots a real CPython + pyrocko, which takes tens of seconds:
 
 1. Wait for the text `Importing pyrocko...` to be **hidden** (the boot overlay
    covers everything until then, and it is `pointer-events: none` but opaque).
-2. Then wait for the status line to read `Ready · N traces`.
+2. Then wait for `#the_canvas_id[data-snuffler-ready="true"]`. This attribute
+   follows application state and remains stable if the visible status wording changes.
 
 Never assert on the UI before both; a screenshot taken early shows the splash.
 

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package snuffler.bridge.v1;
 
+import "snuffler/bridge/v1/common.proto";
 import "snuffler/bridge/v1/data.proto";
 import "snuffler/bridge/v1/figure.proto";
 import "snuffler/bridge/v1/scene.proto";
@@ -18,8 +19,36 @@ message BridgeError {
   string traceback = 3; // traceback.format_exc(), for debugging
 }
 
+// One changed file that could not be read or loaded during a reload batch.
+message ReloadFailure {
+  string source_id = 1;
+  string name = 2;
+  oneof reason {
+    BridgeError remote = 3;
+    string browser_read = 4;
+    string transport = 5;
+    string protocol = 6;
+  }
+}
+
+// The latest successful reload projection plus every independently failed source.
+message ReloadBatchResult {
+  oneof outcome {
+    LoadBytesResult waveform = 1;
+    BundleResult bundle = 2;
+  }
+  repeated ReloadFailure failures = 3;
+}
+
 message StringValue {
   string value = 1;
+}
+
+// A saved-file payload: bytes plus the name and type the browser download takes.
+message FileBlob {
+  string filename = 1;
+  bytes content = 2;
+  string mime = 3;
 }
 
 message BootProgress {
@@ -61,7 +90,7 @@ message Empty {}
 message BridgeResult {
   oneof result {
     BridgeError error = 1;
-    SceneMeta scene = 2; // makeExample, loadBytes, loadUrl, emptyScene, rms, loadWaveformPath
+    SceneMeta scene = 2; // makeExample, loadUrl, emptyScene, loadWaveformPath
     ViewMeta view = 3; // getView (paired with the ys buffer)
     SnufflingResult snuffling = 5; // runSnuffling, catalogSearch, fetchStations, fetchResponses
     MapData map_data = 7; // mapData
@@ -73,6 +102,8 @@ message BridgeResult {
     ActiveEventResult active_event = 13; // setActiveEvent
     ExampleList examples = 14; // listExamples
     BundleResult bundle = 15; // loadBundle (a scene plus the metadata that came with it)
+    FileBlob blob = 16; // exportWaveforms, exportStations
+    LoadBytesResult load_bytes = 17; // loadBytes (scene plus duplicate verdict)
   }
 }
 
@@ -98,7 +129,7 @@ message BridgeResult {
 service BridgeService {
   rpc MakeExample(Empty) returns (SceneMeta);
   rpc EmptyScene(Empty) returns (SceneMeta);
-  rpc LoadBytes(LoadBytesRequest) returns (SceneMeta);
+  rpc LoadBytes(LoadBytesRequest) returns (LoadBytesResult);
   rpc LoadUrl(LoadUrlRequest) returns (SceneMeta);
   rpc ListExamples(Empty) returns (ExampleList);
   rpc LoadBundle(LoadBundleRequest) returns (BundleResult);
@@ -106,11 +137,13 @@ service BridgeService {
   rpc GetView(ViewParams) returns (ViewMeta); // + out-of-band ys buffer
   rpc RenderFigure(FigureRequest) returns (FigureResult); // a real pyrocko/matplotlib figure, PNG
   rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult);
-  rpc RmsTraces(SnufflingRequestParams) returns (SceneMeta);
+  rpc RmsTraces(SnufflingRequestParams) returns (SnufflingResult);
   rpc RunCommand(CommandRequest) returns (CommandResult);
-  rpc MapData(Empty) returns (snuffler.bridge.v1.MapData);
+  rpc MapData(MapRequest) returns (snuffler.bridge.v1.MapData);
   rpc StationDistances(Empty) returns (StationDistanceList);
   rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult);
+  rpc UpdateEvent(EventSnapshot) returns (ActiveEventResult);
+  rpc RemoveEvents(RemoveEventsRequest) returns (ActiveEventResult);
   rpc LoadGfStoreUrl(StringRequest) returns (StringValue);
   rpc MarkersToText(MarkerFile) returns (StringValue);
   rpc LoadMarkers(LoadMarkersRequest) returns (SnufMarkerList);
@@ -121,6 +154,10 @@ service BridgeService {
   rpc DownloadWaveforms(WaveformDownloadRequest) returns (SceneMeta);
   rpc CatalogSearch(CatalogRequest) returns (SnufflingResult);
   rpc FetchStations(StationRequest) returns (SnufflingResult);
+  // Qt's download Save trigger (download.py:147): the loaded waveforms as
+  // MiniSEED plus the station table as a pyrocko station file.
+  rpc ExportWaveforms(Empty) returns (FileBlob);
+  rpc ExportStations(Empty) returns (FileBlob);
   rpc FetchResponses(StationRequest) returns (SnufflingResult);
   rpc GfStoreLabel(Empty) returns (StringValue);
 }

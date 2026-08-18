@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 import numpy as np
@@ -32,8 +32,17 @@ class Trace:
         meta: Any = ...,
     ) -> None: ...
     def data_len(self) -> int: ...
+    def overlaps(self, tmin: float, tmax: float) -> bool: ...
     def copy(self) -> Trace: ...
+    def add(
+        self,
+        other: Trace,
+        interpolate: bool = ...,
+        left: float | None = ...,
+        right: float | None = ...,
+    ) -> None: ...
     def set_ydata(self, ydata: np.ndarray[Any, Any]) -> None: ...
+    def get_ydata(self) -> np.ndarray[Any, Any]: ...
     def spectrum(
         self,
         pad_to_pow2: bool = ...,
@@ -59,17 +68,22 @@ class Trace:
     def lowpass(
         self,
         order: int,
-        frequency: float,
+        corner: float,
+        nyquist_warn: bool = ...,
         nyquist_exception: bool = ...,
+        demean: bool = ...,
     ) -> None: ...
     def highpass(
         self,
         order: int,
-        frequency: float,
+        corner: float,
+        nyquist_warn: bool = ...,
         nyquist_exception: bool = ...,
+        demean: bool = ...,
     ) -> None: ...
     def bandpass(self, order: int, low: float, high: float) -> None: ...
     def resample(self, deltat: float) -> None: ...
+    def downsample(self, ndecimate: int, snap: bool = ..., demean: bool = ...) -> None: ...
     def downsample_to(self, deltat: float) -> None: ...
     def sta_lta_right(
         self,
@@ -96,6 +110,13 @@ class Trace:
     ) -> None: ...
     def append(self, value: np.ndarray[Any, Any]) -> None: ...
 
+class Taper: ...
+
+class CosTaper(Taper):
+    def __init__(self, a: float, b: float, c: float, d: float) -> None: ...
+    def __call__(self, y: np.ndarray[Any, Any], x0: float, dx: float) -> None: ...
+
+def nextpow2(i: float) -> int: ...
 def degapper(
     traces: Sequence[Trace],
     maxgap: float = ...,
@@ -103,6 +124,12 @@ def degapper(
     deoverlap: str = ...,
     maxlap: float | None = ...,
 ) -> list[Trace]: ...
+def minmax(
+    traces: Iterable[Trace],
+    key: Callable[[Trace], Any] | None = ...,
+    mode: str | float = ...,
+    outer_mode: str = ...,
+) -> dict[Any, tuple[float, float]]: ...
 def rotate(
     traces: Sequence[Trace],
     azimuth: float,

@@ -8,7 +8,12 @@ use crate::markers::Marker;
 
 /// Number of tracks the auto-fit track height targets on first load, and the
 /// reset target for the "=" key.
-pub const DEFAULT_NTRACKS_SHOWN: usize = 12;
+///
+/// 24, because that is what the `snuffler` application passes its viewer
+/// (`snuffler.py:262`). Upstream is internally inconsistent here — the library
+/// entry point defaults to 12 and the widget to 20 — but the shell is the
+/// program this port is measured against.
+pub const DEFAULT_NTRACKS_SHOWN: usize = 24;
 
 /// Bounds for the track-height slider (pixels per track row).
 pub const MIN_TRACK_H: f32 = 8.0;
@@ -54,6 +59,21 @@ impl ScalingGroup {
             ScalingGroup::PerComponent => "Per component",
         }
     }
+
+    /// The inverse of [`ScalingGroup::as_str`], for a grouping restored from
+    /// the persisted settings.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        [
+            ScalingGroup::Individual,
+            ScalingGroup::Common,
+            ScalingGroup::PerStation,
+            ScalingGroup::PerStationLocation,
+            ScalingGroup::PerComponent,
+        ]
+        .into_iter()
+        .find(|group| group.as_str() == value)
+    }
 }
 
 /// Statistic used to derive each track's amplitude range (snuffler's "Scaling
@@ -91,6 +111,20 @@ impl ScalingBase {
             ScalingBase::Mean2Std => "Mean ± 2σ",
             ScalingBase::Mean4Std => "Mean ± 4σ",
         }
+    }
+
+    /// The inverse of [`ScalingBase::as_str`], for a statistic restored from
+    /// the persisted settings.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        [
+            ScalingBase::MinMax,
+            ScalingBase::Robust,
+            ScalingBase::Mean2Std,
+            ScalingBase::Mean4Std,
+        ]
+        .into_iter()
+        .find(|base| base.as_str() == value)
     }
 }
 
@@ -288,9 +322,17 @@ impl Subsort {
 }
 
 /// Transfer function applied before mapping waterfall power to color.
+///
+/// Snuffler's `Normalize` is strictly linear (`pile_viewer_waterfall.py:28`) and
+/// has no such control, so `Lin` is the default — the sqrt and log compressions
+/// are this frontend's own additions and stay inert until asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorScale {
-    /// Logarithmic power scaling.
+    /// Linear scaling, snuffler's own.
+    Lin,
+    /// Square-root compression.
+    Sqrt,
+    /// Logarithmic compression.
     Log,
 }
 
@@ -299,9 +341,22 @@ impl ColorScale {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            ColorScale::Lin => "lin",
+            ColorScale::Sqrt => "sqrt",
             ColorScale::Log => "log",
         }
     }
+    /// Returns the frontend label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorScale::Lin => "Linear",
+            ColorScale::Sqrt => "Sqrt",
+            ColorScale::Log => "Log",
+        }
+    }
+    /// Color scales in menu order.
+    pub const ALL: [ColorScale; 3] = [ColorScale::Lin, ColorScale::Sqrt, ColorScale::Log];
 }
 
 /// Waterfall colormaps.
@@ -312,14 +367,22 @@ impl ColorScale {
 pub enum Colormap {
     /// Perceptually uniform blue-green-yellow colors.
     Viridis,
+    /// Perceptually uniform blue-red-yellow colors.
+    Plasma,
     /// Perceptually uniform black-purple-yellow colors.
     Magma,
-    /// Perceptually uniform black-red-yellow colors.
-    Inferno,
-    /// Grayscale colors.
-    Gray,
-    /// Cyclic spectral colors.
-    Rainbow,
+    /// White-to-black grayscale.
+    Binary,
+    /// White-to-red sequential colors.
+    Reds,
+    /// Black-to-copper sequential colors.
+    Copper,
+    /// Blue-white-red diverging colors.
+    Seismic,
+    /// Red-white-blue diverging colors.
+    RdBu,
+    /// Yellow-green sequential colors.
+    YlGn,
 }
 
 impl Colormap {
@@ -328,39 +391,52 @@ impl Colormap {
     pub fn label(self) -> &'static str {
         match self {
             Colormap::Viridis => "viridis",
+            Colormap::Plasma => "plasma",
             Colormap::Magma => "magma",
-            Colormap::Inferno => "inferno",
-            Colormap::Gray => "gray",
-            Colormap::Rainbow => "rainbow",
+            Colormap::Binary => "binary",
+            Colormap::Reds => "Reds",
+            Colormap::Copper => "copper",
+            Colormap::Seismic => "seismic",
+            Colormap::RdBu => "RdBu",
+            Colormap::YlGn => "YlGn",
         }
     }
-    /// Colormaps in menu order.
-    pub const ALL: [Colormap; 5] = [
+    /// Colormaps in menu order — snuffler's own nine, in snuffler's own order
+    /// (`ColorbarControl.AVAILABLE_CMAPS`, gui/util.py:651).
+    pub const ALL: [Colormap; 9] = [
         Colormap::Viridis,
+        Colormap::Plasma,
         Colormap::Magma,
-        Colormap::Inferno,
-        Colormap::Gray,
-        Colormap::Rainbow,
+        Colormap::Binary,
+        Colormap::Reds,
+        Colormap::Copper,
+        Colormap::Seismic,
+        Colormap::RdBu,
+        Colormap::YlGn,
     ];
 }
 
-/// Maximum visible time span (snuffler's "Visible length", `pile_viewer.py:1047`).
+/// Snuffler's "Visible length" (`pile_viewer.py:1047`): a target *sample count*
+/// per trace, despite the name — never a time span. `prepare_cutout2` turns it
+/// into `min_deltat_allow`, the finest sampling worth fetching for the window,
+/// and `make_good_looking_time_range` uses it as the minimum width of a jump.
+/// Selecting an entry never moves the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisibleLength {
-    /// Up to 20,000 seconds.
+    /// Up to 20,000 samples.
     Short,
-    /// Up to 60,000 seconds.
+    /// Up to 60,000 samples.
     Medium,
-    /// Up to 120,000 seconds.
+    /// Up to 120,000 samples.
     Long,
-    /// Up to 600,000 seconds.
+    /// Up to 600,000 samples.
     ExtraLong,
 }
 
 impl VisibleLength {
-    /// Returns the maximum visible duration in seconds.
+    /// Returns the target sample count.
     #[must_use]
-    pub fn seconds(self) -> f64 {
+    pub fn samples(self) -> f64 {
         match self {
             VisibleLength::Short => 20_000.0,
             VisibleLength::Medium => 60_000.0,
@@ -377,6 +453,13 @@ impl VisibleLength {
             VisibleLength::Long => "Long",
             VisibleLength::ExtraLong => "Extra long",
         }
+    }
+
+    /// The inverse of [`VisibleLength::label`], for a choice restored from the
+    /// persisted settings (the labels are Qt's `snuffler.pf` setting keys).
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|length| length.label() == value)
     }
     /// Durations in menu order.
     pub const ALL: [VisibleLength; 4] = [
@@ -420,8 +503,14 @@ pub struct PickingState {
     pub phase: Option<String>,
     /// First-motion polarity inherited by the next committed marker.
     pub polarity: Option<i8>,
-    /// Channel under the cursor the pick is scoped to.
-    pub nslc: Option<(String, String, String, String)>,
+    /// Active-event association inherited by the next committed phase pick.
+    pub event_hash: Option<String>,
+    /// Associated event origin time used by marker-file fallback matching.
+    pub event_time: Option<f64>,
+    /// The channels of the track under the cursor the pick is scoped to —
+    /// every channel gathered onto the row, as Qt's `get_nslc_ids_for_track`
+    /// returns them. Empty while no track is under the cursor.
+    pub nslc_ids: Vec<(String, String, String, String)>,
 }
 
 /// A pending "set active event" request the session drains and sends to the bridge
@@ -478,7 +567,7 @@ pub struct AppState {
     pub fft_filtering: bool,
     /// Applies low-pass before high-pass when both filters are enabled.
     pub bandpass_lphp: bool,
-    /// Deconvolve instrument response (needs `StationXML`; currently inert).
+    /// Deconvolves the instrument response when matching `StationXML` is loaded.
     pub remove_response: bool,
     /// Use station depth for distances (needs coords; inert without).
     pub distances_3d: bool,
@@ -575,7 +664,9 @@ pub struct AppState {
 
     /// User, catalog, and snuffling annotations in insertion order.
     pub markers: Vec<Marker>,
-    /// Next color group applied to new markers (snuffler number keys).
+    /// The controls panel's marker-kind picker highlight: the last kind applied
+    /// through it. Fresh picks are always kind 0, as snuffler's are — nothing
+    /// reads this as a default for new markers.
     pub marker_kind: u8,
     /// Set by the `r` key; the session consumes it to trigger a bridge file reload
     /// (keyboard handlers only touch `state`, not the bridge).
@@ -584,6 +675,10 @@ pub struct AppState {
     pub reload_snufflings_requested: bool,
     /// Set by `e`/`E`; the session drains it to send a `SetActiveEvent` to the bridge.
     pub set_active_event_request: Option<ActiveEventReq>,
+    /// Event hashes whose final frontend event marker was deleted.
+    /// The session drains them into Python's canonical registry before another
+    /// scientific consumer can resolve the removed events.
+    pub remove_event_hashes: Vec<String>,
     /// Auto-reload opened files as they change on disk (snuffler's "Watch Files").
     pub watch_files: bool,
     /// Fetch a wider, grid-snapped time window so pan/zoom reuses already-fetched
@@ -593,8 +688,6 @@ pub struct AppState {
     /// command (snuffler `pile_viewer.py` `markers` command). Compared against the
     /// raw kind so kind>=8 hides under `markers all`, like pyrocko.
     pub visible_marker_kinds: Vec<u8>,
-    /// In-progress span-marker drag (start, current) in epoch seconds.
-    pub pending_span: Option<(f64, f64)>,
     /// Active batch/interactive picking mode (Escape toggles it); `None` when not
     /// picking. Mirrors snuffler's picking mode: a floating pick follows the
     /// cursor, press-drag-release commits a marker, and batch mode re-arms a new
@@ -611,12 +704,36 @@ pub struct AppState {
 
     /// Whether the bottom processing-control panel is visible.
     pub show_controls: bool,
-    /// Whether the browser viewport is in fullscreen mode.
-    pub fullscreen: bool,
+    /// A pending `f`-key or View ▸ Fullscreen request, consumed by the app,
+    /// which calls the browser's Fullscreen API on the document element — the
+    /// only path that works on the web; eframe's `ViewportCommand::Fullscreen`
+    /// lands in an unhandled arm there.
+    pub fullscreen_toggle_requested: bool,
+    /// A pending Ctrl+O, consumed by the app (snuffler's File ▸ Open accelerator).
+    pub open_files_requested: bool,
+    /// A pending Ctrl+S / Ctrl+Shift+S, consumed by the app: `Some(true)` saves
+    /// the selected markers, `Some(false)` all of them.
+    pub save_markers_requested: Option<bool>,
+    /// A pending Ctrl+E, consumed by the app (snuffler's Save-as-image accelerator).
+    pub export_image_requested: bool,
+    /// A bare `s` was pressed: the next key completes one of snuffler's
+    /// two-stroke chords (`s i`/`s c`/`s s` scaling, `s n`/`s d` sorting).
+    pub pending_s_chord: bool,
+    /// The on-screen track row under the pointer, if any — what snuffler reads
+    /// off `QCursor.pos()` when rows are too short for every label and only the
+    /// hovered one is drawn (`pile_viewer.py:3530`).
+    pub hover_track_row: Option<usize>,
+    /// Index into `markers` of the marker under the pointer — snuffler's per-
+    /// marker `alerted` flag (`pile_viewer.py:2168`): the hovered marker brightens
+    /// to its selected shade, its guides go dashed (grey when unselected), and
+    /// its metadata is posted to the status line.
+    pub hovered_marker: Option<usize>,
     /// "Snuffler controls" / "About" help windows.
     pub show_help: bool,
     /// Whether the about window is open.
     pub show_about: bool,
+    /// Whether the per-snuffling help window (Help ▸ Snuffling Help) is open.
+    pub show_snuffling_help: bool,
 
     // --- FDSN network forms (browser fetch) ---
     /// Whether the waveform-download window is open.
@@ -645,6 +762,11 @@ pub struct AppState {
     pub dl_start: String,
     /// FDSN waveform interval end in UTC text form.
     pub dl_end: String,
+    /// Station search by radius around the active event (Qt's primary download
+    /// workflow), instead of by code selectors alone.
+    pub dl_around_event: bool,
+    /// Radius of the around-event station search, in degrees.
+    pub dl_radius_deg: f64,
     /// Selected event-catalog data-center preset.
     pub cat_datacenter: String,
     /// Optional custom event-catalog endpoint overriding the preset.
@@ -670,9 +792,19 @@ pub struct AppState {
     pub live_seedlink_sta: String,
     /// Live `SeedLink` channel selectors.
     pub live_seedlink_selectors: String,
+    /// Live follow-viewport width in seconds (Qt's `--follow N`).
+    pub live_seedlink_follow_s: f64,
+    /// Seconds of live data kept before older samples are discarded — the
+    /// wasm32 heap is one bounded block, so the buffer needs *a* bound, but
+    /// the number is the user's to set.
+    pub live_seedlink_retain_s: f64,
 }
 
 impl Default for AppState {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one literal initializer per state field; splitting it hides nothing"
+    )]
     fn default() -> Self {
         Self {
             tmin: 0.0,
@@ -715,11 +847,12 @@ impl Default for AppState {
             show_time_grid: false,
             wf_cmap: Colormap::Viridis,
             wf_clip: (0.0, 1.0),
-            wf_symmetry: false,
+            // Checked at boot, as snuffler starts it (gui/util.py:709).
+            wf_symmetry: true,
             wf_reverse: false,
             wf_abs: false,
             wf_integrate: false,
-            wf_color_scale: ColorScale::Log,
+            wf_color_scale: ColorScale::Lin,
             snuffling_text: String::new(),
             show_snuffling: false,
             show_dataset_note: false,
@@ -734,18 +867,25 @@ impl Default for AppState {
             reload_requested: false,
             reload_snufflings_requested: false,
             set_active_event_request: None,
+            remove_event_hashes: Vec::new(),
             watch_files: false,
             liberal_fetch: false,
             visible_marker_kinds: (0u8..=7).collect(),
-            pending_span: None,
             picking: None,
             uncertainty_drag_last_y: None,
             view_drag: None,
             wheel_pos: 60.0,
             show_controls: true,
-            fullscreen: false,
+            fullscreen_toggle_requested: false,
+            open_files_requested: false,
+            save_markers_requested: None,
+            export_image_requested: false,
+            pending_s_chord: false,
+            hover_track_row: None,
+            hovered_marker: None,
             show_help: false,
             show_about: false,
+            show_snuffling_help: false,
             show_download: false,
             show_catalog: false,
             show_map: false,
@@ -760,9 +900,13 @@ impl Default for AppState {
             dl_cha: "BH?".into(),
             dl_start: "2023-02-06T01:17:00".into(),
             dl_end: "2023-02-06T01:47:00".into(),
-            cat_datacenter: "usgs".into(),
+            dl_around_event: false,
+            dl_radius_deg: 5.0,
+            // GEOFON, as Qt's catalog search defaults (catalogs.py:56).
+            cat_datacenter: "geofon".into(),
             cat_base_url: String::new(),
-            cat_minmag: 6.0,
+            // 0, as Qt defaults — a 6.0 floor silently hides most seismicity.
+            cat_minmag: 0.0,
             cat_start: "2023-02-06".into(),
             cat_end: "2023-02-07".into(),
             cat_with_mt: true,
@@ -772,11 +916,66 @@ impl Default for AppState {
             live_seedlink_net: "IU".into(),
             live_seedlink_sta: "ANMO".into(),
             live_seedlink_selectors: "BH?".into(),
+            live_seedlink_follow_s: 300.0,
+            live_seedlink_retain_s: 1800.0,
         }
     }
 }
 
 impl AppState {
+    /// Removes selected markers and queues registry removal for orphaned events.
+    pub fn remove_selected_markers(&mut self) {
+        let removed_active = self
+            .markers
+            .iter()
+            .filter(|marker| marker.selected && marker.is_event && marker.active)
+            .filter_map(|marker| marker.event_hash.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let removed = self
+            .markers
+            .iter()
+            .filter(|marker| marker.selected && marker.is_event)
+            .filter_map(|marker| marker.event_hash.clone())
+            .collect::<Vec<_>>();
+        self.markers.retain(|marker| !marker.selected);
+        for event_hash in removed_active {
+            if let Some(marker) = self
+                .markers
+                .iter_mut()
+                .find(|marker| marker.is_event && marker.event_hash.as_ref() == Some(&event_hash))
+            {
+                marker.active = true;
+            }
+        }
+        self.queue_orphaned_event_hashes(removed);
+    }
+
+    /// Removes every marker and queues each canonical event exactly once.
+    pub fn clear_markers(&mut self) {
+        let removed = self
+            .markers
+            .iter()
+            .filter(|marker| marker.is_event)
+            .filter_map(|marker| marker.event_hash.clone())
+            .collect::<Vec<_>>();
+        self.markers.clear();
+        self.queue_orphaned_event_hashes(removed);
+    }
+
+    fn queue_orphaned_event_hashes(&mut self, removed: Vec<String>) {
+        let retained = self
+            .markers
+            .iter()
+            .filter(|marker| marker.is_event)
+            .filter_map(|marker| marker.event_hash.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for event_hash in removed {
+            if !retained.contains(&event_hash) && !self.remove_event_hashes.contains(&event_hash) {
+                self.remove_event_hashes.push(event_hash);
+            }
+        }
+    }
+
     /// Whether a rule is drawn between rows: the user's choice if they made one,
     /// otherwise whatever the current theme does by default.
     #[must_use]
@@ -803,5 +1002,54 @@ impl AppState {
             m.selected = false;
         }
         self.visible_marker_kinds = kinds;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::markers::Marker;
+
+    use super::AppState;
+
+    fn event(hash: &str, selected: bool, active: bool) -> Marker {
+        let mut marker = Marker::new(0.0, 0.0, 0);
+        marker.is_event = true;
+        marker.selected = selected;
+        marker.active = active;
+        marker.event_hash = Some(hash.to_owned());
+        marker
+    }
+
+    #[test]
+    fn marker_deletion_queues_only_hashes_without_a_remaining_event() {
+        let mut state = AppState {
+            markers: vec![event("shared", true, true), event("shared", false, false)],
+            ..Default::default()
+        };
+
+        state.remove_selected_markers();
+
+        // A duplicate event marker still represents the canonical event.
+        assert_eq!(state.markers.len(), 1);
+        assert!(state.remove_event_hashes.is_empty());
+        assert!(state.markers.first().is_some_and(|marker| marker.active));
+
+        let Some(marker) = state.markers.first_mut() else {
+            assert_eq!(state.markers.len(), 1);
+            return;
+        };
+        marker.selected = true;
+        state.remove_selected_markers();
+
+        // Removing the final, active marker queues one canonical deletion.
+        assert!(state.markers.is_empty());
+        assert_eq!(state.remove_event_hashes, ["shared"]);
+
+        state.markers = vec![event("other", false, false), Marker::new(1.0, 1.0, 0)];
+        state.clear_markers();
+
+        // Clear-all queues its event while plain markers have no registry state.
+        assert!(state.markers.is_empty());
+        assert_eq!(state.remove_event_hashes, ["shared", "other"]);
     }
 }

@@ -1,5 +1,8 @@
 use egui::{Align, DragValue, Slider};
 
+/// A parameter row. Qt gives every `Param` whose minimum is above zero a
+/// logarithmic control (`gui/util.py:512`) — a linear 0.1–3600 s slider puts
+/// every useful value in its first three percent of travel — so this does too.
 pub fn param_row(ui: &mut egui::Ui, label: &str, value: &mut f64, min: f64, max: f64) {
     ui.horizontal(|ui| {
         ui.add_sized([160.0, 0.0], egui::Label::new(label).halign(Align::Max));
@@ -8,7 +11,11 @@ pub fn param_row(ui: &mut egui::Ui, label: &str, value: &mut f64, min: f64, max:
                 .speed((max - min) / 500.0)
                 .range(min..=max),
         );
-        ui.add(Slider::new(value, min..=max).show_value(false));
+        ui.add(
+            Slider::new(value, min..=max)
+                .logarithmic(min > 0.0)
+                .show_value(false),
+        );
     });
 }
 

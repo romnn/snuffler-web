@@ -1,16 +1,98 @@
 //! Why a bridge operation did not produce what the frontend asked for.
 //!
-//! Three sources of failure meet here, and keeping them apart is the point: an
-//! rpc that pyrocko rejected ([`snuffler_web_proto::CallError`]), a browser API
-//! that threw or handed back the wrong shape, and the `SeedLink` socket. They
-//! read alike once formatted, but they are not alike to act on — a rejected
-//! request is the user's to fix, a dead worker wants a reload, and a mismatched
-//! payload is a schema drift no user can do anything about.
+//! The error variants preserve whether pyrocko rejected an RPC, a browser API
+//! failed, a payload violated its protocol, or a `SeedLink` socket stopped.
+//! They read alike once formatted, but callers must act on them differently.
 //!
 //! Deliberately free of `JsValue`: the error crosses into the egui frontend and
-//! is stored in [`crate::bridge::Status`], both of which build on the host.
+//! is stored in [`crate::bridge::Status`] or [`crate::bridge::Bridge::diagnostic`].
+//! Both consumers build on the host.
 
-use snuffler_web_proto::CallError;
+use std::fmt;
+
+use snuffler_web_proto::bridge::v1 as pb;
+use snuffler_web_proto::{CallError, RemoteError};
+
+/// Why one source in a file-reload batch failed.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum ReloadFailureReason {
+    /// The browser could not read the selected file handle or its bytes.
+    #[error("browser read failed: {detail}")]
+    BrowserRead {
+        /// The exception reported by the File System Access API.
+        detail: String,
+    },
+    /// The worker transport rejected before a protobuf response arrived.
+    #[error("transport failed: {detail}")]
+    Transport {
+        /// The exception reported by the worker bridge.
+        detail: String,
+    },
+    /// Pyrocko returned its typed exception and traceback.
+    #[error(transparent)]
+    Remote(#[from] RemoteError),
+    /// The JavaScript side could not decode or classify the protobuf response.
+    #[error("protocol failure: {detail}")]
+    Protocol {
+        /// The decode or unexpected-payload detail.
+        detail: String,
+    },
+}
+
+/// One independently failed source in a file-reload batch.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{name}: {reason}")]
+pub struct ReloadSourceError {
+    /// Stable identity of the open browser file handle.
+    pub source_id: String,
+    /// Latest filename reported by the handle.
+    pub name: String,
+    /// Layer that rejected this source.
+    #[source]
+    pub reason: ReloadFailureReason,
+}
+
+impl From<pb::ReloadFailure> for ReloadSourceError {
+    fn from(failure: pb::ReloadFailure) -> Self {
+        use pb::reload_failure::Reason;
+
+        let reason = match failure.reason {
+            Some(Reason::Remote(error)) => ReloadFailureReason::Remote(error.into()),
+            Some(Reason::BrowserRead(detail)) => ReloadFailureReason::BrowserRead { detail },
+            Some(Reason::Transport(detail)) => ReloadFailureReason::Transport { detail },
+            Some(Reason::Protocol(detail)) => ReloadFailureReason::Protocol { detail },
+            None => ReloadFailureReason::Protocol {
+                detail: "the reload failure carried no reason".to_owned(),
+            },
+        };
+        Self {
+            source_id: failure.source_id,
+            name: failure.name,
+            reason,
+        }
+    }
+}
+
+/// Independently failed sources from one otherwise usable reload batch.
+#[derive(Clone, Debug)]
+pub struct ReloadError {
+    /// Failures in open-source iteration order.
+    pub failures: Vec<ReloadSourceError>,
+}
+
+impl fmt::Display for ReloadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, failure) in self.failures.iter().enumerate() {
+            if index > 0 {
+                f.write_str("; ")?;
+            }
+            write!(f, "{failure}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ReloadError {}
 
 /// A failed bridge operation, whatever layer it failed at.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -18,6 +100,10 @@ pub enum BridgeError {
     /// A `BridgeService` rpc did not return its response message.
     #[error(transparent)]
     Call(#[from] CallError),
+
+    /// One or more sources failed in a batch whose other results remain usable.
+    #[error("reloading files failed: {0}")]
+    Reload(#[from] ReloadError),
 
     /// A DOM-only browser call — a file picker, a directory read, a download —
     /// rejected. These have no proto envelope to carry a structured error, so
@@ -64,6 +150,14 @@ impl BridgeError {
     pub fn traceback(&self) -> Option<&str> {
         match self {
             Self::Call(call) => call.traceback(),
+            Self::Reload(reload) => reload.failures.iter().find_map(|failure| {
+                if let ReloadFailureReason::Remote(remote) = &failure.reason
+                    && !remote.traceback.is_empty()
+                {
+                    return Some(remote.traceback.as_str());
+                }
+                None
+            }),
             _ => None,
         }
     }
@@ -133,4 +227,63 @@ pub enum SeedlinkError {
         /// What the `ErrorEvent` carried; browsers often say very little here.
         detail: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BridgeError, ReloadError, ReloadFailureReason, ReloadSourceError};
+    use snuffler_web_proto::bridge::v1 as pb;
+
+    #[test]
+    fn reload_failures_preserve_layer_and_remote_traceback() {
+        let remote = ReloadSourceError::from(pb::ReloadFailure {
+            source_id: "source-a".to_owned(),
+            name: "a.mseed".to_owned(),
+            reason: Some(pb::reload_failure::Reason::Remote(pb::BridgeError {
+                kind: "ValueError".to_owned(),
+                message: "bad samples".to_owned(),
+                traceback: "python traceback".to_owned(),
+            })),
+        });
+        let browser = ReloadSourceError::from(pb::ReloadFailure {
+            source_id: "source-b".to_owned(),
+            name: "b.mseed".to_owned(),
+            reason: Some(pb::reload_failure::Reason::BrowserRead(
+                "permission revoked".to_owned(),
+            )),
+        });
+        let protocol = ReloadSourceError::from(pb::ReloadFailure {
+            source_id: "source-c".to_owned(),
+            name: "c.mseed".to_owned(),
+            reason: Some(pb::reload_failure::Reason::Protocol(
+                "unexpected payload".to_owned(),
+            )),
+        });
+        let transport = ReloadSourceError::from(pb::ReloadFailure {
+            source_id: "source-d".to_owned(),
+            name: "d.mseed".to_owned(),
+            reason: Some(pb::reload_failure::Reason::Transport(
+                "worker stopped".to_owned(),
+            )),
+        });
+
+        assert!(matches!(&remote.reason, ReloadFailureReason::Remote(_)));
+        assert!(matches!(
+            &browser.reason,
+            ReloadFailureReason::BrowserRead { .. }
+        ));
+        assert!(matches!(
+            &protocol.reason,
+            ReloadFailureReason::Protocol { .. }
+        ));
+        assert!(matches!(
+            &transport.reason,
+            ReloadFailureReason::Transport { .. }
+        ));
+
+        let error = BridgeError::from(ReloadError {
+            failures: vec![remote, browser, protocol, transport],
+        });
+        assert_eq!(error.traceback(), Some("python traceback"));
+    }
 }

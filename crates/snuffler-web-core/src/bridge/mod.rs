@@ -20,19 +20,23 @@ use std::rc::Rc;
 mod error;
 mod proto;
 
-pub use error::{BridgeError, MarshalError, SeedlinkError};
+pub use error::{
+    BridgeError, MarshalError, ReloadError, ReloadFailureReason, ReloadSourceError, SeedlinkError,
+};
 pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 
 // The decoded protobuf messages ARE the app-facing domain model — no parallel
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, ExampleDataset,
-    FigureRequest, IngestMiniSeedRequest, MapData, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
-    PolarizationSnufflingParams, RmsSnufflingParams, SceneMeta, SeisbenchSnufflingParams,
-    SeismosizerSnufflingParams, SetActiveEventRequest, SnufflingParams, SnufflingRequestParams,
-    SnufflingResult, SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams,
-    StationRequest, ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
+    ActiveEventResult, BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest,
+    CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest,
+    IngestMiniSeedRequest, MapData, MapRequest, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
+    PolarizationSnufflingParams, ReloadBatchResult, RemoveEventsRequest, RmsSnufflingParams,
+    SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest,
+    SnufflingParams, SnufflingRequestParams, SnufflingResult, SnufflingSpan,
+    SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest,
+    TraceBox, ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
 
 /// Local-file header of a zip archive, which is how a dataset bundle is
@@ -60,7 +64,7 @@ pub struct LiveSeedlinkSession {
 pub struct ViewData {
     /// Track metadata and the absolute time represented by the sample buffer.
     pub meta: ViewMeta,
-    /// Out-of-band waveform samples, envelope points, or packed waterfall cells.
+    /// Out-of-band waveform samples or packed waterfall cells.
     pub ys: Vec<f32>,
 }
 
@@ -68,17 +72,8 @@ impl ViewData {
     /// Raw uniform samples or waterfall cells for one span as a flat slice.
     #[must_use]
     pub fn samples<'a>(&'a self, span: &ViewSpan) -> &'a [f32] {
-        self.points(span, 1)
-    }
-
-    /// A span's payload as a flat slice, `stride` floats per point: 1 for uniform
-    /// samples, 2 for `(t_rel, y)` pairs, 3 for `(t_rel, ylo, yhi)` envelope triples.
-    #[must_use]
-    pub fn points<'a>(&'a self, span: &ViewSpan, stride: usize) -> &'a [f32] {
         let off = usize::try_from(span.offset).unwrap_or(usize::MAX);
-        let cnt = usize::try_from(span.count)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(stride);
+        let cnt = usize::try_from(span.count).unwrap_or(usize::MAX);
         let end = off.saturating_add(cnt).min(self.ys.len());
         self.ys.get(off.min(self.ys.len())..end).unwrap_or(&[])
     }
@@ -109,6 +104,14 @@ pub struct SeedlinkParams {
     pub sta: String,
     /// Channel selector expression.
     pub selectors: String,
+    /// Width of the live-follow viewport in seconds (Qt's `--follow N`);
+    /// non-positive falls back to [`LIVE_FOLLOW_SECONDS`].
+    pub follow_s: f64,
+    /// Seconds of live data to keep before older samples are discarded.
+    /// A bound is not optional on wasm32's single fixed-size heap — Qt keeps
+    /// everything — but the number is the user's; non-positive falls back to
+    /// [`LIVE_RETAIN_SECONDS`].
+    pub retain_s: f64,
 }
 
 /// One figure window's latest render, keyed by figure kind in `Inner::figures`.
@@ -233,6 +236,9 @@ pub struct SeisbenchProgress {
 #[derive(Default)]
 struct Inner {
     status: Status,
+    /// Latest recoverable failure that should remain visible without making the
+    /// bridge operationally unavailable.
+    diagnostic: Option<BridgeError>,
     scene: Option<SceneMeta>,
     /// Incremented every time a new scene is loaded, so the frontend can reset its
     /// view window when (and only when) the data actually changes.
@@ -252,18 +258,19 @@ struct Inner {
     /// add to the Cake Phase dropdown and select.
     pending_cake_model: Option<String>,
     map: Option<MapData>,
+    map_request: Option<MapRequest>,
+    map_request_gen: u64,
+    map_in_flight: bool,
     /// Great-circle distance (degrees) from the active event to each station,
     /// keyed by (net, sta), for the marker editor's distance column. Refetched
     /// when the snuffling generation it was computed for changes.
     station_dists: std::collections::HashMap<(String, String), f64>,
     station_dists_gen: Option<(u64, u64)>,
     station_dists_in_flight: bool,
-    /// Bumped when the user changes the active event, so distances refetch and the
-    /// marker Kagan column updates without re-appending the marker set.
+    /// Bumped whenever Python returns a canonical event-state projection.
     active_event_gen: u64,
-    /// Kagan angle (degrees) per event hash vs the active event (only events with a
-    /// computed angle are present; missing = no MT / no active event).
-    kagan_by_hash: std::collections::HashMap<String, f64>,
+    event_state: Option<ActiveEventResult>,
+    event_request_gen: u64,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
     /// Bumped by [`Bridge::clear_tiles`]. Tiles are keyed by `(z, x, y)` alone, so
     /// a fetch still in flight when the basemap changes would otherwise land in
@@ -285,6 +292,9 @@ struct Inner {
     /// to close itself or show the error.
     command_outcome: Option<CommandOutcome>,
     live_seedlink_started_at: Option<f64>,
+    /// Follow-viewport width of the active live session, from its start form
+    /// (0.0 while no session runs; readers fall back to the default).
+    live_seedlink_follow_s: f64,
     /// The datasets `File ▸ Examples` offers, fetched the first time that menu is
     /// opened rather than compiled in — so a deployment can gain an example
     /// without a new wasm build. `None` until it has been asked for.
@@ -308,6 +318,25 @@ struct Inner {
     /// than something the frontend should have to infer by watching for the
     /// generation to change.
     dataset_note_unseen: bool,
+}
+
+fn finish_reload_batch(inner: &mut Inner, diagnostic: Option<BridgeError>) {
+    inner.status = Status::Ready;
+    inner.diagnostic = diagnostic;
+}
+
+fn record_diagnostic(inner: &mut Inner, error: BridgeError) {
+    inner.diagnostic = Some(error);
+}
+
+fn install_bundle_presentation(
+    inner: &mut Inner,
+    view: Option<BundleView>,
+    about: Option<BundleAbout>,
+) {
+    inner.pending_view = view;
+    inner.dataset_note_unseen = about.is_some();
+    inner.dataset_note = about.map(|about| (inner.scene_gen, about));
 }
 
 /// Schedules frontend redraws after asynchronous bridge work completes.
@@ -361,6 +390,12 @@ impl Bridge {
     #[must_use]
     pub fn status(&self) -> Status {
         self.inner.borrow().status.clone()
+    }
+
+    /// Returns the latest recoverable diagnostic while the bridge remains ready.
+    #[must_use]
+    pub fn diagnostic(&self) -> Option<BridgeError> {
+        self.inner.borrow().diagnostic.clone()
     }
 
     /// The example datasets on offer, or why they could not be listed.
@@ -447,12 +482,16 @@ impl Bridge {
     /// Current `SeedLink` session metadata, if live acquisition is active.
     #[must_use]
     pub fn live_seedlink_session(&self) -> Option<LiveSeedlinkSession> {
-        self.inner
-            .borrow()
+        let inner = self.inner.borrow();
+        inner
             .live_seedlink_started_at
             .map(|started_at| LiveSeedlinkSession {
                 started_at,
-                follow_seconds: LIVE_FOLLOW_SECONDS,
+                follow_seconds: if inner.live_seedlink_follow_s > 0.0 {
+                    inner.live_seedlink_follow_s
+                } else {
+                    LIVE_FOLLOW_SECONDS
+                },
             })
     }
 
@@ -555,6 +594,12 @@ impl Bridge {
         self.inner.borrow().map.clone()
     }
 
+    /// Reports whether the cached or in-flight map belongs to this request.
+    #[must_use]
+    pub fn map_request_is_current(&self, request: &MapRequest) -> bool {
+        self.inner.borrow().map_request.as_ref() == Some(request)
+    }
+
     /// Great-circle distance (degrees) from the active event to a station, if
     /// station coordinates + an active event are known (else `None`).
     #[must_use]
@@ -572,11 +617,10 @@ impl Bridge {
         self.inner.borrow().active_event_gen
     }
 
-    /// Kagan angle (degrees) for an event hash vs the current active event, or
-    /// `None` when it has no computed angle (no MT, or no active event).
+    /// Returns Python's latest canonical event-registry projection.
     #[must_use]
-    pub fn kagan_for(&self, hash: &str) -> Option<f64> {
-        self.inner.borrow().kagan_by_hash.get(hash).copied()
+    pub fn event_state(&self) -> Option<ActiveEventResult> {
+        self.inner.borrow().event_state.clone()
     }
 
     /// Take every tile that has finished decoding, each exactly once, for the view
@@ -636,6 +680,16 @@ impl Bridge {
     pub fn view(&self) -> Option<Ref<'_, ViewData>> {
         let b = self.inner.borrow();
         Ref::filter_map(b, |i| i.view.as_ref()).ok()
+    }
+
+    /// Whether the current view is drawable and has no replacement queued or in flight.
+    #[must_use]
+    pub fn view_is_settled(&self) -> bool {
+        let i = self.inner.borrow();
+        matches!(i.status, Status::Ready)
+            && i.view.is_some()
+            && i.desired.is_none()
+            && i.view_in_flight.is_none()
     }
 }
 
@@ -709,6 +763,8 @@ mod web {
 
         #[wasm_bindgen(js_name = reloadFiles, catch)]
         async fn js_reload_files() -> Result<JsValue, JsValue>;
+        #[wasm_bindgen(js_name = clearOpenSources)]
+        fn js_clear_open_sources();
 
         #[wasm_bindgen(js_name = openDirectory, catch)]
         async fn js_open_directory() -> Result<JsValue, JsValue>;
@@ -716,8 +772,12 @@ mod web {
         #[wasm_bindgen(js_name = reloadSnufflings, catch)]
         async fn js_reload_snufflings() -> Result<JsValue, JsValue>;
 
-        #[wasm_bindgen(js_name = saveMarkers, catch)]
-        async fn js_save_markers(request: Vec<u8>) -> Result<JsValue, JsValue>;
+        #[wasm_bindgen(js_name = downloadFile, catch)]
+        async fn js_download_file(
+            bytes: Vec<u8>,
+            filename: String,
+            mime: String,
+        ) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = loadMarkers, catch)]
         async fn js_load_markers() -> Result<JsValue, JsValue>;
@@ -803,6 +863,40 @@ mod web {
             .map(|arr| arr.to_vec())
     }
 
+    fn picker_result<T>(
+        result: Result<JsValue, JsValue>,
+        field: &'static str,
+        action: &'static str,
+        decode: impl FnOnce(&[u8], &'static str) -> Result<T, CallError>,
+    ) -> Result<Option<T>, BridgeError> {
+        let value = result.map_err(|error| BridgeError::browser(action, jsval_to_string(error)))?;
+        let bytes = js_bytes(value, field)?;
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        decode(&bytes, field).map(Some).map_err(Into::into)
+    }
+
+    async fn download_bytes(
+        bytes: Vec<u8>,
+        filename: String,
+        mime: String,
+        action: &'static str,
+    ) -> Result<(), BridgeError> {
+        js_download_file(bytes, filename, mime)
+            .await
+            .map_err(|error| BridgeError::browser(action, jsval_to_string(error)))?;
+        Ok(())
+    }
+
+    async fn download_blob(
+        result: Result<pb::FileBlob, CallError>,
+        action: &'static str,
+    ) -> Result<(), BridgeError> {
+        let blob = result?;
+        download_bytes(blob.content, blob.filename, blob.mime, action).await
+    }
+
     fn object_uint8(obj: &JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
         let val = js_sys::Reflect::get(obj, &JsValue::from_str(field))
             .map_err(|_| MarshalError::Missing { field })?;
@@ -880,8 +974,7 @@ mod web {
             let obj = js_call(method, request, Vec::new())
                 .await
                 .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-            Ok(object_uint8(&obj, "result")
-                .map_err(|e| TransportError::new(method, e.to_string()))?)
+            object_uint8(&obj, "result").map_err(|e| TransportError::new(method, e.to_string()))
         }
 
         async fn unary_with_buffer(
@@ -964,6 +1057,11 @@ mod web {
         ) -> Result<Self, SeedlinkError> {
             let conn = seedlink_connection(&params)?;
             let first_batch = Rc::new(Cell::new(true));
+            let retain_s = if params.retain_s > 0.0 {
+                params.retain_s
+            } else {
+                LIVE_RETAIN_SECONDS
+            };
             let on_open = seedlink_on_open(
                 conn.ws.clone(),
                 inner.clone(),
@@ -977,6 +1075,7 @@ mod web {
                 conn.source.clone(),
                 started_at,
                 first_batch,
+                retain_s,
             );
             let on_error = seedlink_on_error(inner.clone(), repaint.clone());
             let on_close = seedlink_on_close(inner, repaint, conn.source);
@@ -1067,6 +1166,7 @@ mod web {
         source: String,
         started_at: f64,
         first_batch: Rc<Cell<bool>>,
+        retain_s: f64,
     ) -> Closure<dyn FnMut(web_sys::MessageEvent)> {
         let buffer = Rc::new(RefCell::new(Vec::new()));
         Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
@@ -1088,6 +1188,7 @@ mod web {
                     records,
                     started_at,
                     reset,
+                    retain_s,
                 );
             }
         }) as Box<dyn FnMut(_)>)
@@ -1143,18 +1244,103 @@ mod web {
     }
 
     fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: BridgeError) {
-        inner.borrow_mut().status = Status::Error(error.into());
+        inner.borrow_mut().status = Status::Error(error);
     }
 
     fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
         let mut i = inner.borrow_mut();
-        i.snuffling = Some(SnufflingResult {
-            show_window,
-            text,
-            markers: Vec::new(),
-            scene: None,
-        });
-        i.snuffling_gen += 1;
+        install_snuffling_result(
+            &mut i,
+            SnufflingResult {
+                show_window,
+                text,
+                markers: Vec::new(),
+                scene: None,
+                origin: String::new(),
+                event_state: None,
+            },
+        );
+    }
+
+    fn clear_map_state(inner: &mut Inner) {
+        inner.map = None;
+        inner.map_request = None;
+        inner.map_in_flight = false;
+        inner.map_request_gen = inner.map_request_gen.wrapping_add(1);
+    }
+
+    fn clear_event_state(inner: &mut Inner) {
+        inner.event_state = None;
+        inner.active_event_gen = inner.active_event_gen.wrapping_add(1);
+        clear_map_state(inner);
+    }
+
+    fn install_event_state(inner: &mut Inner, state: ActiveEventResult) {
+        inner.event_state = Some(state);
+        inner.active_event_gen = inner.active_event_gen.wrapping_add(1);
+        inner.station_dists_gen = None;
+        clear_map_state(inner);
+        invalidate_view_request(inner);
+    }
+
+    fn install_snuffling_result(inner: &mut Inner, mut result: SnufflingResult) {
+        if let Some(event_state) = result.event_state.take() {
+            install_event_state(inner, event_state);
+        }
+        inner.snuffling = Some(result);
+        inner.snuffling_gen = inner.snuffling_gen.wrapping_add(1);
+    }
+
+    fn install_scene(inner: &mut Inner, scene: Option<SceneMeta>) {
+        inner.scene = Some(scene.unwrap_or_default());
+        inner.scene_gen = inner.scene_gen.wrapping_add(1);
+        inner.diagnostic = None;
+        clear_view(inner);
+    }
+
+    fn install_waveform_result(inner: &mut Inner, mut result: pb::LoadBytesResult) {
+        install_scene(inner, result.scene.take());
+        if let Some(event_state) = result.event_state.take() {
+            install_event_state(inner, event_state);
+        }
+    }
+
+    fn install_bundle_result(inner: &mut Inner, mut result: pb::BundleResult) {
+        install_scene(inner, result.scene.take());
+        install_bundle_presentation(inner, result.view.take(), result.about.take());
+        if let Some(info) = result.info.take() {
+            install_snuffling_result(inner, info);
+        }
+    }
+
+    fn install_dataset_result(inner: &mut Inner, result: proto::DatasetResult) {
+        match result {
+            proto::DatasetResult::Waveform(result) => install_waveform_result(inner, result),
+            proto::DatasetResult::Bundle(result) => install_bundle_result(inner, result),
+        }
+    }
+
+    fn install_reload_batch(inner: &mut Inner, batch: ReloadBatchResult) -> Option<BridgeError> {
+        if let Some(outcome) = batch.outcome {
+            match outcome {
+                pb::reload_batch_result::Outcome::Waveform(result) => {
+                    install_waveform_result(inner, result);
+                }
+                pb::reload_batch_result::Outcome::Bundle(result) => {
+                    install_bundle_result(inner, result);
+                }
+            }
+        }
+
+        if batch.failures.is_empty() {
+            return None;
+        }
+        Some(
+            ReloadError {
+                failures: batch.failures.into_iter().map(Into::into).collect(),
+            }
+            .into(),
+        )
     }
 
     fn seedlink_proxy_url(host: &str, port: u16) -> String {
@@ -1203,6 +1389,7 @@ mod web {
         content: Vec<u8>,
         start_time: f64,
         reset: bool,
+        retain_s: f64,
     ) {
         spawn_local(async move {
             let parsed = client()
@@ -1211,7 +1398,7 @@ mod web {
                     content,
                     start_time,
                     reset,
-                    retain_seconds: LIVE_RETAIN_SECONDS,
+                    retain_seconds: retain_s,
                 })
                 .await;
             {
@@ -1254,25 +1441,6 @@ mod web {
             if span.dt > 0.0 {
                 kind = "raw";
                 values.extend_from_slice(view.samples(span));
-            } else if span.dt == 0.0 {
-                kind = "points";
-                values.extend(
-                    view.points(span, 2)
-                        .chunks_exact(2)
-                        .filter_map(|pair| match pair {
-                            [_, y] => Some(*y),
-                            _ => None,
-                        }),
-                );
-            } else {
-                kind = "legacy-envelope";
-                for triple in view.points(span, 3).chunks_exact(3) {
-                    let [_, ylo, yhi] = triple else {
-                        continue;
-                    };
-                    values.push(*ylo);
-                    values.push(*yhi);
-                }
             }
         }
         (kind, values)
@@ -1429,6 +1597,7 @@ mod web {
                     let mut i = inner.borrow_mut();
                     match parsed {
                         Ok(scene) => {
+                            clear_event_state(&mut i);
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
@@ -1441,7 +1610,46 @@ mod web {
             });
         }
 
-        /// Replaces the current pile with waveform bytes supplied by the frontend.
+        /// Empties the pile and the event context (`File ▸ Close all`), leaving
+        /// the blank viewer Qt starts with when given no arguments.
+        pub fn empty_scene(&self) {
+            let repaint = self.repaint.clone();
+            js_clear_open_sources();
+            LIVE_SEEDLINK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+            {
+                let mut i = self.inner.borrow_mut();
+                i.status = Status::Loading("Closing…".into());
+                i.diagnostic = None;
+                i.snuffling = None;
+                clear_event_state(&mut i);
+                i.station_dists.clear();
+                i.station_dists_gen = None;
+                i.live_seedlink_started_at = None;
+            }
+            let inner = self.inner.clone();
+            spawn_local(async move {
+                let parsed = client().empty_scene().await;
+                {
+                    let mut i = inner.borrow_mut();
+                    match parsed {
+                        Ok(scene) => {
+                            i.scene = Some(scene);
+                            i.scene_gen += 1;
+                            i.status = Status::Ready;
+                            clear_view(&mut i);
+                        }
+                        Err(e) => i.status = Status::Error(e.into()),
+                    }
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// Appends waveform bytes supplied by the frontend to the pile —
+        /// snuffler's `open_waveforms` appends too (`pile_viewer.py:1651`); the
+        /// boot example is dropped first by the bridge's example-pile rule.
         pub fn load_file(&self, name: String, data: Vec<u8>, fmt: String) {
             // A dropped file may be a whole dataset. Deciding on the bytes rather
             // than the extension means a bundle behaves the same however it arrives
@@ -1459,19 +1667,18 @@ mod web {
                     .load_bytes(pb::LoadBytesRequest {
                         name,
                         fmt,
-                        append: false,
+                        append: true,
                         content: data,
                         source_id: String::new(),
+                        replace_source: false,
                     })
                     .await;
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
-                        Ok(scene) => {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
+                        Ok(result) => {
+                            install_waveform_result(&mut i, result);
                             i.status = Status::Ready;
-                            clear_view(&mut i);
                         }
                         Err(e) => i.status = Status::Error(e.into()),
                     }
@@ -1492,6 +1699,8 @@ mod web {
                     let mut i = inner.borrow_mut();
                     match parsed {
                         Ok(scene) => {
+                            js_clear_open_sources();
+                            clear_event_state(&mut i);
                             i.scene = Some(scene);
                             i.scene_gen += 1;
                             i.status = Status::Ready;
@@ -1570,7 +1779,7 @@ mod web {
                         bridge.inner.borrow_mut().examples = Some(Ok(examples));
                         match found {
                             Some(example) => {
-                                bridge.load_bundle(example.url, example.sha256, example.title)
+                                bridge.load_bundle(example.url, example.sha256, example.title);
                             }
                             None => {
                                 bridge.inner.borrow_mut().status =
@@ -1607,17 +1816,9 @@ mod web {
                     let mut i = inner.borrow_mut();
                     match parsed {
                         Ok(bundle) => {
-                            i.scene = Some(bundle.scene.unwrap_or_default());
-                            i.scene_gen += 1;
+                            js_clear_open_sources();
+                            install_bundle_result(&mut i, bundle);
                             i.status = Status::Ready;
-                            clear_view(&mut i);
-                            i.pending_view = bundle.view;
-                            i.dataset_note_unseen = bundle.about.is_some();
-                            i.dataset_note = bundle.about.map(|about| (i.scene_gen, about));
-                            if let Some(info) = bundle.info {
-                                i.snuffling = Some(info);
-                                i.snuffling_gen += 1;
-                            }
                         }
                         Err(e) => i.status = Status::Error(e.into()),
                     }
@@ -1702,8 +1903,7 @@ mod web {
                                 clear_view(&mut i);
                             }
                             i.status = Status::Ready;
-                            i.snuffling = Some(r);
-                            i.snuffling_gen += 1;
+                            install_snuffling_result(&mut i, r);
                         }
                         Err(e) => i.status = Status::Error(e.into()),
                     }
@@ -1712,8 +1912,8 @@ mod web {
             });
         }
 
-        /// Download waveforms from a CORS-enabled FDSN dataselect service and
-        /// replace the pile with the result (browser fetch; pyrocko parses).
+        /// Downloads waveforms from a CORS-enabled FDSN dataselect service and
+        /// append them to the pile (browser fetch; pyrocko parses).
         pub fn download_waveforms(&self, params: WaveformDownloadRequest) {
             let repaint = self.repaint.clone();
             self.inner.borrow_mut().status = Status::Loading("Downloading waveforms…".into());
@@ -1737,8 +1937,7 @@ mod web {
             });
         }
 
-        /// Compute blockwise-RMS derived traces (pyrocko's RMS snuffling) and
-        /// append them to the pile; the result replaces the scene.
+        /// Computes blockwise RMS traces, replacing the previous RMS run.
         pub fn rms_traces(&self, params: SnufflingRequestParams) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
@@ -1748,11 +1947,14 @@ mod web {
                 {
                     let mut i = inner.borrow_mut();
                     match parsed {
-                        Ok(scene) => {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
+                        Ok(mut result) => {
+                            if let Some(scene) = result.scene.take() {
+                                i.scene = Some(scene);
+                                i.scene_gen += 1;
+                                clear_view(&mut i);
+                            }
                             i.status = Status::Ready;
-                            clear_view(&mut i);
+                            install_snuffling_result(&mut i, result);
                         }
                         Err(e) => i.status = Status::Error(e.into()),
                     }
@@ -1776,13 +1978,14 @@ mod web {
                         text: e.to_string(),
                         markers: Vec::new(),
                         scene: None,
+                        origin: String::new(),
+                        event_state: None,
                     }),
                 };
                 {
                     let mut i = inner.borrow_mut();
                     if let Some(r) = parsed {
-                        i.snuffling = Some(r);
-                        i.snuffling_gen += 1;
+                        install_snuffling_result(&mut i, r);
                     }
                     invalidate_view_request(&mut i);
                 }
@@ -1828,13 +2031,17 @@ mod web {
                     Ok(_) => {}
                     Err(e) => {
                         let mut i = inner.borrow_mut();
-                        i.snuffling = Some(SnufflingResult {
-                            show_window: true,
-                            text: format!("Load GF store from URL failed: {e}"),
-                            markers: Vec::new(),
-                            scene: None,
-                        });
-                        i.snuffling_gen += 1;
+                        install_snuffling_result(
+                            &mut i,
+                            SnufflingResult {
+                                show_window: true,
+                                text: format!("Load GF store from URL failed: {e}"),
+                                markers: Vec::new(),
+                                scene: None,
+                                origin: String::new(),
+                                event_state: None,
+                            },
+                        );
                     }
                 }
                 repaint.request_repaint();
@@ -1861,13 +2068,17 @@ mod web {
                     }
                     Err(e) => {
                         let mut i = inner.borrow_mut();
-                        i.snuffling = Some(SnufflingResult {
-                            show_window: true,
-                            text: format!("Add GF store failed: {}", jsval_to_string(e)),
-                            markers: Vec::new(),
-                            scene: None,
-                        });
-                        i.snuffling_gen += 1;
+                        install_snuffling_result(
+                            &mut i,
+                            SnufflingResult {
+                                show_window: true,
+                                text: format!("Add GF store failed: {}", jsval_to_string(e)),
+                                markers: Vec::new(),
+                                scene: None,
+                                origin: String::new(),
+                                event_state: None,
+                            },
+                        );
                     }
                 }
                 repaint.request_repaint();
@@ -1932,13 +2143,14 @@ mod web {
                         text: e.to_string(),
                         markers: Vec::new(),
                         scene: None,
+                        origin: String::new(),
+                        event_state: None,
                     }),
                 };
                 {
                     let mut i = inner.borrow_mut();
                     if let Some(r) = parsed {
-                        i.snuffling = Some(r);
-                        i.snuffling_gen += 1;
+                        install_snuffling_result(&mut i, r);
                     }
                     invalidate_view_request(&mut i); // re-dispatch so distance/azimuth sort recomputes
                 }
@@ -1960,13 +2172,14 @@ mod web {
                         text: e.to_string(),
                         markers: Vec::new(),
                         scene: None,
+                        origin: String::new(),
+                        event_state: None,
                     }),
                 };
                 {
                     let mut i = inner.borrow_mut();
                     if let Some(r) = parsed {
-                        i.snuffling = Some(r);
-                        i.snuffling_gen += 1;
+                        install_snuffling_result(&mut i, r);
                     }
                     invalidate_view_request(&mut i); // re-dispatch so deconvolution applies
                 }
@@ -1975,6 +2188,7 @@ mod web {
         }
 
         /// Reports whether a live `SeedLink` socket is active.
+        #[must_use]
         pub fn seedlink_active(&self) -> bool {
             let _scene_gen = self.inner.borrow().scene_gen;
             LIVE_SEEDLINK.with(|slot| slot.borrow().is_some())
@@ -1987,6 +2201,11 @@ mod web {
                 slot.borrow_mut().take();
             });
             let started_at = js_sys::Date::now() / 1000.0;
+            let follow_s = if params.follow_s > 0.0 {
+                params.follow_s
+            } else {
+                LIVE_FOLLOW_SECONDS
+            };
             match LiveSeedlinkHandle::connect(
                 self.inner.clone(),
                 repaint.clone(),
@@ -1994,23 +2213,25 @@ mod web {
                 started_at,
             ) {
                 Ok(handle) => {
+                    js_clear_open_sources();
                     LIVE_SEEDLINK.with(|slot| {
                         *slot.borrow_mut() = Some(handle);
                     });
                     let mut i = self.inner.borrow_mut();
                     i.live_seedlink_started_at = Some(started_at);
+                    i.live_seedlink_follow_s = follow_s;
                     i.scene = Some(SceneMeta {
                         tmin: started_at,
-                        tmax: started_at + LIVE_FOLLOW_SECONDS,
+                        tmax: started_at + follow_s,
                         tracks: Vec::new(),
                     });
                     i.scene_gen += 1;
                     i.status = Status::Loading("Connecting SeedLink…".to_owned());
+                    i.diagnostic = None;
                     i.snuffling = None;
-                    i.kagan_by_hash.clear();
+                    clear_event_state(&mut i);
                     i.station_dists.clear();
                     i.station_dists_gen = None;
-                    i.active_event_gen = i.active_event_gen.wrapping_add(1);
                     clear_view(&mut i);
                 }
                 Err(err) => {
@@ -2046,18 +2267,12 @@ mod web {
                             Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
                             Ok(bytes) => {
                                 match proto::scene_or_bundle_from_bytes(&bytes, "open_files") {
-                                    Ok((scene, info)) => {
-                                        i.scene = Some(scene);
-                                        i.scene_gen += 1;
-                                        i.status = Status::Ready;
-                                        clear_view(&mut i);
+                                    Ok(result) => {
                                         // A picked bundle also loaded stations and
-                                        // events; its markers reach the app the
-                                        // same way `load_events` delivers them.
-                                        if let Some(info) = info {
-                                            i.snuffling = Some(info);
-                                            i.snuffling_gen += 1;
-                                        }
+                                        // events; its markers reach the app through
+                                        // the same installer as a direct bundle load.
+                                        install_dataset_result(&mut i, result);
+                                        i.status = Status::Ready;
                                     }
                                     Err(e) => i.status = Status::Error(e.into()),
                                 }
@@ -2068,7 +2283,7 @@ mod web {
                             i.status = Status::Error(BridgeError::browser(
                                 "opening files",
                                 jsval_to_string(e),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -2090,22 +2305,22 @@ mod web {
                     match res {
                         Ok(v) => match js_bytes(v, "open_directory") {
                             Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => match proto::scene_from_bytes(&bytes, "open_directory") {
-                                Ok(scene) => {
-                                    i.scene = Some(scene);
-                                    i.scene_gen += 1;
-                                    i.status = Status::Ready;
-                                    clear_view(&mut i);
+                            Ok(bytes) => {
+                                match proto::scene_or_bundle_from_bytes(&bytes, "open_directory") {
+                                    Ok(result) => {
+                                        install_dataset_result(&mut i, result);
+                                        i.status = Status::Ready;
+                                    }
+                                    Err(e) => i.status = Status::Error(e.into()),
                                 }
-                                Err(e) => i.status = Status::Error(e.into()),
-                            },
+                            }
                             Err(e) => i.status = Status::Error(e.into()),
                         },
                         Err(e) => {
                             i.status = Status::Error(BridgeError::browser(
                                 "opening a directory",
                                 jsval_to_string(e),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -2134,7 +2349,7 @@ mod web {
                             i.status = Status::Error(BridgeError::browser(
                                 "reloading snufflings",
                                 jsval_to_string(e),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -2143,11 +2358,19 @@ mod web {
         }
 
         /// Re-read any opened files whose on-disk mtime changed and replace their
-        /// traces (snuffler's "r"). A no-op (stays Ready) when nothing changed or
-        /// the files were opened without a re-readable File System Access handle.
+        /// traces (snuffler's "r").
+        ///
+        /// Successful sources are installed even when another source in the same
+        /// batch fails.
+        /// Those failures remain visible through [`Bridge::diagnostic`] while the
+        /// operational [`Status`] returns to [`Status::Ready`].
         pub fn reload_files(&self) {
             let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Reloading modified files…".into());
+            {
+                let mut inner = self.inner.borrow_mut();
+                inner.status = Status::Loading("Reloading modified files…".into());
+                inner.diagnostic = None;
+            }
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
@@ -2156,23 +2379,25 @@ mod web {
                     let mut i = inner.borrow_mut();
                     match res {
                         Ok(v) => match js_bytes(v, "reload_files") {
-                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => match proto::scene_from_bytes(&bytes, "reload_files") {
-                                Ok(scene) => {
-                                    i.scene = Some(scene);
-                                    i.scene_gen += 1;
-                                    i.status = Status::Ready;
-                                    clear_view(&mut i);
+                            Ok(bytes) => {
+                                match proto::decode_message::<ReloadBatchResult>(
+                                    &bytes,
+                                    "reload_files",
+                                ) {
+                                    Ok(batch) => {
+                                        let diagnostic = install_reload_batch(&mut i, batch);
+                                        finish_reload_batch(&mut i, diagnostic);
+                                    }
+                                    Err(error) => i.status = Status::Error(error.into()),
                                 }
-                                Err(e) => i.status = Status::Error(e.into()),
-                            },
+                            }
                             Err(e) => i.status = Status::Error(e.into()),
                         },
                         Err(e) => {
                             i.status = Status::Error(BridgeError::browser(
                                 "reloading files",
                                 jsval_to_string(e),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -2180,14 +2405,71 @@ mod web {
             });
         }
 
-        /// Serialize markers to pyrocko marker format and download them.
-        #[allow(
-            clippy::unused_self,
-            reason = "kept as a method for API symmetry with the other bridge calls; the fire-and-forget download needs no state"
-        )]
-        pub fn save_markers(&self, markers: MarkerFile) {
+        /// Qt's download Save trigger: the loaded waveforms as one `MiniSEED`
+        /// download plus the station table as a pyrocko station file.
+        /// A refusal remains a typed recoverable diagnostic, so either successful
+        /// half still downloads and the viewer stays operational.
+        pub fn save_waveforms_and_stations(&self) {
+            let inner = self.inner.clone();
+            let repaint = self.repaint.clone();
             spawn_local(async move {
-                let _ = js_save_markers(proto::encode_message(&markers)).await;
+                // Both halves run even when the first fails: one refused file
+                // must not cost the user the other download.
+                // The first failure takes the diagnostic slot.
+                let failed = [
+                    download_blob(client().export_waveforms().await, "downloading waveforms").await,
+                    download_blob(client().export_stations().await, "downloading stations").await,
+                ]
+                .into_iter()
+                .find_map(Result::err);
+                {
+                    let mut i = inner.borrow_mut();
+                    i.diagnostic = failed;
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// The waveform half alone — the live window's "save the buffer as
+        /// `MiniSEED`" (a stream rarely has a station table to save with it).
+        /// A refusal surfaces as a recoverable diagnostic.
+        pub fn save_waveforms(&self) {
+            let inner = self.inner.clone();
+            let repaint = self.repaint.clone();
+            spawn_local(async move {
+                let result =
+                    download_blob(client().export_waveforms().await, "downloading waveforms").await;
+                {
+                    let mut i = inner.borrow_mut();
+                    i.diagnostic = result.err();
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// Serializes markers through pyrocko and downloads the resulting text.
+        /// A failure surfaces as a typed recoverable diagnostic.
+        pub fn save_markers(&self, markers: MarkerFile) {
+            let inner = self.inner.clone();
+            let repaint = self.repaint.clone();
+            spawn_local(async move {
+                let result = match client().markers_to_text(markers).await {
+                    Ok(text) => {
+                        download_bytes(
+                            text.value.into_bytes(),
+                            "markers.txt".to_owned(),
+                            "text/plain".to_owned(),
+                            "downloading markers",
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error.into()),
+                };
+                {
+                    let mut i = inner.borrow_mut();
+                    i.diagnostic = result.err();
+                }
+                repaint.request_repaint();
             });
         }
 
@@ -2215,24 +2497,33 @@ mod web {
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
-                let markers = match js_load_markers().await {
-                    Ok(v) => js_bytes(v, "markers")
-                        .ok()
-                        .filter(|bytes| !bytes.is_empty())
-                        .and_then(|bytes| proto::markers_from_bytes(&bytes, "markers").ok())
-                        .map(|msg| msg.markers),
-                    Err(_) => None,
-                };
-                if let Some(markers) = markers {
-                    let mut i = inner.borrow_mut();
-                    let n = markers.len();
-                    i.snuffling = Some(SnufflingResult {
-                        show_window: true,
-                        text: format!("loaded {n} marker(s)"),
-                        markers,
-                        scene: None,
-                    });
-                    i.snuffling_gen += 1;
+                match picker_result(
+                    js_load_markers().await,
+                    "markers",
+                    "loading markers",
+                    proto::markers_from_bytes,
+                ) {
+                    Ok(Some(loaded)) => {
+                        let mut i = inner.borrow_mut();
+                        i.diagnostic = None;
+                        let n = loaded.markers.len();
+                        install_snuffling_result(
+                            &mut i,
+                            SnufflingResult {
+                                show_window: true,
+                                text: format!("loaded {n} marker(s)"),
+                                markers: loaded.markers,
+                                scene: None,
+                                origin: String::new(),
+                                event_state: loaded.event_state,
+                            },
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let mut i = inner.borrow_mut();
+                        record_diagnostic(&mut i, error);
+                    }
                 }
                 repaint.request_repaint();
             });
@@ -2246,17 +2537,22 @@ mod web {
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
-                let result = match js_load_station_xml().await {
-                    Ok(v) => js_bytes(v, "stationxml")
-                        .ok()
-                        .filter(|bytes| !bytes.is_empty())
-                        .and_then(|bytes| proto::snuffling_from_bytes(&bytes, "stationxml").ok()),
-                    Err(_) => None,
-                };
-                if let Some(result) = result {
-                    let mut i = inner.borrow_mut();
-                    i.snuffling = Some(result);
-                    i.snuffling_gen += 1;
+                match picker_result(
+                    js_load_station_xml().await,
+                    "stationxml",
+                    "loading StationXML",
+                    proto::snuffling_from_bytes,
+                ) {
+                    Ok(Some(result)) => {
+                        let mut i = inner.borrow_mut();
+                        i.diagnostic = None;
+                        install_snuffling_result(&mut i, result);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let mut i = inner.borrow_mut();
+                        record_diagnostic(&mut i, error);
+                    }
                 }
                 repaint.request_repaint();
             });
@@ -2269,17 +2565,22 @@ mod web {
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
-                let result = match js_load_stations().await {
-                    Ok(v) => js_bytes(v, "stations")
-                        .ok()
-                        .filter(|bytes| !bytes.is_empty())
-                        .and_then(|bytes| proto::snuffling_from_bytes(&bytes, "stations").ok()),
-                    Err(_) => None,
-                };
-                if let Some(result) = result {
-                    let mut i = inner.borrow_mut();
-                    i.snuffling = Some(result);
-                    i.snuffling_gen += 1;
+                match picker_result(
+                    js_load_stations().await,
+                    "stations",
+                    "loading stations",
+                    proto::snuffling_from_bytes,
+                ) {
+                    Ok(Some(result)) => {
+                        let mut i = inner.borrow_mut();
+                        i.diagnostic = None;
+                        install_snuffling_result(&mut i, result);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let mut i = inner.borrow_mut();
+                        record_diagnostic(&mut i, error);
+                    }
                 }
                 repaint.request_repaint();
             });
@@ -2293,34 +2594,54 @@ mod web {
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
-                let result = match js_load_events().await {
-                    Ok(v) => js_bytes(v, "events")
-                        .ok()
-                        .filter(|bytes| !bytes.is_empty())
-                        .and_then(|bytes| proto::snuffling_from_bytes(&bytes, "events").ok()),
-                    Err(_) => None,
-                };
-                if let Some(result) = result {
-                    let mut i = inner.borrow_mut();
-                    i.snuffling = Some(result);
-                    i.snuffling_gen += 1;
-                    invalidate_view_request(&mut i);
+                match picker_result(
+                    js_load_events().await,
+                    "events",
+                    "loading events",
+                    proto::snuffling_from_bytes,
+                ) {
+                    Ok(Some(result)) => {
+                        let mut i = inner.borrow_mut();
+                        i.diagnostic = None;
+                        install_snuffling_result(&mut i, result);
+                        invalidate_view_request(&mut i);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let mut i = inner.borrow_mut();
+                        record_diagnostic(&mut i, error);
+                    }
                 }
                 repaint.request_repaint();
             });
         }
 
         /// Fetch station + event coordinates for the Map overlay.
-        pub fn fetch_map_data(&self) {
+        pub fn fetch_map_data(&self, request: MapRequest) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
             let repaint = repaint.clone();
+            let request_gen = {
+                let mut i = inner.borrow_mut();
+                if i.map_in_flight && i.map_request.as_ref() == Some(&request) {
+                    return;
+                }
+                let changed = i.map_request.as_ref() != Some(&request);
+                i.map_request = Some(request.clone());
+                i.map_request_gen = i.map_request_gen.wrapping_add(1);
+                i.map_in_flight = true;
+                if changed {
+                    i.map = None;
+                }
+                i.map_request_gen
+            };
             spawn_local(async move {
-                let parsed = client().map_data().await.ok();
+                let result = client().map_data(request).await;
                 {
                     let mut i = inner.borrow_mut();
-                    if let Some(m) = parsed {
-                        i.map = Some(m);
+                    if i.map_request_gen == request_gen {
+                        i.map = result.ok();
+                        i.map_in_flight = false;
                     }
                 }
                 repaint.request_repaint();
@@ -2363,9 +2684,10 @@ mod web {
             });
         }
 
-        /// Silent variant of `reload_files` for the "Watch Files" poll: swaps in a
-        /// new scene only when a watched file actually changed, without flickering
-        /// the status line.
+        /// Polls watched files without showing a loading status.
+        ///
+        /// Successful changes install immediately; source failures still surface
+        /// because otherwise their earlier batch peers would change invisibly.
         pub fn watch_poll(&self) {
             let repaint = self.repaint.clone();
             if !matches!(self.inner.borrow().status, Status::Ready) {
@@ -2374,52 +2696,119 @@ mod web {
             let inner = self.inner.clone();
             let repaint = repaint.clone();
             spawn_local(async move {
-                let Ok(v) = js_reload_files().await else {
-                    return;
-                };
-                let Ok(bytes) = js_bytes(v, "watch_poll") else {
-                    return;
-                };
-                if bytes.is_empty() {
-                    return;
-                }
-                let Ok(scene) = proto::scene_from_bytes(&bytes, "watch_poll") else {
-                    return;
-                };
+                let result = js_reload_files().await;
                 {
                     let mut i = inner.borrow_mut();
-                    i.scene = Some(scene);
-                    i.scene_gen += 1;
-                    clear_view(&mut i);
+                    match result {
+                        Ok(value) => match js_bytes(value, "watch_poll") {
+                            Ok(bytes) => match proto::decode_message::<ReloadBatchResult>(
+                                &bytes,
+                                "watch_poll",
+                            ) {
+                                Ok(batch) => {
+                                    let diagnostic = install_reload_batch(&mut i, batch);
+                                    i.diagnostic = diagnostic;
+                                }
+                                Err(error) => {
+                                    i.diagnostic = None;
+                                    i.status = Status::Error(error.into());
+                                }
+                            },
+                            Err(error) => {
+                                i.diagnostic = None;
+                                i.status = Status::Error(error.into());
+                            }
+                        },
+                        Err(error) => {
+                            i.diagnostic = None;
+                            i.status = Status::Error(BridgeError::browser(
+                                "watching files",
+                                jsval_to_string(error),
+                            ));
+                        }
+                    }
                 }
                 repaint.request_repaint();
             });
         }
 
-        /// Set (or clear) the active event in Python and pull back the recomputed
-        /// per-event Kagan angles; bumps `active_event_gen` so distances refetch.
+        /// Sets or clears the active event and installs Python's canonical registry.
         pub fn set_active_event(&self, req: SetActiveEventRequest) {
             let repaint = self.repaint.clone();
             let inner = self.inner.clone();
             let repaint = repaint.clone();
+            let request_gen = {
+                let mut i = inner.borrow_mut();
+                i.event_request_gen = i.event_request_gen.wrapping_add(1);
+                i.event_request_gen
+            };
             spawn_local(async move {
-                let res = client().set_active_event(req).await.ok();
+                let result = client().set_active_event(req).await;
                 {
                     let mut i = inner.borrow_mut();
-                    i.active_event_gen += 1;
-                    if let Some(r) = res {
-                        i.kagan_by_hash.clear();
-                        for k in r.kagan {
-                            if let Some(v) = k.kagan_deg {
-                                i.kagan_by_hash.insert(k.event_hash, v);
+                    if i.event_request_gen == request_gen {
+                        match result {
+                            Ok(state) => {
+                                i.diagnostic = None;
+                                install_event_state(&mut i, state);
                             }
+                            Err(error) => record_diagnostic(&mut i, error.into()),
                         }
                     }
-                    // The distance/azimuth sorts and their track annotations are
-                    // measured from the active event, so the view has to be
-                    // rebuilt against the new one — its request params are
-                    // unchanged, so nothing else would re-dispatch it.
-                    invalidate_view_request(&mut i);
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// Replaces one canonical event after an inline marker-table edit.
+        pub fn update_event(&self, event: EventSnapshot) {
+            let repaint = self.repaint.clone();
+            let inner = self.inner.clone();
+            let request_gen = {
+                let mut i = inner.borrow_mut();
+                i.event_request_gen = i.event_request_gen.wrapping_add(1);
+                i.event_request_gen
+            };
+            spawn_local(async move {
+                let result = client().update_event(event).await;
+                {
+                    let mut i = inner.borrow_mut();
+                    if i.event_request_gen == request_gen {
+                        match result {
+                            Ok(state) => {
+                                i.diagnostic = None;
+                                install_event_state(&mut i, state);
+                            }
+                            Err(error) => record_diagnostic(&mut i, error.into()),
+                        }
+                    }
+                }
+                repaint.request_repaint();
+            });
+        }
+
+        /// Removes canonical events whose final frontend marker was deleted.
+        pub fn remove_events(&self, request: RemoveEventsRequest) {
+            let repaint = self.repaint.clone();
+            let inner = self.inner.clone();
+            let request_gen = {
+                let mut i = inner.borrow_mut();
+                i.event_request_gen = i.event_request_gen.wrapping_add(1);
+                i.event_request_gen
+            };
+            spawn_local(async move {
+                let result = client().remove_events(request).await;
+                {
+                    let mut i = inner.borrow_mut();
+                    if i.event_request_gen == request_gen {
+                        match result {
+                            Ok(state) => {
+                                i.diagnostic = None;
+                                install_event_state(&mut i, state);
+                            }
+                            Err(error) => record_diagnostic(&mut i, error.into()),
+                        }
+                    }
                 }
                 repaint.request_repaint();
             });
@@ -2652,5 +3041,76 @@ mod web {
                 self.dispatch_view();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BridgeError, BundleAbout, BundleView, Inner, Status, finish_reload_batch,
+        install_bundle_presentation, record_diagnostic,
+    };
+
+    #[test]
+    fn recoverable_reload_diagnostics_leave_the_bridge_ready() {
+        let mut inner = Inner {
+            status: Status::Loading("Reloading modified files…".to_owned()),
+            ..Default::default()
+        };
+        let diagnostic = BridgeError::browser("reading a file for reload", "permission revoked");
+
+        finish_reload_batch(&mut inner, Some(diagnostic));
+
+        assert!(matches!(inner.status, Status::Ready));
+        assert!(inner.diagnostic.is_some());
+    }
+
+    #[test]
+    fn recoverable_operation_diagnostics_do_not_disable_the_bridge() {
+        let mut inner = Inner {
+            status: Status::Ready,
+            ..Default::default()
+        };
+
+        record_diagnostic(
+            &mut inner,
+            BridgeError::browser("loading markers", "malformed marker file"),
+        );
+
+        assert!(matches!(inner.status, Status::Ready));
+        assert!(inner.diagnostic.is_some());
+    }
+
+    #[test]
+    fn bundle_presentation_uses_the_installed_scene_generation() {
+        let mut inner = Inner {
+            scene_gen: 7,
+            ..Default::default()
+        };
+
+        install_bundle_presentation(
+            &mut inner,
+            Some(BundleView {
+                sort: "distance".to_owned(),
+                subsort: "grouped".to_owned(),
+            }),
+            Some(BundleAbout {
+                title: "Changed bundle".to_owned(),
+                body: "Updated note".to_owned(),
+            }),
+        );
+
+        assert_eq!(
+            inner.pending_view.as_ref().map(|view| view.sort.as_str()),
+            Some("distance")
+        );
+        assert!(inner.dataset_note_unseen);
+        assert_eq!(
+            inner
+                .dataset_note
+                .as_ref()
+                .map(|(generation, about)| (*generation, about.title.as_str())),
+            Some((7, "Changed bundle"))
+        );
     }
 }

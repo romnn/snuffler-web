@@ -7,16 +7,18 @@
     )
 )]
 
-use crate::bridge::{Bridge, Repaint, SnufflingRequestParams, ViewParams};
+use crate::bridge::{
+    ActiveEventResult, Bridge, Nslc, Repaint, SnufflingRequestParams, SnufflingSpan, ViewParams,
+};
 #[cfg(target_arch = "wasm32")]
-use crate::bridge::{CommandOutcome, CommandRequest, Nslc, SeedlinkParams, SetActiveEventRequest};
+use crate::bridge::{
+    CommandOutcome, CommandRequest, RemoveEventsRequest, SeedlinkParams, SetActiveEventRequest,
+};
+use crate::markers::Marker;
 #[cfg(target_arch = "wasm32")]
-use crate::markers::{Marker, MarkersCommand, parse_markers_command};
+use crate::markers::{MarkersCommand, parse_markers_command};
 use crate::snufflings::SnufflingConfigs;
-use crate::state::{AppState, ViewMode};
-
-const VIEW_TIME_OVERSCAN: f64 = 2.0;
-const VIEW_TIME_PAN_BUCKET_FRACTION: f64 = 0.5;
+use crate::state::AppState;
 
 /// Owns the user-visible state and its asynchronous pyrocko bridge.
 pub struct Session {
@@ -31,7 +33,20 @@ pub struct Session {
     last_watch_poll: f64,
     last_active_event_gen: u64,
     last_snuffling_gen: u64,
+    /// The window follow mode last wrote; any other value means the user (or a
+    /// jump) moved the view since, which suspends following.
+    follow_window: Option<(f64, f64)>,
+    /// When following was last interrupted by an interactive range change.
+    follow_interrupted_at: Option<f64>,
+    /// `started_at` (as bits, for exact comparison) of the live session whose
+    /// first packet already snapped the track scroll, so later packets leave
+    /// the user's scrolling alone.
+    live_scroll_snapped_for: Option<u64>,
 }
+
+/// How long an interactive range change suspends live following, snuffler's
+/// `interactive_range_change_delay_time` (`pile_viewer.py:1253`).
+const FOLLOW_SUSPEND_S: f64 = 10.0;
 
 impl Session {
     /// Creates an empty viewer session and installs its frontend repaint scheduler.
@@ -46,6 +61,9 @@ impl Session {
             last_watch_poll: 0.0,
             last_active_event_gen: 0,
             last_snuffling_gen: 0,
+            follow_window: None,
+            follow_interrupted_at: None,
+            live_scroll_snapped_for: None,
         }
     }
 
@@ -82,15 +100,55 @@ impl Session {
     /// snuffler's 10% margin on either side. Without a length the window keeps
     /// its width and centres on the time instead.
     pub fn go_to_time(&mut self, time: f64, length: Option<f64>) {
-        if let Some(length) = length {
-            let margin = length * 0.1;
-            self.state.tmin = time - margin;
-            self.state.tmax = time + length + margin;
-        } else {
-            let width = (self.state.tmax - self.state.tmin).max(1.0);
-            self.state.tmin = time - width * 0.5;
-            self.state.tmax = time + width * 0.5;
+        let target_tmax = time + length.unwrap_or(0.0);
+        let (tmin, tmax) = good_looking_time_range(
+            self.state.visible_length.samples(),
+            self.scene_deltatmin(),
+            (self.state.tmin, self.state.tmax),
+            time,
+            target_tmax,
+            false,
+        );
+        self.state.tmin = tmin;
+        self.state.tmax = tmax;
+    }
+
+    /// The finest sampling interval of the loaded pile, or 0.0 with nothing
+    /// loaded (snuffler's `content_deltat_range` floor, which
+    /// [`good_looking_time_range`] turns into a 1 s minimum window).
+    #[must_use]
+    pub fn scene_deltatmin(&self) -> f64 {
+        self.bridge.scene().map_or(0.0, |scene| {
+            scene
+                .tracks
+                .iter()
+                .map(|track| track.deltat)
+                .fold(f64::INFINITY, f64::min)
+        })
+    }
+
+    /// The loaded pile's sampling-interval band with snuffler's fallbacks
+    /// (`content_deltat_range`, `pile_viewer.py:2745`): 1 ms when there is no
+    /// finest rate, 1000 s when there is no coarsest. Feeds the filter
+    /// controls' corner range exactly as Qt's `adjust_controls` does.
+    #[must_use]
+    pub fn scene_deltat_range(&self) -> (f64, f64) {
+        let (mut dtmin, mut dtmax) = self.bridge.scene().map_or((0.0, 0.0), |scene| {
+            scene
+                .tracks
+                .iter()
+                .map(|track| track.deltat)
+                .fold((f64::INFINITY, 0.0_f64), |(lo, hi), dt| {
+                    (lo.min(dt), hi.max(dt))
+                })
+        });
+        if !dtmin.is_finite() || dtmin == 0.0 {
+            dtmin = 0.001;
         }
+        if dtmax == 0.0 {
+            dtmax = 1000.0;
+        }
+        (dtmin, dtmax)
     }
 
     /// Replaces the current source with live `SeedLink` acquisition.
@@ -100,14 +158,30 @@ impl Session {
         self.bridge.start_seedlink(params);
     }
 
+    /// `File ▸ Close all`: empties the pile and every annotation that describes
+    /// it, back to the blank viewer Qt boots into with no arguments.
+    #[cfg(target_arch = "wasm32")]
+    pub fn close_all(&mut self) {
+        self.clear_annotations();
+        self.bridge.empty_scene();
+    }
+
     fn clear_annotations(&mut self) {
         self.state.markers.clear();
         self.state.snuffling_text.clear();
         self.state.show_snuffling = false;
         self.state.set_active_event_request = None;
-        self.state.pending_span = None;
+        self.state.remove_event_hashes.clear();
         self.state.picking = None;
         self.state.uncertainty_drag_last_y = None;
+    }
+
+    fn consume_empty_scene(&mut self, scene_gen: u64) {
+        self.state.track_scroll = 0.0;
+        self.state.track_offset = 0;
+        self.last_scene_bounds = None;
+        self.last_scene_gen = scene_gen;
+        self.follow_window = None;
     }
 
     /// Applies bridge results and flushes pending state intents once per frontend frame.
@@ -117,7 +191,7 @@ impl Session {
     /// layout and input handling decided.
     #[cfg(target_arch = "wasm32")]
     pub fn sync(&mut self, now_s: f64) {
-        self.fit_new_scene();
+        self.fit_new_scene(now_s);
         self.bridge.refresh_seisbench_progress(now_s);
         self.apply_snuffling_result();
 
@@ -138,12 +212,13 @@ impl Session {
             self.bridge.reload_snufflings();
         }
         if self.state.watch_files {
-            if now_s - self.last_watch_poll > 2.0 {
+            // 1000 ms, matching snuffler's watch timer (pile_viewer.py:1225).
+            if now_s - self.last_watch_poll > 1.0 {
                 self.last_watch_poll = now_s;
                 self.bridge.watch_poll();
             }
             self.bridge
-                .request_repaint_after(std::time::Duration::from_secs(2));
+                .request_repaint_after(std::time::Duration::from_secs(1));
         }
 
         if let Some(request) = self.state.set_active_event_request.take() {
@@ -156,14 +231,72 @@ impl Session {
                     .map(|(net, sta, loc, cha)| Nslc { net, sta, loc, cha }),
             });
         }
+        if !self.state.remove_event_hashes.is_empty() {
+            self.bridge.remove_events(RemoveEventsRequest {
+                event_hashes: std::mem::take(&mut self.state.remove_event_hashes),
+            });
+        }
 
         let active_event_gen = self.bridge.active_event_gen();
         if active_event_gen != self.last_active_event_gen {
             self.last_active_event_gen = active_event_gen;
-            for marker in &mut self.state.markers {
-                if let Some(hash) = marker.event_hash.as_deref() {
-                    marker.kagan_deg = self.bridge.kagan_for(hash);
+            if let Some(event_state) = self.bridge.event_state() {
+                Self::apply_event_state(&mut self.state.markers, &event_state);
+            }
+        }
+    }
+
+    fn apply_event_state(markers: &mut [Marker], state: &ActiveEventResult) {
+        use std::collections::HashMap;
+
+        let events: HashMap<&str, _> = state
+            .events
+            .iter()
+            .map(|event| (event.event_hash.as_str(), event))
+            .collect();
+        let metrics: HashMap<&str, _> = state
+            .kagan
+            .iter()
+            .map(|metric| (metric.event_hash.as_str(), metric))
+            .collect();
+        let active_hash = state
+            .has_event
+            .then_some(state.active_hash.as_deref())
+            .flatten();
+
+        for marker in markers {
+            let Some(event_hash) = marker.event_hash.as_deref() else {
+                if marker.is_event {
+                    marker.active = false;
                 }
+                continue;
+            };
+            if let Some(event) = events.get(event_hash) {
+                marker.event_time = (!marker.is_event).then_some(event.time);
+                if marker.is_event {
+                    marker.tmin = event.time;
+                    marker.tmax = event.time;
+                    marker.lat = Some(event.lat);
+                    marker.lon = Some(event.lon);
+                    marker.depth_km = Some(event.depth / 1000.0);
+                    marker.magnitude = event.magnitude;
+                    marker.event_name.clone_from(&event.name);
+                    marker.region.clone_from(&event.region);
+                    marker.catalog.clone_from(&event.catalog);
+                    marker.moment_tensor = event.moment_tensor.as_ref().map(|tensor| {
+                        [
+                            tensor.mnn, tensor.mee, tensor.mdd, tensor.mne, tensor.mnd, tensor.med,
+                        ]
+                    });
+                }
+            }
+            marker.active = marker.is_event && active_hash == Some(event_hash);
+            if marker.is_event {
+                marker.kagan_deg = metrics.get(event_hash).and_then(|metric| metric.kagan_deg);
+                marker.dist_active_km = metrics.get(event_hash).and_then(|metric| metric.dist_km);
+            } else {
+                marker.kagan_deg = None;
+                marker.dist_active_km = None;
             }
         }
     }
@@ -180,15 +313,16 @@ impl Session {
     }
 
     /// Builds the bridge view request for the current state and render budget.
+    ///
+    /// The request window is the drawn window, exactly as snuffler hands its own
+    /// `prepare_cutout2` the on-screen range: the bridge owns fetch widening via
+    /// `liberal_fetch` (Qt's power-of-two grid snapping), and a frontend overscan
+    /// on top would change the demean/filter extent in a way Qt has no analogue
+    /// for.
     #[must_use]
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "overscan is a small constant multiple of an already-clamped render budget"
-    )]
     pub fn view_params(&self, visible_bins: u32) -> ViewParams {
         let state = &self.state;
-        let mut params = ViewParams {
+        ViewParams {
             tmin: state.tmin,
             tmax: state.tmax,
             npx: visible_bins,
@@ -225,30 +359,9 @@ impl Session {
             wf_reverse: state.wf_reverse,
             track_offset: state.track_offset as u64,
             track_count: state.ntracks_shown as u64,
-        };
-
-        if state.view_mode != ViewMode::Wiggle {
-            return params;
+            visible_length: Some(state.visible_length.samples()),
+            liberal_fetch: state.liberal_fetch,
         }
-
-        let (overscan, bucket_fraction) = if state.liberal_fetch {
-            (3.0, 1.0)
-        } else {
-            (VIEW_TIME_OVERSCAN, VIEW_TIME_PAN_BUCKET_FRACTION)
-        };
-        let visible_window = (state.tmax - state.tmin).max(1e-9);
-        let origin = self.bridge.scene().map_or(0.0, |scene| scene.tmin);
-        let bucket = visible_window * bucket_fraction;
-        let bucket_tmin = bucketed_time_start(origin, state.tmin, bucket);
-
-        params.tmin = bucket_tmin - 0.5 * visible_window;
-        params.tmax = params.tmin + visible_window * overscan;
-        params.npx = (f64::from(visible_bins) * overscan).ceil() as u32;
-        if state.view_drag.is_some() {
-            params.visible_tmin = Some(params.tmin);
-            params.visible_tmax = Some(params.tmax);
-        }
-        params
     }
 
     /// Builds a snuffling request from the current view and shared configurations.
@@ -257,6 +370,29 @@ impl Session {
         SnufflingRequestParams {
             view: Some(self.view_params(visible_bins)),
             snufflings: Some(self.snufflings.params()),
+            // Qt runs a snuffling over the selected non-event markers' spans,
+            // falling back to the visible window only when nothing is selected
+            // (`chopper_selected_traces`, snuffling.py:1000).
+            selected_spans: self
+                .state
+                .markers
+                .iter()
+                .filter(|m| m.selected && !m.is_event)
+                .map(|m| SnufflingSpan {
+                    tmin: m.tmin,
+                    tmax: m.tmax,
+                    nslc_ids: m
+                        .nslc_ids
+                        .iter()
+                        .map(|(net, sta, loc, cha)| Nslc {
+                            net: net.clone(),
+                            sta: sta.clone(),
+                            loc: loc.clone(),
+                            cha: cha.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
         }
     }
 
@@ -271,6 +407,13 @@ impl Session {
             return;
         };
 
+        // Qt's `cleanup()` contract: a re-run replaces what the previous run
+        // of the same snuffling added, instead of stacking duplicates.
+        if !result.origin.is_empty() {
+            self.state
+                .markers
+                .retain(|m| m.origin.as_deref() != Some(result.origin.as_str()));
+        }
         let (mut event_min, mut event_max, mut has_event) =
             (f64::INFINITY, f64::NEG_INFINITY, false);
         for marker in &result.markers {
@@ -281,14 +424,18 @@ impl Session {
             );
             mapped.phase.clone_from(&marker.phase);
             mapped.is_event = marker.is_event;
-            mapped.nslc = marker.nslc.as_ref().map(|nslc| {
-                (
-                    nslc.net.clone(),
-                    nslc.sta.clone(),
-                    nslc.loc.clone(),
-                    nslc.cha.clone(),
-                )
-            });
+            mapped.nslc_ids = marker
+                .nslc_ids
+                .iter()
+                .map(|nslc| {
+                    (
+                        nslc.net.clone(),
+                        nslc.sta.clone(),
+                        nslc.loc.clone(),
+                        nslc.cha.clone(),
+                    )
+                })
+                .collect();
             mapped.polarity = marker.polarity.and_then(|value| i8::try_from(value).ok());
             mapped.moment_tensor = marker.moment_tensor.as_ref().map(|tensor| {
                 [
@@ -302,6 +449,26 @@ impl Session {
             mapped.depth_km = marker.depth.map(|depth| depth / 1000.0);
             mapped.lat = marker.lat;
             mapped.lon = marker.lon;
+            mapped.automatic = marker.automatic;
+            mapped.incidence_angle = marker.incidence_angle;
+            mapped.takeoff_angle = marker.takeoff_angle;
+            mapped.event_name.clone_from(&marker.event_name);
+            mapped.region.clone_from(&marker.region);
+            mapped.catalog.clone_from(&marker.catalog);
+            mapped.event_time = marker.event_time;
+            mapped.dist_active_km = marker.dist_active_km;
+            // Python-side auto-activation (largest catalog magnitude) arrives on
+            // the marker so the canvas and table *show* the active event rather
+            // than silently measuring distances from an invisible one.
+            if marker.active {
+                for existing in &mut self.state.markers {
+                    existing.active = false;
+                }
+                mapped.active = true;
+            }
+            if !result.origin.is_empty() {
+                mapped.origin = Some(result.origin.clone());
+            }
             if marker.is_event {
                 has_event = true;
                 event_min = event_min.min(marker.t);
@@ -323,7 +490,7 @@ impl Session {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn fit_new_scene(&mut self) {
+    fn fit_new_scene(&mut self, now_s: f64) {
         let scene_gen = self.bridge.scene_gen();
         if scene_gen == self.last_scene_gen {
             return;
@@ -331,26 +498,55 @@ impl Session {
         let Some(scene) = self.bridge.scene() else {
             return;
         };
+        let live_session = self.bridge.live_seedlink_session();
+        if scene.tracks.is_empty() && live_session.is_none() {
+            self.consume_empty_scene(scene_gen);
+            return;
+        }
         let bounds = (scene.tmin, scene.tmax);
-        if let Some(live) = self.bridge.live_seedlink_session() {
-            let latest = scene
-                .tracks
-                .iter()
-                .map(|track| track.tmax)
-                .fold(scene.tmax, f64::max);
-            let window = live.follow_seconds.max(1.0);
-            if latest.is_finite() && latest > live.started_at {
-                self.state.tmax = latest;
-                self.state.tmin = (latest - window).max(live.started_at);
-            } else {
-                self.state.tmin = live.started_at;
-                self.state.tmax = live.started_at + window;
+        if let Some(live) = live_session {
+            // A fresh live session resets the suspension and snaps the track
+            // scroll once (Qt's `follow` zeroes the interrupt clock,
+            // pile_viewer.py:4257); later packets leave scrolling alone.
+            if self.live_scroll_snapped_for != Some(live.started_at.to_bits()) {
+                self.live_scroll_snapped_for = Some(live.started_at.to_bits());
+                self.state.track_scroll = 0.0;
+                self.state.track_offset = 0;
+                self.follow_window = None;
+                self.follow_interrupted_at = None;
             }
-            self.state.track_scroll = 0.0;
-            self.state.track_offset = 0;
+            // Any view movement this session did not make itself since the last
+            // packet — a pan, a zoom, a `goto` — re-arms the suspension, as
+            // Qt's `interrupt_following` does on every interactive range
+            // change (pile_viewer.py:4235).
+            let user_moved = self.follow_window.is_some_and(|(t0, t1)| {
+                (t0 - self.state.tmin).abs() > 1e-9 || (t1 - self.state.tmax).abs() > 1e-9
+            });
+            if user_moved {
+                self.follow_interrupted_at = Some(now_s);
+            }
+            let suspended = self
+                .follow_interrupted_at
+                .is_some_and(|at| now_s - at < FOLLOW_SUSPEND_S);
+            if !suspended {
+                let latest = scene
+                    .tracks
+                    .iter()
+                    .map(|track| track.tmax)
+                    .fold(scene.tmax, f64::max);
+                let window = live.follow_seconds.max(1.0);
+                if latest.is_finite() && latest > live.started_at {
+                    self.state.tmax = latest;
+                    self.state.tmin = (latest - window).max(live.started_at);
+                } else {
+                    self.state.tmin = live.started_at;
+                    self.state.tmax = live.started_at + window;
+                }
+            }
+            self.follow_window = Some((self.state.tmin, self.state.tmax));
             self.last_scene_bounds = Some(bounds);
             self.last_scene_gen = scene_gen;
-        } else if !scene.tracks.is_empty() {
+        } else {
             let range_changed = self.last_scene_bounds.is_none_or(|old| {
                 (old.0 - bounds.0).abs() > 1e-6 || (old.1 - bounds.1).abs() > 1e-6
             });
@@ -366,17 +562,65 @@ impl Session {
     }
 }
 
-fn bucketed_time_start(origin: f64, tmin: f64, bucket: f64) -> f64 {
-    if !bucket.is_finite() || bucket <= 0.0 {
-        return tmin;
+/// Snuffler's `make_good_looking_time_range` (`pile_viewer.py:2760`): pad a target
+/// span by 10 % on each side, flooring every jump — `goto`, `g`, `G` — at one
+/// trace-visibility length, `deltatmin * visible_length * 0.95`. `view_range` is
+/// the current window, which caps the floor the way Qt caps it; the floor
+/// becomes one second when nothing is loaded.
+#[must_use]
+pub fn good_looking_time_range(
+    visible_length_samples: f64,
+    deltatmin: f64,
+    view_range: (f64, f64),
+    mut tmin: f64,
+    mut tmax: f64,
+    tight: bool,
+) -> (f64, f64) {
+    if tmax < tmin {
+        std::mem::swap(&mut tmin, &mut tmax);
     }
-    origin + ((tmin - origin) / bucket).floor() * bucket
+    let mut dt = deltatmin * visible_length_samples * 0.95;
+    if dt == 0.0 || !dt.is_finite() {
+        dt = 1.0;
+    }
+    if tight {
+        // Tight around a real span pads it; tight around a point zooms in to one
+        // visibility length (pile_viewer.py:2770).
+        if tmax > tmin {
+            let dtm = tmax - tmin;
+            return (tmin - dtm * 0.1, tmax + dtm * 0.1);
+        }
+        let tcenter = f64::midpoint(tmin, tmax);
+        return (tcenter - 0.5 * dt, tcenter + 0.5 * dt);
+    }
+    if tmax - tmin < dt {
+        let (vmin, vmax) = view_range;
+        let dt = dt.min(vmax - vmin);
+        let tcenter = f64::midpoint(tmin, tmax);
+        let (etmin, etmax) = (tmin, tmax);
+        tmin = etmin.min(tcenter - 0.5 * dt);
+        tmax = etmax.max(tcenter + 0.5 * dt);
+        let dtm = tmax - tmin;
+        // The margin goes only to the sides the floor did not already widen.
+        if (etmin - tmin).abs() == 0.0 {
+            tmin -= dtm * 0.1;
+        }
+        if (etmax - tmax).abs() == 0.0 {
+            tmax += dtm * 0.1;
+        }
+    } else {
+        let dtm = tmax - tmin;
+        tmin -= dtm * 0.1;
+        tmax += dtm * 0.1;
+    }
+    (tmin, tmax)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::bridge::Repaint;
-    use crate::state::{ViewDrag, ViewMode};
+    use crate::bridge::{ActiveEventResult, EventKagan, EventSnapshot, Repaint};
+    use crate::markers::Marker;
+    use crate::state::{ViewMode, VisibleLength};
 
     use super::Session;
 
@@ -384,36 +628,35 @@ mod tests {
         Session::new(Repaint::new(|| {}, |_| {}))
     }
 
+    // The request window is the drawn window on both view modes: the bridge owns
+    // any fetch widening (liberal_fetch), exactly as snuffler hands
+    // prepare_cutout2 the on-screen range.
     #[test]
-    fn view_request_overscans_and_buckets_the_visible_window() {
+    fn view_request_is_the_drawn_window() {
         let mut session = session();
         session.state.tmin = 101.0;
         session.state.tmax = 111.0;
 
         let params = session.view_params(50);
-        assert!((params.tmin - 95.0).abs() < f64::EPSILON);
-        assert!((params.tmax - 115.0).abs() < f64::EPSILON);
-        assert_eq!(params.npx, 100);
+        assert!((params.tmin - 101.0).abs() < f64::EPSILON);
+        assert!((params.tmax - 111.0).abs() < f64::EPSILON);
+        assert_eq!(params.npx, 50);
         assert_eq!(params.visible_tmin, Some(101.0));
         assert_eq!(params.visible_tmax, Some(111.0));
+        assert_eq!(params.scale_tmin, Some(101.0));
+        assert_eq!(params.scale_tmax, Some(111.0));
     }
 
+    // Snuffler's visible_length is a sample-count target the bridge turns into
+    // min_deltat_allow; the boot default is upstream's first radio entry.
     #[test]
-    fn pointer_drag_uses_fetched_bounds_for_autoscaling() {
+    fn view_request_carries_visible_length_and_liberal_fetch() {
         let mut session = session();
-        session.state.tmin = 101.0;
-        session.state.tmax = 111.0;
-        session.state.view_drag = Some(ViewDrag {
-            x: 0.0,
-            y: 0.0,
-            tmin: 101.0,
-            tmax: 111.0,
-            pan_only: false,
-        });
+        session.state.liberal_fetch = true;
 
         let params = session.view_params(50);
-        assert_eq!(params.visible_tmin, Some(params.tmin));
-        assert_eq!(params.visible_tmax, Some(params.tmax));
+        assert_eq!(params.visible_length, Some(VisibleLength::Short.samples()));
+        assert!(params.liberal_fetch);
     }
 
     #[test]
@@ -440,5 +683,87 @@ mod tests {
             .and_then(|configs| configs.spectrum)
             .is_some_and(|spectrum| spectrum.spec_smoothing);
         assert!(smoothing);
+    }
+
+    #[test]
+    fn empty_scene_retires_fit_memory_and_track_offset() {
+        let mut session = session();
+        session.last_scene_bounds = Some((10.0, 20.0));
+        session.state.track_scroll = 5.0;
+        session.state.track_offset = 5;
+
+        session.consume_empty_scene(7);
+
+        assert_eq!(session.last_scene_gen, 7);
+        assert_eq!(session.last_scene_bounds, None);
+        assert!(session.state.track_scroll.abs() < f32::EPSILON);
+        assert_eq!(session.state.track_offset, 0);
+    }
+
+    #[test]
+    fn canonical_event_state_updates_events_metrics_and_phase_fallback_time() {
+        let mut event = Marker::new(123.0, 123.0, 0);
+        event.is_event = true;
+        event.event_hash = Some("local:event".to_owned());
+        let mut phase = Marker::new(124.0, 124.0, 0);
+        phase.event_hash = Some("local:event".to_owned());
+        phase.kagan_deg = Some(99.0);
+        let mut markers = vec![event, phase];
+        let state = ActiveEventResult {
+            has_event: true,
+            active_hash: Some("local:event".to_owned()),
+            kagan: vec![EventKagan {
+                event_hash: "local:event".to_owned(),
+                kagan_deg: Some(4.0),
+                dist_km: Some(0.0),
+            }],
+            events: vec![EventSnapshot {
+                event_hash: "local:event".to_owned(),
+                time: 123.0,
+                lat: 12.5,
+                lon: 45.25,
+                depth: 4200.0,
+                magnitude: Some(3.5),
+                name: Some("edited".to_owned()),
+                region: Some("Eifel".to_owned()),
+                catalog: None,
+                moment_tensor: None,
+            }],
+        };
+
+        Session::apply_event_state(&mut markers, &state);
+
+        let [event, phase] = markers.as_slice() else {
+            assert_eq!(markers.len(), 2);
+            return;
+        };
+        assert!(event.active);
+        assert!(
+            event
+                .lat
+                .is_some_and(|value| (value - 12.5).abs() < f64::EPSILON)
+        );
+        assert!(
+            event
+                .lon
+                .is_some_and(|value| (value - 45.25).abs() < f64::EPSILON)
+        );
+        assert!(
+            event
+                .depth_km
+                .is_some_and(|value| (value - 4.2).abs() < f64::EPSILON)
+        );
+        assert_eq!(event.event_name.as_deref(), Some("edited"));
+        assert!(
+            event
+                .dist_active_km
+                .is_some_and(|value| value.abs() < f64::EPSILON)
+        );
+        assert!(
+            phase
+                .event_time
+                .is_some_and(|value| (value - 123.0).abs() < f64::EPSILON)
+        );
+        assert_eq!(phase.kagan_deg, None);
     }
 }

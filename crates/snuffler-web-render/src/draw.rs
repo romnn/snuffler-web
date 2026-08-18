@@ -60,6 +60,7 @@ pub struct SvgTarget {
     open_clips: u32,
     width: f32,
     height: f32,
+    margin: f32,
 }
 
 impl SvgTarget {
@@ -79,7 +80,15 @@ impl SvgTarget {
             open_clips: 0,
             width,
             height,
+            margin: 0.0,
         }
+    }
+
+    /// Adds a margin around the drawing by widening the `viewBox`, the way Qt's
+    /// SVG export frames its print canvas (`savesvg`, `pile_viewer.py:2884`):
+    /// `width`/`height` stay the canvas size and the content shrinks into it.
+    pub fn set_margin(&mut self, margin: f32) {
+        self.margin = margin;
     }
 
     /// Assemble the final `<svg>` document.
@@ -89,12 +98,14 @@ impl SvgTarget {
             self.body.push_str("</g>");
             self.open_clips -= 1;
         }
-        let (w, h) = (self.width, self.height);
+        let (w, h, m) = (self.width, self.height, self.margin.max(0.0));
+        let origin = if m > 0.0 { -m } else { 0.0 };
+        let (vw, vh) = (w + 2.0 * m, h + 2.0 * m);
         let mut out = String::with_capacity(self.body.len() + self.defs.len() + 256);
         let _ = write!(
             out,
             "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
-             width=\"{w:.0}\" height=\"{h:.0}\" viewBox=\"0 0 {w:.0} {h:.0}\">"
+             width=\"{w:.0}\" height=\"{h:.0}\" viewBox=\"{origin:.2} {origin:.2} {vw:.2} {vh:.2}\">"
         );
         out.push_str(
             "<defs><style>text{font-family:'Ubuntu',system-ui,-apple-system,sans-serif;}</style>",

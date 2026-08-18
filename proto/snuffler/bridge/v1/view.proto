@@ -42,6 +42,16 @@ message ViewParams {
   double wf_clip_hi = 34;
   bool wf_symmetry = 35;
   bool wf_reverse = 36;
+  // Snuffler's `visible_length`: a target *sample count* per trace, not a time.
+  // It bounds `min_deltat_allow` — channels sampled finer than the window can use
+  // are not fetched at all (prepare_cutout2, pile_viewer.py:3597). Unset means
+  // the upstream default of 20000.
+  optional double visible_length = 37;
+  // Snuffler's 'Liberal Fetch Optimization': snap the processing window to an
+  // absolute power-of-two grid so panning reuses the cached processed traces.
+  // The fetch window is the demean/filter extent, so this changes the numbers —
+  // exactly as it does in Qt (pile_viewer.py:3618).
+  bool liberal_fetch = 38;
 }
 
 // One contiguous run of payload on a track.
@@ -54,11 +64,9 @@ message ViewParams {
 message ViewSpan {
   // Start of this run, relative to ViewParams.tmin.
   double t0_rel = 1;
-  // Sample spacing, and with it how to read this run out of `ys`: > 0 uniform
-  // samples, 0 interleaved (t_rel, y) pairs, < 0 interleaved (t_rel, ylo, yhi)
-  // triples.
+  // Sample spacing for this run in the flat `ys` payload.
   double dt = 2;
-  // Number of points, not of floats — the interleaved forms carry 2 or 3 each.
+  // Number of uniform samples in the run.
   uint64 count = 3;
   // Where this run starts in the flat `ys` payload.
   uint64 offset = 4;
@@ -70,10 +78,36 @@ message ViewSpan {
   // track because snuffler projects per (track, scaling key): two sensors sharing
   // a location-grouped row keep their own amplitude scales, and a waterfall strip
   // keeps its own colour range.
-  float ymin = 6;
-  float ymax = 7;
-  float ymean = 8;
-  float yscale = 9;
+  //
+  // double, not float: Qt's projection stays float64 end to end, and a track
+  // whose DC offset dwarfs its span would quantize visibly at 24 bits. These are
+  // four scalars per track, not payload.
+  double ymin = 6;
+  double ymax = 7;
+  double ymean = 8;
+  double yscale = 9;
+  // AutoScaler's tick increment and label exponent for this scale, so 'Show
+  // Scale Axes' can draw snuffler's ticks and numbers (pile_viewer.py:3357)
+  // without recomputing the scaler frontend-side. yinc 0 = no ticks.
+  double yinc = 10;
+  sint32 yexp = 11;
+}
+
+// Where data exists on a row, from the pile rather than the fetched cutout.
+//
+// Snuffler's trace boxes are drawn from `pile.iter_traces` (`draw_trace_boxes`,
+// pile_viewer.py:2968), so they survive every window the fetch declines — a
+// channel `min_deltat_allow` refused to load still shows *where* its data is.
+// Deriving boxes from the fetched spans instead leaves the view blank at wide
+// zooms, with nothing left to navigate back to.
+message TraceBox {
+  double tmin = 1;
+  double tmax = 2;
+  // Box style index (`determine_box_styles`, pile_viewer.py:2947): stepped at
+  // every discontinuity in (nslc, deltat, adjacency) over the full_id-sorted
+  // pile, so adjacent files alternate tints. The painter takes it modulo its
+  // palette length, as Qt does.
+  uint32 style = 3;
 }
 
 message ViewTrack {
@@ -100,10 +134,25 @@ message ViewTrack {
   // The runs of samples to draw on this track, in time order: one per segment of
   // the channel that falls in the window, in either view mode.
   repeated ViewSpan spans = 9;
+  // The pile's data coverage on this row within the view window, present even
+  // when `spans` is empty because the zoom put every channel below
+  // `min_deltat_allow`.
+  repeated TraceBox boxes = 10;
 }
 
 message ViewMeta {
   double view_tmin = 1;
   double view_tmax = 2;
   repeated ViewTrack tracks = 3;
+  // Processing failures the view survived — a filter or restitution that threw,
+  // drawn unprocessed. Snuffler lets these exceptions reach the user; a browser
+  // must not die on them, but drawing unfiltered data as if it were filtered
+  // with no signal is worse, so the failure rides the answer it affected.
+  repeated string notices = 4;
+  // The distinct coloring keys of the *whole pile* under the current subsort, in
+  // sorted order — snuffler's `color_keys` (`pile.gather_keys(color)`,
+  // pile_viewer.py:1753), which it computes once per pile change and numbers the
+  // trace palette by. Numbering over the visible slice instead renumbers the
+  // palette on every scroll, which snuffler cannot do.
+  repeated string color_keys = 5;
 }

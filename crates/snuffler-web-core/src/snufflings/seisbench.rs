@@ -36,12 +36,16 @@ const MODELS: &[ModelChoice] = &[
 pub struct Config {
     /// Index into the supported model list.
     pub selected: usize,
-    /// Whether user-entered thresholds replace model defaults.
-    pub override_thresholds: bool,
     /// P-phase probability threshold.
     pub p_threshold: f64,
     /// S-phase probability threshold.
     pub s_threshold: f64,
+    /// Whether model probability traces are added to the pile.
+    pub show_annotation_traces: bool,
+    /// Whether the main viewer passband is applied before inference.
+    pub use_predefined_filters: bool,
+    /// Time-axis rescaling applied before inference.
+    pub scale_factor: f64,
 }
 
 impl Default for Config {
@@ -49,9 +53,11 @@ impl Default for Config {
         let choice = DEFAULT_MODEL;
         Self {
             selected: 0,
-            override_thresholds: false,
             p_threshold: choice.p_threshold,
             s_threshold: choice.s_threshold,
+            show_annotation_traces: false,
+            use_predefined_filters: true,
+            scale_factor: 1.0,
         }
     }
 }
@@ -64,9 +70,12 @@ impl Config {
         SeisbenchSnufflingParams {
             model: choice.model.to_owned(),
             weights: choice.weights.to_owned(),
-            p_threshold: self.override_thresholds.then_some(self.p_threshold),
-            s_threshold: self.override_thresholds.then_some(self.s_threshold),
+            p_threshold: Some(self.p_threshold),
+            s_threshold: Some(self.s_threshold),
             model_base_url: model_base_url().to_owned(),
+            show_annotation_traces: self.show_annotation_traces,
+            use_predefined_filters: self.use_predefined_filters,
+            scale_factor: self.scale_factor,
         }
     }
 }

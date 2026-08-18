@@ -2,7 +2,9 @@
 
 use egui::Color32;
 
-use snuffler_web_core::bridge::{Bridge, MarkerFile, MarkerFileEntry, MomentTensor, Nslc};
+use snuffler_web_core::bridge::{
+    Bridge, EventSnapshot, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
+};
 use snuffler_web_core::markers::{MARKER_COLORS, Marker, MarkerColumn};
 use snuffler_web_core::state::AppState;
 
@@ -48,10 +50,18 @@ impl MarkerTable {
             });
         state.show_marker_editor = open;
 
+        if let Some(row) = output.replace_selection {
+            for (i, marker) in state.markers.iter_mut().enumerate() {
+                marker.selected = i == row;
+            }
+        }
         if let Some(time) = output.center_time {
             let window = (state.tmax - state.tmin).max(1.0);
             state.tmin = time - window / 2.0;
             state.tmax = time + window / 2.0;
+        }
+        for event in output.event_updates {
+            bridge.update_event(event);
         }
         output.beachball
     }
@@ -70,7 +80,7 @@ impl MarkerTable {
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("marker_table")
                 .striped(true)
-                .num_columns(14)
+                .num_columns(16)
                 .spacing([10.0, 3.0])
                 .show(ui, |ui| {
                     marker_headers(ui, &mut sort, &mut ascending);
@@ -78,7 +88,7 @@ impl MarkerTable {
                         let Some(marker) = state.markers.get_mut(row) else {
                             continue;
                         };
-                        marker_row(ui, row, marker, &mut edit, bridge, output);
+                        marker_row(ui, row, marker, &mut edit, output);
                     }
                 });
         });
@@ -94,12 +104,10 @@ impl MarkerTable {
         let ms = &state.markers;
         let mut order: Vec<usize> = (0..ms.len()).collect();
         let (col, asc) = (self.sort, self.sort_ascending);
-        let dist_of = |m: &Marker| -> f64 {
-            m.nslc
-                .as_ref()
-                .and_then(|(n, s, _, _)| bridge.station_distance(n, s))
-                .unwrap_or(f64::INFINITY)
-        };
+        let _ = bridge;
+        // Qt's Dist [km]: this *event* to the active event (marker_editor.py:502),
+        // precomputed in Python; rows without one sort last.
+        let dist_of = |m: &Marker| -> f64 { m.dist_active_km.unwrap_or(f64::INFINITY) };
         order.sort_by(|&a, &b| {
             let (Some(ma), Some(mb)) = (ms.get(a), ms.get(b)) else {
                 return std::cmp::Ordering::Equal;
@@ -108,11 +116,16 @@ impl MarkerTable {
                 MarkerColumn::Type => ma.is_event.cmp(&mb.is_event),
                 MarkerColumn::Time => ma.tmin.total_cmp(&mb.tmin),
                 MarkerColumn::Span => (ma.tmax - ma.tmin).total_cmp(&(mb.tmax - mb.tmin)),
-                MarkerColumn::Phase => ma
-                    .phase
-                    .as_deref()
-                    .unwrap_or("")
-                    .cmp(mb.phase.as_deref().unwrap_or("")),
+                MarkerColumn::Phase => {
+                    let label = |marker: &Marker| {
+                        if marker.is_event {
+                            marker.event_label()
+                        } else {
+                            marker.phase.clone().unwrap_or_default()
+                        }
+                    };
+                    label(ma).cmp(&label(mb))
+                }
                 MarkerColumn::Pol => ma
                     .polarity
                     .unwrap_or(i8::MIN)
@@ -120,6 +133,15 @@ impl MarkerTable {
                 MarkerColumn::Kind => (ma.kind & 7).cmp(&(mb.kind & 7)),
                 MarkerColumn::Channel => nslc_key(ma).cmp(&nslc_key(mb)),
                 MarkerColumn::Dist => dist_of(ma).total_cmp(&dist_of(mb)),
+                MarkerColumn::Uncert => ma
+                    .uncertainty
+                    .unwrap_or(f64::INFINITY)
+                    .total_cmp(&mb.uncertainty.unwrap_or(f64::INFINITY)),
+                MarkerColumn::Hash => ma
+                    .event_hash
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(mb.event_hash.as_deref().unwrap_or("")),
                 MarkerColumn::Kagan => ma
                     .kagan_deg
                     .unwrap_or(f64::INFINITY)
@@ -152,6 +174,10 @@ impl MarkerTable {
 struct TableOutput {
     center_time: Option<f64>,
     beachball: Option<[f64; 6]>,
+    /// A plain row click replaces the whole selection with this row (Qt table
+    /// semantics); applied after the draw pass because it touches every marker.
+    replace_selection: Option<usize>,
+    event_updates: Vec<EventSnapshot>,
 }
 
 fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -176,27 +202,52 @@ fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
         if ui.button("Delete selected").clicked() {
-            state.markers.retain(|marker| !marker.selected);
+            state.remove_selected_markers();
         }
-        if ui.button("Clear all").clicked() {
-            state.markers.clear();
+        // Destroying every marker deserves a second look: the first click arms
+        // the confirmation, the second (on the re-labelled button) performs it.
+        let confirm_id = ui.make_persistent_id("clear-all-armed");
+        let armed = ui.memory(|mem| mem.data.get_temp::<bool>(confirm_id).unwrap_or(false));
+        let label = if armed {
+            "Really clear all?"
+        } else {
+            "Clear all"
+        };
+        let resp = ui.button(label);
+        if resp.clicked() {
+            if armed {
+                state.clear_markers();
+            }
+            ui.memory_mut(|mem| mem.data.insert_temp(confirm_id, !armed));
+        } else if armed && ui.input(|i| i.pointer.any_click()) {
+            // A click anywhere else disarms it.
+            ui.memory_mut(|mem| mem.data.insert_temp(confirm_id, false));
         }
     });
 }
 
 fn marker_headers(ui: &mut egui::Ui, sort: &mut MarkerColumn, ascending: &mut bool) {
-    const HEADERS: [(MarkerColumn, &str, Option<&str>); 13] = [
+    const HEADERS: [(MarkerColumn, &str, Option<&str>); 15] = [
         (MarkerColumn::Type, "", None),
         (MarkerColumn::Time, "time (UTC)", None),
         (MarkerColumn::Span, "span", None),
-        (MarkerColumn::Phase, "phase", None),
+        (
+            MarkerColumn::Phase,
+            "label",
+            Some("phase name of a pick; composed event label (click to edit its name)"),
+        ),
         (MarkerColumn::Pol, "pol", None),
+        (
+            MarkerColumn::Uncert,
+            "unc [s]",
+            Some("phase-pick time uncertainty (shift-drag a selected pick to set)"),
+        ),
         (MarkerColumn::Kind, "kind", None),
-        (MarkerColumn::Channel, "channel", None),
+        (MarkerColumn::Channel, "NSLCs", None),
         (
             MarkerColumn::Dist,
-            "dist",
-            Some("great-circle distance from the active event [°]"),
+            "dist [km]",
+            Some("distance from this event to the active event"),
         ),
         (
             MarkerColumn::Kagan,
@@ -207,6 +258,7 @@ fn marker_headers(ui: &mut egui::Ui, sort: &mut MarkerColumn, ascending: &mut bo
         (MarkerColumn::Depth, "depth [km]", None),
         (MarkerColumn::Lat, "lat", None),
         (MarkerColumn::Lon, "lon", None),
+        (MarkerColumn::Hash, "event hash", None),
     ];
 
     for (column, label, hover) in HEADERS {
@@ -224,9 +276,9 @@ fn marker_row(
     row: usize,
     marker: &mut Marker,
     edit: &mut Option<(MarkerColumn, usize, String)>,
-    bridge: &Bridge,
     output: &mut TableOutput,
 ) {
+    let event_before = event_snapshot(marker);
     let color = MARKER_COLORS
         .get((marker.kind & 7) as usize)
         .copied()
@@ -235,18 +287,25 @@ fn marker_row(
     // Both cells select the row, and both say so: without this the only place
     // selection surfaces is the table's "N markers · M selected" summary, which
     // tells a screen-reader user how many rows are picked but never which.
+    // A plain click *replaces* the selection, as clicking a Qt table row does;
+    // Ctrl/Cmd/Shift adds or removes the row. A double click re-centres the
+    // view on the marker, Qt's non-editable-cell double-click.
     let symbol_cell = ui.selectable_label(marker.selected, symbol);
     crate::a11y::publish_selected(ui.ctx(), &symbol_cell, marker.selected);
-    if symbol_cell.clicked() {
-        marker.selected = !marker.selected;
-    }
     let time_cell = ui.selectable_label(
         marker.selected,
         snuffler_web_core::timeaxis::format_full(marker.tmin),
     );
     crate::a11y::publish_selected(ui.ctx(), &time_cell, marker.selected);
-    if time_cell.clicked() {
-        marker.selected = !marker.selected;
+    if symbol_cell.double_clicked() || time_cell.double_clicked() {
+        output.center_time = Some(f64::midpoint(marker.tmin, marker.tmax));
+    } else if symbol_cell.clicked() || time_cell.clicked() {
+        let additive = ui.input(|i| i.modifiers.ctrl || i.modifiers.command || i.modifiers.shift);
+        if additive {
+            marker.selected = !marker.selected;
+        } else {
+            output.replace_selection = Some(row);
+        }
     }
     let span = marker.tmax - marker.tmin;
     ui.label(if span > 0.0 {
@@ -254,21 +313,75 @@ fn marker_row(
     } else {
         "—".to_owned()
     });
-    edit_text_cell(
-        ui,
-        edit,
-        row,
-        MarkerColumn::Phase,
-        &mut marker.phase,
-        !marker.is_event,
-    );
-    marker_identity_cells(ui, marker);
-    marker_geometry_cells(ui, row, marker, edit, bridge);
+    // Event display composes magnitude, region, and name like Qt.
+    // Editing still targets only the raw name, which is Qt's rename path.
+    if marker.is_event {
+        let shown = marker.event_label();
+        edit_text_cell_with_display(
+            ui,
+            edit,
+            row,
+            MarkerColumn::Phase,
+            &mut marker.event_name,
+            true,
+            shown,
+        );
+    } else {
+        edit_text_cell(ui, edit, row, MarkerColumn::Phase, &mut marker.phase, true);
+    }
+    marker_identity_cells(ui, row, marker, edit);
+    marker_geometry_cells(ui, row, marker, edit);
+    ui.label(marker.event_hash.as_deref().map_or_else(
+        || "—".to_owned(),
+        |h| {
+            if h.chars().count() > 12 {
+                let head: String = h.chars().take(12).collect();
+                format!("{head}…")
+            } else {
+                h.to_owned()
+            }
+        },
+    ));
     marker_actions(ui, marker, output);
+    if let Some(event_after) = event_snapshot(marker)
+        && event_before.as_ref() != Some(&event_after)
+    {
+        output.event_updates.push(event_after);
+    }
     ui.end_row();
 }
 
-fn marker_identity_cells(ui: &mut egui::Ui, marker: &mut Marker) {
+fn event_snapshot(marker: &Marker) -> Option<EventSnapshot> {
+    if !marker.is_event {
+        return None;
+    }
+    Some(EventSnapshot {
+        event_hash: marker.event_hash.clone()?,
+        time: marker.tmin,
+        lat: marker.lat?,
+        lon: marker.lon?,
+        depth: marker.depth_km.unwrap_or(0.0) * 1000.0,
+        magnitude: marker.magnitude,
+        name: marker.event_name.clone(),
+        region: marker.region.clone(),
+        catalog: marker.catalog.clone(),
+        moment_tensor: marker.moment_tensor.map(|tensor| MomentTensor {
+            mnn: tensor[0],
+            mee: tensor[1],
+            mdd: tensor[2],
+            mne: tensor[3],
+            mnd: tensor[4],
+            med: tensor[5],
+        }),
+    })
+}
+
+fn marker_identity_cells(
+    ui: &mut egui::Ui,
+    row: usize,
+    marker: &mut Marker,
+    edit: &mut Option<(MarkerColumn, usize, String)>,
+) {
     let polarity = match marker.polarity {
         Some(1) => "+",
         Some(-1) => "-",
@@ -287,6 +400,18 @@ fn marker_identity_cells(ui: &mut egui::Ui, marker: &mut Marker) {
             _ => None,
         };
     }
+    // Uncertainty [s], backed by the same field the shift-drag writes; only a
+    // phase pick carries one, as in Qt.
+    let editable = marker.phase.is_some();
+    edit_num_cell(
+        ui,
+        edit,
+        row,
+        MarkerColumn::Uncert,
+        &mut marker.uncertainty,
+        3,
+        editable,
+    );
     if ui
         .small_button(format!("{}", marker.kind & 7))
         .on_hover_text("cycle marker kind / colour (0–7)")
@@ -302,13 +427,10 @@ fn marker_geometry_cells(
     row: usize,
     marker: &mut Marker,
     edit: &mut Option<(MarkerColumn, usize, String)>,
-    bridge: &Bridge,
 ) {
-    let distance = marker
-        .nslc
-        .as_ref()
-        .and_then(|(network, station, _, _)| bridge.station_distance(network, station));
-    ui.label(distance.map_or_else(|| "—".to_owned(), |value| format!("{value:.2}°")));
+    // Qt's Dist [km] (marker_editor.py:502): this *event* to the active event,
+    // '%.5g' of kilometres, blank for anything that is not an event marker.
+    ui.label(marker.dist_active_km.map_or_else(|| "—".to_owned(), fmt_g5));
     ui.label(
         marker
             .kagan_deg
@@ -341,20 +463,29 @@ fn marker_actions(ui: &mut egui::Ui, marker: &Marker, output: &mut TableOutput) 
     });
 }
 pub fn markers_to_file(markers: &[Marker]) -> MarkerFile {
+    // Qt keeps its markers in a `Sorted(..., 'tmin')` container
+    // (pile_viewer.py:833), so a saved file is always in time order — sort here
+    // so two logically identical files compare equal.
+    let mut ordered: Vec<&Marker> = markers.iter().collect();
+    ordered.sort_by(|a, b| a.tmin.total_cmp(&b.tmin));
     MarkerFile {
-        markers: markers
+        markers: ordered
             .iter()
             .map(|m| MarkerFileEntry {
                 tmin: m.tmin,
                 tmax: m.tmax,
                 kind: u32::from(m.kind),
                 phase: m.phase.clone(),
-                nslc: m.nslc.as_ref().map(|(net, sta, loc, cha)| Nslc {
-                    net: net.clone(),
-                    sta: sta.clone(),
-                    loc: loc.clone(),
-                    cha: cha.clone(),
-                }),
+                nslc_ids: m
+                    .nslc_ids
+                    .iter()
+                    .map(|(net, sta, loc, cha)| Nslc {
+                        net: net.clone(),
+                        sta: sta.clone(),
+                        loc: loc.clone(),
+                        cha: cha.clone(),
+                    })
+                    .collect(),
                 polarity: m.polarity.map(i32::from),
                 uncertainty: m.uncertainty,
                 is_event: m.is_event,
@@ -371,18 +502,56 @@ pub fn markers_to_file(markers: &[Marker]) -> MarkerFile {
                     mnd: t[4],
                     med: t[5],
                 }),
+                // A hand pick's automatic flag saves `False`, never `None`, on a
+                // phase marker (Qt writes it unconditionally).
+                automatic: if m.is_event {
+                    None
+                } else {
+                    m.automatic.or(Some(false)).filter(|_| m.phase.is_some())
+                },
+                incidence_angle: m.incidence_angle,
+                takeoff_angle: m.takeoff_angle,
+                event_time: m.event_time,
+                event_name: m.event_name.clone(),
+                region: m.region.clone(),
+                catalog: m.catalog.clone(),
             })
             .collect(),
     }
 }
 
-/// The `n.s.l.c` string a marker row displays in the channel column (empty when
-/// the marker applies to all tracks), used as its sort key.
+/// `%.5g`, the format Qt's Dist [km] cell prints (`marker_editor.py:510`): five
+/// significant digits, trailing zeros trimmed. Distances in km sit comfortably
+/// inside fixed notation, so the scientific branch never fires in practice.
+fn fmt_g5(v: f64) -> String {
+    if v == 0.0 {
+        return "0".to_owned();
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "log10 of a finite non-zero distance is a small integer"
+    )]
+    let mag = v.abs().log10().floor() as i32;
+    if !(-4..5).contains(&mag) {
+        return format!("{v:.4e}");
+    }
+    let decimals = usize::try_from((4 - mag).max(0)).unwrap_or(0);
+    let mut t = format!("{v:.decimals$}");
+    if t.contains('.') {
+        t = t.trim_end_matches('0').trim_end_matches('.').to_owned();
+    }
+    t
+}
+
+/// The channel column's text: every id dot-joined, ids pipe-joined — Qt's
+/// NSLCs cell (`'|'.join('.'.join(id))`, `marker_editor.py:513`). Empty when the
+/// marker applies to all tracks. Doubles as the column's sort key.
 pub fn nslc_key(m: &Marker) -> String {
-    m.nslc
-        .as_ref()
+    m.nslc_ids
+        .iter()
         .map(|(n, s, l, c)| format!("{n}.{s}.{l}.{c}"))
-        .unwrap_or_default()
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// A clickable marker-table column header: shows a ▲/▼ arrow on the active sort
@@ -467,6 +636,18 @@ pub fn edit_text_cell(
     editable: bool,
 ) {
     let shown = value.clone().unwrap_or_default();
+    edit_text_cell_with_display(ui, edit, row, col, value, editable, shown);
+}
+
+fn edit_text_cell_with_display(
+    ui: &mut egui::Ui,
+    edit: &mut Option<(MarkerColumn, usize, String)>,
+    row: usize,
+    col: MarkerColumn,
+    value: &mut Option<String>,
+    editable: bool,
+    shown: String,
+) {
     if !editable {
         ui.label(shown);
         return;

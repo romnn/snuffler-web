@@ -24,6 +24,8 @@ fn variant_for(output: &str) -> Option<&'static str> {
         "StringValue" => Some("Text"),
         "ExampleList" => Some("Examples"),
         "BundleResult" => Some("Bundle"),
+        "FileBlob" => Some("Blob"),
+        "LoadBytesResult" => Some("LoadBytes"),
         _ => None,
     }
 }

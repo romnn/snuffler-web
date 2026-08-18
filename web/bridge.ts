@@ -6,18 +6,26 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   BridgeResultSchema,
   MlDevice as ProtoMlDevice,
+  ReloadBatchResultSchema,
+  ReloadFailureSchema,
   WorkerEventSchema,
+  type BridgeError as ProtoBridgeError,
+  type ReloadFailure,
   type SeisbenchProgress,
 } from "./proto/snuffler/bridge/v1/bridge_pb.js";
 import {
   AddCakeModelRequestSchema,
+  BundleResultSchema,
   LoadBundleRequestSchema,
   LoadBytesRequestSchema,
   LoadEventsRequestSchema,
   LoadMarkersRequestSchema,
   LoadStationXmlRequestSchema,
   LoadStationsRequestSchema,
+  type BundleResult,
+  type LoadBytesResult,
 } from "./proto/snuffler/bridge/v1/data_pb.js";
+import type { SceneMeta } from "./proto/snuffler/bridge/v1/scene_pb.js";
 import { rpc, BridgeMethod, type BridgeMethodId } from "./rpc.js";
 import {
   WORKER_MOUNT_GF_STORE,
@@ -59,9 +67,14 @@ type RuntimeInfo = {
 
 // Re-readable handles for files opened via the File System Access API, keyed by a
 // stable source id, so "reload modified files" can re-read them from disk.
-type OpenSource = { handle: FileSystemFileHandle; mtime: number };
+type SourceKind = "waveform" | "bundle";
+type OpenSource = { handle: FileSystemFileHandle; mtime: number; kind: SourceKind };
 const _openSources = new Map<string, OpenSource>();
 let _sourceCounter = 0;
+
+export function clearOpenSources() {
+  _openSources.clear();
+}
 
 type Pending = {
   resolve: (msg: any) => void;
@@ -259,9 +272,10 @@ async function rpcBufferResult(method: BridgeMethodId, args?) {
   };
 }
 
-// Decode a BridgeResult envelope to its StringValue text, for the DOM glue that
-// needs a string back (marker export, cake model, GF store). Throws on the error
-// variant, mirroring how Rust surfaces a BridgeError.
+// Decode a BridgeResult envelope for the DOM glue that needs a string back for
+// a cake model or GF store.
+// The error variant rejects the browser operation, mirroring how Rust surfaces
+// a BridgeError.
 function resultText(env: Uint8Array): string {
   const r = fromBinary(BridgeResultSchema, env);
   if (r.result.case === "error") {
@@ -392,12 +406,114 @@ function pickFiles(multiple): Promise<File[]> {
   });
 }
 
-async function loadSource(name: string, data: Uint8Array, append: boolean, sourceId: string) {
+type LoadOutcome = {
+  envelope: Uint8Array;
+  loaded: boolean;
+  kind: SourceKind;
+  scene: SceneMeta | undefined;
+  waveform: LoadBytesResult | null;
+  bundle: BundleResult | null;
+};
+
+class RemoteLoadError extends Error {
+  constructor(readonly remote: ProtoBridgeError) {
+    super(remote.message ? `${remote.kind}: ${remote.message}` : remote.kind);
+  }
+}
+
+class ProtocolLoadError extends Error {}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function checkedLoadOutcome(envelope: Uint8Array, kind: SourceKind): LoadOutcome {
+  let result;
+  try {
+    result = fromBinary(BridgeResultSchema, envelope);
+  } catch (error) {
+    throw new ProtocolLoadError(errorDetail(error));
+  }
+  if (result.result.case === "error") {
+    throw new RemoteLoadError(result.result.value);
+  }
+  if (kind === "waveform" && result.result.case === "loadBytes") {
+    return {
+      envelope,
+      loaded: result.result.value.loaded,
+      kind,
+      scene: result.result.value.scene,
+      waveform: result.result.value,
+      bundle: null,
+    };
+  }
+  if (kind === "bundle" && result.result.case === "bundle") {
+    return {
+      envelope,
+      loaded: true,
+      kind,
+      scene: result.result.value.scene,
+      waveform: null,
+      bundle: result.result.value,
+    };
+  }
+  throw new ProtocolLoadError(`unexpected bridge result: ${result.result.case}`);
+}
+
+function reloadFailure(
+  sourceId: string,
+  name: string,
+  error: unknown,
+  browserRead: boolean
+): ReloadFailure {
+  const failure = create(ReloadFailureSchema, { sourceId, name });
+  if (browserRead) {
+    failure.reason = { case: "browserRead", value: errorDetail(error) };
+  } else if (error instanceof RemoteLoadError) {
+    failure.reason = { case: "remote", value: error.remote };
+  } else if (error instanceof ProtocolLoadError) {
+    failure.reason = { case: "protocol", value: error.message };
+  } else {
+    failure.reason = { case: "transport", value: errorDetail(error) };
+  }
+  return failure;
+}
+
+function mergeOpenOutcome(previousBundle: BundleResult | null, outcome: LoadOutcome) {
+  if (outcome.bundle) {
+    return { envelope: outcome.envelope, bundle: outcome.bundle };
+  }
+  if (!previousBundle || !outcome.scene) {
+    return { envelope: outcome.envelope, bundle: previousBundle };
+  }
+  const bundle = create(BundleResultSchema, { ...previousBundle, scene: outcome.scene });
+  const envelope = toBinary(
+    BridgeResultSchema,
+    create(BridgeResultSchema, { result: { case: "bundle", value: bundle } })
+  );
+  return { envelope, bundle };
+}
+
+async function loadSource(
+  name: string,
+  data: Uint8Array,
+  append: boolean,
+  sourceId: string,
+  replaceSource: boolean
+) {
   const request = toBinary(
     LoadBytesRequestSchema,
-    create(LoadBytesRequestSchema, { name, fmt: "detect", append, content: data, sourceId })
+    create(LoadBytesRequestSchema, {
+      name,
+      fmt: "detect",
+      append,
+      content: data,
+      sourceId,
+      replaceSource,
+    })
   );
-  return rpcBytes(rpc("loadBytes"), { request });
+  const envelope = await rpcBytes(rpc("loadBytes"), { request });
+  return checkedLoadOutcome(envelope, "waveform");
 }
 
 // A picked file may be a whole dataset rather than one waveform file. Zips go to
@@ -410,15 +526,49 @@ function isZip(data: Uint8Array) {
   return data.length >= 4 && ZIP_MAGIC.every((byte, i) => data[i] === byte);
 }
 
-async function loadOne(name: string, data: Uint8Array, append: boolean, sourceId: string) {
+async function loadOne(
+  name: string,
+  data: Uint8Array,
+  append: boolean,
+  sourceId: string,
+  replaceSource = false
+) {
   if (isZip(data)) {
     const request = toBinary(
       LoadBundleRequestSchema,
       create(LoadBundleRequestSchema, { name, content: data })
     );
-    return rpcBytes(rpc("loadBundle"), { request });
+    const envelope = await rpcBytes(rpc("loadBundle"), { request });
+    return checkedLoadOutcome(envelope, "bundle");
   }
-  return loadSource(name, data, append, sourceId);
+  return loadSource(name, data, append, sourceId, replaceSource);
+}
+
+function rememberOpenSource(
+  sourceId: string,
+  handle: FileSystemFileHandle,
+  mtime: number,
+  outcome: LoadOutcome
+) {
+  if (!outcome.loaded) return;
+  if (outcome.kind === "bundle") {
+    // A bundle replaces the whole dataset, so handles for the displaced pile no
+    // longer name sources Python could reload.
+    _openSources.clear();
+  }
+  _openSources.set(sourceId, { handle, mtime, kind: outcome.kind });
+}
+
+// One unreadable file must not abort the rest of a multi-file open: snuffler
+// logs it, skips it, and reports the set at the end (pile.py:502). Here every
+// failure is logged as it happens; when *nothing* loaded the collected set is
+// raised so the status line explains what went wrong instead of saying Ready.
+function reportSkipped(failed: string[], loadedAny: boolean) {
+  if (failed.length === 0) return;
+  if (!loadedAny) {
+    throw new Error(`could not read: ${failed.join(", ")}`);
+  }
+  console.warn(`skipped unreadable file(s): ${failed.join(", ")}`);
 }
 
 export async function openFiles() {
@@ -432,35 +582,68 @@ export async function openFiles() {
     } catch {
       return new Uint8Array(0); // user cancelled
     }
-    let result = new Uint8Array(0);
+    let result: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+    let bundle: BundleResult | null = null;
+    let loadedAny = false;
+    const failed: string[] = [];
     for (const handle of handles) {
-      const f = await handle.getFile();
-      const data = new Uint8Array(await f.arrayBuffer());
       const sourceId = `src${_sourceCounter++}`;
-      _openSources.set(sourceId, { handle, mtime: f.lastModified });
-      result = await loadOne(f.name, data, true, sourceId);
+      try {
+        const f = await handle.getFile();
+        const data = new Uint8Array(await f.arrayBuffer());
+        const outcome = await loadOne(f.name, data, true, sourceId);
+        const merged = mergeOpenOutcome(bundle, outcome);
+        result = merged.envelope;
+        bundle = merged.bundle;
+        rememberOpenSource(sourceId, handle, f.lastModified, outcome);
+        loadedAny ||= outcome.loaded;
+      } catch (e) {
+        _openSources.delete(sourceId);
+        failed.push(handle.name || "?");
+        console.warn(`skipping ${handle.name}:`, e);
+      }
     }
+    reportSkipped(failed, loadedAny);
     return result;
   }
   const files = await pickFiles(true);
   if (files.length === 0) return new Uint8Array(0);
-  let result = new Uint8Array(0);
+  let result: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  let bundle: BundleResult | null = null;
+  let loadedAny = false;
+  const failed: string[] = [];
   for (const f of files) {
-    const data = new Uint8Array(await f.arrayBuffer());
-    result = await loadOne(f.name, data, true, "");
+    try {
+      const data = new Uint8Array(await f.arrayBuffer());
+      const outcome = await loadOne(f.name, data, true, "");
+      const merged = mergeOpenOutcome(bundle, outcome);
+      result = merged.envelope;
+      bundle = merged.bundle;
+      loadedAny ||= outcome.loaded;
+    } catch (e) {
+      failed.push(f.name || "?");
+      console.warn(`skipping ${f.name}:`, e);
+    }
   }
+  reportSkipped(failed, loadedAny);
   return result;
 }
 
-const WAVEFORM_EXT = /\.(mseed|msd|mss|seed|sac|gcf|datacube|kan|yaff|pyrocko)$/i;
-
-// Recursively load every waveform file under a picked directory (snuffler's
-// "Open waveform directory"). Chromium-only (showDirectoryPicker); handles are
+// Recursively load every file under a picked directory (snuffler's "Open
+// waveform directory"). No extension filter: snuffler hands every file to
+// format detection, which is what lets the extensionless SDS and day-file
+// layouts (GE.WLF..BHZ.D.2023.037, 2009.123) load; whatever detection rejects
+// is skipped per file. Chromium-only (showDirectoryPicker); handles are
 // retained so the loaded files also participate in reload.
 export async function openDirectory() {
   const pick = (window as unknown as { showDirectoryPicker?: (o?: unknown) => Promise<any> })
     .showDirectoryPicker;
-  if (typeof pick !== "function") return new Uint8Array(0);
+  if (typeof pick !== "function") {
+    throw new Error(
+      "This browser has no File System Access API (showDirectoryPicker); " +
+        "opening a waveform directory needs a Chromium-based browser."
+    );
+  }
   let dir: any;
   try {
     dir = await pick({ mode: "read" });
@@ -473,57 +656,133 @@ export async function openDirectory() {
       else if (h.kind === "directory") yield* walk(h);
     }
   }
-  let scene = new Uint8Array(0);
+  let scene: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  let bundle: BundleResult | null = null;
+  let loadedAny = false;
+  const failed: string[] = [];
   for await (const handle of walk(dir)) {
-    const f = await handle.getFile();
-    if (!WAVEFORM_EXT.test(f.name)) continue;
-    const data = new Uint8Array(await f.arrayBuffer());
     const sourceId = `src${_sourceCounter++}`;
-    _openSources.set(sourceId, { handle, mtime: f.lastModified });
     try {
-      scene = await loadSource(f.name, data, true, sourceId);
-    } catch {
-      _openSources.delete(sourceId); // unreadable / non-waveform slipped the filter
+      const f = await handle.getFile();
+      const data = new Uint8Array(await f.arrayBuffer());
+      const outcome = await loadOne(f.name, data, true, sourceId);
+      const merged = mergeOpenOutcome(bundle, outcome);
+      scene = merged.envelope;
+      bundle = merged.bundle;
+      rememberOpenSource(sourceId, handle, f.lastModified, outcome);
+      loadedAny ||= outcome.loaded;
+    } catch (e) {
+      _openSources.delete(sourceId); // unreadable, or not a waveform format
+      failed.push(handle.name || "?");
+      console.warn(`skipping ${handle.name}:`, e);
     }
   }
+  reportSkipped(failed, loadedAny);
   return scene;
 }
 
 // Re-read any opened files whose on-disk mtime changed and replace their traces
-// (snuffler's "r" reload). Only works for files opened via showOpenFilePicker;
-// returns an empty scene when nothing changed (or no re-readable handles).
+// (snuffler's "r" reload).
+// Each changed source commits independently, so a later failure cannot hide an
+// earlier successful scene or make that success impossible to observe.
 export async function reloadFiles() {
-  let scene = new Uint8Array(0);
-  let changed = false;
-  for (const [sourceId, src] of _openSources) {
-    let f: File;
-    try {
-      f = await src.handle.getFile();
-    } catch {
-      continue; // permission revoked or file gone
-    }
-    if (f.lastModified === src.mtime) continue;
-    src.mtime = f.lastModified;
-    const data = new Uint8Array(await f.arrayBuffer());
-    scene = await loadSource(f.name, data, true, sourceId);
-    changed = true;
+  if (typeof window.showOpenFilePicker !== "function") {
+    throw new Error(
+      "This browser has no File System Access API (showOpenFilePicker); " +
+        "reloading files from disk needs a Chromium-based browser."
+    );
   }
-  return changed ? scene : new Uint8Array(0);
+  let latest: LoadOutcome | null = null;
+  const failures: ReloadFailure[] = [];
+  for (const [sourceId, src] of Array.from(_openSources)) {
+    let name = src.handle.name || sourceId;
+    let file: File;
+    let data: Uint8Array;
+    try {
+      file = await src.handle.getFile();
+      name = file.name;
+      if (file.lastModified === src.mtime) continue;
+      data = new Uint8Array(await file.arrayBuffer());
+    } catch (error) {
+      failures.push(reloadFailure(sourceId, name, error, true));
+      continue;
+    }
+
+    let outcome: LoadOutcome;
+    try {
+      outcome = await loadOne(
+        file.name,
+        data,
+        src.kind !== "bundle",
+        sourceId,
+        src.kind === "waveform"
+      );
+    } catch (error) {
+      failures.push(reloadFailure(sourceId, name, error, false));
+      continue;
+    }
+
+    const updated: OpenSource = {
+      handle: src.handle,
+      mtime: file.lastModified,
+      kind: outcome.kind,
+    };
+    const replacedDataset = src.kind === "bundle" || outcome.kind === "bundle";
+    if (replacedDataset) {
+      _openSources.clear();
+    }
+    _openSources.set(sourceId, updated);
+    if (outcome.loaded) latest = outcome;
+    if (replacedDataset) break;
+  }
+  const result = create(ReloadBatchResultSchema, { failures });
+  if (latest?.bundle) {
+    result.outcome = { case: "bundle", value: latest.bundle };
+  } else if (latest?.waveform) {
+    result.outcome = { case: "waveform", value: latest.waveform };
+  }
+  return toBinary(ReloadBatchResultSchema, result);
 }
 
-export async function saveMarkers(request) {
-  const text = resultText(await rpcBytes(rpc("markersToText"), { request }));
-  const blob = new Blob([text], { type: "text/plain" });
+// Every export goes through here — the web's stand-in for the save dialog Qt
+// pops for each of its exports. showSaveFilePicker (Chromium, same API family
+// as the open pickers used above) lets the user name and place the file; on
+// engines without it, or when the click's transient activation has expired,
+// the download attribute still carries the suggested name.
+async function saveBlob(blob: Blob, suggestedName: string) {
+  const picker = (window as unknown as { showSaveFilePicker?: (o?: unknown) => Promise<any> })
+    .showSaveFilePicker;
+  if (typeof picker === "function") {
+    try {
+      const handle = await picker.call(window, { suggestedName });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return; // user cancelled
+      // NotAllowedError (no user activation left) and the rest: fall through.
+    }
+  }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "markers.txt";
+  a.download = suggestedName;
   document.body.appendChild(a);
   a.click();
   setTimeout(() => {
     URL.revokeObjectURL(a.href);
     a.remove();
   }, 1000);
-  return "";
+}
+
+// Rust has already decoded the typed protobuf result before this DOM-only step.
+export async function downloadFile(bytes, filename, mime) {
+  // The bytes may be a wasm-bindgen view over shared memory, which `Blob`
+  // rejects, so the browser receives a private copy.
+  const blob = new Blob([copyBytes(bytes) ?? new Uint8Array()], {
+    type: mime || "application/octet-stream",
+  });
+  await saveBlob(blob, filename || "download.bin");
 }
 
 export function savePng(bytes, filename) {
@@ -532,28 +791,12 @@ export function savePng(bytes, filename) {
   // views ("must not be shared"). copyBytes() lifts it into a private,
   // non-shared buffer first (same trick wasm-bindgen uses for strings).
   const blob = new Blob([copyBytes(bytes) ?? new Uint8Array()], { type: "image/png" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename || "snuffler.png";
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  }, 1000);
+  void saveBlob(blob, filename || "snuffler.png");
 }
 
 export function saveSvg(svg, filename) {
   const blob = new Blob([svg], { type: "image/svg+xml" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename || "snuffler.svg";
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  }, 1000);
+  void saveBlob(blob, filename || "snuffler.svg");
 }
 
 export async function loadMarkers() {
@@ -579,11 +822,14 @@ export async function loadStationXml() {
 }
 
 export async function loadStations() {
-  const files = await pickFiles(false);
+  // Any number of station files in one gesture, as Qt's picker takes them; the
+  // format is line-based, so the documents concatenate into one table.
+  const files = await pickFiles(true);
   if (files.length === 0) return new Uint8Array(0);
+  const texts = await Promise.all(files.map((file) => file.text()));
   const request = toBinary(
     LoadStationsRequestSchema,
-    create(LoadStationsRequestSchema, { text: await files[0].text() })
+    create(LoadStationsRequestSchema, { text: texts.join("\n") })
   );
   return rpcBytes(rpc("loadStations"), { request });
 }

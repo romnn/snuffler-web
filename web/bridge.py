@@ -58,6 +58,7 @@ TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
 
 class AutoScalerLike(Protocol):
     def make_scale(self, data_range: Tuple[float, float]) -> Tuple[float, float, float]: ...
+    def make_exp(self, x: float) -> int: ...
 
 
 # The current set of loaded traces (snuffler's "pile").
@@ -65,6 +66,30 @@ _TRACES: List[ptrace.Trace] = []
 # Provenance: traces contributed by each on-disk source (File System Access
 # handle id), so "reload modified files" can swap just that source's traces.
 _SOURCE_TRACES: "OrderedDict[str, List[ptrace.Trace]]" = OrderedDict()
+# Content digest registered for each re-readable source.
+# Reload uses this to keep duplicate detection coherent when a file changes.
+_SOURCE_DIGESTS: Dict[str, str] = {}
+# Parsed traces for sources hidden because another source currently owns the
+# same content. Keeping the source materialized lets it take ownership without
+# another filesystem notification when the visible owner later changes.
+_SUPPRESSED_SOURCE_TRACES: Dict[str, List[ptrace.Trace]] = {}
+# Provenance of snuffling-derived traces, keyed by the snuffling's origin tag,
+# so a rerun replaces its own previous output (Qt's `cleanup()` ticket
+# contract) without touching file provenance.
+_DERIVED_TRACES: Dict[str, List[ptrace.Trace]] = {}
+# Event-registry objects contributed by each snuffling origin.
+# Object identity prevents cleanup from deleting a newer event that reused an
+# owned hash through a catalog load, marker load, or frontend edit.
+_DERIVED_EVENTS: Dict[str, Dict[str, Any]] = {}
+# True while the pile still holds only the boot demo (the synthetic example or
+# a checksummed example bundle nobody asked to keep). The first real data that
+# would append to it replaces it instead: Qt opens empty, so its append-on-open
+# never composes with a pre-seeded pile the way the web's boot example would.
+_PILE_IS_EXAMPLE = False
+# Owners of each content digest currently represented in the pile.
+# A source can retain its last digest while owning no traces after converging on
+# another source, so duplicate detection must count owners rather than source IDs.
+_DIGEST_OWNERS: Dict[str, "set[str]"] = {}
 
 # Trace visibility driven by the ':' command line, mirroring snuffler's two
 # independent filters: `_HIDDEN` is the blacklist `hide`/`unhide` maintain, and
@@ -79,28 +104,126 @@ _REDUCE: Optional[List[str]] = None
 _SCALING_HOOKS: "OrderedDict[str, Tuple[Optional[float], Optional[float]]]" = OrderedDict()
 _DATA_GEN = 0
 _RESPONSE_GEN = 0
-_VIEW_CACHE_LIMIT = 256
-_MIN_DECIMATION_BINS = 16
-_MAX_DECIMATION_BINS = 8192
 _VIEW_PERF_LOG_INTERVAL_S = 1.0
 _VIEW_PERF_SLOW_MS = 25.0
-_VIEW_CACHE: "OrderedDict[Tuple[Any, ...], Tuple[float, float, np.ndarray]]" = OrderedDict()
+# The processed-cutout cache, exactly snuffler's: one slot holding the last
+# `prepare_cutout2`-style state vector and its processed traces, reused whenever
+# the requested window is contained in the cached one and the rest of the vector
+# matches (pile_viewer.py:3640).
+_CUTOUT_VEC: Optional[Tuple[Any, ...]] = None
+_CUTOUT_TRACES: Optional[List[ptrace.Trace]] = None
+# The notices the cached cutout's processing produced, re-emitted on every
+# cache hit: the drawn data is the same failed-filter/unrestituted data, so the
+# warning must outlive the one view that happened to rebuild the cutout.
+_CUTOUT_NOTICES: List[str] = []
+# snuffler's `tf_cache`: the combined FFT-filtering transfer function per
+# (deltat, nfreqs, nslc-or-None). Keyed additionally on the corners and the
+# response generation so it can never go stale — Qt instead clears it from the
+# filter-change slots.
+_TF_CACHE: Dict[Tuple[Any, ...], np.ndarray] = {}
+# Frozen scale ranges ('Fix Scale Ranges'). Snuffler remembers them with no
+# notion of what produced them, so they survive filter, sort and even pile
+# changes (pile_viewer.py:3281); this port matches that and deliberately does not
+# key them on any context.
 _OLD_DATA_RANGES: Dict[Any, Tuple[float, float]] = {}
-_OLD_DATA_RANGE_CONTEXT: Optional[Tuple[Any, ...]] = None
+# Snuffler's `trace_styles` (`determine_box_styles`, pile_viewer.py:2947): the
+# box tint index per (full_id, deltat), recomputed when the pile changes.
+_BOX_STYLES: Dict[Tuple[Any, ...], int] = {}
+_BOX_STYLES_GEN: Optional[int] = None
+# Processing failures collected while building one view, delivered on its meta.
+_VIEW_NOTICES: List[str] = []
 _LAST_VIEW_PERF_LOG_S = 0.0
+# The real `pyrocko.pile.Pile` the view chops through, rebuilt lazily when the
+# trace set changes so `pile.chopper` — the exact code Qt calls — does the
+# chopping, degapping and rate selection.
+_PILE: Optional[Any] = None
+_PILE_GEN: Optional[int] = None
 
 
 def _clear_view_cache() -> None:
-    global _OLD_DATA_RANGE_CONTEXT
-    _VIEW_CACHE.clear()
-    _OLD_DATA_RANGES.clear()
-    _OLD_DATA_RANGE_CONTEXT = None
+    global _CUTOUT_VEC, _CUTOUT_TRACES, _PILE, _PILE_GEN
+    _CUTOUT_VEC = None
+    _CUTOUT_TRACES = None
+    _CUTOUT_NOTICES.clear()
+    _TF_CACHE.clear()
+    _PILE = None
+    _PILE_GEN = None
 
 
 def _mark_traces_changed() -> None:
     global _DATA_GEN
     _DATA_GEN += 1
     _clear_view_cache()
+
+
+# The session state a Shift+R code reload carries over: everything the user
+# loaded, derived or configured — pile, provenance, metadata, command filters,
+# scale memories, mounted stores — plus the generation counters that keep the
+# frontend's caches coherent. Deliberately absent: the pure caches (cutouts,
+# transfer functions, box styles, waterfall LUTs), which rebuild from the
+# restored generations, and per-view transients like the notice list. The
+# worker's reload snippet calls `_reload_snapshot`/`_reload_restore` so this
+# module owns the list; a name here that stops existing is caught by
+# tests/parity/test_reload_keep.py.
+_RELOAD_KEEP = (
+    "_TRACES",
+    "_SOURCE_TRACES",
+    "_SOURCE_DIGESTS",
+    "_SUPPRESSED_SOURCE_TRACES",
+    "_DERIVED_TRACES",
+    "_DERIVED_EVENTS",
+    "_PILE_IS_EXAMPLE",
+    "_DIGEST_OWNERS",
+    "_HIDDEN",
+    "_REDUCE",
+    "_SCALING_HOOKS",
+    "_DATA_GEN",
+    "_RESPONSE_GEN",
+    "_OLD_DATA_RANGES",
+    "_STATIONS",
+    "_ACTIVE_EVENT",
+    "_ACTIVE_HASH",
+    "_ACTIVE_MT",
+    "_EVENT_REGISTRY",
+    "_STATIONXMLS",
+    "_GF_STORES",
+    "_PLATES",
+    "_SEISBENCH_MODEL_URLS",
+    "_STAGE_COUNTER",
+)
+
+
+def _reload_snapshot() -> Dict[str, Any]:
+    """The session state a code reload must carry over, captured off the *old*
+    module just before ``importlib.reload`` — and detached from it.
+
+    The names are popped, not read: ``importlib.reload`` reuses the module
+    dict, so a name left behind would survive the reload even when the new
+    source no longer defines it — a zombie global nothing reads.
+    Popping loses nothing, because re-executing the source recreates every
+    living global with its fresh default; the caller must pair this with
+    `_reload_restore` (in a ``finally``, so a failed reload cannot strand the
+    detached state).
+
+    Keyed by name, not versioned: state survives exactly where old and new
+    code agree on the global's name.
+    A global renamed or retired between the two versions resets to its fresh
+    default on that reload — an accepted loss, since Shift+R is a dev-loop
+    tool, not a persistence format."""
+    return {name: globals().pop(name) for name in _RELOAD_KEEP if name in globals()}
+
+
+def _reload_restore(saved: Dict[str, Any]) -> None:
+    """Reinstall a `_reload_snapshot` into the freshly reloaded module.
+
+    Only names the *new* module's `_RELOAD_KEEP` still claims are installed:
+    a snapshot entry the new code no longer knows would otherwise be parked
+    as a zombie global that nothing reads while the successor state sits
+    empty.
+    State introduced by newer code keeps its fresh default.
+    The generation bump makes every cache rebuild against the restored pile."""
+    globals().update({name: value for name, value in saved.items() if name in _RELOAD_KEEP})
+    _mark_traces_changed()
 
 
 def _without_empty(traces: Iterable[ptrace.Trace]) -> List[ptrace.Trace]:
@@ -117,19 +240,50 @@ def _without_empty(traces: Iterable[ptrace.Trace]) -> List[ptrace.Trace]:
 
 
 def _set_traces(traces: List[ptrace.Trace], append: bool = False) -> None:
-    global _TRACES
+    global _TRACES, _PILE_IS_EXAMPLE
+    # Real data replaces the boot example rather than joining it: appending
+    # onto the demo pile would show the user's channels among synthetic noise
+    # with nothing marking which is which.
+    if append and _PILE_IS_EXAMPLE:
+        append = False
     _TRACES = (list(_TRACES) + traces) if append else traces
     if not append:
         _SOURCE_TRACES.clear()
+        _SOURCE_DIGESTS.clear()
+        _SUPPRESSED_SOURCE_TRACES.clear()
+        _DIGEST_OWNERS.clear()
+        _DERIVED_TRACES.clear()
+        # The replaced scene's events, stations and responses go with its
+        # waveforms — user loads only ever append, so nothing user-owned can
+        # pass through here except in the boot-example handover above.
+        _clear_dataset_metadata()
+    _PILE_IS_EXAMPLE = False
     _mark_traces_changed()
 
 
 def _clear_event_context() -> None:
-    global _ACTIVE_EVENT, _ACTIVE_MT, _EVENTS
-    _ACTIVE_EVENT = None
-    _ACTIVE_MT = None
     _EVENT_REGISTRY.clear()
-    _EVENTS = []
+    _DERIVED_EVENTS.clear()
+    _activate_event(None)
+
+
+def _clear_dataset_metadata() -> None:
+    """Drop the non-waveform context of a replaced scene. The events, station
+    coordinates and instrument responses all describe the dataset going away;
+    any of them surviving into the next scene mis-sorts it (stale
+    coordinates) or deconvolves an overlapping NSLC against the wrong
+    response. Only scene *replacements* come through here — an example
+    bundle, the boot example giving way to the first real load, EmptyScene, a
+    live-stream reset — never a user append."""
+    global _RESPONSE_GEN
+    _clear_event_context()
+    _STATIONS.clear()
+    _WARNED_NO_RESPONSE.clear()
+    if _STATIONXMLS:
+        _STATIONXMLS.clear()
+        # The transfer-function cache keys on the response generation, so the
+        # bump retires every entry built from the dropped documents.
+        _RESPONSE_GEN += 1
 
 
 def _replace_source(source_id: str, new_traces: List[ptrace.Trace]) -> None:
@@ -139,6 +293,8 @@ def _replace_source(source_id: str, new_traces: List[ptrace.Trace]) -> None:
     faithful analog of pyrocko ``reload_modified`` only touching changed files."""
     global _TRACES
     old = _SOURCE_TRACES.get(source_id)
+    if old is None:
+        raise ValueError("waveform source %r was not registered by an initial load" % source_id)
     if old:
         old_ids = {id(t) for t in old}
         _TRACES = [t for t in _TRACES if id(t) not in old_ids]
@@ -147,20 +303,174 @@ def _replace_source(source_id: str, new_traces: List[ptrace.Trace]) -> None:
     _mark_traces_changed()
 
 
-def _visible_traces() -> List[ptrace.Trace]:
-    # pyrocko's canonical NSLC matcher (shell globs, case-insensitive, anchored on
-    # the full "net.sta.loc.cha" code), the same one snuffler's hide/quick-filter
-    # use — match_nslc takes a list of patterns and returns True if any matches.
+def _digest_owner(source_id: str) -> str:
+    return "source:%s" % source_id if source_id else "anonymous"
+
+
+def _add_digest_owner(digest: str, source_id: str) -> None:
+    _DIGEST_OWNERS.setdefault(digest, set()).add(_digest_owner(source_id))
+
+
+def _promote_suppressed_source(digest: str) -> None:
+    for source_id in _SOURCE_TRACES:
+        if _SOURCE_DIGESTS.get(source_id) != digest:
+            continue
+        traces = _SUPPRESSED_SOURCE_TRACES.pop(source_id, None)
+        if traces is None:
+            continue
+        _replace_source(source_id, traces)
+        _add_digest_owner(digest, source_id)
+        return
+
+
+def _remove_digest_owner(digest: str, source_id: str) -> None:
+    owners = _DIGEST_OWNERS.get(digest)
+    if owners is None:
+        return
+    owners.discard(_digest_owner(source_id))
+    if not owners:
+        del _DIGEST_OWNERS[digest]
+        _promote_suppressed_source(digest)
+
+
+def _replace_derived(origin: str, new_traces: List[ptrace.Trace]) -> None:
+    """Swap the traces a snuffling's previous run added for this run's — the
+    trace half of Qt's `cleanup()` ticket contract (snuffling.py:1689), scoped
+    by origin. Identity-based, so it can never delete a user-loaded trace that
+    merely shares a name; and it leaves `_SOURCE_TRACES`, the load digests and
+    the boot-example flag alone, because derived traces never came from a file
+    and replacing them must not reset file provenance."""
+    global _TRACES
+    old = _DERIVED_TRACES.get(origin)
+    if old:
+        old_ids = {id(t) for t in old}
+        _TRACES = [t for t in _TRACES if id(t) not in old_ids]
+    _TRACES = list(_TRACES) + list(new_traces)
+    _DERIVED_TRACES[origin] = list(new_traces)
+    _mark_traces_changed()
+
+
+def _trace_selected(tr: ptrace.Trace) -> bool:
+    """Whether the ':' command-line filters leave this trace visible.
+
+    pyrocko's canonical NSLC matcher (shell globs, case-insensitive, anchored on
+    the full "net.sta.loc.cha" code), the same one snuffler's hide/quick-filter
+    use — match_nslc takes a list of patterns and returns True if any matches.
+    This is what snuffler passes into `prepare_cutout2` as its `trace_filter`.
+    """
     from pyrocko.util import match_nslc
 
-    out = []
-    for tr in _TRACES:
-        if _REDUCE is not None and not match_nslc(_REDUCE, tr.nslc_id):
-            continue
-        if _HIDDEN and match_nslc(_HIDDEN, tr.nslc_id):
-            continue
-        out.append(tr)
-    return out
+    if _REDUCE is not None and not match_nslc(_REDUCE, tr.nslc_id):
+        return False
+    return not (_HIDDEN and match_nslc(_HIDDEN, tr.nslc_id))
+
+
+def _visible_traces() -> List[ptrace.Trace]:
+    return [tr for tr in _TRACES if _trace_selected(tr)]
+
+
+def _ensure_avl() -> None:
+    """Provide ``pyrocko.avl`` where the wheel lacks the C extension.
+
+    ``pyrocko.pile`` imports the vendored pyavl C module at its top, so a wheel
+    without it cannot import the pile at all. The Pyodide runtime gains the real
+    extension on its next rebuild (pybuild/setup.py builds it in ``_CORE``);
+    until that runtime ships, this stand-in covers exactly the surface
+    ``pile.Sorted`` touches — comparator-ordered inserts, inclusive ``span``
+    queries, indexed access and removal — over a bisected list, which is ample
+    for browser-sized piles. Where the real module exists (CPython, a rebuilt
+    runtime) it wins and this never engages.
+    """
+    import importlib
+    import sys
+
+    try:
+        importlib.import_module("pyrocko.avl")
+        return
+    except ImportError:
+        pass
+
+    import bisect
+    import functools
+    import types
+
+    class _AvlTree:
+        def __init__(self, values: Any, compare: Any) -> None:
+            self._cmp_key = functools.cmp_to_key(compare)
+            self._items = sorted(values, key=self._cmp_key)
+            self._keys = [self._cmp_key(v) for v in self._items]
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def __getitem__(self, i: Any) -> Any:
+            return self._items[i]
+
+        def __iter__(self) -> Any:
+            return iter(self._items)
+
+        def iter(self) -> Any:
+            return iter(self._items)
+
+        def insert(self, value: Any) -> None:
+            key = self._cmp_key(value)
+            i = bisect.bisect_right(self._keys, key)
+            self._items.insert(i, value)
+            self._keys.insert(i, key)
+
+        def remove_at(self, i: int) -> Any:
+            del self._keys[i]
+            return self._items.pop(i)
+
+        def span(self, lo: Any, hi: Any = None) -> Tuple[int, int]:
+            # pyavl semantics: t[i:j] holds every element e with lo <= e <= hi;
+            # the one-argument form spans the elements equal to `lo`.
+            if hi is None:
+                hi = lo
+            return (
+                bisect.bisect_left(self._keys, self._cmp_key(lo)),
+                bisect.bisect_right(self._keys, self._cmp_key(hi)),
+            )
+
+        def min(self) -> Any:
+            return self._items[0]
+
+        def max(self) -> Any:
+            return self._items[-1]
+
+    module = types.ModuleType("pyrocko.avl")
+
+    def _new(values: Any = (), compare: Any = None) -> _AvlTree:
+        if compare is None:
+            compare = lambda a, b: (a > b) - (a < b)  # noqa: E731 — pyavl's default
+        return _AvlTree(list(values), compare)
+
+    setattr(module, "new", _new)
+    sys.modules["pyrocko.avl"] = module
+    import pyrocko
+
+    pyrocko.avl = module  # type: ignore[attr-defined]
+
+
+def _pile() -> Any:
+    """The loaded traces as a real `pyrocko.pile.Pile`.
+
+    The view chops through `pile.chopper` — snuffler's own chopping, degapping and
+    sampling-rate selection — rather than a reimplementation of it. Rebuilt lazily
+    when the trace set changes; the Trace objects are shared, not copied, which is
+    safe because the chopper hands out chopped copies.
+    """
+    global _PILE, _PILE_GEN
+    if _PILE is None or _PILE_GEN != _DATA_GEN:
+        _ensure_avl()
+        from pyrocko import pile as ppile
+
+        p = ppile.Pile()
+        if _TRACES:
+            p.add_file(ppile.MemTracesFile(None, list(_TRACES)))
+        _PILE = p
+        _PILE_GEN = _DATA_GEN
+    return _PILE
 
 
 # Station coordinates -> (lat, lon, elevation, depth) and the active event
@@ -177,17 +487,60 @@ def _visible_traces() -> List[ptrace.Trace]:
 # and, as there, the last station added wins it.
 _STATIONS: Dict[Tuple[str, ...], Tuple[float, float, float, float]] = {}
 _ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
+# Registry key of the active event, so machine-made picks (cake, F-keys through
+# the frontend) can be associated with it (snuffler `set_event`).
+_ACTIVE_HASH: str = ""
 # Moment tensor of the active (largest-magnitude) catalog event, if it has one.
 # Used as the reference for the marker table's Kagan-angle column.
 _ACTIVE_MT: Any = None
 # All loaded events, keyed by their marker event_hash, so the user can pick any of
 # them as the active event (distance/Kagan/cake/seismosizer reference).
 _EVENT_REGISTRY: "OrderedDict[str, Any]" = OrderedDict()
-# Instrument responses (a parsed FDSNStationXML), used by Deconvolution.
-_STATIONXML: Any = None
-# Catalog events (lat, lon, depth_m, mag, time) for the Map overlay.
-_EVENTS: List[data_pb2.MapEvent] = []
 
+
+def _activate_event(event_hash: Optional[str]) -> None:
+    """Set every active-event projection from one registry entry, or clear all."""
+    global _ACTIVE_EVENT, _ACTIVE_HASH, _ACTIVE_MT
+    event = _EVENT_REGISTRY.get(event_hash) if event_hash else None
+    if event is None:
+        _ACTIVE_EVENT = None
+        _ACTIVE_HASH = ""
+        _ACTIVE_MT = None
+        return
+    _ACTIVE_EVENT = (
+        float(event.lat),
+        float(event.lon),
+        float(event.depth or 0.0),
+        float(event.time),
+    )
+    _ACTIVE_HASH = str(event_hash)
+    _ACTIVE_MT = event.moment_tensor
+
+
+def _replace_derived_events(origin: str, events: Mapping[str, Any]) -> None:
+    old_events = _DERIVED_EVENTS.get(origin, {})
+    active_was_retired = False
+    for event_hash, owned_event in old_events.items():
+        if event_hash not in events and _EVENT_REGISTRY.get(event_hash) is owned_event:
+            _EVENT_REGISTRY.pop(event_hash, None)
+            active_was_retired = active_was_retired or _ACTIVE_HASH == event_hash
+    _EVENT_REGISTRY.update(events)
+    _DERIVED_EVENTS[origin] = dict(events)
+    if active_was_retired:
+        _activate_event(None)
+    elif _ACTIVE_HASH in events:
+        _activate_event(_ACTIVE_HASH)
+
+
+# Instrument responses, used by Deconvolution: the parsed FDSNStationXML
+# documents in load order. A list rather than one merged document, because that
+# is how snuffler keeps them (`station_xmls`, pile_viewer.py:4470): lookups take
+# the first document that resolves, so a channel described twice across files
+# still restitutes instead of raising on the ambiguity a merge would create.
+_STATIONXMLS: List[Any] = []
+# Channels already reported as having no usable response, so the warning fires
+# once per response generation rather than once per paint.
+_WARNED_NO_RESPONSE: "set[NslcId]" = set()
 # CORS-enabled FDSN web services (verified to allow cross-origin fetch).
 _FDSN = {
     "geofon": "https://geofon.gfz.de",
@@ -286,16 +639,33 @@ async def _pyfetch_fdsn(url: str) -> Any:
 
     proxied = _local_fdsn_proxy_url(url)
     try:
-        return await pyfetch(proxied)
+        resp = await pyfetch(proxied)
     except Exception:
         if proxied != url:
             return await pyfetch(url)
         raise
+    # The local proxy 403s any host off its allowlist — the normal outcome for
+    # a custom base URL on localhost, and not an exception. Retry such a host
+    # directly: if it sends CORS headers the query still works, and if not the
+    # failure surfaces as the network error it is.
+    if resp.status == 403 and proxied != url:
+        return await pyfetch(url)
+    return resp
 
 
 async def _fetch_fdsn_text_or_empty(url: str) -> str:
+    """The document at ``url``, or "" for FDSN's own no-data answers.
+
+    Only 204 and 404 — the codes the standard assigns to "no matching data" —
+    read as empty. Every other failure raises so a 403 from the local proxy's
+    allowlist or a 500 from the service surfaces as the error it is, rather
+    than being reported as "0 loaded"."""
     resp = await _pyfetch_fdsn(url)
-    return str(await resp.string()) if resp.ok else ""
+    if resp.ok:
+        return str(await resp.string())
+    if resp.status in (204, 404):
+        return ""
+    raise RuntimeError("HTTP %s from %s" % (resp.status, url))
 
 
 def _trace_meta(msg: scene_pb2.TraceMeta, tr: ptrace.Trace) -> None:
@@ -356,195 +726,29 @@ def _make_example_scene() -> scene_pb2.SceneMeta:
             )
 
     _set_traces(traces)
+    # The synthetic demo is a boot pile, not user data: the first real load
+    # replaces it (see `_set_traces`).
+    global _PILE_IS_EXAMPLE
+    _PILE_IS_EXAMPLE = True
     return _scene_meta()
 
 
-def _load_path_scene(
-    name: str, path: str, fmt: str, append: bool = False, source_id: str = ""
-) -> scene_pb2.SceneMeta:
-    """Load a file already staged in Pyodide's FS with pyrocko's ``io.load``. With
-    a ``source_id`` the load replaces that source's previous traces (reload)."""
-    del name
+def _load_path_traces(path: str, fmt: str) -> List[ptrace.Trace]:
+    """Load waveform traces already staged in Pyodide's filesystem."""
     fmt2 = "detect" if fmt in (None, "", "detect") else fmt
-    traces = _without_empty(pio.load(path, format=fmt2))
-    if source_id:
-        _replace_source(source_id, traces)
-    else:
-        _set_traces(traces, append=append)
+    return _without_empty(pio.load(path, format=fmt2))
+
+
+def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> scene_pb2.SceneMeta:
+    """Load a file already staged in Pyodide's FS with pyrocko's ``io.load``."""
+    del name
+    _set_traces(_load_path_traces(path, fmt), append=append)
     return _scene_meta()
-
-
-def _stable_decimation_stride(samples_per_bin: int) -> int:
-    """Choose a stable stride so tiny zoom changes do not constantly re-bin."""
-    stride = max(1, int(samples_per_bin))
-    if stride <= 1:
-        return 1
-    value = 1.0
-    step = 2.0**0.25
-    while value < stride:
-        value *= step
-    return max(1, int(math.ceil(value)))
-
-
-def _decimate(
-    y: np.ndarray,
-    deltat: float,
-    npx: int,
-    cap_bins: bool = True,
-    sample_offset: int = 0,
-) -> Tuple[np.ndarray, int, float]:
-    """Return raw samples or a signal-preserving min/max envelope.
-
-    ``dt > 0`` means the payload is raw uniformly-spaced samples. ``dt == 0``
-    means the payload is interleaved ``(t_rel, y)`` points. The reduced
-    representation keeps the first sample, extrema, and last sample of every
-    pixel-scale bin in chronological order so the renderer draws a connected
-    trace without smoothing over peaks.
-    """
-    n = len(y)
-    npx = max(npx, _MIN_DECIMATION_BINS)
-    if cap_bins:
-        npx = min(npx, _MAX_DECIMATION_BINS)
-    if n <= npx * 4:
-        return np.ascontiguousarray(y, dtype="<f4"), n, deltat
-
-    stride = _stable_decimation_stride(int(math.ceil(n / npx)))
-    pieces: List[np.ndarray] = []
-    sample_offset = max(0, int(sample_offset))
-    global_start = sample_offset
-    global_stop = sample_offset + n
-    first_bin = global_start // stride
-    last_bin = (global_stop + stride - 1) // stride
-
-    def edge_indices(bin_idx: int) -> Optional[np.ndarray]:
-        bin_start = bin_idx * stride
-        start = max(0, bin_start - global_start)
-        stop = min(n, bin_start + stride - global_start)
-        if stop <= start:
-            return None
-        block = y[start:stop]
-        return np.unique(
-            np.array(
-                (
-                    start,
-                    start + int(np.argmin(block)),
-                    start + int(np.argmax(block)),
-                    stop - 1,
-                ),
-                dtype=np.int64,
-            )
-        )
-
-    full_first = first_bin + int(global_start > first_bin * stride)
-    full_last = last_bin - int(global_stop < last_bin * stride)
-
-    first_edge = edge_indices(first_bin) if first_bin < full_first else None
-    if first_edge is not None:
-        pieces.append(first_edge)
-
-    full_bins = max(0, full_last - full_first)
-    if full_bins:
-        local_start = full_first * stride - global_start
-        blocks = y[local_start : local_start + full_bins * stride].reshape(full_bins, stride)
-        starts = local_start + np.arange(full_bins, dtype=np.int64) * stride
-        idx4 = np.sort(
-            np.stack(
-                (
-                    starts,
-                    starts + np.argmin(blocks, axis=1),
-                    starts + np.argmax(blocks, axis=1),
-                    starts + stride - 1,
-                ),
-                axis=1,
-            ),
-            axis=1,
-        )
-        keep = np.ones(idx4.shape, dtype=bool)
-        keep[:, 1:] = idx4[:, 1:] != idx4[:, :-1]
-        pieces.append(idx4[keep])
-
-    last_edge = edge_indices(last_bin - 1) if full_last < last_bin else None
-    if last_edge is not None and (first_edge is None or last_bin - 1 != first_bin):
-        pieces.append(last_edge)
-
-    idx = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
-    out = np.empty(idx.size * 2, dtype="<f4")
-    out[0::2] = idx.astype(np.float64) * deltat
-    out[1::2] = y[idx].astype("<f4", copy=False)
-    return out, int(idx.size), 0.0
 
 
 # snuffler's `gap_lap_tolerance`: the largest gap it will interpolate across and the
 # largest overlap it will trim, both in samples.
 _GAP_LAP_TOLERANCE = 5.0
-
-
-def _degap(traces: List[ptrace.Trace]) -> List[ptrace.Trace]:
-    """Merge adjacent segments of a channel, as snuffler's chopper does.
-
-    Two details this is easy to get wrong, and did:
-
-    ``degapper`` merges by rewriting the *first* trace of each run in place, and what
-    gets handed to it here is the loaded pile itself — so computing one view would
-    permanently rewrite the data, and turning the option back off would not bring it
-    back. Snuffler never hits this because its chopper degaps freshly chopped copies.
-    Only traces sharing an nslc id can merge, so copying just those is enough, and a
-    pile without gaps copies nothing.
-
-    ``maxlap`` defaults to ``None``, meaning "trim an overlap of any size", where
-    snuffler passes ``gap_lap_tolerance`` for both bounds and so leaves a larger
-    overlap alone.
-    """
-    counts: Dict[Tuple[str, str, str, str], int] = {}
-    for tr in traces:
-        counts[tr.nslc_id] = counts.get(tr.nslc_id, 0) + 1
-    prepared = [tr.copy() if counts[tr.nslc_id] > 1 else tr for tr in traces]
-    # degapper walks the list pairwise, so each channel's segments have to be
-    # contiguous and in time order first — snuffler sorts on `full_id` for this.
-    prepared.sort(key=lambda tr: tr.full_id)
-    return ptrace.degapper(prepared, maxgap=_GAP_LAP_TOLERANCE, maxlap=_GAP_LAP_TOLERANCE)
-
-
-def _apply_rotation(traces: List[ptrace.Trace], deg: float) -> List[ptrace.Trace]:
-    """Rotate horizontal component pairs (N/E or 1/2) by `deg` degrees, like
-    snuffler's rotate control, using pyrocko's own ``trace.rotate`` (verified
-    bit-identical to the earlier hand 2x2). Aligned, equal-length pairs only."""
-    if not deg:
-        return traces
-    groups: Dict[Tuple[str, str, str], List[ptrace.Trace]] = {}
-    for tr in traces:
-        groups.setdefault(tr.nslc_id[:3], []).append(tr)
-
-    # Substitution, not reconstruction: every trace keeps the slot the sort gave it
-    # and only its samples change. Appending the rotated pair ahead of the rest
-    # instead would reorder the tracks — dragging the Rotate control would swap the
-    # two horizontal rows out from under the pointer.
-    replacements: Dict[int, ptrace.Trace] = {}
-    for grp in groups.values():
-        by_comp = {t.channel[-1].upper(): t for t in grp if t.channel}
-        for n, e in (("N", "E"), ("1", "2")):
-            tn, te = by_comp.get(n), by_comp.get(e)
-            if (
-                tn is not None
-                and te is not None
-                and tn.ydata is not None
-                and te.ydata is not None
-                and len(tn.ydata) == len(te.ydata)
-                and tn.deltat == te.deltat
-                and tn.tmin == te.tmin
-            ):
-                try:
-                    pair = ptrace.rotate(
-                        [tn, te],
-                        deg,
-                        in_channels=[tn.channel, te.channel],
-                        out_channels=[tn.channel, te.channel],
-                    )
-                except Exception:  # noqa: BLE001 — leave unrotatable pairs as-is
-                    continue
-                if len(pair) == 2:
-                    replacements[id(tn)], replacements[id(te)] = pair[0], pair[1]
-    return [replacements.get(id(t), t) for t in traces]
 
 
 def _decon_freq_limits(
@@ -569,16 +773,58 @@ def _decon_freq_limits(
     return f1, f2, f3, f4
 
 
+def _view_notice(message: str) -> None:
+    """Record a processing failure for the view being built.
+
+    Delivered on `ViewMeta.notices` so the frontend can say what was drawn
+    unprocessed — snuffler lets these exceptions reach the user, and silently
+    drawing unfiltered data as filtered is the one failure mode worse than
+    either. Deduplicated per view.
+    """
+    if message not in _VIEW_NOTICES:
+        _VIEW_NOTICES.append(message)
+
+
+def _get_instrument_response(nslc_id: NslcId, tmin: float, tmax: float) -> Any:
+    """The response for `nslc_id` over the view window, resolved as snuffler
+    resolves it (`get_instrument_response`, pile_viewer.py:4468): the StationXML
+    documents stay a list in load order and the first one that resolves wins; a
+    document that raises — including on an ambiguous double match — is skipped;
+    and a channel that resolves nowhere is reported rather than silently passed
+    through.
+    """
+    resp = None
+    for sx in _STATIONXMLS:
+        try:
+            resp = sx.get_pyrocko_response(nslc_id, timespan=(tmin, tmax))
+            break
+        except Exception:  # noqa: BLE001 — try the next document, exactly as Qt does
+            continue
+    if resp is None:
+        if nslc_id not in _WARNED_NO_RESPONSE:
+            _WARNED_NO_RESPONSE.add(nslc_id)
+            _view_notice("no instrument response information for %s.%s.%s.%s" % tuple(nslc_id))
+        return None
+    return resp
+
+
 def _remove_response(
     tr: ptrace.Trace,
     enabled: bool,
     hp: Optional[float] = None,
     lp: Optional[float] = None,
+    tmin: Optional[float] = None,
+    tmax: Optional[float] = None,
 ) -> ptrace.Trace:
     """Deconvolve the instrument response using StationXML fetched from an FDSN
-    station service (Data ▸ Download ▸ Fetch responses). A no-op until responses are
-    loaded; a trace without a matching response passes through. The frequency limits +
-    cut-off-fading match snuffler's deconvolution exactly.
+    station service (Data ▸ Download ▸ Fetch responses).
+    A trace without a matching response passes through with a view notice.
+    The frequency limits + cut-off-fading match snuffler's deconvolution exactly.
+
+    The response is requested over the *view window* (``tmin``/``tmax``), not the
+    trace's own span, because that is what the reference passes
+    (pile_viewer.py:3845) — a trace crossing a metadata epoch boundary should
+    resolve for the epoch on screen.
 
     The result is in the instrument's own input unit — velocity for a broadband —
     because that is what snuffler's ``get_instrument_response`` produces. Passing
@@ -591,11 +837,15 @@ def _remove_response(
     the lowpass/highpass. The order matters even though both steps are linear — the
     frequency limits are derived from `data_len`, so deconvolving a differently
     extended trace tapers differently."""
-    if not enabled or _STATIONXML is None:
+    if not enabled:
         return tr
+    span_tmin = float(tr.tmin) if tmin is None else float(tmin)
+    span_tmax = float(tr.tmax) if tmax is None else float(tmax)
+    resp = _get_instrument_response(tr.nslc_id, span_tmin, span_tmax)
+    if resp is None:
+        return tr
+    freqlimits = _decon_freq_limits(float(tr.deltat), int(tr.data_len()), hp, lp)
     try:
-        resp = _STATIONXML.get_pyrocko_response(tr.nslc_id, timespan=(tr.tmin, tr.tmax))
-        freqlimits = _decon_freq_limits(float(tr.deltat), int(tr.data_len()), hp, lp)
         return tr.transfer(
             freqlimits=freqlimits,
             transfer_function=resp,
@@ -603,7 +853,8 @@ def _remove_response(
             demean=True,
             invert=True,
         )
-    except Exception:  # noqa: BLE001 — a channel without a usable response passes through
+    except Exception as exc:  # noqa: BLE001 — drawn unrestituted, but never silently
+        _view_notice("restitution failed for %s.%s.%s.%s: %s" % (*tr.nslc_id, exc))
         return tr
 
 
@@ -713,20 +964,60 @@ def _sort_distance(net: str, sta: str, loc: str, distances_3d: bool) -> Optional
         # claims, so it is not ours to quietly correct here. Fixing it belongs
         # upstream; doing it here would make every distance disagree with the Qt
         # application the port is measured against.
-        return math.hypot(surface_m, float(edep) - float(sdep))
+        #
+        # `sqrt(dd**2 + ...)` rather than `math.hypot`, which computes the same
+        # length more accurately: `set_event_relative_data` uses the plain
+        # square-root form, and a distance sitting within an ulp of a 0.5 km
+        # rounding boundary (IU.ANMO in the bonin corpus, 10152.5 km) prints a
+        # different kilometre under the two.
+        dd = float(edep) - float(sdep)
+        return math.sqrt(dd**2 + surface_m**2)
     return surface_m
 
 
+def _fmt_m_float(metres: float) -> str:
+    """snuffler's `m_float.__str__` (pile_viewer.py:75): kilometres to 0 decimals
+    above 10 km, to 1 below, `%.5g` metres under a kilometre."""
+    if abs(metres) >= 10000.0:
+        return "%g km" % round(metres / 1000.0, 0)
+    if abs(metres) >= 1000.0:
+        return "%g km" % round(metres / 1000.0, 1)
+    return "%.5g m" % metres
+
+
 def _sort_annotation(net: str, sta: str, loc: str, sort: str, distances_3d: bool) -> str:
-    """Track-label annotation naming the value the distance sort ordered by, so a
-    surprising track order can be read off the tracks themselves. Stations without
-    coordinates sort to the end, which looks arbitrary unless it is called out."""
-    if sort != "distance" or _ACTIVE_EVENT is None:
+    """The sort-value prefix of snuffler's track label: the stringified ssort
+    members of the gather key (`plabel`, pile_viewer.py:3521), in snuffler's own
+    formats — `m_float` for distances, `deg_float`'s bare `%4.0f` for azimuths,
+    `sector_int`'s `[%i]` plus a distance for the 12-block sort. Empty for the
+    name sort and for a station without coordinates, whose `None` members
+    snuffler skips out of the label.
+    """
+    if _ACTIVE_EVENT is None or sort not in (
+        "distance",
+        "azimuth",
+        "azimuth_blocks",
+        "backazimuth",
+    ):
         return ""
+    st = _station_at(net, sta, loc)
+    if st is None:
+        return ""
+    if sort == "distance":
+        dist = _sort_distance(net, sta, loc, distances_3d)
+        return "" if dist is None else _fmt_m_float(dist)
+    from pyrocko import orthodrome as od
+
+    elat, elon = _ACTIVE_EVENT[:2]
+    slat, slon = st[0], st[1]
+    if sort == "backazimuth":
+        return "%4.0f" % float(od.azimuth(slat, slon, elat, elon))
+    azi = float(od.azimuth(elat, elon, slat, slon))
+    if sort == "azimuth":
+        return "%4.0f" % azi
     dist = _sort_distance(net, sta, loc, distances_3d)
-    if dist is None:
-        return "no coords"
-    return "%.1f km" % (dist / 1000.0)
+    sector = "[%i]" % int(round((azi + 15.0) / 30.0))
+    return sector if dist is None else "%s %s" % (sector, _fmt_m_float(dist))
 
 
 def _sort_order(
@@ -838,32 +1129,28 @@ def _range_trace(
     )
 
 
-def _scale_context(req: view_pb2.ViewParams) -> Tuple[Any, ...]:
-    return (
-        _DATA_GEN,
-        _RESPONSE_GEN,
-        req.sort or "name",
-        req.subsort or "nslc",
-        _float_key(float(req.rotate)),
-        bool(req.remove_response),
-        bool(req.demean),
-        bool(req.degap),
-        _float_key(req.highpass if req.HasField("highpass") else None),
-        _float_key(req.lowpass if req.HasField("lowpass") else None),
-        bool(req.fft_filtering),
-        bool(req.bandpass_lphp),
-        req.scaling_base or "minmax",
-        req.scaling_group or "individual",
-    )
+def _fft_filter(
+    seg: ptrace.Trace,
+    hp: Optional[float],
+    lp: Optional[float],
+    remove_resp: bool = False,
+    resp_tmin: float = 0.0,
+    resp_tmax: float = 0.0,
+) -> None:
+    """snuffler's 'FFT filtering' branch (pile_viewer.py:3696): linear-detrend,
+    multiply the (pow2-padded) spectrum by one combined transfer function, irfft,
+    then retrend.
 
+    The transfer function folds the order-4 Butterworth low/high responses
+    together with — when Deconvolution is on — the cosine taper and the inverted
+    instrument response, all in a single FFT pass; and in that case the fitted
+    trend is deliberately *not* re-added (pile_viewer.py:3794), even when no
+    response was found for the channel. detrend/retrend are the OLS-line removal
+    those snuffler helpers do (np.polyfit == their linregress).
 
-def _fft_filter(seg: ptrace.Trace, hp: Optional[float], lp: Optional[float]) -> None:
-    """snuffler's 'FFT filtering': linear-detrend, multiply the (pow2-padded)
-    spectrum by a Butterworth (order 4) low/high response, irfft, then retrend.
-
-    Matches pyrocko.gui.snuffler.pile_viewer.prepare_cutout2 exactly (a smooth
-    Butterworth roll-off, not a hard brick-wall mask). detrend/retrend are the
-    OLS-line removal those snuffler helpers do (np.polyfit == their linregress)."""
+    The transfer function is cached exactly on snuffler's `tf_cache` key —
+    (deltat, nfreqs, nslc-when-deconvolving) — widened by the corners and the
+    response generation, which Qt handles by clearing the cache instead."""
     from pyrocko import response
 
     it = np.arange(seg.data_len(), dtype=float)
@@ -872,14 +1159,43 @@ def _fft_filter(seg: ptrace.Trace, hp: Optional[float], lp: Optional[float]) -> 
     slope, offset = float(coeffs[0]), float(coeffs[1])
     seg.set_ydata(y - slope * it - offset)
     freqs, fdata = seg.spectrum(pad_to_pow2=True, tfade=None)
-    resps = []
-    if lp is not None:
-        resps.append(response.ButterworthResponse(order=4, corner=float(lp), type="low"))
-    if hp is not None:
-        resps.append(response.ButterworthResponse(order=4, corner=float(hp), type="high"))
-    tf = response.MultiplyResponse(resps).evaluate(freqs)
+    nfreqs = int(fdata.size)
+    key = (
+        float(seg.deltat),
+        nfreqs,
+        tuple(seg.nslc_id) if remove_resp else None,
+        _float_key(hp),
+        _float_key(lp),
+        _RESPONSE_GEN,
+    )
+    tf = _TF_CACHE.get(key)
+    if tf is None:
+        resps = []
+        if lp is not None:
+            resps.append(response.ButterworthResponse(order=4, corner=float(lp), type="low"))
+        if hp is not None:
+            resps.append(response.ButterworthResponse(order=4, corner=float(hp), type="high"))
+        if resps:
+            tf = response.MultiplyResponse(resps).evaluate(freqs)
+        else:
+            tf = np.ones(nfreqs, dtype=complex)
+        if remove_resp:
+            inst_resp = _get_instrument_response(seg.nslc_id, resp_tmin, resp_tmax)
+            if inst_resp is not None:
+                f1, f2, f3, f4 = _decon_freq_limits(float(seg.deltat), int(seg.data_len()), hp, lp)
+                taper = ptrace.CosTaper(f1, f2, f3, f4)
+                taper_vals = np.ones(nfreqs)
+                taper(taper_vals, float(freqs[0]), float(freqs[1] - freqs[0]))
+                inst_tf = inst_resp.evaluate(freqs)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    inv_inst_tf = np.where(np.abs(inst_tf) > 0.0, 1.0 / inst_tf, 0.0)
+                tf = tf * taper_vals * inv_inst_tf
+        _TF_CACHE[key] = tf
     filtered = np.fft.irfft(fdata * tf)[: seg.data_len()]
-    seg.set_ydata(it * slope + filtered + offset)
+    if not remove_resp:
+        seg.set_ydata(it * slope + filtered + offset)
+    else:
+        seg.set_ydata(filtered)
 
 
 def _filter_seg(
@@ -888,95 +1204,277 @@ def _filter_seg(
     lp: Optional[float],
     fft: bool,
     lphp: bool,
+    remove_resp: bool = False,
+    resp_tmin: float = 0.0,
+    resp_tmax: float = 0.0,
 ) -> None:
     """Apply the main filter to a chopped trace, honoring the FFT-filtering and
     bandpass-as-low+highpass options. Filter corners at/above Nyquist are skipped
-    (snuffler's ``< 0.5/deltat`` guards), not left to a bare try/except."""
+    (snuffler's ``< 0.5/deltat`` guards), not left to a bare try/except.
+
+    With FFT filtering on, Deconvolution is folded into the same pass — snuffler
+    enters that branch when a corner *or* `remove_resp` is set
+    (pile_viewer.py:3699) and skips the separate restitution entirely
+    (pile_viewer.py:3840), so the caller must not restitute again.
+
+    `demean=False` on the lowpass/highpass stages, as Qt passes it
+    (pile_viewer.py:3821): those pyrocko filters demean by default and never add
+    the mean back, so leaving the default would remove a mean of its own even
+    with Demean off. The bandpass branch has no such parameter to get wrong.
+    A filter that still throws rolls the segment back to its unprocessed
+    samples and delivers the failure with the view."""
+    original = seg.ydata
     try:
-        if fft and (hp is not None or lp is not None):
-            _fft_filter(seg, hp, lp)
+        if fft:
+            if hp is not None or lp is not None or remove_resp:
+                _fft_filter(seg, hp, lp, remove_resp, resp_tmin, resp_tmax)
             return
         fmax = 0.5 / float(seg.deltat)
         if not lphp and hp is not None and lp is not None and hp < lp < fmax and hp < fmax:
             seg.bandpass(2, float(hp), float(lp))
         else:
             if lp is not None and lp < fmax:
-                seg.lowpass(4, float(lp))
+                seg.lowpass(4, float(lp), demean=False)
             if hp is not None and (lp is None or hp < lp) and hp < fmax:
-                seg.highpass(4, float(hp))
-    except Exception:
-        pass
-
-
-def _cache_get(key: Tuple[Any, ...]) -> Optional[Tuple[float, float, np.ndarray]]:
-    entry = _VIEW_CACHE.get(key)
-    if entry is not None:
-        _VIEW_CACHE.move_to_end(key)
-    return entry
-
-
-def _cache_put(key: Tuple[Any, ...], entry: Tuple[float, float, np.ndarray]) -> None:
-    _VIEW_CACHE[key] = entry
-    _VIEW_CACHE.move_to_end(key)
-    while len(_VIEW_CACHE) > _VIEW_CACHE_LIMIT:
-        _VIEW_CACHE.popitem(last=False)
+                seg.highpass(4, float(hp), demean=False)
+    except Exception as exc:  # noqa: BLE001 — drawn unfiltered, but never silently
+        # Roll back to the pre-filter samples: the FFT branch detrends before
+        # the transfer function can fail, and the IIR branch can apply the
+        # lowpass before the highpass throws — either would ship half-processed
+        # data labelled "drawn unfiltered". Every pyrocko filter *replaces*
+        # ydata (`astype` copies, lfilter/irfft allocate), so the saved
+        # reference is exactly the unprocessed array.
+        seg.set_ydata(original)
+        _view_notice("filter failed for %s.%s.%s.%s: %s" % (*seg.nslc_id, exc))
 
 
 def _float_key(value: Optional[float]) -> Optional[float]:
     return None if value is None else round(float(value), 9)
 
 
-def _processed_trace(
-    tr: ptrace.Trace,
-    track_key: Tuple[Any, ...],
+def _adequate_tpad(hp: Optional[float], lp: Optional[float]) -> float:
+    """`get_adequate_tpad` (pile_viewer.py:3576) minus the snuffling-hook term,
+    which this port does not run: padding for the current filter corners only."""
+    tpad = 0.0
+    for f in (hp, lp):
+        if f is not None:
+            tpad = max(tpad, 2.0 / float(f))
+    return tpad
+
+
+def _rotate_pairs_inplace(processed_traces: List[ptrace.Trace], rotate_deg: float) -> None:
+    """Rotate horizontal pairs in place, exactly as `prepare_cutout2` does
+    (pile_viewer.py:3865): after demean, filtering and restitution, pairing the
+    N/E or 1/2 channels of one net.sta.loc whose sampling and start agree within
+    tolerance — `deltat` to 0.1 %, `tmin` to 1 % of a sample — at equal length.
+    The chopper has already aligned both channels of a real pair, which is what
+    makes these tolerances reachable; requiring exact float equality on the raw
+    traces silently skipped horizontals that start a fraction of a sample apart.
+    """
+    phi = rotate_deg / 180.0 * math.pi
+    cphi = math.cos(phi)
+    sphi = math.sin(phi)
+    for a in processed_traces:
+        for b in processed_traces:
+            if (
+                a.network == b.network
+                and a.station == b.station
+                and a.location == b.location
+                and (
+                    (a.channel.lower().endswith("n") and b.channel.lower().endswith("e"))
+                    or (a.channel.endswith("1") and b.channel.endswith("2"))
+                )
+                and abs(a.deltat - b.deltat) < a.deltat * 0.001
+                and abs(a.tmin - b.tmin) < a.deltat * 0.01
+                and len(a.get_ydata()) == len(b.get_ydata())
+            ):
+                aydata = a.get_ydata() * cphi + b.get_ydata() * sphi
+                bydata = -a.get_ydata() * sphi + b.get_ydata() * cphi
+                a.set_ydata(aydata)
+                b.set_ydata(bydata)
+
+
+# `accessor_id` for the view's pile access bookkeeping (Qt passes `id(self)`).
+_VIEW_ACCESSOR = "view"
+
+
+def _prepare_cutout(
     tmin: float,
     tmax: float,
+    *,
+    visible_length: float,
     hp: Optional[float],
     lp: Optional[float],
     demean: bool,
+    degap: bool,
     fft: bool,
     lphp: bool,
-    remove_response: bool = False,
-) -> Optional[Tuple[float, float, np.ndarray]]:
-    del tmin, tmax
-    proc_min, proc_max = float(tr.tmin), float(tr.tmax)
-    key = (
+    ads: bool,
+    remove_resp: bool,
+    rotate: float,
+    liberal_fetch: bool,
+) -> List[ptrace.Trace]:
+    """The traces snuffler would be about to draw for this window: a faithful
+    transcription of `PileViewerMain.prepare_cutout2` (pile_viewer.py:3590), with
+    the chopping, degapping, downsampling, filtering and restitution all done by
+    the same pyrocko code Qt calls.
+
+    Stages, in the reference's order: derive `min_deltat_allow` — the finest
+    sampling the window can use, below which channels are not fetched at all;
+    optionally snap the fetch window to an absolute power-of-two grid (Liberal
+    Fetch); chop a tpad-padded window through `pile.chopper` (which degaps);
+    demean each chop, skipping `tabu` traces; filter — one combined FFT pass, or
+    the Butterworth stages after the optional anti-aliased `Trace.downsample`
+    loop; restitute (unless the FFT pass already folded the response in); rotate
+    matching horizontal pairs in place; and finally chop back to the requested
+    window plus four samples per side, dropping anything shorter than two
+    samples.
+
+    The processing extent is therefore the padded fetch window, not the whole
+    trace: the mean Demean removes, the filter transient, the detrend line and
+    the deconvolution grid all follow the window exactly as they do in snuffler.
+
+    Cached exactly as Qt caches it (pile_viewer.py:3632): one state vector,
+    reused when the new window is contained in the cached one and every other
+    member matches.
+    """
+    global _CUTOUT_VEC, _CUTOUT_TRACES
+    p = _pile()
+    if p.is_empty():
+        return []
+
+    nmax = float(visible_length) if visible_length > 0.0 else 20_000.0
+    tsee = tmax - tmin
+    min_deltat_wo_decimate = tsee / nmax
+    min_deltat_w_decimate = min_deltat_wo_decimate / 32.0
+
+    min_deltat_allow = min_deltat_wo_decimate
+    if lp is not None:
+        target_deltat_lp = 0.25 / float(lp)
+        if target_deltat_lp > min_deltat_wo_decimate:
+            min_deltat_allow = min_deltat_w_decimate
+
+    # A power of *e*, not of ten — almost certainly an upstream slip for
+    # `log10`/`10**`, reproduced deliberately because it is the reference
+    # behaviour (see `min-deltat-allow` history in tests/parity).
+    min_deltat_allow = math.exp(int(math.floor(math.log(min_deltat_allow))))
+
+    tmin_ = tmin
+    tmax_ = tmax
+    if liberal_fetch:
+        tlen = float(ptrace.nextpow2((tmax - tmin) * 1.5))
+        tmin = math.floor(tmin / tlen) * tlen
+        tmax = math.ceil(tmax / tlen) * tlen
+
+    tpad = min(_adequate_tpad(hp, lp), tsee * 3.0)
+
+    vec = (
+        tmin,
+        tmax,
+        tpad,
+        tuple(_HIDDEN),
+        None if _REDUCE is None else tuple(_REDUCE),
+        degap,
+        demean,
+        _float_key(lp),
+        _float_key(hp),
+        fft,
+        lphp,
+        min_deltat_allow,
+        _float_key(rotate),
+        ads,
+        remove_resp,
         _DATA_GEN,
         _RESPONSE_GEN,
-        track_key,
-        _float_key(proc_min),
-        _float_key(proc_max),
-        _float_key(hp),
-        _float_key(lp),
-        bool(demean),
-        bool(fft),
-        bool(lphp),
     )
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
 
-    try:
-        seg = tr.chop(proc_min, proc_max, inplace=False, include_last=True)
-    except Exception:
-        return None
-    if seg.ydata is None or len(seg.ydata) == 0:
-        return None
+    if (
+        _CUTOUT_VEC is not None
+        and _CUTOUT_TRACES is not None
+        and _CUTOUT_VEC[0] <= vec[0]
+        and vec[1] <= _CUTOUT_VEC[1]
+        and vec[2:] == _CUTOUT_VEC[2:]
+    ):
+        processed_traces = _CUTOUT_TRACES
+        # The cached data still carries whatever went wrong while it was
+        # built; a pan that hits the cache must warn like the view that
+        # missed it.
+        for message in _CUTOUT_NOTICES:
+            _view_notice(message)
+    else:
+        # A fresh processing pass warns once per channel again: the previous
+        # pass's dedup must not silence a condition that still holds.
+        _WARNED_NO_RESPONSE.clear()
+        notices_before = len(_VIEW_NOTICES)
+        processed_traces = []
+        if p.deltatmax is not None and p.deltatmax >= min_deltat_allow:
 
-    seg.ydata = seg.ydata.astype(np.float64)
-    if demean:
-        seg.ydata = seg.ydata - seg.ydata.mean()
-    _filter_seg(seg, hp, lp, fft, lphp)
-    seg = _remove_response(seg, remove_response, hp, lp)
-    if seg.ydata is None or len(seg.ydata) == 0:
-        return None
-    entry = (
-        float(seg.tmin),
-        float(seg.deltat),
-        np.ascontiguousarray(seg.ydata, dtype=np.float64),
-    )
-    _cache_put(key, entry)
-    return entry
+            def group_selector(gr: Any) -> bool:
+                return bool(gr.deltatmax >= min_deltat_allow)
+
+            def trace_selectorx(tr: ptrace.Trace) -> bool:
+                return tr.deltat >= min_deltat_allow and _trace_selected(tr)
+
+            for traces in p.chopper(
+                tmin=tmin,
+                tmax=tmax,
+                tpad=tpad,
+                want_incomplete=True,
+                degap=degap,
+                maxgap=_GAP_LAP_TOLERANCE,
+                maxlap=_GAP_LAP_TOLERANCE,
+                keep_current_files_open=True,
+                group_selector=group_selector,
+                trace_selector=trace_selectorx,
+                accessor_id=_VIEW_ACCESSOR,
+                snap=(math.floor, math.ceil),
+                include_last=True,
+            ):
+                if demean:
+                    for tr in traces:
+                        if tr.meta and tr.meta.get("tabu", False):
+                            continue
+                        y = tr.get_ydata()
+                        tr.set_ydata(y - np.mean(y))
+
+                for tr in traces:
+                    if not (tr.meta and tr.meta.get("tabu", False)):
+                        if fft:
+                            _filter_seg(tr, hp, lp, True, lphp, remove_resp, tmin, tmax)
+                        else:
+                            if ads and lp is not None:
+                                while tr.deltat < min_deltat_wo_decimate:
+                                    tr.downsample(2, demean=False)
+                            _filter_seg(tr, hp, lp, False, lphp)
+                    processed_traces.append(tr)
+
+                if remove_resp and not fft:
+                    processed_traces = [
+                        _remove_response(tr, True, hp, lp, tmin, tmax) for tr in processed_traces
+                    ]
+
+        if rotate != 0.0:
+            _rotate_pairs_inplace(processed_traces, rotate)
+
+        _CUTOUT_VEC = vec
+        _CUTOUT_TRACES = processed_traces
+        _CUTOUT_NOTICES[:] = _VIEW_NOTICES[notices_before:]
+
+    chopped_traces = []
+    for tr in processed_traces:
+        chop_tmin = tmin_ - tr.deltat * 4
+        chop_tmax = tmax_ + tr.deltat * 4
+        try:
+            ctrace = tr.chop(chop_tmin, chop_tmax, inplace=False)
+        except ptrace.NoData:
+            continue
+        # Qt drops any chopped trace shorter than two samples
+        # (pile_viewer.py:3905): a one-sample overlap becomes nothing, not a row.
+        if ctrace.data_len() < 2:
+            continue
+        chopped_traces.append(ctrace)
+
+    return chopped_traces
 
 
 def _slice_segment(
@@ -994,52 +1492,65 @@ def _slice_segment(
     return y[start:stop], seg_tmin + start * deltat, deltat, start
 
 
-def _display_time_span(tr: ptrace.Trace) -> Tuple[float, float]:
-    t0, t1 = float(tr.tmin), float(tr.tmax)
-    if tr.nslc_id[3].endswith("-RMS") and int(tr.data_len()) > 0:
-        half = 0.5 * float(tr.deltat)
-        return t0 - half, t1 + half
-    return t0, t1
-
-
-def _waterfall_trace(
-    yview: np.ndarray,
-    deltat: float,
+def _waterfall_row_strips(
+    slices: "List[Tuple[np.ndarray, float, float]]",
     npx: int,
     want_abs: bool,
     want_integrate: bool,
     color_scale: str = "lin",
-) -> Tuple[np.ndarray, float]:
-    """Snuffler TraceWaterfall data for one trace: normalized amplitude over time.
+) -> "List[Tuple[np.ndarray, float, float]]":
+    """Snuffler-style waterfall strips for one track row: normalized amplitude
+    over time, on one shared amplitude scale and one shared time resolution.
 
-    With the envelope (``want_abs``), ``color_scale`` (``lin`` | ``sqrt`` | ``log``)
-    compresses the amplitude before it is colour-mapped, honouring snuffler's
-    waterfall colour-scale control (the Rust side only normalises + blits)."""
+    Snuffler normalises per image row, and a row there is a whole trace
+    (``pile_viewer_waterfall.py:148``; ``_common_scale`` is always on). This
+    port's row is a *track*, which can carry several segments, so the peak is
+    taken across every strip of the row before dividing — two pieces of a gapped
+    channel share one colour scale, as they share one labelled row. The
+    decimation stride is derived once per row for the same reason: both pieces
+    keep one time resolution.
+
+    Takes ``(yview, t0, deltat)`` per segment; returns ``(strip, t0, dt)`` per
+    segment, strips as little-endian float32. ``color_scale`` (``lin`` | ``sqrt``
+    | ``log``) compresses the envelope before colour-mapping — a frontend
+    addition, linear by default, which is all snuffler has.
+    """
     from scipy import signal as sps
 
-    y = np.asarray(yview, dtype=np.float64)
-    if y.size == 0:
-        return np.zeros(0, dtype="<f4"), float(deltat)
+    if not slices:
+        return []
+    # One target resolution for the row: the coarsest any piece would have
+    # chosen on its own, so no piece is stretched past its own sampling.
+    target_dt = max(
+        float(deltat) * max(1, int(np.asarray(y).size // max(1, 2 * int(npx))))
+        for y, _t0, deltat in slices
+    )
+    prepared: "List[Tuple[np.ndarray, float, float]]" = []
+    for y, t0, deltat in slices:
+        step = max(1, int(round(target_dt / float(deltat))))
+        data = np.ascontiguousarray(np.asarray(y, dtype=np.float64)[::step])
+        if want_integrate:
+            data = np.cumsum(data) * float(deltat)
+        prepared.append((data, float(t0), float(deltat) * step))
 
-    step = max(1, int(y.size // max(1, 2 * int(npx))))
-    data = np.ascontiguousarray(y[::step], dtype=np.float64)
-    if want_integrate:
-        data = np.cumsum(data) * float(deltat)
-
-    peak = float(np.abs(data).max()) if data.size else 0.0
-    if peak > 0.0:
-        data = data / peak
-
-    if want_abs and data.size:
-        hilbert: Callable[[np.ndarray], np.ndarray] = getattr(sps, "hilbert")
-        data = np.abs(hilbert(data))
-        if color_scale == "sqrt":
-            data = np.sqrt(data)
-        elif color_scale == "log":
-            # map [0, 1] -> [0, 1] with log compression (log10(1)=0, log10(10)=1).
-            data = np.log10(data * 9.0 + 1.0)
-
-    return np.ascontiguousarray(data, dtype="<f4"), float(deltat) * float(step)
+    peak = max(
+        (float(np.abs(data).max()) if data.size else 0.0 for data, _t0, _dt in prepared),
+        default=0.0,
+    )
+    out: "List[Tuple[np.ndarray, float, float]]" = []
+    for data, t0, dt in prepared:
+        if peak > 0.0:
+            data = data / peak
+        if want_abs and data.size:
+            hilbert: Callable[[np.ndarray], np.ndarray] = getattr(sps, "hilbert")
+            data = np.abs(hilbert(data))
+            if color_scale == "sqrt":
+                data = np.sqrt(data)
+            elif color_scale == "log":
+                # map [0, 1] -> [0, 1] with log compression (log10(1)=0, log10(10)=1).
+                data = np.log10(data * 9.0 + 1.0)
+        out.append((np.ascontiguousarray(data, dtype="<f4"), t0, dt))
+    return out
 
 
 _WF_LUTS: Dict[str, np.ndarray] = {}
@@ -1071,7 +1582,6 @@ def _wf_rgba(
     hi: float,
     clip_lo: float,
     clip_hi: float,
-    symmetry: bool,
     reverse: bool,
     lut: np.ndarray,
 ) -> np.ndarray:
@@ -1079,20 +1589,19 @@ def _wf_rgba(
     float32 (its 4 little-endian bytes ARE the RGBA) so it rides the same
     zero-copy ``ys`` buffer; the frontend just reinterprets and blits. Mirrors the
     former Rust normalisation exactly: clip the ``[lo, hi]`` band by
-    ``clip_lo/clip_hi``, optional symmetry recentre + reverse, then LUT lookup."""
+    ``clip_lo/clip_hi``, optional reverse, then LUT lookup. Symmetry is not
+    handled here: in snuffler it constrains the clip *pair* (`set_symetry`,
+    gui/util.py:817), which the frontend enforces on the sliders themselves."""
     span = max(hi - lo, 1e-6)
     band_lo = lo + clip_lo * span
     band_hi = lo + clip_hi * span
-    if symmetry:
-        mid = 0.5 * (band_lo + band_hi)
-        half = 0.5 * (band_hi - band_lo)
-        band_lo = mid - half
-        band_hi = mid + half
     rng = max(band_hi - band_lo, 1e-6)
     tn = np.clip((strip.astype(np.float64) - band_lo) / rng, 0.0, 1.0)
     if reverse:
         tn = 1.0 - tn
-    idx = np.minimum((tn * 255.0).astype(np.int64), 255)
+    # matplotlib indexes its 256-entry LUT with int(t * 256) clipped to 255;
+    # * 255 picked every interior value's neighbour.
+    idx = np.minimum((tn * 256.0).astype(np.int64), 255)
     rgba = np.empty((idx.size, 4), dtype=np.uint8)
     rgba[:, :3] = lut[idx]
     rgba[:, 3] = 255
@@ -1108,7 +1617,9 @@ def _colorize_waterfall(meta: view_pb2.ViewMeta, ys: np.ndarray, req: view_pb2.V
     clip_hi = float(req.wf_clip_hi)
     if not clip_hi > clip_lo:
         clip_lo, clip_hi = 0.0, 1.0
-    symmetry = bool(req.wf_symmetry)
+    # Symmetry is a constraint the frontend applies to the clip pair (snuffler's
+    # `set_symetry`), so by the time the band arrives here it is already
+    # symmetric when it should be; no colour-side handling remains.
     reverse = bool(req.wf_reverse)
     for t in meta.tracks:
         if not t.nf:
@@ -1125,7 +1636,6 @@ def _colorize_waterfall(meta: view_pb2.ViewMeta, ys: np.ndarray, req: view_pb2.V
                 float(span.ymax),
                 clip_lo,
                 clip_hi,
-                symmetry,
                 reverse,
                 lut,
             )
@@ -1205,42 +1715,132 @@ def _gather_sort_value(tr: ptrace.Trace, sort: str, distances_3d: bool) -> Tuple
     return (float(round((azi + 15.0) / 30.0)), _sort_distance(net, sta, loc, distances_3d))
 
 
-def _gather_tracks(
-    traces: List[ptrace.Trace],
-    subsort: str,
-    visible_tmin: float,
-    visible_tmax: float,
-    sort: str = "name",
-    distances_3d: bool = False,
-) -> List[List[Tuple[int, ptrace.Trace]]]:
-    """Group traces into tracks the way snuffler gathers them.
+def _gather_key(
+    tr: ptrace.Trace, perm: Tuple[int, ...], sort: str, distances_3d: bool
+) -> Tuple[Any, ...]:
+    """A trace's row identity: the sort value followed by the subsort permutation
+    of the nslc id, exactly snuffler's gather key (`set_gathering`,
+    pile_viewer.py:1741)."""
+    return _gather_sort_value(tr, sort, distances_3d) + tuple(tr.nslc_id[i] for i in perm)
 
-    Snuffler's stack is one row per *gather key* — the sort value followed by the
-    subsort permutation of the nslc id (`set_gathering`) — and every segment of that
-    channel is painted onto that one row. Keying on the trace instead stacks a
-    channel with a gap once per segment, and scales each piece on its own; the two
-    only agree on gapless data, which is why it went unnoticed.
 
-    Rows keep the order the sort put them in, taken from where each key first
-    appears; within a row the segments run in time order. A row survives if any of
-    its segments falls in the window, so a gap that spans the whole view is the one
-    case that drops it.
+def _row_universe(
+    sort: str, subsort: str, distances_3d: bool
+) -> List[Tuple[Tuple[Any, ...], ptrace.Trace]]:
+    """The track rows of the whole pile, in draw order.
+
+    Snuffler's stack is one row per gather key of *every* blacklist-selected trace
+    (`set_gathering` keys the pile, pile_viewer.py:1750), whether or not it has
+    data in the window — a channel with no data on screen keeps its labelled empty
+    row, so panning across a gap cannot reshuffle the stack. Rows are ordered by
+    the same key the traces sort by; each carries a representative trace for the
+    label and the annotation.
     """
+    selected = _visible_traces()
+    order = _sort_order(selected, sort, subsort, distances_3d)
     perm = _subsort_perm(subsort)
-    groups: Dict[Tuple[Any, ...], List[Tuple[int, ptrace.Trace]]] = {}
-    for index, tr in enumerate(traces):
-        display_tmin, display_tmax = _display_time_span(tr)
-        if display_tmax < visible_tmin or display_tmin > visible_tmax:
-            continue
-        key = _gather_sort_value(tr, sort, distances_3d) + tuple(tr.nslc_id[i] for i in perm)
-        groups.setdefault(key, []).append((index, tr))
-    # Time order within a row, with the nslc id as a tiebreak: two traces can start at
-    # the same instant when the row groups several channels together, and a stack that
-    # reshuffles between identical requests is worse than either order.
-    return [
-        sorted(members, key=lambda item: (item[1].tmin, item[1].nslc_id))
-        for members in groups.values()
-    ]
+    rows: "OrderedDict[Tuple[Any, ...], ptrace.Trace]" = OrderedDict()
+    for i in order:
+        tr = selected[i]
+        rows.setdefault(_gather_key(tr, perm, sort, distances_3d), tr)
+    return list(rows.items())
+
+
+def _pile_color_keys(subsort: str) -> List[str]:
+    """Snuffler's `color_keys` (`pile.gather_keys(color)`, pile_viewer.py:1753):
+    the distinct values of the subsort's coloring function over the whole pile —
+    no blacklist, no window — in sorted order. The trace palette numbers over this
+    list, so a key keeps its colour as the view scrolls; numbering over the
+    visible slice instead recolours the same station on every scroll, which
+    snuffler cannot do.
+
+    The per-subsort coloring functions are the second halves of snuffler's subsort
+    `menudef` (pile_viewer.py:1020): location for NSLC and the two grouped-by-
+    location modes, channel for NSCL/SNCL/LNSC, and the net+sta+loc composite for
+    CNSL — dot-joined here, which sorts identically to snuffler's tuple since
+    the codes cannot contain dots.
+    """
+
+    def color(tr: ptrace.Trace) -> str:
+        if subsort in ("nslc", "nsc_l", "snc_l"):
+            return tr.nslc_id[2]
+        if subsort == "cnsl":
+            return "%s.%s.%s" % (tr.nslc_id[0], tr.nslc_id[1], tr.nslc_id[2])
+        return tr.nslc_id[3]
+
+    return sorted({color(tr) for tr in _TRACES})
+
+
+def _box_styles() -> Dict[Tuple[Any, ...], int]:
+    """Snuffler's `determine_box_styles` (pile_viewer.py:2947): walk the pile's
+    traces in `full_id` order and step the style index at every discontinuity in
+    (nslc, deltat, adjacency), so each contiguous run of files shares a tint and
+    neighbouring runs alternate. Keyed per (full_id, deltat) exactly as Qt keys
+    `trace_styles`; cached until the pile changes, as Qt recomputes only on a
+    pile change."""
+    global _BOX_STYLES, _BOX_STYLES_GEN
+    if _BOX_STYLES_GEN == _DATA_GEN:
+        return _BOX_STYLES
+    traces = sorted(_TRACES, key=lambda tr: tr.full_id)
+    istyle = 0
+    styles: Dict[Tuple[Any, ...], int] = {}
+    previous: Optional[ptrace.Trace] = None
+    for tr in traces:
+        if previous is not None and not (
+            previous.nslc_id == tr.nslc_id
+            and previous.deltat == tr.deltat
+            and abs(previous.tmax - tr.tmin) < _GAP_LAP_TOLERANCE * tr.deltat
+        ):
+            istyle += 1
+        styles[(tr.full_id, tr.deltat)] = istyle
+        previous = tr
+    _BOX_STYLES = styles
+    _BOX_STYLES_GEN = _DATA_GEN
+    return styles
+
+
+def _trace_boxes_by_row(
+    tmin: float,
+    tmax: float,
+    row_index: Dict[Tuple[Any, ...], int],
+    perm: Tuple[int, ...],
+    sort: str,
+    distances_3d: bool,
+) -> Dict[int, List[Tuple[float, float, int]]]:
+    """Snuffler's trace boxes (`draw_trace_boxes`, pile_viewer.py:2968): the
+    pile's data coverage per row over the view window.
+
+    Sourced from the pile rather than the fetched cutout, which is the property
+    that matters: a channel `min_deltat_allow` declined to fetch still reports
+    where its data lies, so a view zoomed far beyond the data keeps an anchor to
+    navigate back to. One box per overlapping trace, or — above Qt's 500-trace
+    threshold — one per (row, style) batch spanning first-appended `tmin` to
+    last-appended `tmax` in `full_id` order, quirks and all."""
+    styles = _box_styles()
+    overlapping = [tr for tr in _TRACES if tr.overlaps(tmin, tmax) and _trace_selected(tr)]
+    overlapping.sort(key=lambda tr: tr.full_id)
+    boxes: Dict[int, List[Tuple[float, float, int]]] = {}
+    if len(overlapping) < 500:
+        for tr in overlapping:
+            row = row_index.get(_gather_key(tr, perm, sort, distances_3d))
+            if row is None:
+                continue
+            style = styles.get((tr.full_id, tr.deltat), 0)
+            boxes.setdefault(row, []).append((float(tr.tmin), float(tr.tmax), style))
+    else:
+        merged: "OrderedDict[Tuple[int, int], Tuple[float, float]]" = OrderedDict()
+        for tr in overlapping:
+            row = row_index.get(_gather_key(tr, perm, sort, distances_3d))
+            if row is None:
+                continue
+            style = styles.get((tr.full_id, tr.deltat), 0)
+            bounds = merged.get((row, style))
+            merged[(row, style)] = (
+                (float(tr.tmin), float(tr.tmax)) if bounds is None else (bounds[0], float(tr.tmax))
+            )
+        for (row, style), (btmin, btmax) in merged.items():
+            boxes.setdefault(row, []).append((btmin, btmax, style))
+    return boxes
 
 
 class _SpanBuild(NamedTuple):
@@ -1263,8 +1863,9 @@ class _SpanBuild(NamedTuple):
 def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
     """Compute the requested view (wiggle waveforms or a Qt-style waterfall).
 
-    Returns (ViewMeta, ys). For wiggles `ys` holds raw uniform samples at close
-    zooms, or explicit `(t_rel, y)` extrema points for reduced long-window views.
+    Returns (ViewMeta, ys).
+    For wiggles `ys` holds uniform samples at the native or anti-alias-decimated
+    rate.
     For the waterfall it holds per-track normalized amplitude strips for the
     requested track page.
     """
@@ -1309,21 +1910,49 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     wf_abs = bool(req.wf_abs)
     wf_integrate = bool(req.wf_integrate)
     wf_color_scale = req.wf_color_scale or "lin"
-    scale_context = _scale_context(req)
+    visible_length = float(req.visible_length) if req.HasField("visible_length") else 20_000.0
+    liberal_fetch = bool(req.liberal_fetch)
 
-    traces = list(_visible_traces())
+    _VIEW_NOTICES.clear()
+    traces = _prepare_cutout(
+        tmin,
+        tmax,
+        visible_length=visible_length,
+        hp=hp,
+        lp=lp,
+        demean=demean,
+        degap=degap,
+        fft=fft,
+        lphp=lphp,
+        ads=allow_ds,
+        remove_resp=remove_response,
+        rotate=rotate,
+        liberal_fetch=liberal_fetch,
+    )
     perf_visible = time.monotonic()
-    if degap:
-        try:
-            traces = _degap(traces)
-        except Exception:
-            pass
-    order = _sort_order(traces, sort, subsort, bool(req.distances_3d))
-    work = [traces[i] for i in order]
-    work = _apply_rotation(work, rotate)
+    distances_3d = bool(req.distances_3d)
+    perm = _subsort_perm(subsort)
+    # The row stack comes from the whole pile, not from what the cutout returned:
+    # a channel with no data in the window (or one min_deltat_allow declined to
+    # fetch) keeps its labelled, empty row exactly as it does under snuffler.
+    rows = _row_universe(sort, subsort, distances_3d)
+    row_index = {key: idx for idx, (key, _head) in enumerate(rows)}
+    members_by_row: List[List[Tuple[int, ptrace.Trace]]] = [[] for _ in rows]
+    for index, tr in enumerate(traces):
+        row = row_index.get(_gather_key(tr, perm, sort, distances_3d))
+        if row is not None:
+            members_by_row[row].append((index, tr))
+    # Pile-backed data coverage per row, drawn as Qt's trace boxes. The painter
+    # gates boxes on view mode and the Show Boxes option, as Qt's drawit does.
+    boxes_by_row: Dict[int, List[Tuple[float, float, int]]] = (
+        {}
+        if mode == "waterfall"
+        else _trace_boxes_by_row(tmin, tmax, row_index, perm, sort, distances_3d)
+    )
     perf_prepare = time.monotonic()
 
     meta = view_pb2.ViewMeta(view_tmin=tmin, view_tmax=tmax)
+    meta.color_keys.extend(_pile_color_keys(subsort))
     ys_parts: List[np.ndarray] = []
     range_traces: List[ptrace.Trace] = []
     data_ranges: Dict[Any, Tuple[float, float]] = {}
@@ -1335,17 +1964,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     view_idx = 0
     wanted_tracks = 0
     sample_tracks = 0
-    # Everything the fast path does not handle needs the `trace.minmax` path,
-    # whatever the grouping — asking `scaling_group != "individual"` instead left
-    # the Robust and Mean±Nσ bases with no range at all in the default grouping, so
-    # they flattened the display to ymin=0, ymax=1.
-    need_group_range = not fast_individual_minmax
-    perm = _subsort_perm(subsort)
-    for members in _gather_tracks(
-        work, subsort, visible_tmin, visible_tmax, sort, bool(req.distances_3d)
-    ):
+    for row_idx, (_row_key, head) in enumerate(rows):
+        # Time order within a row, with the nslc id as a tiebreak: two traces can
+        # start at the same instant when the row groups several channels together,
+        # and a stack that reshuffles between identical requests is worse than
+        # either order.
+        members = sorted(members_by_row[row_idx], key=lambda item: (item[1].tmin, item[1].nslc_id))
         wanted_tracks += 1
-        head = members[0][1]
         # A row is named by what it groups on: an element the rows merge over drops
         # out of the label and becomes '*' in the identity rather than showing one
         # member's value. Both are snuffler's own representations — its track label
@@ -1353,7 +1978,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         # element, which is what keeps a marker matched to its row even when the
         # marker's own location has no data in the window.
         net, sta, loc, cha = (head.nslc_id[i] if i in perm else "*" for i in range(4))
-        label = ".".join(head.nslc_id[i] for i in range(4) if i in perm)
+        # The label is snuffler's: the gather key space-joined, sort value first,
+        # nslc elements in the subsort's permuted order, `None`s skipped and the
+        # empty location kept (`plabel`, pile_viewer.py:3521) — so the subsort is
+        # visible in the label and a distance-sorted row reads "123 km XX STA01
+        # HHZ" here as it does there.
+        nslc_part = " ".join(head.nslc_id[i] for i in perm)
+        label = nslc_part
         # The head's own location, not the row identity's '*': a row that merges over
         # locations still holds instruments at one distance, because the gather key
         # carries that distance. Reading it off '*' would fall back to whichever
@@ -1361,64 +1992,59 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         annotation = _sort_annotation(
             head.nslc_id[0], head.nslc_id[1], head.nslc_id[2], sort, bool(req.distances_3d)
         )
+        if annotation:
+            label = "%s %s" % (annotation, nslc_part)
         want_samples = track_offset <= view_idx < track_end
         if want_samples:
             sample_tracks += 1
         view_idx += 1
 
-        # Built before the track is added, because a track whose every segment
-        # fails to process is left out of the stack entirely rather than drawn
-        # empty, and `offset` must not advance for a payload nobody receives.
         spans: List[_SpanBuild] = []
         nf = 0
         fmax = 0.0
-        for tr_idx, tr in members:
-            if not (want_samples or (mode != "waterfall" and need_group_range)):
+        wf_slices: "List[Tuple[np.ndarray, float, float, ptrace.Trace]]" = []
+        for _tr_idx, tr in members:
+            # Data and scale ranges for the requested track page only: snuffler's
+            # trace_selector restricts the chopper to `shown_tracks_range`
+            # (pile_viewer.py:1798), so its group scales range over the shown
+            # rows — scrolling the stack changes a common scale there, and now
+            # here too.
+            if not want_samples:
                 continue
-            track_key = (
-                tr_idx,
-                tuple(tr.nslc_id),
-                _float_key(float(tr.tmin)),
-                _float_key(float(tr.tmax)),
-                _float_key(float(tr.deltat)),
-                int(tr.data_len()),
-                _float_key(rotate),
-                bool(remove_response),
-                bool(degap),
-            )
-            entry = _processed_trace(
-                tr, track_key, tmin, tmax, hp, lp, demean, fft, lphp, remove_response
-            )
-            if entry is None:
+            # `tr` is already processed and chopped to the requested window plus
+            # four samples per side — exactly the trace snuffler is about to draw.
+            if tr.ydata is None or not len(tr.ydata):
                 continue
+            entry = (
+                float(tr.tmin),
+                float(tr.deltat),
+                np.asarray(tr.get_ydata(), dtype=np.float64),
+            )
 
             if mode == "waterfall":
                 sliced = _slice_segment(entry, tmin, tmax, 4.0)
                 if sliced is None:
                     continue
                 yview, ytmin, deltat, _sample_offset = sliced
-                strip, dt = _waterfall_trace(
-                    yview, deltat, npx, wf_abs, wf_integrate, wf_color_scale
-                )
-                if not strip.size:
-                    continue
-                nf = 1
-                wf_range = (float(strip.min()), float(strip.max())) if wf_abs else None
-                spans.append(_SpanBuild(ytmin - tmin, dt, int(strip.size), strip, tr, wf_range))
+                # Collected per row and normalised together below, so every
+                # segment of the row shares one colour scale and one stride.
+                wf_slices.append((yview, float(ytmin), float(deltat), tr))
                 continue
 
-            data_sliced = _slice_segment(entry, tmin, tmax, 4.0) if want_samples else None
-            scale_sliced = (
-                _slice_segment(entry, scale_tmin, scale_tmax, 0.0)
-                if fast_individual_minmax or need_group_range
-                else None
-            )
+            data_sliced = _slice_segment(entry, tmin, tmax, 4.0)
+            # Four samples of margin on the scale slice too: snuffler's minmax
+            # runs over the final chopped traces, which the chop widened by four
+            # samples at each end (pile_viewer.py:3894).
+            scale_sliced = _slice_segment(entry, scale_tmin, scale_tmax, 4.0)
             if scale_sliced is not None:
                 yrange, yrmin, rdt, _range_offset = scale_sliced
                 if fast_individual_minmax:
                     # Merged, not overwritten: the segments of one channel share a
                     # scaling key, so the range has to span all of them.
-                    lo, hi = float(np.min(yrange)), float(np.max(yrange))
+                    # nanmin/nanmax because `trace.minmax` uses them
+                    # (trace.py:2549): Qt ignores a NaN sample and produces a
+                    # real range, so the fast path must too.
+                    lo, hi = float(np.nanmin(yrange)), float(np.nanmax(yrange))
                     previous = data_ranges.get(tr.nslc_id)
                     data_ranges[tr.nslc_id] = (
                         (lo, hi)
@@ -1429,18 +2055,47 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                     range_traces.append(_range_trace(tr.nslc_id, yrmin, rdt, yrange))
             if data_sliced is None:
                 continue
-            yview, ytmin, deltat, sample_offset = data_sliced
-            target = npx if allow_ds else len(yview)
-            y, count, dt = _decimate(yview, deltat, target, allow_ds, sample_offset)
-            if count:
-                spans.append(_SpanBuild(ytmin - tmin, dt, int(count), y, tr))
+            yview, ytmin, deltat, _sample_offset = data_sliced
+            # The payload is the samples themselves, always: with Allow
+            # Downsampling on the data was already anti-alias decimated by
+            # `Trace.downsample` inside the cutout, exactly as Qt decimates —
+            # there is no separate display envelope to substitute for it.
+            if yview.size:
+                spans.append(
+                    _SpanBuild(ytmin - tmin, deltat, int(yview.size), yview.astype("<f4"), tr)
+                )
 
-        if want_samples and not spans:
+        if wf_slices:
+            strips = _waterfall_row_strips(
+                [(y, t0, dt) for y, t0, dt, _tr in wf_slices],
+                npx,
+                wf_abs,
+                wf_integrate,
+                wf_color_scale,
+            )
+            for (strip, t0, dt), (_y, _t0, _dt, tr) in zip(strips, wf_slices, strict=True):
+                if not strip.size:
+                    continue
+                nf = 1
+                wf_range = (float(strip.min()), float(strip.max())) if wf_abs else None
+                spans.append(_SpanBuild(t0 - tmin, dt, int(strip.size), strip, tr, wf_range))
+        # In waterfall mode a row without an image strip is dropped; a wiggle row
+        # is kept even with no spans — snuffler's stack is one labelled row per
+        # pile gather key, occupied or not.
+        if mode == "waterfall" and not spans:
             continue
         t = meta.tracks.add()
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
         t.sort_annotation = annotation
+        # Boxes only for the requested track page, like the spans: rows outside
+        # it are stack placeholders the painter never shows.
+        if want_samples:
+            for btmin, btmax, bstyle in boxes_by_row.get(row_idx, []):
+                box = t.boxes.add()
+                box.tmin = btmin
+                box.tmax = btmax
+                box.style = bstyle
         if mode == "waterfall":
             t.nf = int(nf)
             t.fmax = fmax
@@ -1470,7 +2125,6 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 span.ymin = lo
                 span.ymax = hi
     elif range_traces or data_ranges:
-        global _OLD_DATA_RANGE_CONTEXT
         if range_traces:
             mode_param, outer_mode = _scaling_base_modes(base)
 
@@ -1487,12 +2141,18 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             data_ranges.update(
                 {key: (float(lo), float(hi)) for key, (lo, hi) in raw_ranges.items()}
             )
-        if fix_scale_ranges and _OLD_DATA_RANGE_CONTEXT == scale_context:
+        # Exactly snuffler's freeze (pile_viewer.py:3281): remember the live
+        # ranges while the option is off, serve the remembered ones while it is
+        # on, with no notion of what produced them — they survive filter, sort
+        # and pile changes, which is what makes "freeze, change the passband,
+        # compare amplitudes" work. One deliberate improvement: a *copy* is
+        # stored where Qt keeps an alias, so ':scaling' overrides applied below
+        # cannot leak into what gets remembered.
+        if fix_scale_ranges:
             data_ranges.update(_OLD_DATA_RANGES)
-        elif not fix_scale_ranges:
+        else:
             _OLD_DATA_RANGES.clear()
             _OLD_DATA_RANGES.update(data_ranges)
-            _OLD_DATA_RANGE_CONTEXT = scale_context
 
         # ':scaling' overrides land after minmax + fix-range and before make_scale
         # divides by gain, exactly Qt's order (pile_viewer apply_scaling_hooks).
@@ -1514,19 +2174,25 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             # An equal range is real data — a dead channel pinned at one value — and
             # AutoScaler pads it to ±1 around the value, exactly as snuffler centres
             # such a flatline.
-            # Only a non-finite or inverted range has no meaning.
+            # Only a non-finite or inverted range has no meaning. With nanmin /
+            # nanmax upstream (matching `trace.minmax`) the non-finite case is an
+            # *all*-NaN slice, where Qt hands AutoScaler NaN and draws a nonsense
+            # axis — a crash-shaped behaviour not worth reproducing.
             if not math.isfinite(dymin) or not math.isfinite(dymax) or dymax < dymin:
                 dymin, dymax = 0.0, 1.0
-            ymin, ymax, _yinc = yscaler.make_scale((dymin / gain, dymax / gain))
+            ymin, ymax, yinc = yscaler.make_scale((dymin / gain, dymax / gain))
             ymin = float(ymin)
             ymax = float(ymax)
-            if ymax <= ymin:
-                ymax = ymin + 1e-12
             half = max(0.5 * (ymax - ymin), 1e-12)
             span.ymin = ymin
             span.ymax = ymax
             span.ymean = 0.5 * (ymin + ymax)
             span.yscale = max(gain * half, 1e-12)
+            # The scaler's tick increment and label exponent ride along so 'Show
+            # Scale Axes' draws snuffler's exact ticks and numbers
+            # (pile_viewer.py:3357) — Qt reads both off this same AutoScaler.
+            span.yinc = float(yinc)
+            span.yexp = int(yscaler.make_exp(yinc)) if float(yinc) > 0.0 else 0
 
     perf_scale = time.monotonic()
     ys = (
@@ -1536,6 +2202,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     )
     if mode == "waterfall" and ys.size:
         _colorize_waterfall(meta, ys, req)
+    meta.notices.extend(_VIEW_NOTICES)
     perf_concat = time.monotonic()
     _maybe_log_view_perf(
         mode,
@@ -1544,7 +2211,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         npx,
         track_offset,
         track_count,
-        len(work),
+        len(traces),
         wanted_tracks,
         sample_tracks,
         int(ys.size),
@@ -1557,10 +2224,6 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         time.monotonic(),
     )
     return meta, ys
-
-
-def _is_stalta_trace(tr: ptrace.Trace) -> bool:
-    return bool(tr.nslc_id[3].endswith("-STALTA"))
 
 
 def _is_tabu_trace(tr: ptrace.Trace) -> bool:
@@ -1643,17 +2306,30 @@ def _render_figure_png(
     return figure_pb2.FigureResult(png=buf.getvalue(), width=int(width), height=int(height))
 
 
-def _figure_work_traces(view: view_pb2.ViewParams) -> List[ptrace.Trace]:
-    """The visible traces a figure snuffling operates on: name-sorted, rotated to
-    the current component rotation, restricted to the shown track window — the
-    same selection the waveform view shows."""
-    rotate = float(view.rotate)
-    vis = _visible_traces()
-    order = sorted(range(len(vis)), key=lambda i: vis[i].nslc_id)
-    work = _apply_rotation([vis[i] for i in order], rotate)
+def _inview_work_traces(view: view_pb2.ViewParams) -> List[ptrace.Trace]:
+    """The traces a `mode='inview'` snuffling operates on: every visible trace
+    whose gather-key row lies in the shown track window — Qt's
+    `trace_selector` tests row membership (pile_viewer.py:1798), so a grouped
+    row contributes *all* its members, not one list slot per track. Returned
+    in the pile chopper's `full_id` order (`_process_chopped`, pile.py:1213),
+    not the viewer's sort, and never rotated: `chopper_selected_traces` hands
+    snufflings the pile's data, with the GUI rotation explicitly not respected
+    (snuffling.py:985)."""
+    sort = view.sort or "name"
+    subsort = view.subsort or "nslc"
+    distances_3d = bool(view.distances_3d)
+    rows = _row_universe(sort, subsort, distances_3d)
+    row_index = {key: i for i, (key, _tr) in enumerate(rows)}
     track_offset = max(0, int(view.track_offset))
-    track_count = max(0, int(view.track_count) or len(work))
-    return work[track_offset : track_offset + track_count]
+    track_count = max(0, int(view.track_count) or len(rows))
+    lo, hi = track_offset, track_offset + track_count
+    perm = _subsort_perm(subsort)
+    inview = [
+        tr
+        for tr in _visible_traces()
+        if lo <= row_index.get(_gather_key(tr, perm, sort, distances_3d), -1) < hi
+    ]
+    return sorted(inview, key=lambda tr: tr.full_id)
 
 
 def _fig_ampspec(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
@@ -1664,22 +2340,23 @@ def _fig_ampspec(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
     are pyrocko's, so nothing is reimplemented."""
     from matplotlib import cm
 
-    view = req.view
-    tmin, tmax = float(view.tmin), float(view.tmax)
     spectrum = req.snufflings.spectrum
     want_smoothing = bool(spectrum.spec_smoothing)
     bandwidth = float(spectrum.spec_smoothing_bandwidth or 40.0)
 
+    # The selected markers' spans *with their channel patterns*, else the
+    # visible window — the run scope Qt gives every snuffling
+    # (`chopper_selected_traces`, ampspec.py:61).
+    # The batches arrive marker-outer, so the per-segment colours follow Qt's
+    # order, and the chopper degaps: a channel split across files contributes
+    # one spectrum, not one per fragment.
     segs: List[ptrace.Trace] = []
-    for tr in _figure_work_traces(view):
-        try:
-            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
-        except Exception:  # noqa: BLE001 — skip traces with no data in the window
-            continue
-        if seg.ydata is None or len(seg.ydata) < 8:
-            continue
-        seg.ydata = seg.ydata.astype(np.float64)
-        segs.append(seg)
+    for batch in _chopper_selected_traces(req):
+        for seg in batch.traces:
+            if seg.ydata is None or len(seg.ydata) < 8:
+                continue
+            seg.ydata = seg.ydata.astype(np.float64)
+            segs.append(seg)
 
     if not segs:
         raise _FigureEmpty("No data in the visible window.")
@@ -1696,11 +2373,17 @@ def _fig_ampspec(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
         if freq.size > 2:
             flimits.append(float(freq[1]))
             flimits.append(float(freq[-1]))
-        labsa = np.log(absa + 1e-30)
-        std = float(np.std(labsa))
-        mean = float(np.mean(labsa))
-        alimits.append(math.exp(mean - 5.0 * std))
-        alimits.append(math.exp(mean + 5.0 * std))
+        # The y-limit statistics run over the *positive* bins only: Qt's bare
+        # `log(0)` propagates -inf into mean and std; flooring the log instead
+        # lets one flatlined channel drag the shared axis thirty decades down
+        # and squash every real spectrum. Masking is the honest version of both.
+        positive = absa[absa > 0.0]
+        if positive.size:
+            labsa = np.log(positive)
+            std = float(np.std(labsa))
+            mean = float(np.mean(labsa))
+            alimits.append(math.exp(mean - 5.0 * std))
+            alimits.append(math.exp(mean + 5.0 * std))
         color = colors[i]
         label = ".".join(seg.nslc_id)
         axes.plot(freq, absa, c=color, alpha=alpha, label=label)
@@ -1756,11 +2439,35 @@ def _spectro_cmap(name: str) -> Any:
     return pplot.mpl_get_cmap(name)
 
 
+def _spectrogram_inventory(
+    req: snuffling_pb2.SnufflingRequestParams, tinc: float, tpad: float
+) -> Tuple[float, float, List[Tuple[NslcId, float]]]:
+    """Prescan Qt's chopper stream into unique channel/sample-rate panels."""
+    times: List[float] = []
+    sampling: Dict[NslcId, "set[float]"] = {}
+    for batch in _chopper_selected_traces(
+        req,
+        mode="inview",
+        tinc=tinc,
+        tpad=tpad,
+        want_incomplete=False,
+        load_data=False,
+    ):
+        times.extend((float(batch.tmin), float(batch.tmax)))
+        for trace in batch.traces:
+            sampling.setdefault(trace.nslc_id, set()).add(float(trace.deltat))
+    if not times or not sampling:
+        raise _FigureEmpty("No visible traces to compute a spectrogram for.")
+    panels = sorted((nslc, deltat) for nslc, values in sampling.items() for deltat in values)
+    return min(times), max(times), panels
+
+
 def _fig_spectrogram(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
     """Spectrogram of each visible channel — a faithful port of pyrocko's
-    ``snufflings/spectrogram.py``: a windowed STFT (taper + overlap) plotted as a
-    ``pcolormesh`` PSD grid with the spectro/rainbow colour table and log/sqrt/lin
-    colour scaling. The FFT and PSD normalisation are pyrocko's."""
+    ``snufflings/spectrogram.py``: an absolute window grid (NaN where a window is
+    incomplete), pyrocko's PSD normalisation, the `nt_max`/`nf_max` size guards,
+    one *shared* colour scale with a colorbar so the panels are comparable, a
+    formatted time axis, and the `2/twin` frequency floor."""
     p = req.snufflings.spectrogram
     twin = float(p.spectrogram_twin or 100.0)
     overlap = float(p.spectrogram_overlap or 75.0)
@@ -1768,12 +2475,14 @@ def _fig_spectrogram(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> Non
     fmin = float(p.spectrogram_fmin) if p.HasField("spectrogram_fmin") else None
     fmax = float(p.spectrogram_fmax) if p.HasField("spectrogram_fmax") else None
     color_scale = p.spectrogram_color_scale or "log"
+    # Qt's image-size guards (spectrogram.py:91): more grid columns or rows than
+    # this would build an unreasonably large mesh — a limit that matters more in
+    # a browser, not less.
+    nt_max, nf_max = 2000, 500
 
-    view = req.view
-    tmin, tmax = float(view.tmin), float(view.tmax)
-    work = _figure_work_traces(view)
-    if not work:
-        raise _FigureEmpty("No visible traces to compute a spectrogram for.")
+    def downsample_plan(n: int, n_max: int) -> Tuple[int, int]:
+        n_mean = (n - 1) // n_max + 1
+        return n // n_mean, n_mean
 
     tapers = {
         "Hanning": np.hanning,
@@ -1788,65 +2497,128 @@ def _fig_spectrogram(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> Non
     tinc = twin - 2.0 * tpad
     if tinc <= 0.0:
         raise _FigureEmpty("Overlap is too high for the window length.")
+    tmin, tmax, panels = _spectrogram_inventory(req, tinc, tpad)
 
-    n = len(work)
+    nt = int(round((tmax - tmin) / tinc))
+    if nt > nt_max:
+        _, nt_mean = downsample_plan(nt, nt_max)
+        raise _FigureEmpty(
+            "Number of samples in spectrogram time axis: %i. Resulting image "
+            "will be unreasonably large. Consider increasing window length to "
+            "about %g s." % (nt, (tinc * nt_mean) / (1.0 - overlap / 100.0))
+        )
+    if nt < 1:
+        raise _FigureEmpty("The window is shorter than one spectrogram column.")
+
+    n = len(panels)
     ncols = (n - 1) // 5 + 1
     nrows = (n - 1) // ncols + 1
     plotted = 0
-    for i, tr in enumerate(work):
-        try:
-            base = tr.chop(tmin, tmax, inplace=False, include_last=True)
-        except Exception:  # noqa: BLE001 — skip channels with no data in the window
+    zvalues: List[float] = []
+    meshes: List[Any] = []
+    axes_list: List[Any] = []
+    for i, (nslc, deltat) in enumerate(panels):
+        nsamples_want = int(math.floor((tinc + 2.0 * tpad) / deltat))
+        if nsamples_want < 4:
             continue
-        deltat = float(base.deltat)
-        nwin = int(math.floor(twin / deltat))
-        if nwin < 4 or base.ydata is None or len(base.ydata) < nwin:
-            continue
-        nfft = 1 << (nwin - 1).bit_length()  # next power of two
+        nfft = 1 << (nsamples_want - 1).bit_length()  # next power of two
         df = 1.0 / (deltat * nfft)
         nf = nfft // 2 + 1
         ifmin = int(math.ceil(fmin / df)) if fmin else 0
         ifmax = min(int(math.floor(fmax / df)) + 1, nf) if fmax else nf
-        if ifmax - ifmin < 2:
+        nf_show = ifmax - ifmin
+        if nf_show < 2:
             continue
-        win = taper_fn(nwin)
+        nf_show_ds, nf_mean = downsample_plan(nf_show, nf_max)
+        win = taper_fn(nsamples_want)
         wnorm = deltat * 2.0 / (df * float(np.sum(win**2)))
-        step = max(1, int(round(tinc / deltat)))
-        ydata = base.ydata.astype(np.float64)
-        cols: List[np.ndarray] = []
-        times: List[float] = []
-        start = 0
-        while start + nwin <= len(ydata):
-            seg = ydata[start : start + nwin].copy()
-            seg -= seg.mean()
-            seg *= win
-            spec = np.abs(np.fft.rfft(seg, n=nfft))[ifmin:ifmax] ** 2 * wnorm
-            cols.append(spec)
-            times.append(base.tmin + (start + nwin * 0.5) * deltat)
-            start += step
-        if len(cols) < 2:
-            continue
-        amps = np.asarray(cols).T  # [frequency, time]
         freqs = np.arange(ifmin, ifmax) * df
+        if nf_mean != 1:
+            nf_trim = (nf_show // nf_mean) * nf_mean
+            freqs = np.mean(freqs[:nf_trim].reshape((-1, nf_mean)), axis=1)
+        amps = np.full((nf_show_ds, nt), np.nan)
+        have_data = False
+
+        def wanted_trace(trace: ptrace.Trace, expected: NslcId = nslc) -> bool:
+            return trace.nslc_id == expected
+
+        for batch in _chopper_selected_traces(
+            req,
+            mode="inview",
+            trace_filter=wanted_trace,
+            tinc=tinc,
+            tpad=tpad + deltat,
+            want_incomplete=False,
+        ):
+            traces = batch.traces
+            if len(traces) != 1:
+                continue
+            trace = traces[0]
+            if float(trace.deltat) != deltat:
+                raise ValueError(
+                    "Unexpected sampling rate on channel %s: %g"
+                    % (".".join(nslc), float(trace.deltat))
+                )
+            trace.chop(float(batch.tmin) - tpad, trace.tmax, inplace=True)
+            if trace.ydata is None:
+                continue
+            trace.set_ydata(trace.ydata[:nsamples_want])
+            if trace.data_len() != nsamples_want:
+                continue
+            y = trace.ydata.astype(np.float64)
+            y = (y - y.mean()) * win
+            a = np.abs(np.fft.rfft(y, n=nfft))[ifmin:ifmax] ** 2 * wnorm
+            if nf_mean != 1:
+                nf_trim = (nf_show // nf_mean) * nf_mean
+                a = np.mean(a[:nf_trim].reshape((-1, nf_mean)), axis=1)
+            tmid = 0.5 * (float(trace.tmax) + float(trace.tmin))
+            index = int(round((tmid - tmin) / tinc))
+            if index < 0 or nt <= index:
+                continue
+            amps[:, index] = a
+            have_data = True
+        if not have_data:
+            continue
+        times = tmin + 0.5 * tinc + tinc * np.arange(nt)
         if color_scale == "log":
-            amps = np.log(amps + 1e-30)
+            with np.errstate(divide="ignore"):
+                amps = np.log(amps)
         elif color_scale == "sqrt":
             amps = np.sqrt(amps)
-        mean_a, std_a = float(np.nanmean(amps)), float(np.nanstd(amps))
-        zmin = max(float(np.nanmin(amps)), mean_a - 3.0 * std_a)
-        zmax = min(float(np.nanmax(amps)), mean_a + 3.0 * std_a)
+        finite = amps[np.isfinite(amps)]
+        if not finite.size:
+            continue
+        mean_a, std_a = float(np.mean(finite)), float(np.std(finite))
+        zvalues.append(max(float(np.min(finite)), mean_a - 3.0 * std_a))
+        zvalues.append(min(float(np.max(finite)), mean_a + 3.0 * std_a))
         icol, irow = i % ncols, i // ncols
         axes = fig.add_subplot(nrows, ncols, irow * ncols + icol + 1)
-        axes.pcolormesh(
-            np.asarray(times), freqs, amps, cmap=cmap, shading="gouraud", vmin=zmin, vmax=zmax
-        )
-        axes.set_title(".".join(x for x in tr.nslc_id if x), fontsize=9)
+        mesh = axes.pcolormesh(times, freqs, amps, cmap=cmap, shading="gouraud")
+        # Qt's frequency floor: `2/twin` when no explicit fmin is set
+        # (spectrogram.py:324) — below that a window holds under two cycles.
+        axes.set_ylim(fmin if fmin else 2.0 / twin, fmax if fmax else float(freqs[-1]))
+        axes.set_title(".".join(code for code in nslc if code), fontsize=9)
         axes.set_ylabel("Frequency [Hz]")
+        axes.grid(color="black", alpha=0.3)
+        try:
+            from pyrocko import plot as pplot
+
+            pplot.mpl_time_axis(axes, 10.0 / ncols)
+        except Exception:  # noqa: BLE001 — fall back to epoch seconds
+            pass
+        meshes.append(mesh)
+        axes_list.append(axes)
         plotted += 1
 
     if plotted == 0:
         raise _FigureEmpty("Not enough data in the window for the chosen window length.")
-    fig.tight_layout()
+    # One shared colour scale plus a colorbar (Qt's `psd` colour dim), so the
+    # panels are comparable — the whole point of drawing them side by side.
+    zmin, zmax = min(zvalues), max(zvalues)
+    for mesh in meshes:
+        mesh.set_clim(zmin, zmax)
+    label = {"log": "log PSD", "sqrt": "sqrt PSD"}.get(color_scale, "PSD")
+    fig.colorbar(meshes[-1], ax=axes_list, label=label)
 
 
 def _pca(data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
@@ -1866,6 +2638,10 @@ def _pca(data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, f
     return cov, evals, evecs, azimuth, incidence
 
 
+# "Fix Scale" (polarization panel): the per-station amplitude scale of the last
+# run, reused while the switch is on so successive windows plot comparably.
+_POL_FIXED_AMAX: Dict[Tuple[str, str, str], float] = {}
+
 _POL_COLORS = {
     "line": "#204a87",  # sky blue 3 (tango)
     "rot": "#a40000",  # scarlet red 3
@@ -1875,42 +2651,140 @@ _POL_COLORS = {
 }
 
 
+_POL_SCHEMES: List[List[str]] = [
+    ["E", "N", "Z"],
+    ["1", "2", "Z"],
+    ["1", "2", "3"],
+    ["0", "1", "2"],
+    ["R", "T", "Z"],
+    ["E", "N"],
+    ["1", "2"],
+    ["0", "1"],
+]
+
+
+def _polarization_scheme(by_channel: Dict[str, ptrace.Trace]) -> Optional[List[ptrace.Trace]]:
+    """Order a station's channels ``[E-like, N-like(, Z-like)]`` by Qt's
+    component schemes (`polarization.py:250`): the Cube-datalogger names first,
+    then the eight last-character schemes. ``None`` when the group matches none.
+    """
+    channels = sorted(by_channel)
+    for cube in (["p2", "p1", "p0"], ["p2", "p1"]):
+        if channels == sorted(cube):
+            return [by_channel[ch] for ch in cube]
+    comps = {ch[-1]: ch for ch in by_channel if ch}
+    if len(comps) != len(by_channel):
+        return None
+    for scheme in _POL_SCHEMES:
+        if sorted(comps) == sorted(scheme):
+            return [by_channel[comps[c]] for c in scheme]
+    return None
+
+
+def _polarization_channels(
+    nsl: Tuple[str, str, str],
+    chagroup: str,
+    w_tmin: float,
+    w_tmax: float,
+    hp: Optional[float],
+    lp: Optional[float],
+    t_length: float,
+) -> Dict[str, ptrace.Trace]:
+    """One polarization window's filtered channel segments, keyed by channel —
+    the extraction both the figure and its text twin start from, so their
+    completeness demands cannot drift apart.
+
+    Qt's polarization choppers the raw pile with only its own channel pattern
+    (polarization.py:300) — no viewer hide/quick filters, no row window, no
+    GUI rotation (the snuffling derives its own R/T rotation from the
+    back-azimuth) — and requires data across the window, one window length of
+    display margin, and the filter's settling pad, so a hidden component still
+    analyses and a gappy or too-short one drops out.
+    Each segment comes back filtered and chopped to the display margin
+    ``[w_tmin - t_length, w_tmax + t_length]``; callers chop further as their
+    output needs."""
+    from pyrocko import util as putil
+
+    # The filter needs settling room: three periods of the lowest corner,
+    # capped so a slider mid-drag cannot demand an insane cutout
+    # (polarization.py:270); tpad is the display margin around the window.
+    if hp is not None:
+        tpad_filter = 3.0 / float(hp)
+    elif lp is not None:
+        tpad_filter = 3.0 / float(lp)
+    else:
+        tpad_filter = 0.0
+    tpad_filter = min(tpad_filter, 5.0 * t_length)
+    tpad = t_length
+
+    pattern = ".".join(nsl + (chagroup + "?",))
+
+    def match(tr: ptrace.Trace, pattern: str = pattern) -> bool:
+        return bool(putil.match_nslc(pattern, tr.nslc_id))
+
+    by_channel: Dict[str, ptrace.Trace] = {}
+    for batch in _pile().chopper(
+        tmin=w_tmin,
+        tmax=w_tmax,
+        tpad=tpad + tpad_filter,
+        want_incomplete=False,
+        style="batch",
+        trace_selector=match,
+    ):
+        for seg in batch.traces:
+            if seg.ydata is None or len(seg.ydata) < 3:
+                continue
+            seg.ydata = seg.ydata.astype(np.float64)
+            # The snuffling's own corners, always as 4th-order lowpass then
+            # highpass and only below the trace's Nyquist (polarization.py:308).
+            try:
+                if lp is not None and float(lp) < 0.5 / seg.deltat:
+                    seg.lowpass(4, float(lp))
+                if hp is not None and float(hp) < 0.5 / seg.deltat:
+                    seg.highpass(4, float(hp))
+                seg.chop(w_tmin - tpad, w_tmax + tpad)
+            except Exception:  # noqa: BLE001 — window not covered
+                continue
+            by_channel[seg.channel] = seg
+    return by_channel
+
+
 def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
     """Per-station polarization figure — a faithful port of
-    ``snufflings/polarization.py``: three covariance-hodogram projections
-    (N-E / R-Z / T-Z) with a moving dot, optional 2D eigensystem ellipses, a
-    backazimuth indicator, and the 3-component trace panel. The eigen-analysis
-    (``_pca``) and rotation (``trace.rotate``) are pyrocko's; only the interactive
-    dynamic axes placement is replaced by a static grid."""
+    ``snufflings/polarization.py``: the analysis windows come from the *selected
+    markers* (`get_selected`, polarization.py:205 — the snuffling fails without
+    one), shifted and sized by Offset and Length; three covariance-hodogram
+    projections with a moving dot, optional 2D eigensystem ellipses, a
+    backazimuth indicator, and the rotated trace panel labelled with the rotated
+    channel names. The eigen-analysis (``_pca``) is pyrocko's math; the
+    interactive dynamic axes placement is replaced by a static grid."""
     from matplotlib import patches
 
-    view = req.view
-    tmin, tmax = float(view.tmin), float(view.tmax)
     pol = req.snufflings.polarization
+    t_length = float(pol.polarization_t_length or 1.0)
+    ft_offset = float(pol.polarization_ft_offset)
     delta_azi = float(pol.polarization_azimuth)
     rotate_to_rt = bool(pol.polarization_rotate_to_rt)
     dot_position = min(1.0, max(0.0, float(pol.polarization_dot_position)))
     show_2d = bool(pol.polarization_show_eigensystem_2d)
+    show_3d = bool(pol.polarization_show_eigensystem_3d)
+    fix_scale = bool(pol.polarization_fix_scale)
     hp = pol.polarization_highpass if pol.HasField("polarization_highpass") else None
     lp = pol.polarization_lowpass if pol.HasField("polarization_lowpass") else None
 
-    groups: Dict[Tuple[str, str, str], Dict[str, ptrace.Trace]] = {}
-    for tr in _figure_work_traces(view):
-        if tr.channel:
-            groups.setdefault(tr.nslc_id[:3], {})[tr.channel[-1].upper()] = tr
-
-    stations: List[Tuple[Tuple[str, str, str], ptrace.Trace, ptrace.Trace, ptrace.Trace]] = []
-    for nsl, by in sorted(groups.items()):
-        vertical = by.get("Z")
-        horiz = next(
-            ((by[a], by[b]) for a, b in (("N", "E"), ("1", "2")) if a in by and b in by), None
-        )
-        if vertical is not None and horiz is not None:
-            stations.append((nsl, horiz[0], horiz[1], vertical))
-
-    if not stations:
+    # Qt's windows (`get_selected` + `transform_time_span`): one per selected
+    # channel-scoped marker, anchored at the marker start, Offset·Length later,
+    # Length long. An unscoped marker contributes nothing there either.
+    windows: List[Tuple[Tuple[str, str, str], str, float, float]] = []
+    for s in req.selected_spans:
+        w_tmin = float(s.tmin) + t_length * ft_offset
+        w_tmax = w_tmin + t_length
+        for n in s.nslc_ids:
+            windows.append(((n.net, n.sta, n.loc), n.cha[:-1] if n.cha else "", w_tmin, w_tmax))
+    if not windows:
         raise _FigureEmpty(
-            "Polarization needs 3-component stations (Z + 2 horizontals) in the window."
+            "No selected markers.\n\nCreate and select markers at points of "
+            "interest. Normal and phase markers are accepted."
         )
 
     bazis: Dict[Tuple[str, str, str], float] = {}
@@ -1918,43 +2792,74 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
         from pyrocko import orthodrome as od
 
         elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
-        for nsl, *_rest in stations:
+        for nsl, _chagroup, _wt0, _wt1 in windows:
             st = _station_at(nsl[0], nsl[1], nsl[2])
             if st is not None:
                 bazis[nsl] = float(od.azimuth(st[0], st[1], elat, elon))
 
-    def prep(tr: ptrace.Trace) -> Optional[np.ndarray]:
-        try:
-            seg = tr.chop(tmin, tmax, inplace=False, include_last=True)
-        except Exception:  # noqa: BLE001 — no data in the window
-            return None
-        if seg.ydata is None or len(seg.ydata) < 3:
-            return None
-        seg.ydata = seg.ydata.astype(np.float64)
-        _filter_seg(seg, hp, lp, False, False)
-        return seg.ydata
+    stations = []
+    for nsl, chagroup, w_tmin, w_tmax in windows:
+        by_channel: Dict[str, ptrace.Trace] = {}
+        for cha, seg in _polarization_channels(
+            nsl, chagroup, w_tmin, w_tmax, hp, lp, t_length
+        ).items():
+            # Demean by the *analysis* chop's mean (polarization.py:326): a
+            # DC offset displaces the hodogram and corrupts the covariance.
+            try:
+                seg_chop = seg.chop(w_tmin, w_tmax, inplace=False)
+            except Exception:  # noqa: BLE001 — window not covered
+                continue
+            if seg_chop.ydata is None or not len(seg_chop.ydata):
+                continue
+            seg.ydata = seg.ydata - float(np.mean(seg_chop.ydata))
+            by_channel[cha] = seg
+        group = _polarization_scheme(by_channel) if by_channel else None
+        if group is None or len(group) != 3:
+            continue
+        stations.append((nsl, group, w_tmin, w_tmax))
+
+    if not stations:
+        raise _FigureEmpty(
+            "No matching traces. Check time and channel settings. Traces may "
+            "not contain gaps within the extracted time window and in the "
+            "padding areas left and right."
+        )
 
     nst = len(stations)
     drawn = 0
-    for i, (nsl, tn, te, tz) in enumerate(stations):
-        yn, ye, yz = prep(tn), prep(te), prep(tz)
-        if yn is None or ye is None or yz is None:
-            continue
+    for i, (nsl, group, w_tmin, w_tmax) in enumerate(stations):
+        te, tn, tz = group
+        ye, yn, yz = (np.asarray(t.ydata, dtype=np.float64) for t in (te, tn, tz))
         ns = min(len(yn), len(ye), len(yz))
         if ns < 3:
             continue
         yn, ye, yz = yn[:ns], ye[:ns], yz[:ns]
 
         bazimuth = delta_azi
-        if rotate_to_rt and nsl in bazis:
+        if rotate_to_rt:
+            if nsl not in bazis:
+                raise _FigureEmpty(
+                    "Cannot rotate to RT. Station coordinates must be available "
+                    'and an event must be marked as the "active" event.'
+                )
             bazimuth += bazis[nsl] + 90.0
         if bazimuth != 0.0:
             ca, sa = math.cos(math.radians(bazimuth)), math.sin(math.radians(bazimuth))
-            yr, yt = ca * yn + sa * ye, -sa * yn + ca * ye
+            # pyrocko's `trace.rotate` matrix: n' = cos·n + sin·e,
+            # e' = −sin·n + cos·e.
+            yn_r, ye_r = ca * yn + sa * ye, -sa * yn + ca * ye
+            cha_e_rot, cha_n_rot = te.channel[-1] + "'", tn.channel[-1] + "'"
         else:
-            yr, yt = yn, ye
+            yn_r, ye_r = yn, ye
+            cha_e_rot, cha_n_rot = te.channel[-1], tn.channel[-1]
 
         amax = float(np.sqrt(yn**2 + ye**2 + yz**2).max()) or 1.0
+        # Fix Scale: hold the station's amplitude scale from the previous run
+        # so successive windows plot comparably; off, the store follows along.
+        if fix_scale and nsl in _POL_FIXED_AMAX:
+            amax = _POL_FIXED_AMAX[nsl]
+        else:
+            _POL_FIXED_AMAX[nsl] = amax
         ipos = int(round(dot_position * (ns - 1)))
         line, rot = _POL_COLORS["line"], _POL_COLORS["rot"]
 
@@ -1963,10 +2868,13 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
         ax12 = fig.add_subplot(nst, 4, i * 4 + 3)
         axtr = fig.add_subplot(nst, 4, i * 4 + 4)
 
+        # Panel labels are Qt's: the unrotated horizontals first, then each
+        # *rotated channel name* against Z (polarization.py:482) — never a
+        # literal R/T, which for a transverse-first rotation reads backwards.
         for axes, xdata, ydata, xlab, ylab in (
             (ax01, ye, yn, te.channel[-1], tn.channel[-1]),
-            (ax02, yr, yz, "R", "Z"),
-            (ax12, yt, yz, "T", "Z"),
+            (ax02, ye_r, yz, cha_e_rot, "Z"),
+            (ax12, yn_r, yz, cha_n_rot, "Z"),
         ):
             axes.set_aspect(1.0)
             axes.plot(xdata, ydata, color=line, lw=1.0)
@@ -1992,6 +2900,23 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
                     )
                 )
 
+        # Show 3D Eigensystem: the principal axis of the 3-component
+        # covariance, projected into each hodogram's coordinate pair.
+        if show_3d and ns >= 3:
+            _c3, ev3, evec3, _a3, _i3 = _pca(np.vstack([ye_r, yn_r, yz]))
+            p_e, p_n, p_z = (float(evec3[j, -1]) for j in range(3))
+            scale3 = amax
+            for axes, dx, dy in ((ax01, p_e, p_n), (ax02, p_e, p_z), (ax12, p_n, p_z)):
+                axes.plot(
+                    [-scale3 * dx, scale3 * dx],
+                    [-scale3 * dy, scale3 * dy],
+                    "-",
+                    lw=2,
+                    zorder=-15,
+                    color=_POL_COLORS["ell"],
+                    alpha=0.6,
+                )
+
         if nsl in bazis:
             eb = bazis[nsl]
             ax01.plot(
@@ -2004,15 +2929,16 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
             )
 
         deltat = float(tz.deltat)
-        times = np.arange(ns) * deltat
-        for itr, ydata in enumerate((yr, yt, yz)):
+        times = float(tz.tmin) + np.arange(ns) * deltat
+        for itr, (ydata, _lab) in enumerate(((ye_r, cha_e_rot), (yn_r, cha_n_rot), (yz, "Z"))):
             col = rot if (itr < 2 and bazimuth != 0.0) else line
             axtr.plot(times, ydata / (2.0 * amax) + itr, color=col, lw=1.0)
             axtr.plot([times[ipos]], [ydata[ipos] / (2.0 * amax) + itr], "o", ms=4, color=col)
-        axtr.axvspan(times[0], times[-1], color=_POL_COLORS["win"], zorder=-20)
+        # The shaded band is the *analysis* window inside the padded traces.
+        axtr.axvspan(w_tmin, w_tmax, color=_POL_COLORS["win"], zorder=-20)
         axtr.set_ylim(-1, 3)
         axtr.set_yticks([0, 1, 2])
-        axtr.set_yticklabels(["R", "T", "Z"])
+        axtr.set_yticklabels([cha_e_rot, cha_n_rot, "Z"])
         axtr.set_xlabel("Time [s]")
         ax01.set_title(".".join(x for x in nsl if x) or nsl[1])
         drawn += 1
@@ -2183,18 +3109,48 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
     ``pyrocko.gf.LocalEngine`` and a mounted Green's-functions store — a faithful
     port of ``snufflings/seismosizer.py`` (DCSource). Adds the synthetic traces to
     the pile and a source event marker. Needs a mounted GF store + `ensureGf`."""
+    # Qt's `call()` opens with `self.cleanup()` (seismosizer.py:97) — before
+    # any validation — so even a failing run clears the previous run's
+    # synthetics and marker.
+    # Every failure carries the updated scene and the origin tag; the tag is
+    # what retires the old event marker.
+    _replace_derived("seismosizer", [])
+    _replace_derived_events("seismosizer", {})
+
+    def refuse(text: str) -> snuffling_pb2.SnufflingResult:
+        result = snuffling_pb2.SnufflingResult(
+            show_window=True, text=text, scene=_scene_meta(), origin="seismosizer"
+        )
+        result.event_state.CopyFrom(_event_state())
+        return result
+
+    try:
+        return _seismosizer_result(req, refuse)
+    except Exception as exc:  # noqa: BLE001 — surface, don't raise
+        # Qt surfaces any exception out of `call()` in the snuffling error
+        # dialog with the cleanup above already done — a damaged store,
+        # regularization or event conversion must not fail differently from
+        # the two refusals `fail()` handles.
+        # Without the scene and origin on this path, the frontend would keep
+        # the previous run's output.
+        return refuse("%s: %s\n\n%s" % (type(exc).__name__, exc, traceback.format_exc()))
+
+
+def _seismosizer_result(
+    req: snuffling_pb2.SnufflingRequestParams,
+    refuse: Callable[[str], snuffling_pb2.SnufflingResult],
+) -> snuffling_pb2.SnufflingResult:
+    """The Seismosizer run proper, after `_seismosizer_run`'s cleanup: build
+    the source and targets, process them through the mounted store, and hand
+    every invalid input to ``refuse``."""
     p = req.snufflings.seismosizer
     store_label = p.seis_store or ""
     if not store_label.startswith(GF_STORE_PREFIX):
-        return snuffling_pb2.SnufflingResult(
-            show_window=True, text="Select a mounted GF store first (use “Add GF Store…”)."
-        )
+        return refuse("Select a mounted GF store first (use “Add GF Store…”).")
     sid = store_label[len(GF_STORE_PREFIX) :]
     store_dir = _GF_STORES.get(sid)
     if store_dir is None:
-        return snuffling_pb2.SnufflingResult(
-            show_window=True, text="GF store %r is not mounted." % sid
-        )
+        return refuse("GF store %r is not mounted." % sid)
 
     gf = _ensure_real_gf()
     from pyrocko import model
@@ -2205,20 +3161,99 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
     else:
         elat, elon, etime = 0.0, 0.0, 0.0
 
-    stf = gf.HalfSinusoidSTF(duration=float(p.seis_stf_duration)) if p.seis_stf_duration else None
-    source = gf.DCSource(
+    # Qt's four STF choices with the duration applied to the instance —
+    # including duration 0, which passes a zero-duration STF object rather than
+    # none (`get_stf`, seismosizer.py:65).
+    stf_type = p.seis_stf_type or "half sin"
+    stf_of = {
+        "half sin": gf.HalfSinusoidSTF,
+        "triangular": gf.TriangularSTF,
+        "boxcar": gf.BoxcarSTF,
+    }.get(stf_type)
+    if stf_of is None and stf_type != "None":
+        # Qt's Choice widget makes an unknown label unrepresentable (its
+        # `get_stf` dict lookup would KeyError); over the bridge it is an
+        # invalid request, refused rather than silently run with no STF.
+        return refuse("Unknown STF type %r." % stf_type)
+    stf = stf_of(duration=float(p.seis_stf_duration)) if stf_of is not None else None
+    common = dict(
         time=etime + float(p.seis_time),
         lat=elat,
         lon=elon,
         north_shift=float(p.seis_north_km) * km,
         east_shift=float(p.seis_east_km) * km,
         depth=float(p.seis_depth_km) * km,
-        magnitude=float(p.seis_magnitude),
-        strike=float(p.seis_strike),
-        dip=float(p.seis_dip),
-        rake=float(p.seis_rake),
-        stf=stf,
     )
+    # Qt's five Seismosizer source snufflings, one per `pyrocko.gf` source type
+    # (seismosizer.py:280-560), each built with its own parameter set.
+    src_type = p.seis_source_type or "DCSource"
+    if src_type == "MTSource":
+        from pyrocko import moment_tensor as mtm
+
+        # Relative components normalized to unit moment, then scaled to the
+        # magnitude's moment (`get_m6`, seismosizer.py:385).
+        rm6 = np.array(
+            [p.seis_rmnn, p.seis_rmee, p.seis_rmdd, p.seis_rmne, p.seis_rmnd, p.seis_rmed],
+            dtype=float,
+        )
+        m9 = np.array(mtm.symmat6(*rm6))
+        m0_unscaled = math.sqrt(float(np.sum(m9**2))) / math.sqrt(2.0)
+        if m0_unscaled == 0.0:
+            return refuse("MTSource needs a non-zero relative moment tensor.")
+        m9 = m9 / m0_unscaled * mtm.magnitude_to_moment(float(p.seis_magnitude))
+        source = gf.MTSource(m6=mtm.to6(m9), stf=stf, **common)
+    elif src_type == "SFSource":
+        source = gf.SFSource(
+            fn=float(p.seis_fn), fe=float(p.seis_fe), fd=float(p.seis_fd), stf=stf, **common
+        )
+    elif src_type == "RectangularSource":
+        source = gf.RectangularSource(
+            magnitude=float(p.seis_magnitude),
+            strike=float(p.seis_strike),
+            dip=float(p.seis_dip),
+            rake=float(p.seis_rake),
+            length=float(p.seis_length_km) * km,
+            width=float(p.seis_width_km) * km,
+            nucleation_x=float(p.seis_nucleation_x),
+            nucleation_y=float(p.seis_nucleation_y),
+            velocity=float(p.seis_velocity),
+            stf=stf,
+            **common,
+        )
+    elif src_type == "PseudoDynamicRupture":
+        source = gf.PseudoDynamicRupture(
+            nx=max(1, int(p.seis_nx)),
+            ny=max(1, int(p.seis_ny)),
+            slip=float(p.seis_slip),
+            strike=float(p.seis_strike),
+            dip=float(p.seis_dip),
+            rake=float(p.seis_rake),
+            length=float(p.seis_length_km) * km,
+            width=float(p.seis_width_km) * km,
+            nucleation_x=float(p.seis_nucleation_x),
+            nucleation_y=float(p.seis_nucleation_y),
+            gamma=float(p.seis_gamma),
+            # Qt hardcodes these (seismosizer.py:577) — except nthreads, which
+            # is single here because Pyodide has no thread pool for this.
+            nthreads=1,
+            pure_shear=True,
+            smooth_rupture=True,
+            **common,
+        )
+    elif src_type == "DCSource":
+        source = gf.DCSource(
+            magnitude=float(p.seis_magnitude),
+            strike=float(p.seis_strike),
+            dip=float(p.seis_dip),
+            rake=float(p.seis_rake),
+            stf=stf,
+            **common,
+        )
+    else:
+        # The five types above are the closed set Qt's Choice offers; an
+        # unknown label silently becoming a DCSource would run the wrong
+        # physics without a word.
+        return refuse("Unknown source type %r." % src_type)
     source.regularize()
 
     stations = []
@@ -2235,20 +3270,46 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
                 model.Station(network="SY", station="%g_%g" % (lat, lon), lat=lat, lon=lon)
             )
 
-    targets = [
-        gf.Target(
-            codes=(st.network, st.station, "syn", cha),
-            quantity="displacement",
-            lat=st.lat,
-            lon=st.lon,
-            depth=st.depth,
-            store_id=sid,
-            interpolation="nearest_neighbor",
-            optimization="enable",
-        )
-        for st in stations
-        for cha in "NEZ"
-    ]
+    # Qt targets the (loc, cha) pairs present in the *marker-scoped* traces
+    # per station (`chopper_selected_traces(fallback=True, mode='visible')`,
+    # seismosizer.py:114), always adding ('', N/E/Z), with codes `loc + '-syn'`
+    # and azimuth/dip assigned for T/R/1/2 channel endings (seismosizer.py:120).
+    # Per marker, a trace must match that marker's channel patterns *and* hold
+    # data in its span — a channel silent across the whole scope yields no
+    # synthetic target.
+    spans = _snuffling_spans(req)
+    s2c: Dict[Tuple[str, str], "set[Tuple[str, str]]"] = {}
+    for tr in _visible_traces():
+        if not any((sel is None or sel(tr)) and tr.overlaps(s0, s1) for s0, s1, sel in spans):
+            continue
+        net, sta, loc, cha = tr.nslc_id
+        s2c.setdefault((net, sta), set()).add((loc, cha))
+    for st in stations:
+        s2c.setdefault((st.network, st.station), set()).update(("", cha) for cha in "NEZ")
+
+    targets = []
+    for st in stations:
+        for loc, cha in sorted(s2c.get((st.network, st.station), set())):
+            target = gf.Target(
+                codes=(st.network, st.station, loc + "-syn", cha),
+                quantity="displacement",
+                lat=st.lat,
+                lon=st.lon,
+                depth=st.depth,
+                store_id=sid,
+                interpolation="nearest_neighbor",
+                optimization="enable",
+            )
+            _azi_fwd, bazi = source.azibazi_to(target)
+            if cha.endswith("T"):
+                target.dip, target.azimuth = 0.0, bazi + 270.0
+            elif cha.endswith("R"):
+                target.dip, target.azimuth = 0.0, bazi + 180.0
+            elif cha.endswith("1"):
+                target.dip, target.azimuth = 0.0, 0.0
+            elif cha.endswith("2"):
+                target.dip, target.azimuth = 0.0, 90.0
+            targets.append(target)
 
     engine = gf.LocalEngine(store_dirs=[store_dir])
     # Pyodide's mounted (NativeFS/OPFS) filesystem does not support mmap, so open
@@ -2256,7 +3317,12 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
     engine._open_stores[sid] = gf.store.Store(store_dir, use_memmap=False)  # noqa: SLF001
     request = gf.Request(sources=[source], targets=targets)
     request.regularize()
-    traces = engine.process(request, nthreads=0).pyrocko_traces()
+    try:
+        traces = engine.process(request, nthreads=0).pyrocko_traces()
+    except (gf.meta.OutOfBounds, gf.store_ext.StoreExtError) as exc:
+        # Qt's `self.fail(e)` on the same two exceptions (seismosizer.py:204):
+        # the message, with the cleanup above already done.
+        return refuse(str(exc))
 
     waveform_type = p.seis_waveform_type or "Displacement [m]"
     if waveform_type.startswith("Velocity"):
@@ -2269,16 +3335,50 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
         for tr in traces:
             tr.set_ydata(tr.ydata * 1e9)
 
-    _set_traces(list(_TRACES) + traces)
-    result = snuffling_pb2.SnufflingResult(show_window=True, scene=_scene_meta())
-    result.text = "%d synthetic trace(s) from a DC source (M%.1f)." % (
+    result = snuffling_pb2.SnufflingResult(show_window=True, origin="seismosizer")
+    # Qt adds `EventMarker(source.pyrocko_event())` (seismosizer.py:143): the
+    # synthetic event carries its full origin and mechanism, not just a label.
+    ev = source.pyrocko_event()
+    ev_hash = str(ev.get_hash())
+    # The event's own magnitude, not the dial's: a PseudoDynamicRupture
+    # derives its moment from slip and geometry, and an SFSource has none at
+    # all — the configured value would be wrong for one and a fiction for the
+    # other.
+    result.text = "%d synthetic trace(s) from a %s%s." % (
         len(traces),
-        float(p.seis_magnitude),
+        src_type,
+        " (M%.1f)" % float(ev.magnitude) if ev.magnitude is not None else "",
     )
     marker = result.markers.add()
     marker.t = float(source.time)
     marker.is_event = True
-    marker.phase = "synthetic DC M%.1f" % float(p.seis_magnitude)
+    marker.event_name = str(ev.name) if ev.name else "synthetic %s" % src_type
+    if ev.magnitude is not None:
+        marker.magnitude = float(ev.magnitude)
+    marker.lat = float(ev.lat)
+    marker.lon = float(ev.lon)
+    marker.depth = float(ev.depth or 0.0)
+    mt = ev.moment_tensor
+    if mt is not None:
+        mnn, mee, mdd, mne, mnd, med = (float(x) for x in mt.m6())
+        marker.moment_tensor.mnn = mnn
+        marker.moment_tensor.mee = mee
+        marker.moment_tensor.mdd = mdd
+        marker.moment_tensor.mne = mne
+        marker.moment_tensor.mnd = mnd
+        marker.moment_tensor.med = med
+    marker.event_hash = ev_hash
+    # Commit only now, with every fallible step behind us: event conversion or
+    # marker construction throwing above must leave the cleaned state, never a
+    # scene holding new synthetics without their marker.
+    # Qt's rerun contract: `call()` opens with `self.cleanup()`
+    # (seismosizer.py:97), so a new run replaces the previous run's synthetics
+    # instead of stacking over them — and only those, never the file pile or
+    # its provenance.
+    _replace_derived_events("seismosizer", {ev_hash: ev})
+    _replace_derived("seismosizer", traces)
+    result.scene.CopyFrom(_scene_meta())
+    result.event_state.CopyFrom(_event_state())
     return result
 
 
@@ -2335,11 +3435,31 @@ def _apply_seisbench_filter(seg: ptrace.Trace, spec: Dict[str, Any]) -> None:
         pass
 
 
+def _apply_seisbench_view_filter(
+    tr: ptrace.Trace,
+    highpass: Optional[float],
+    lowpass: Optional[float],
+    tcut: float,
+) -> ptrace.Trace:
+    """Apply Qt's default SeisBench preprocessing from the main viewer passband."""
+    seg = tr.copy()
+    if lowpass is not None:
+        seg.lowpass(4, lowpass, nyquist_exception=False)
+    if highpass is not None:
+        seg.highpass(4, highpass, nyquist_exception=False)
+    try:
+        seg.chop(seg.tmin + tcut, seg.tmax - tcut)
+    except ptrace.NoData:
+        pass
+    return seg
+
+
 def _seisbench_groups(
     traces: List[ptrace.Trace],
     tmin: float,
     tmax: float,
     spec: Dict[str, Any],
+    scale_factor: float = 1.0,
 ) -> "OrderedDict[Tuple[str, str, str], Tuple[float, np.ndarray, NslcId]]":
     """Assemble per-(net,sta,loc) component arrays at the model sampling rate.
 
@@ -2355,7 +3475,9 @@ def _seisbench_groups(
     if "E" in comp_row:
         comp_row.setdefault("2", comp_row["E"])
     dt = 1.0 / sampling_rate
-    staged: "OrderedDict[Tuple[str, str, str], Dict[int, Tuple[float, np.ndarray]]]" = OrderedDict()
+    staged: "OrderedDict[Tuple[str, str, str], Dict[int, List[Tuple[float, np.ndarray]]]]" = (
+        OrderedDict()
+    )
     rep: Dict[Tuple[str, str, str], NslcId] = {}
     for tr in traces:
         net, sta, loc, cha = tr.nslc_id
@@ -2371,6 +3493,8 @@ def _seisbench_groups(
         if seg.ydata is None or len(seg.ydata) < 2:
             continue
         seg.ydata = seg.ydata.astype(np.float64)
+        if scale_factor != 1.0:
+            seg.deltat *= scale_factor
         if abs(seg.deltat - dt) > 1e-9:
             try:
                 seg.resample(dt)
@@ -2378,29 +3502,32 @@ def _seisbench_groups(
                 continue
         _apply_seisbench_filter(seg, spec)
         key = (net, sta, loc)
-        staged.setdefault(key, {})[row] = (
-            float(seg.tmin),
-            np.asarray(seg.ydata, dtype=np.float32),
+        # A component row collects *every* fragment, exactly as seisbench's
+        # stream_to_array writes each trace at its offset — a channel split
+        # across files must not shrink to whichever fragment came last.
+        staged.setdefault(key, {}).setdefault(row, []).append(
+            (float(seg.tmin), np.asarray(seg.ydata, dtype=np.float32))
         )
         if row == 0 or key not in rep:
             rep[key] = (net, sta, loc, cha)  # prefer the vertical channel as the label
 
     out: "OrderedDict[Tuple[str, str, str], Tuple[float, np.ndarray, NslcId]]" = OrderedDict()
     for key, comps in staged.items():
-        g_tmin = min(t for t, _ in comps.values())
-        g_tmax = max(t + (len(y) - 1) * dt for t, y in comps.values())
+        g_tmin = min(t for frags in comps.values() for t, _ in frags)
+        g_tmax = max(t + (len(y) - 1) * dt for frags in comps.values() for t, y in frags)
         n = int(round((g_tmax - g_tmin) * sampling_rate)) + 1
         if n < 4:
             continue
         data = np.zeros((len(component_order), n), dtype=np.float32)
-        for row, (t0, y) in comps.items():
-            off = int(round((t0 - g_tmin) * sampling_rate))
-            if off < 0:
-                y = y[-off:]
-                off = 0
-            m = min(len(y), n - off)
-            if m > 0:
-                data[row, off : off + m] = y[:m]
+        for row, frags in comps.items():
+            for t0, y in frags:
+                off = int(round((t0 - g_tmin) * sampling_rate))
+                if off < 0:
+                    y = y[-off:]
+                    off = 0
+                m = min(len(y), n - off)
+                if m > 0:
+                    data[row, off : off + m] = y[:m]
         out[key] = (g_tmin, data, rep[key])
     return out
 
@@ -2408,7 +3535,8 @@ def _seisbench_groups(
 async def _seisbench_pick_result(
     req: snuffling_pb2.SnufflingRequestParams,
 ) -> snuffling_pb2.SnufflingResult:
-    """SeisBench deep-learning P/S picker over the visible window.
+    """SeisBench deep-learning P/S picker over the selected marker spans, or
+    the visible window when nothing is selected.
 
     The ONNX forward pass runs in the JS worker through onnxruntime-web; numpy
     pre/post-processing mirrors the pinned SeisBench 0.11.7 source.
@@ -2418,50 +3546,151 @@ async def _seisbench_pick_result(
     params = req.snufflings.seisbench
     model = params.model or "PhaseNet"
     weights = params.weights or "instance"
+    scale_factor = min(10.0, max(0.1, float(params.scale_factor or 1.0)))
+    _replace_derived("seisbench", [])
     progress_prefix = "SeisBench %s/%s" % (model, weights)
     _seisbench_progress(0.0, "%s · loading model" % progress_prefix)
     model_url, spec = await _ensure_seisbench_model(model, weights, params.model_base_url or "")
-    view = req.view
     component_order = str(spec["component_order"])
     _seisbench_progress(0.01, "%s · preparing waveform chunks" % progress_prefix)
-    groups = _seisbench_groups(_visible_traces(), float(view.tmin), float(view.tmax), spec)
-    result = snuffling_pb2.SnufflingResult(show_window=True)
-    n_p = n_s = 0
-    total_batches = max(
-        1, sum(sbi.batch_count(data, spec) for _g_tmin, data, _nslc in groups.values())
+    # Qt's picker runs the marker-span scope through the pile chopper in
+    # 300-second batches padded by one second plus the main high-pass filter's
+    # settling margin (seisbench_picker.py:248), in `mode='visible'` — one pass
+    # per selected span, over that span's channels only.
+    # Collapsing several spans to their envelope would change the *output*,
+    # not just the cost: the model would see, and pick in, the data between
+    # disjoint markers, and a channel would be picked during a span whose
+    # marker never selected it.
+    tinc, model_pad = 300.0, 1.0
+    use_view_filter = bool(params.use_predefined_filters)
+    view_highpass = (
+        float(req.view.highpass) if use_view_filter and req.view.HasField("highpass") else None
     )
-    completed_batches = 0
+    view_lowpass = (
+        float(req.view.lowpass) if use_view_filter and req.view.HasField("lowpass") else None
+    )
+    filter_pad = 2.0 / view_highpass if view_highpass is not None else 0.0
+    tpad = model_pad + filter_pad
+    result = snuffling_pb2.SnufflingResult(show_window=True, origin="seisbench")
+    n_p = n_s = 0
+    annotation_traces: List[ptrace.Trace] = []
+    # The bar's total comes from span arithmetic alone, so no pre-pass over
+    # the data is needed: windows advance it in equal shares and the model's
+    # mini-batches fill the current share.
+    # Each chopper batch streams straight through inference and is released,
+    # as Qt's loop does — collecting every station's resampled grid first
+    # would hold the whole selection in memory at once.
+    total_windows = max(
+        1,
+        sum(
+            max(1, math.ceil((s_tmax - s_tmin) / tinc))
+            for s_tmin, s_tmax, _sel in _snuffling_spans(req)
+        ),
+    )
+    completed_windows = 0
+    window_batches = 1
+    done_in_window = 0
 
     def batch_done() -> None:
-        nonlocal completed_batches
-        completed_batches += 1
-        frac = min(0.99, 0.20 + 0.79 * completed_batches / total_batches)
+        nonlocal done_in_window
+        done_in_window += 1
+        share = min(1.0, done_in_window / window_batches)
+        frac = min(0.99, 0.20 + 0.79 * (completed_windows + share) / total_windows)
         _seisbench_progress(frac, "%s · running inference" % progress_prefix)
 
-    for g_tmin, data, nslc in groups.values():
-        ann = await sbi.annotate(model_url, data, spec, batch_done, progress_prefix)
-        thresholds = {
-            "P": params.p_threshold
-            if params.HasField("p_threshold")
-            else sbi.default_threshold(spec, "P"),
-            "S": params.s_threshold
-            if params.HasField("s_threshold")
-            else sbi.default_threshold(spec, "S"),
-        }
-        for phase, kind in (("P", 1), ("S", 2)):
-            if phase not in sbi.labels(spec):
-                continue
-            threshold = float(thresholds[phase])
-            for idx, _val in sbi.extract_picks(
-                ann.data[:, sbi.phase_channel(spec, phase)], threshold
-            ):
-                marker = result.markers.add()
-                marker.t = g_tmin + ann.start_offset + idx / ann.sampling_rate
-                marker.kind = kind
-                marker.phase = phase
-                marker.nslc.CopyFrom(_nslc_pb(list(nslc)))
-                n_p, n_s = (n_p + 1, n_s) if phase == "P" else (n_p, n_s + 1)
-    if not groups:
+    thresholds = {
+        "P": params.p_threshold
+        if params.HasField("p_threshold")
+        else sbi.default_threshold(spec, "P"),
+        "S": params.s_threshold
+        if params.HasField("s_threshold")
+        else sbi.default_threshold(spec, "S"),
+    }
+    # Distinct stations across all batches, for the summary line — overlapping
+    # markers can run the same station twice, as Qt's per-marker chopper does.
+    stations_picked = set()
+    for batch in _chopper_selected_traces(req, mode="visible", tinc=tinc, tpad=tpad):
+        # Qt drops every `tabu` batch trace before inference
+        # (seisbench_picker.py:257): RMS curves and STA/LTA level traces are
+        # derived data the model must never pick on.
+        batch_traces = [tr for tr in batch.traces if not _is_tabu_trace(tr)]
+        if not batch_traces:
+            completed_windows += 1
+            continue
+        wmin, wmax = float(batch.tmin), float(batch.tmax)
+        if use_view_filter:
+            batch_traces = [
+                _apply_seisbench_view_filter(tr, view_highpass, view_lowpass, filter_pad)
+                for tr in batch_traces
+            ]
+        groups = _seisbench_groups(
+            batch_traces,
+            wmin - model_pad,
+            wmax + model_pad,
+            spec,
+            scale_factor,
+        )
+        window_batches = max(
+            1, sum(sbi.batch_count(data, spec) for _g_tmin, data, _nslc in groups.values())
+        )
+        done_in_window = 0
+        for key, (g_tmin, data, nslc) in groups.items():
+            stations_picked.add(key)
+            ann = await sbi.annotate(model_url, data, spec, batch_done, progress_prefix)
+            if params.show_annotation_traces and ann.data.size:
+                labels = sbi.labels(spec)
+                start = g_tmin + ann.start_offset / scale_factor
+                if scale_factor != 1.0:
+                    blinding = spec.get("blinding") or [0, 0]
+                    blind_samples = max(int(value) for value in blinding)
+                    start -= (blind_samples / 100.0) * (1.0 - 1.0 / scale_factor)
+                for label_index, label in enumerate(labels):
+                    if label == "N":
+                        continue
+                    annotation = ptrace.Trace(
+                        network=key[0],
+                        station=key[1],
+                        location=key[2],
+                        channel="%s_%s" % (model, label),
+                        tmin=start,
+                        deltat=1.0 / (ann.sampling_rate * scale_factor),
+                        ydata=np.asarray(ann.data[:, label_index], dtype=np.float64),
+                        meta={"tabu": True, "annotation": True},
+                    )
+                    try:
+                        annotation.chop(wmin, wmax)
+                    except ptrace.NoData:
+                        continue
+                    annotation_traces.append(annotation)
+            # Qt's SeisBench picker uses kind 0 for P and 1 for S, marks the
+            # picks automatic, and rides the pick probability on the marker's
+            # incidence angle (seisbench_picker.py:341) — the number a user
+            # most wants back from an ML picker.
+            for phase, kind in (("P", 0), ("S", 1)):
+                if phase not in sbi.labels(spec):
+                    continue
+                threshold = float(thresholds[phase])
+                for idx, val in sbi.extract_picks(
+                    ann.data[:, sbi.phase_channel(spec, phase)], threshold
+                ):
+                    model_time = g_tmin + ann.start_offset + idx / ann.sampling_rate
+                    t_pick = g_tmin + (model_time - g_tmin) / scale_factor
+                    # Qt keeps only picks inside the batch window
+                    # (seisbench_picker.py:334): the padding exists for model
+                    # context, and a pick in it would duplicate across
+                    # neighbouring batches.
+                    if not wmin <= t_pick < wmax:
+                        continue
+                    marker = result.markers.add()
+                    marker.t = t_pick
+                    marker.kind = kind
+                    marker.phase = phase
+                    marker.automatic = True
+                    marker.incidence_angle = float(val)
+                    marker.nslc_ids.add().CopyFrom(_nslc_pb(list(nslc)))
+                    n_p, n_s = (n_p + 1, n_s) if phase == "P" else (n_p, n_s + 1)
+        completed_windows += 1
+    if not stations_picked:
         result.text = "SeisBench picker: no %s data in the visible window." % component_order
     else:
         result.text = "SeisBench %s/%s: %d P and %d S pick(s) across %d station(s)." % (
@@ -2469,60 +3698,127 @@ async def _seisbench_pick_result(
             weights,
             n_p,
             n_s,
-            len(groups),
+            len(stations_picked),
         )
+    _replace_derived("seisbench", annotation_traces)
+    result.scene.CopyFrom(_scene_meta())
     _seisbench_progress(1.0, "%s · complete" % progress_prefix)
     return result
+
+
+def _snuffling_spans(
+    req: snuffling_pb2.SnufflingRequestParams,
+    skip_instant: bool = False,
+) -> List[Tuple[float, float, Optional[Any]]]:
+    """The processing scope Qt gives every snuffling (`chopper_selected_traces`,
+    snuffling.py:1000): one ``(tmin, tmax, trace_selector)`` per selected
+    non-event marker — the selector is the marker's channel patterns — or the
+    visible window with no extra filter when nothing is selected.
+
+    ``skip_instant`` reproduces STA/LTA's ``marker_selector`` (stalta.py:163),
+    which drops zero-length picks from the scope."""
+    from pyrocko import util as putil
+
+    view = req.view
+    spans: List[Tuple[float, float, Optional[Any]]] = []
+    for s in req.selected_spans:
+        if skip_instant and float(s.tmax) <= float(s.tmin):
+            continue
+        pats = ["%s.%s.%s.%s" % (n.net, n.sta, n.loc, n.cha) for n in s.nslc_ids]
+        sel: Optional[Any] = None
+        if pats:
+
+            def sel(tr: ptrace.Trace, pats: List[str] = pats) -> bool:
+                return bool(putil.match_nslc(pats, tr.nslc_id))
+
+        spans.append((float(s.tmin), float(s.tmax), sel))
+    if not spans:
+        spans.append((float(view.tmin), float(view.tmax), None))
+    return spans
+
+
+def _matches_selection(tr: ptrace.Trace, spans: List[Tuple[float, float, Optional[Any]]]) -> bool:
+    """Whether any selected span's channel patterns admit this trace — the
+    union of `chopper_selected_traces`' per-marker selectors, for the runners
+    that collapse the spans themselves to one window."""
+    return any(sel is None or sel(tr) for _s0, _s1, sel in spans)
+
+
+def _chopper_selected_traces(
+    req: snuffling_pb2.SnufflingRequestParams,
+    mode: str = "inview",
+    skip_instant: bool = False,
+    trace_filter: Optional[Callable[[ptrace.Trace], bool]] = None,
+    **chopper_kwargs: Any,
+) -> Iterator[Any]:
+    """Qt's `Snuffling.chopper_selected_traces` (snuffling.py:952) over the
+    real pile: one `Pile.chopper` run per selected non-event marker — its span
+    and channel patterns become `tmin`/`tmax`/`trace_selector` — or one over
+    the visible window when nothing is selected (`fallback=True` there).
+
+    The viewer contributes its `mode` selector ANDed into the marker's, the
+    composition Qt builds at snuffling.py:1072: the shown track rows for
+    ``'inview'`` (the default there too), the hide/quick filters for
+    ``'visible'``.
+    Yields the chopper's batches, so degapping of file-split traces, `full_id`
+    ordering and incomplete-window weeding come from pyrocko's own
+    `_process_chopped` (pile.py:1213), not a reimplementation.
+    """
+    viewer_sel: Callable[[ptrace.Trace], bool]
+    if mode == "inview":
+        rows = {id(tr) for tr in _inview_work_traces(req.view)}
+
+        def viewer_sel(tr: ptrace.Trace) -> bool:
+            return id(tr) in rows
+    elif mode == "visible":
+        viewer_sel = _trace_selected
+    else:
+        # Qt raises on an unknown mode too; 'all' has no consumer here yet.
+        raise ValueError("invalid mode argument: %r" % mode)
+
+    p = _pile()
+    for s_tmin, s_tmax, sel in _snuffling_spans(req, skip_instant=skip_instant):
+
+        def selector(tr: ptrace.Trace, sel: Optional[Any] = sel) -> bool:
+            return (
+                viewer_sel(tr)
+                and (trace_filter is None or trace_filter(tr))
+                and (sel is None or sel(tr))
+            )
+
+        yield from p.chopper(
+            tmin=s_tmin, tmax=s_tmax, trace_selector=selector, style="batch", **chopper_kwargs
+        )
 
 
 def _run_snuffling_result(
     name: str, req: snuffling_pb2.SnufflingRequestParams
 ) -> snuffling_pb2.SnufflingResult:
     """Run a built-in snuffling over the current window."""
-    view = req.view
-    tmin, tmax = float(view.tmin), float(view.tmax)
-    hp = view.highpass if view.HasField("highpass") else None
-    lp = view.lowpass if view.HasField("lowpass") else None
-    rotate = float(view.rotate)
-    fft = bool(view.fft_filtering)
-    lphp = bool(view.bandpass_lphp)
-
     if name == "cake":
         return _cake_run(req)
 
     if name == "seismosizer":
         return _seismosizer_run(req)
 
-    vis = _visible_traces()
-    order = _sort_order(vis, view.sort or "name", view.subsort or "nslc", bool(view.distances_3d))
-    work = _apply_rotation([vis[i] for i in order], rotate)
-
-    def chopped(
-        pass_hp: Optional[float] = hp,
-        pass_lp: Optional[float] = lp,
-        ctmin: float = tmin,
-        ctmax: float = tmax,
-        traces: Optional[List[ptrace.Trace]] = None,
-    ) -> Iterator[Tuple[ptrace.Trace, ptrace.Trace]]:
-        for tr in work if traces is None else traces:
-            try:
-                seg = tr.chop(ctmin, ctmax, inplace=False, include_last=True)
-            except Exception:
-                continue
-            if seg.ydata is None or len(seg.ydata) < 4:
-                continue
-            seg.ydata = seg.ydata.astype(np.float64)
-            _filter_seg(seg, pass_hp, pass_lp, fft, lphp)
-            yield tr, seg
-
     if name == "minmax":
+        # Qt's Minimum/Maximum reports *raw* pile values (minmax.py:42 passes
+        # no `main_bandpass`), so no view passband here — the numbers
+        # deliberately describe the data, not the screen.
+        # Its chopper runs the default `mode='inview'` with `degap=False`, and
+        # `trace.minmax` folds every chopped piece into one (min, max) per
+        # NSLC (minmax.py:49) — a channel split across files or picked by
+        # several markers still yields a single row.
+        mima = ptrace.minmax(
+            seg
+            for batch in _chopper_selected_traces(req, degap=False)
+            for seg in batch.traces
+            if seg.ydata is not None and len(seg.ydata)
+        )
         lines = ["%-16s %13s %13s %13s" % ("channel", "min", "max", "peak-to-peak")]
-        for tr, seg in chopped():
-            y = seg.ydata
-            lines.append(
-                "%-16s %+.4e %+.4e %.4e"
-                % (".".join(tr.nslc_id), float(y.min()), float(y.max()), float(y.max() - y.min()))
-            )
+        for nslc in sorted(mima):
+            mi, ma = (float(v) for v in mima[nslc])
+            lines.append("%-16s %+.4e %+.4e %.4e" % (".".join(nslc), mi, ma, ma - mi))
         text = "\n".join(lines) if len(lines) > 1 else "No data in the visible window."
         return snuffling_pb2.SnufflingResult(show_window=True, text=text)
 
@@ -2542,63 +3838,82 @@ def _run_snuffling_result(
             "[-1/ratio,1]": 2,
             "[-1/ratio,1] clipped to [0,1]": 3,
         }.get(scaling_name, 1)
-        result = snuffling_pb2.SnufflingResult(show_window=False)
-        processed = []
-        derived = []
-        source_work = [tr for tr in work if not _is_stalta_trace(tr)]
-        had_level_traces = any(_is_stalta_trace(tr) for tr in _TRACES)
-        if had_level_traces:
-            _TRACES[:] = [tr for tr in _TRACES if not _is_stalta_trace(tr)]
-        for tr, seg in chopped(shp, slp, traces=source_work):
-            if len(seg.ydata) < 64:
-                continue
-            try:
-                c = seg.copy()
-                method = c.sta_lta_right if variant == "right" else c.sta_lta_centered
+        result = snuffling_pb2.SnufflingResult(show_window=False, origin="stalta")
+        lwin = tshort * ratio
+        derived: List[ptrace.Trace] = []
+        # Cleanup precedes the chopper and every filter operation, matching Qt's
+        # ticket lifecycle even when a later batch fails.
+        _replace_derived("stalta", [])
+        deltat_min = min((tr.deltat for tr in _TRACES if tr.deltat > 0.0), default=0.01)
+        tinc = max(lwin * 2.0, 500_000.0 * deltat_min)
+        for batch in _chopper_selected_traces(
+            req,
+            mode="visible",
+            skip_instant=True,
+            trace_filter=lambda trace: not _is_tabu_trace(trace),
+            tinc=tinc,
+            tpad=lwin,
+            want_incomplete=False,
+        ):
+            sumtrace = None
+            isum = 0
+            for tr in batch.traces:
+                if tr.ydata is None or len(tr.ydata) < 64:
+                    continue
+                tr.ydata = tr.ydata.astype(np.float64)
+                if slp is not None:
+                    tr.lowpass(4, float(slp), nyquist_exception=True)
+                if shp is not None:
+                    tr.highpass(4, float(shp), nyquist_exception=True)
+                method = tr.sta_lta_right if variant == "right" else tr.sta_lta_centered
                 try:
-                    method(tshort, tshort * ratio, scalingmethod=scaling_method)
+                    method(tshort, lwin, scalingmethod=scaling_method)
                 except TypeError:
-                    method(tshort, tshort * ratio)
+                    method(tshort, lwin)
+                tr.chop(batch.tmin, batch.tmax)
+                original_nslc = tr.nslc_id
+                if not apply_to_sum:
+                    tpeaks, _apeaks = tr.peaks(level, tshort)
+                    for tp in tpeaks:
+                        marker = result.markers.add()
+                        marker.t = float(tp)
+                        marker.nslc_ids.add().CopyFrom(_nslc_pb(list(original_nslc)))
+                # Qt renames the level trace into location `cg` keeping the
+                # channel (stalta.py:189) and tags it tabu.
+                tr.set_codes(location="cg")
+                tr.meta = {"tabu": True}
                 if show_level_traces:
-                    net, sta, loc, cha = tr.nslc_id
-                    derived.append(
-                        ptrace.Trace(
-                            network=net,
-                            station=sta,
-                            location=loc,
-                            channel=cha + "-STALTA",
-                            deltat=float(c.deltat),
-                            tmin=float(c.tmin),
-                            ydata=np.asarray(c.ydata, dtype=np.float64),
+                    derived.append(tr)
+                # The `.SUM.cg.` mean trace at the pile's finest sampling
+                # (stalta.py:196), built whether or not it is shown.
+                if sumtrace is None:
+                    ny = int((tr.tmax - tr.tmin) / deltat_min)
+                    if ny > 0:
+                        sumtrace = ptrace.Trace(
+                            network="",
+                            station="SUM",
+                            location="cg",
+                            channel="",
+                            deltat=deltat_min,
+                            tmin=float(tr.tmin),
+                            ydata=np.zeros(ny),
                             meta={"tabu": True},
                         )
-                    )
+                if sumtrace is not None:
+                    sumtrace.add(tr, left=None, right=None)
+                    isum += 1
+            if sumtrace is not None and isum > 0:
+                sumtrace.ydata = sumtrace.ydata / float(isum)
                 if apply_to_sum:
-                    processed.append(c)
-                    continue
-                tpeaks, _apeaks = c.peaks(level, tshort)
-            except Exception:
-                continue
-            for tp in tpeaks:
-                marker = result.markers.add()
-                marker.t = float(tp)
-                marker.nslc.CopyFrom(_nslc_pb(list(tr.nslc_id)))
-        if apply_to_sum and processed:
-            min_len = min(len(c.ydata) for c in processed)
-            if min_len >= 64:
-                try:
-                    csum = processed[0].copy()
-                    csum.ydata = np.mean([c.ydata[:min_len] for c in processed], axis=0)
-                    tpeaks, _apeaks = csum.peaks(level, tshort)
+                    tpeaks, _apeaks = sumtrace.peaks(level, tshort)
                     for tp in tpeaks:
-                        result.markers.add().t = float(tp)
-                except Exception:
-                    pass
-        if show_level_traces:
-            _TRACES.extend(derived)
-        if had_level_traces or show_level_traces:
-            _mark_traces_changed()
-            result.scene.CopyFrom(_scene_meta())
+                        marker = result.markers.add()
+                        marker.t = float(tp)
+                        marker.nslc_ids.add().CopyFrom(_nslc_pb(["*", "*", "*", "*"]))
+                if show_level_traces:
+                    derived.append(sumtrace)
+        _replace_derived("stalta", derived if show_level_traces else [])
+        result.scene.CopyFrom(_scene_meta())
         result.text = "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)" % (
             len(result.markers),
             tshort,
@@ -2609,7 +3924,10 @@ def _run_snuffling_result(
 
     if name == "polarization":
         # Covariance-eigenvalue polarization analysis (Jurkevics, 1988) per
-        # 3-component station over the visible window. Pure numpy.
+        # 3-component station — the text twin of the figure: the same
+        # raw-pile chopper, marker-derived windows, component schemes, own
+        # 4th-order filters with settling pad, demeaning and rotation
+        # convention, reported as numbers.
         polarization = req.snufflings.polarization
         php = (
             polarization.polarization_highpass
@@ -2621,37 +3939,66 @@ def _run_snuffling_result(
             if polarization.HasField("polarization_lowpass")
             else None
         )
-        length = float(polarization.polarization_t_length or (tmax - tmin))
-        offset = float(polarization.polarization_ft_offset)
+        t_length = float(polarization.polarization_t_length or 1.0)
+        ft_offset = float(polarization.polarization_ft_offset)
         azimuth = float(polarization.polarization_azimuth)
-        if 0.0 < length < (tmax - tmin):
-            center = 0.5 * (tmin + tmax) + offset * length
-            ptmin, ptmax = center - 0.5 * length, center + 0.5 * length
-        else:
-            ptmin, ptmax = tmin, tmax
 
-        groups: Dict[Tuple[str, str, str], Dict[str, np.ndarray]] = {}
-        comp_of = {"Z": "Z", "N": "N", "1": "N", "E": "E", "2": "E"}
-        for tr, seg in chopped(php, plp, ptmin, ptmax):
-            net, sta, loc, cha = tr.nslc_id
-            comp = comp_of.get(cha[-1].upper()) if cha else None
-            if comp is not None:
-                groups.setdefault((net, sta, loc), {})[comp] = seg.ydata
+        windows: List[Tuple[Tuple[str, str, str], str, float, float]] = []
+        for s in req.selected_spans:
+            w_tmin = float(s.tmin) + t_length * ft_offset
+            w_tmax = w_tmin + t_length
+            for pn in s.nslc_ids:
+                windows.append(
+                    ((pn.net, pn.sta, pn.loc), pn.cha[:-1] if pn.cha else "", w_tmin, w_tmax)
+                )
+        if not windows:
+            return snuffling_pb2.SnufflingResult(
+                show_window=True,
+                text=(
+                    "No selected markers.\n\nCreate and select markers at points "
+                    "of interest. Normal and phase markers are accepted."
+                ),
+            )
 
         lines = ["%-16s %8s %8s %6s %6s" % ("station", "az[°]", "inc[°]", "rect", "plan")]
-        for (net, sta, loc), comps in groups.items():
-            if not all(k in comps for k in ("Z", "N", "E")):
+        for nsl, chagroup, w_tmin, w_tmax in windows:
+            by_channel: Dict[str, np.ndarray] = {}
+            trs: Dict[str, ptrace.Trace] = {}
+            # The same extraction the figure runs — raw pile, channel pattern
+            # only, complete padded windows — then chopped to the bare analysis
+            # window, since only the numbers are reported.
+            for cha, seg in _polarization_channels(
+                nsl, chagroup, w_tmin, w_tmax, php, plp, t_length
+            ).items():
+                try:
+                    seg = seg.chop(w_tmin, w_tmax, inplace=False)
+                except Exception:  # noqa: BLE001 — window not covered
+                    continue
+                if seg.ydata is None or len(seg.ydata) < 8:
+                    continue
+                trs[cha] = seg
+            group = _polarization_scheme(trs) if trs else None
+            if group is None or len(group) != 3:
                 continue
-            m = min(len(comps[k]) for k in ("Z", "N", "E"))
+            te_, tn_, tz_ = group
+            for key, seg in (("E", te_), ("N", tn_), ("Z", tz_)):
+                y = np.asarray(seg.ydata, dtype=np.float64)
+                by_channel[key] = y - float(np.mean(y))
+            m = min(len(by_channel[k]) for k in ("Z", "N", "E"))
             if m < 8:
                 continue
+            yz = by_channel["Z"][:m]
+            yn = by_channel["N"][:m]
+            ye = by_channel["E"][:m]
             if azimuth != 0.0:
+                # pyrocko's `trace.rotate` matrix, the same convention the
+                # figure draws with: n' = cos·n + sin·e, e' = −sin·n + cos·e.
                 theta = np.radians(azimuth)
-                n = comps["N"][:m].copy()
-                e = comps["E"][:m].copy()
-                comps["N"] = np.cos(theta) * n - np.sin(theta) * e
-                comps["E"] = np.sin(theta) * n + np.cos(theta) * e
-            data = np.vstack([comps["Z"][:m], comps["N"][:m], comps["E"][:m]])
+                yn, ye = (
+                    np.cos(theta) * yn + np.sin(theta) * ye,
+                    -np.sin(theta) * yn + np.cos(theta) * ye,
+                )
+            data = np.vstack([yz, yn, ye])
             data = data - data.mean(axis=1, keepdims=True)
             evals, evecs = np.linalg.eigh(np.cov(data))  # ascending
             order_ev = np.argsort(evals)[::-1]
@@ -2663,13 +4010,13 @@ def _run_snuffling_result(
             inc = float(np.degrees(np.arccos(min(1.0, abs(float(vz))))))
             lines.append(
                 "%-16s %8.1f %8.1f %6.2f %6.2f"
-                % ("%s.%s.%s" % (net, sta, loc), az, inc, rect, plan)
+                % (".".join(x for x in nsl if x), az, inc, rect, plan)
             )
 
         text = (
             "\n".join(lines)
             if len(lines) > 1
-            else "Need 3-component (Z/N/E) data in the visible window."
+            else "Need a selected marker over 3-component (Z + 2 horizontal) data."
         )
         return snuffling_pb2.SnufflingResult(show_window=True, text=text)
 
@@ -2700,11 +4047,15 @@ def _dataselect_url(req: data_pb2.WaveformDownloadRequest) -> str:
 
 
 def _load_waveform_path_scene(path: str) -> scene_pb2.SceneMeta:
-    """Load staged FDSN MiniSEED bytes into the pile and return the scene."""
+    """Load staged FDSN MiniSEED bytes into the pile and return the scene.
+
+    Appends: Qt's download snuffling adds the fetched traces to whatever is
+    loaded (`Pile.add_file` via download.py:140), it never replaces the pile.
+    """
     if not path:
         return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
     traces = list(pio.load(path, format="mseed"))
-    _set_traces(traces)
+    _set_traces(traces, append=True)
     return _scene_meta()
 
 
@@ -2736,23 +4087,19 @@ def _append_mseed_scene(
     retain_seconds: float = 0.0,
 ) -> scene_pb2.SceneMeta:
     """Append live MiniSEED records and merge adjacent segments by NSLC/time."""
-    del source
     global _TRACES
+    del source
     if reset:
-        _TRACES = []
-        _SOURCE_TRACES.clear()
-        _clear_event_context()
+        # The common replacement path retires file provenance, derived data,
+        # dataset metadata, and the boot-example flag as one invariant.
+        _set_traces([])
     if not raw:
-        if reset:
-            _mark_traces_changed()
         return _scene_meta()
 
     traces = list(pio.load(_stage_bytes("live.mseed", raw), format="mseed"))
     if start_time > 0.0:
         traces = _trim_live_traces(traces, start_time)
     if not traces:
-        if reset:
-            _mark_traces_changed()
         return _scene_meta()
 
     merged_input = list(_TRACES) + traces
@@ -2821,11 +4168,19 @@ def _ftime(s: str) -> float:
 
 def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse FDSN event 'text' format into event markers; set the active event
-    (largest magnitude) for distance/azimuth sorting."""
-    global _ACTIVE_EVENT, _EVENTS
+    (largest magnitude) for distance/azimuth sorting.
+
+    Every event carries its full origin (lat/lon/depth/magnitude), its identity
+    (event id, region, catalog) and is put in ``_EVENT_REGISTRY``, so ``e`` on
+    one activates the *real* origin — and the auto-activated marker itself is
+    flagged ``active`` so the state is visible on the canvas and in the table.
+    """
+    from pyrocko import model
+    from pyrocko import orthodrome as od
+
     result = snuffling_pb2.SnufflingResult(show_window=True)
     lines = []
-    _EVENTS = []
+    entries = []
     best = None
     for line in text.splitlines():
         line = line.strip()
@@ -2839,35 +4194,64 @@ def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
         lon = float(c[3]) if c[3] else 0.0
         depth = (float(c[4]) if c[4] else 0.0) * 1000.0
         mag = float(c[10]) if len(c) > 10 and c[10] else 0.0
-        name = c[12] if len(c) > 12 else ""
+        # FDSN text columns: EventID | Time | Lat | Lon | Depth | Author |
+        # Catalog | ... | Magnitude | MagAuthor | EventLocationName.
+        event_id = c[0].strip()
+        catalog = c[6].strip() if len(c) > 6 else ""
+        region = c[12] if len(c) > 12 else ""
         when = c[1].replace("T", " ")[:19]
+        ev = model.Event(
+            time=t,
+            lat=lat,
+            lon=lon,
+            depth=depth,
+            magnitude=mag,
+            name=event_id or None,
+            region=region or None,
+            catalog=catalog or None,
+        )
+        h = event_id or str(ev.get_hash())
+        _EVENT_REGISTRY[h] = ev
         marker = result.markers.add()
         marker.t = t
-        marker.phase = ("M%.1f %s" % (mag, name)).strip()[:48]
         marker.is_event = True
-        _EVENTS.append(
-            data_pb2.MapEvent(
-                lat=lat, lon=lon, mag=mag, depth=depth, name=name or "(Event)", time=when
-            )
-        )
-        lines.append("M%.1f  %s  %s" % (mag, when, name))
+        marker.event_hash = h
+        if event_id:
+            marker.event_name = event_id
+        if region:
+            marker.region = region
+        if catalog:
+            marker.catalog = catalog
+        marker.magnitude = mag
+        marker.lat = lat
+        marker.lon = lon
+        marker.depth = depth
+        lines.append("M%.1f  %s  %s" % (mag, when, region))
+        entries.append((marker, lat, lon))
         if best is None or mag > best[0]:
-            best = (mag, lat, lon, depth, t)
+            best = (mag, lat, lon, depth, t, marker)
     if best is not None:
-        _ACTIVE_EVENT = (best[1], best[2], best[3], best[4])
+        _activate_event(best[5].event_hash)
+        best[5].active = True
+        for marker, lat, lon in entries:
+            marker.dist_active_km = (
+                float(od.distance_accurate50m(lat, lon, best[1], best[2])) / 1000.0
+            )
         header = (
             "%d event(s) found; active event M%.1f (distance sort enabled).\n"
             "Jumped the view to the events — load waveforms for this time to "
             "see them on data." % (len(result.markers), best[0])
         )
     else:
+        _activate_event(None)
         header = "No events found in this time window."
     body = "\n".join(lines[:30])
     result.text = header + ("\n\n" + body if body else "")
+    result.event_state.CopyFrom(_event_state())
     return result
 
 
-def _short_event_name(name: str) -> str:
+def _short_event_name(name: Optional[str]) -> str:
     """A compact event code from a QuakeML public id, e.g.
     ``quakeml:earthquake.usgs.gov/...?eventid=us6000jllz&...`` → ``us6000jllz`` or
     ``quakeml:us.anss.org/event/us6000jllz`` → ``us6000jllz``."""
@@ -2882,10 +4266,10 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse an FDSN QuakeML event response into event markers carrying moment
     tensors, and precompute the Kagan angle of every MT event to the active
     (largest-magnitude) event. Reuses pyrocko's own QuakeML reader + MomentTensor
-    (no seismology reimplemented in Rust). Also populates ``_EVENTS`` and
+    (no seismology reimplemented in Rust). Also populates the event registry and
     ``_ACTIVE_EVENT`` so the Map overlay and distance sort keep working."""
-    global _ACTIVE_EVENT, _ACTIVE_MT, _EVENTS
     from pyrocko import moment_tensor as mtm
+    from pyrocko import orthodrome as od
     from pyrocko import util
 
     # quakeml.py eagerly imports pyrocko.gui.snuffler.marker; install the stub that
@@ -2894,8 +4278,6 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
     from pyrocko.io import quakeml
 
     result = snuffling_pb2.SnufflingResult(show_window=True)
-    _EVENTS = []
-    _EVENT_REGISTRY.clear()
     qml = quakeml.QuakeML.load_xml(string=text)
     events = qml.get_pyrocko_events()
 
@@ -2906,42 +4288,49 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
         lat = float(ev.lat)
         lon = float(ev.lon)
         depth = float(ev.depth) if ev.depth is not None else 0.0
-        _EVENTS.append(
-            data_pb2.MapEvent(
-                lat=lat,
-                lon=lon,
-                mag=mag,
-                depth=depth,
-                name=_short_event_name(ev.name) or "(Event)",
-                time=util.time_to_str(ev.time)[:19],
-            )
-        )
         entries.append((ev, mag, lat, lon, depth))
         if best is None or mag > best[1]:
             best = (ev, mag, lat, lon, depth)
 
+    for event, _mag, _lat, _lon, _depth in entries:
+        event_hash = str(event.name) if event.name else str(event.get_hash())
+        _EVENT_REGISTRY[event_hash] = event
     if best is not None:
-        best_ev = best[0]
-        _ACTIVE_EVENT = (best[2], best[3], best[4], float(best_ev.time))
-        _ACTIVE_MT = best_ev.moment_tensor
+        best_event = best[0]
+        best_hash = str(best_event.name) if best_event.name else str(best_event.get_hash())
+        _activate_event(best_hash)
     else:
-        _ACTIVE_MT = None
+        _activate_event(None)
 
     lines = []
     for ev, mag, _lat, _lon, _depth in entries:
+        event_hash = str(ev.name) if ev.name else str(ev.get_hash())
         short = _short_event_name(ev.name)
         marker = result.markers.add()
         marker.t = float(ev.time)
-        marker.phase = ("M%.1f %s" % (mag, short)).strip()[:48]
         marker.is_event = True
-        marker.event_hash = ev.name or ""
+        marker.event_hash = event_hash
+        if short:
+            marker.event_name = short
+        if getattr(ev, "region", None):
+            marker.region = str(ev.region)
+        if getattr(ev, "catalog", None):
+            marker.catalog = str(ev.catalog)
         marker.magnitude = mag
         marker.lat = float(ev.lat)
         marker.lon = float(ev.lon)
         if ev.depth is not None:
             marker.depth = float(ev.depth)
-        if ev.name:
-            _EVENT_REGISTRY[ev.name] = ev
+        if best is not None:
+            # The auto-activated event is *visible*: the largest-magnitude
+            # marker carries the active flag, and every event row gets its
+            # distance to it for the table's Dist [km] column.
+            if ev is best[0]:
+                marker.active = True
+            marker.dist_active_km = (
+                float(od.distance_accurate50m(float(ev.lat), float(ev.lon), best[2], best[3]))
+                / 1000.0
+            )
         mt = ev.moment_tensor
         if mt is not None:
             mnn, mee, mdd, mne, mnd, med = (float(x) for x in mt.m6())
@@ -2966,26 +4355,80 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
         header = "No events found in this time window."
     body = "\n".join(lines[:30])
     result.text = header + ("\n\n" + body if body else "")
+    result.event_state.CopyFrom(_event_state())
     return result
 
 
-def _set_active_event(req: data_pb2.SetActiveEventRequest) -> data_pb2.ActiveEventResult:
+def _moment_tensor_message(moment_tensor: Any) -> Optional[common_pb2.MomentTensor]:
+    if moment_tensor is None:
+        return None
+    mnn, mee, mdd, mne, mnd, med = (float(value) for value in moment_tensor.m6())
+    return common_pb2.MomentTensor(mnn=mnn, mee=mee, mdd=mdd, mne=mne, mnd=mnd, med=med)
+
+
+def _event_snapshot(event_hash: str, event: Any) -> common_pb2.EventSnapshot:
+    snapshot = common_pb2.EventSnapshot(
+        event_hash=event_hash,
+        time=float(event.time),
+        lat=float(event.lat),
+        lon=float(event.lon),
+        depth=float(event.depth or 0.0),
+    )
+    if event.magnitude is not None:
+        snapshot.magnitude = float(event.magnitude)
+    for field in ("name", "region", "catalog"):
+        value = getattr(event, field, None)
+        if value:
+            setattr(snapshot, field, str(value))
+    moment_tensor = _moment_tensor_message(getattr(event, "moment_tensor", None))
+    if moment_tensor is not None:
+        snapshot.moment_tensor.CopyFrom(moment_tensor)
+    return snapshot
+
+
+def _event_state() -> common_pb2.ActiveEventResult:
+    """Project the authoritative event registry and its active-event metrics."""
+    from pyrocko import moment_tensor as mtm
+    from pyrocko import orthodrome as od
+
+    active = _EVENT_REGISTRY.get(_ACTIVE_HASH) if _ACTIVE_HASH else None
+    active_mt = getattr(active, "moment_tensor", None) if active is not None else None
+    result = common_pb2.ActiveEventResult(has_event=active is not None)
+    if active is not None:
+        result.active_hash = _ACTIVE_HASH
+    for event_hash, event in _EVENT_REGISTRY.items():
+        result.events.add().CopyFrom(_event_snapshot(event_hash, event))
+        metric = result.kagan.add()
+        metric.event_hash = event_hash
+        moment_tensor = getattr(event, "moment_tensor", None)
+        if active_mt is not None and moment_tensor is not None:
+            metric.kagan_deg = float(mtm.kagan_angle(active_mt, moment_tensor))
+        if active is not None:
+            metric.dist_km = (
+                float(
+                    od.distance_accurate50m(
+                        float(event.lat),
+                        float(event.lon),
+                        float(active.lat),
+                        float(active.lon),
+                    )
+                )
+                / 1000.0
+            )
+    return result
+
+
+def _set_active_event(req: data_pb2.SetActiveEventRequest) -> common_pb2.ActiveEventResult:
     """Set (or clear) the user-chosen active event — the single reference every
     downstream consumer (station distances, Kagan column, cake/seismosizer origin,
     map centre) reads from ``_ACTIVE_EVENT``/``_ACTIVE_MT``. Faithful port of
     snuffler ``set_active_event_marker`` / ``deactivate_event_marker``; recomputes
     the Kagan angle of every registered event against the new active MT."""
-    global _ACTIVE_EVENT, _ACTIVE_MT
     from pyrocko import model
-    from pyrocko import moment_tensor as mtm
 
     if req.deactivate:
-        _ACTIVE_EVENT = None
-        _ACTIVE_MT = None
-        return data_pb2.ActiveEventResult(
-            has_event=False,
-            kagan=[data_pb2.EventKagan(event_hash=h) for h in _EVENT_REGISTRY],
-        )
+        _activate_event(None)
+        return _event_state()
 
     ev = _EVENT_REGISTRY.get(req.event_hash) if req.event_hash else None
     if ev is None:
@@ -3003,28 +4446,77 @@ def _set_active_event(req: data_pb2.SetActiveEventRequest) -> data_pb2.ActiveEve
         if req.event_hash:
             _EVENT_REGISTRY[req.event_hash] = ev
 
-    _ACTIVE_EVENT = (float(ev.lat), float(ev.lon), float(ev.depth or 0.0), float(ev.time))
-    _ACTIVE_MT = ev.moment_tensor
+    _activate_event(req.event_hash or None)
 
-    out = data_pb2.ActiveEventResult(has_event=True, active_hash=req.event_hash or "")
-    for h, e in _EVENT_REGISTRY.items():
-        entry = out.kagan.add()
-        entry.event_hash = h
-        mt = getattr(e, "moment_tensor", None)
-        if _ACTIVE_MT is not None and mt is not None:
-            entry.kagan_deg = float(mtm.kagan_angle(_ACTIVE_MT, mt))
-    return out
+    return _event_state()
+
+
+def _update_event(snapshot: common_pb2.EventSnapshot) -> common_pb2.ActiveEventResult:
+    """Replace one registry event from the frontend's complete edited snapshot."""
+    from pyrocko import model
+    from pyrocko import moment_tensor as mtm
+
+    if not snapshot.event_hash:
+        raise ValueError("event update requires an event_hash")
+    moment_tensor = None
+    if snapshot.HasField("moment_tensor"):
+        tensor = snapshot.moment_tensor
+        moment_tensor = mtm.MomentTensor(
+            mnn=tensor.mnn,
+            mee=tensor.mee,
+            mdd=tensor.mdd,
+            mne=tensor.mne,
+            mnd=tensor.mnd,
+            med=tensor.med,
+        )
+    event = model.Event(
+        time=float(snapshot.time),
+        lat=float(snapshot.lat),
+        lon=float(snapshot.lon),
+        depth=float(snapshot.depth),
+        magnitude=(float(snapshot.magnitude) if snapshot.HasField("magnitude") else None),
+        name=(snapshot.name if snapshot.HasField("name") else None),
+        region=(snapshot.region if snapshot.HasField("region") else None),
+        catalog=(snapshot.catalog if snapshot.HasField("catalog") else None),
+        moment_tensor=moment_tensor,
+    )
+    _EVENT_REGISTRY[snapshot.event_hash] = event
+    if snapshot.event_hash == _ACTIVE_HASH:
+        _activate_event(snapshot.event_hash)
+    return _event_state()
+
+
+def _remove_events(request: data_pb2.RemoveEventsRequest) -> common_pb2.ActiveEventResult:
+    event_hashes = set(request.event_hashes)
+    for event_hash in event_hashes:
+        _EVENT_REGISTRY.pop(event_hash, None)
+    if _ACTIVE_HASH in event_hashes:
+        _activate_event(None)
+    return _event_state()
 
 
 def _station_url(req: data_pb2.StationRequest) -> str:
-    """FDSN station query URL (text format, station level)."""
+    """FDSN station query URL — channel level, as Qt's download resolves them
+    (download.py:78), with the location, the time span, and the optional
+    radius search around the active event's epicentre."""
     base = _fdsn_base(req.datacenter)
+    extra = []
+    if req.start:
+        extra.append("starttime=%s" % req.start)
+    if req.end:
+        extra.append("endtime=%s" % req.end)
+    if req.HasField("radius_deg") and _ACTIVE_EVENT is not None:
+        extra.append("latitude=%.5f" % _ACTIVE_EVENT[0])
+        extra.append("longitude=%.5f" % _ACTIVE_EVENT[1])
+        extra.append("maxradius=%.4f" % float(req.radius_deg))
     q = "&".join(
         [
             "net=%s" % (req.net or "*"),
             "sta=%s" % (req.sta or "*"),
+            "loc=%s" % (req.loc or "*"),
             "cha=%s" % (req.cha or "*"),
-            "level=station",
+            *extra,
+            "level=channel",
             "format=text",
         ]
     )
@@ -3032,25 +4524,47 @@ def _station_url(req: data_pb2.StationRequest) -> str:
 
 
 def _parse_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
-    """Parse FDSN station 'text' format (#Net|Sta|Lat|Lon|Elev|Site|Start|End)
-    and remember coordinates for distance/azimuth sorting.
+    """Parse FDSN station text and remember coordinates for sorting/cake/map.
 
-    Station-level text carries neither a location code nor a sensor depth, so every
-    channel of a station shares one position — which is all this format can say.
-    A StationXML fetch (``level=response``) resolves both.
+    The query asks for *channel* level, whose rows carry the location code and
+    the sensor depth (`#Net|Sta|Loc|Cha|Lat|Lon|Elev|Depth|…`) — exactly what
+    the per-location station table wants. Station-level rows
+    (`#Net|Sta|Lat|Lon|Elev|Site|…`) still parse, as the fallback for servers
+    that answer coarser than asked.
     """
-    global _STATIONS
     n = 0
+    seen = set()
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         c = line.split("|")
-        if len(c) < 5:
-            continue
         try:
-            _STATIONS[(c[0], c[1])] = (float(c[2]), float(c[3]), float(c[4]), 0.0)
-            n += 1
+            # A channel-level row has its latitude in column 4; a station-level
+            # row has it in column 2 (where a channel row holds the location
+            # code, which never parses as a float).
+            if len(c) >= 8:
+                try:
+                    lat, lon = float(c[4]), float(c[5])
+                    is_channel = True
+                except ValueError:
+                    is_channel = False
+            else:
+                is_channel = False
+            key: Tuple[str, ...]
+            if is_channel:
+                elev = float(c[6]) if c[6] else 0.0
+                depth = float(c[7]) if c[7] else 0.0
+                key = (c[0], c[1], c[2])
+                _add_station(c[0], c[1], c[2], lat, lon, elev, depth)
+            else:
+                if len(c) < 5:
+                    continue
+                key = (c[0], c[1])
+                _STATIONS[key] = (float(c[2]), float(c[3]), float(c[4]), 0.0)
+            if key not in seen:
+                seen.add(key)
+                n += 1
         except Exception:
             pass
     return snuffling_pb2.SnufflingResult(
@@ -3126,12 +4640,14 @@ def _load_events_result(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse a local pyrocko event file into event markers and set the active
     event (largest magnitude, for distance/azimuth sorting), via pyrocko's own
     ``model.load_events``. Mirrors the FDSN catalog path."""
-    global _ACTIVE_EVENT, _EVENTS
     if not text.strip():
-        return snuffling_pb2.SnufflingResult(show_window=True, text="empty event file")
+        _activate_event(None)
+        result = snuffling_pb2.SnufflingResult(show_window=True, text="empty event file")
+        result.event_state.CopyFrom(_event_state())
+        return result
     import tempfile
 
-    from pyrocko import model, util
+    from pyrocko import model
 
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
         handle.write(text)
@@ -3148,38 +4664,54 @@ def _load_events_result(text: str) -> snuffling_pb2.SnufflingResult:
         except OSError:
             pass
 
+    from pyrocko import orthodrome as od
+
     result = snuffling_pb2.SnufflingResult(show_window=True)
-    _EVENTS = []
-    best: Optional[Tuple[float, float, float, float, float]] = None
+    entries = []
+    best: Optional[Tuple[float, float, float, float, float, Any]] = None
     for ev in events:
         lat = float(ev.lat)
         lon = float(ev.lon)
         depth = float(ev.depth or 0.0)
         mag = float(ev.magnitude) if ev.magnitude is not None else 0.0
+        # The full origin and identity ride the marker, and the event goes in
+        # the registry, so activating it later uses the real origin instead of
+        # a rebuilt zero-depth stand-in.
+        h = str(ev.name) if ev.name else str(ev.get_hash())
+        _EVENT_REGISTRY[h] = ev
         marker = result.markers.add()
         marker.t = float(ev.time)
-        marker.phase = ("M%.1f %s" % (mag, ev.name or "")).strip()[:48]
         marker.is_event = True
-        _EVENTS.append(
-            data_pb2.MapEvent(
-                lat=lat,
-                lon=lon,
-                mag=mag,
-                depth=depth,
-                name=ev.name or "(Event)",
-                time=util.time_to_str(ev.time)[:19],
-            )
-        )
+        marker.event_hash = h
+        if ev.name:
+            marker.event_name = str(ev.name)[:96]
+        if getattr(ev, "region", None):
+            marker.region = str(ev.region)
+        if getattr(ev, "catalog", None):
+            marker.catalog = str(ev.catalog)
+        marker.magnitude = mag
+        marker.lat = lat
+        marker.lon = lon
+        marker.depth = depth
+        entries.append((marker, lat, lon))
         if best is None or mag > best[0]:
-            best = (mag, lat, lon, depth, float(ev.time))
+            best = (mag, lat, lon, depth, float(ev.time), marker)
     if best is not None:
-        _ACTIVE_EVENT = (best[1], best[2], best[3], best[4])
+        _activate_event(best[5].event_hash)
+        # Auto-activation stays, made visible on the marker itself.
+        best[5].active = True
+        for marker, lat, lon in entries:
+            marker.dist_active_km = (
+                float(od.distance_accurate50m(lat, lon, best[1], best[2])) / 1000.0
+            )
         result.text = "%d event(s) loaded; active event M%.1f (distance sort enabled)." % (
             len(result.markers),
             best[0],
         )
     else:
+        _activate_event(None)
         result.text = "No events in file."
+    result.event_state.CopyFrom(_event_state())
     return result
 
 
@@ -3199,27 +4731,39 @@ def _response_url(req: data_pb2.StationRequest) -> str:
 
 
 def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResult:
-    """Parse and merge StationXML documents into instrument responses.
+    """Parse StationXML documents into instrument responses.
+
+    Appended to the document list rather than merged into one: snuffler keeps its
+    ``station_xmls`` as a list in load order and resolves each channel against
+    the first document that answers (pile_viewer.py:4470), so a second load adds
+    responses instead of discarding the first load's, and a channel described in
+    two documents restitutes instead of raising on the merge's ambiguity.
 
     Station coordinates are also harvested for distance/azimuth sorting.
     """
-    global _STATIONXML, _RESPONSE_GEN
+    global _RESPONSE_GEN
     xml_texts = [text for text in xml_texts if text.strip()]
     if not xml_texts:
         return snuffling_pb2.SnufflingResult(show_window=True, text="no station metadata returned")
     from pyrocko.io import stationxml
 
     station_xmls = [stationxml.load_xml(string=text) for text in xml_texts]
-    _STATIONXML = stationxml.primitive_merge(station_xmls)
+    _STATIONXMLS.extend(station_xmls)
     _RESPONSE_GEN += 1
+    _WARNED_NO_RESPONSE.clear()
     _clear_view_cache()
-    nchan = sum(len(st.channel_list) for net in _STATIONXML.network_list for st in net.station_list)
+    nchan = sum(
+        len(st.channel_list)
+        for sx in station_xmls
+        for net in sx.network_list
+        for st in net.station_list
+    )
     # Coordinates via `get_pyrocko_stations`, the same call snuffler feeds
     # `--stationxml` files through — not the station element's own lat/lon.
     # The two can genuinely disagree (real files carry channel positions ~100 m
     # away from the station element), and snuffler's distance/azimuth sorts follow
     # the channel-derived position, epoch handling and all.
-    for st in _STATIONXML.get_pyrocko_stations():
+    for st in (station for sx in station_xmls for station in sx.get_pyrocko_stations()):
         try:
             _add_station(
                 st.network,
@@ -3254,6 +4798,96 @@ _BUNDLE_MANIFEST = "snuffler.json"
 
 # Prose a bundle may carry beside its data, which no loader wants.
 _BUNDLE_SKIP_SUFFIXES = (".json", ".md", ".txt", ".py", ".cfg", ".toml")
+
+
+class _DatasetState(NamedTuple):
+    traces: List[ptrace.Trace]
+    source_traces: "OrderedDict[str, List[ptrace.Trace]]"
+    source_digests: Dict[str, str]
+    suppressed_source_traces: Dict[str, List[ptrace.Trace]]
+    digest_owners: Dict[str, "set[str]"]
+    derived_traces: Dict[str, List[ptrace.Trace]]
+    derived_events: Dict[str, Dict[str, Any]]
+    pile_is_example: bool
+    stations: Dict[Tuple[str, ...], Tuple[float, float, float, float]]
+    active_event: Optional[Tuple[float, float, float, float]]
+    active_hash: str
+    active_mt: Any
+    event_registry: "OrderedDict[str, Any]"
+    stationxmls: List[Any]
+    warned_no_response: "set[NslcId]"
+
+
+def _dataset_state() -> _DatasetState:
+    return _DatasetState(
+        traces=list(_TRACES),
+        source_traces=OrderedDict(
+            (source_id, list(traces)) for source_id, traces in _SOURCE_TRACES.items()
+        ),
+        source_digests=dict(_SOURCE_DIGESTS),
+        suppressed_source_traces={
+            source_id: list(traces) for source_id, traces in _SUPPRESSED_SOURCE_TRACES.items()
+        },
+        digest_owners={digest: set(owners) for digest, owners in _DIGEST_OWNERS.items()},
+        derived_traces={origin: list(traces) for origin, traces in _DERIVED_TRACES.items()},
+        derived_events={origin: dict(events) for origin, events in _DERIVED_EVENTS.items()},
+        pile_is_example=_PILE_IS_EXAMPLE,
+        stations=dict(_STATIONS),
+        active_event=_ACTIVE_EVENT,
+        active_hash=_ACTIVE_HASH,
+        active_mt=_ACTIVE_MT,
+        event_registry=OrderedDict(_EVENT_REGISTRY),
+        stationxmls=list(_STATIONXMLS),
+        warned_no_response=set(_WARNED_NO_RESPONSE),
+    )
+
+
+def _install_dataset_state(state: _DatasetState) -> None:
+    global _ACTIVE_EVENT, _ACTIVE_HASH, _ACTIVE_MT, _PILE_IS_EXAMPLE, _TRACES
+    global _DERIVED_EVENTS, _DERIVED_TRACES, _DIGEST_OWNERS
+    global _SOURCE_DIGESTS, _SOURCE_TRACES
+    global _SUPPRESSED_SOURCE_TRACES
+    global _EVENT_REGISTRY, _STATIONS, _STATIONXMLS, _WARNED_NO_RESPONSE
+    _TRACES = list(state.traces)
+    _SOURCE_TRACES = OrderedDict(
+        (source_id, list(traces)) for source_id, traces in state.source_traces.items()
+    )
+    _SOURCE_DIGESTS = dict(state.source_digests)
+    _SUPPRESSED_SOURCE_TRACES = {
+        source_id: list(traces) for source_id, traces in state.suppressed_source_traces.items()
+    }
+    _DIGEST_OWNERS = {digest: set(owners) for digest, owners in state.digest_owners.items()}
+    _DERIVED_TRACES = {origin: list(traces) for origin, traces in state.derived_traces.items()}
+    _DERIVED_EVENTS = {origin: dict(events) for origin, events in state.derived_events.items()}
+    _PILE_IS_EXAMPLE = state.pile_is_example
+    _STATIONS = dict(state.stations)
+    _ACTIVE_EVENT = state.active_event
+    _ACTIVE_HASH = state.active_hash
+    _ACTIVE_MT = state.active_mt
+    _EVENT_REGISTRY = OrderedDict(state.event_registry)
+    _STATIONXMLS = list(state.stationxmls)
+    _WARNED_NO_RESPONSE = set(state.warned_no_response)
+    _mark_traces_changed()
+
+
+def _empty_dataset_state(traces: List[ptrace.Trace]) -> _DatasetState:
+    return _DatasetState(
+        traces=list(traces),
+        source_traces=OrderedDict(),
+        source_digests={},
+        suppressed_source_traces={},
+        digest_owners={},
+        derived_traces={},
+        derived_events={},
+        pile_is_example=False,
+        stations={},
+        active_event=None,
+        active_hash="",
+        active_mt=None,
+        event_registry=OrderedDict(),
+        stationxmls=[],
+        warned_no_response=set(),
+    )
 
 
 def _bundle_role(name: str, payload: bytes) -> str:
@@ -3355,42 +4989,55 @@ def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
     if not waveforms:
         raise ValueError("%s contains no waveform files" % (label or "bundle"))
 
-    scene = scene_pb2.SceneMeta()
-    for index, (name, payload) in enumerate(waveforms):
-        scene = _load_path_scene(name, _stage_bytes(name, payload), "detect", append=index > 0)
-
-    loaded = [
-        "%d trace(s) from %d file(s)" % (len(scene.tracks), len(waveforms)),
-    ]
-    info = snuffling_pb2.SnufflingResult(show_window=True)
-
-    responses = [
-        payload.decode("utf-8", "replace") for _name, payload in groups.get("stationxml", [])
-    ]
-    if responses:
-        loaded.append(_load_responses_result(responses).text)
-    for _name, payload in groups.get("stations", []):
-        loaded.append(_load_stations_result(payload.decode("utf-8", "replace")).text)
-    for _name, payload in groups.get("events", []):
-        events = _load_events_result(payload.decode("utf-8", "replace"))
-        info.markers.extend(events.markers)
-        loaded.append(events.text)
-
+    traces: List[ptrace.Trace] = []
+    for name, payload in waveforms:
+        traces.extend(_load_path_traces(_stage_bytes(name, payload), "detect"))
     about = _bundle_about(manifest)
     title = str(manifest.get("title", "")).strip() or label
-    info.text = ("%s\n\n%s" % (title, "\n".join(loaded))).strip()
-    # A described dataset opens one window, and it is the description: the counts
-    # are already in the status line, and burying the prose under them was how the
-    # same three lines about instrument responses ended up in front of every reader
-    # of every example. An undescribed archive still reports, since otherwise
-    # nothing at all would say what it did.
-    info.show_window = about is None
-    state = manifest.get("state") or {}
+    manifest_state = manifest.get("state")
+    state = manifest_state if isinstance(manifest_state, dict) else {}
     view = data_pb2.BundleView(
         sort=str(state.get("sort", "")),
         subsort=str(state.get("subsort", "")),
     )
-    return data_pb2.BundleResult(scene=scene, info=info, view=view, about=about)
+
+    previous = _dataset_state()
+    _install_dataset_state(_empty_dataset_state(traces))
+    try:
+        scene = _scene_meta()
+        loaded = ["%d trace(s) from %d file(s)" % (len(scene.tracks), len(waveforms))]
+        info = snuffling_pb2.SnufflingResult(show_window=True, origin="bundle")
+        responses = [
+            payload.decode("utf-8", "replace") for _name, payload in groups.get("stationxml", [])
+        ]
+        if responses:
+            loaded.append(_load_responses_result(responses).text)
+        for name, payload in groups.get("stations", []):
+            stations = _load_stations_result(payload.decode("utf-8", "replace"))
+            if stations.text.startswith(("could not parse", "empty")):
+                raise ValueError("%s: %s" % (name, stations.text))
+            loaded.append(stations.text)
+        for name, payload in groups.get("events", []):
+            events = _load_events_result(payload.decode("utf-8", "replace"))
+            if events.text.startswith(("could not parse", "empty")):
+                raise ValueError("%s: %s" % (name, events.text))
+            info.markers.extend(events.markers)
+            loaded.append(events.text)
+        info.text = ("%s\n\n%s" % (title, "\n".join(loaded))).strip()
+        info.event_state.CopyFrom(_event_state())
+        # A described dataset opens one window, and it is the description: the counts
+        # are already in the status line, and burying the prose under them was how the
+        # same three lines about instrument responses ended up in front of every reader
+        # of every example.
+        # An undescribed archive still reports, since otherwise
+        # nothing at all would say what it did.
+        info.show_window = about is None
+        staged = _dataset_state()
+        result = data_pb2.BundleResult(scene=scene, info=info, view=view, about=about)
+    finally:
+        _install_dataset_state(previous)
+    _install_dataset_state(staged)
+    return result
 
 
 async def _example_list() -> data_pb2.ExampleList:
@@ -3457,16 +5104,65 @@ async def _plate_boundaries() -> List[data_pb2.PlateBoundary]:
     return _PLATES
 
 
-def _map_data_result(plates: Optional[List[data_pb2.PlateBoundary]] = None) -> data_pb2.MapData:
-    """Station + event coordinates for the Map overlay (no network — reads what
-    the FDSN fetches already loaded), plus optional plate boundaries."""
+def _map_data_result(
+    request: data_pb2.MapRequest,
+    plates: Optional[List[data_pb2.PlateBoundary]] = None,
+) -> data_pb2.MapData:
+    """Resolve the map's marker projection through the event/station registries."""
     msg = data_pb2.MapData()
+    from pyrocko.util import match_nslc
+
+    active_stations: Optional["set[Tuple[str, str]]"] = None
+    if request.only_active_event:
+        active_stations = set()
+        active_event = (
+            _EVENT_REGISTRY.get(request.active_event_hash)
+            if request.HasField("active_event_hash")
+            else None
+        )
+        active_time = (
+            float(active_event.time)
+            if active_event is not None
+            else (
+                float(request.active_event_time) if request.HasField("active_event_time") else None
+            )
+        )
+        if active_time is not None:
+            active_stations = {
+                (tr.nslc_id[0], tr.nslc_id[1])
+                for tr in _TRACES
+                if tr.tmax >= active_time - 3600.0 and tr.tmin <= active_time + 3600.0
+            }
+
     for (net, sta), (lat, lon, _elev, _depth) in _stations_by_name().items():
+        if active_stations is not None and (net, sta) not in active_stations:
+            continue
+        # Qt's map shows the viewer's stations *minus the blacklist*
+        # (map/__init__.py:242): a station the user hid is hidden everywhere.
+        if _HIDDEN and match_nslc(_HIDDEN, (net, sta, "", "")):
+            continue
         station = msg.stations.add()
         station.label = "%s.%s" % (net, sta)
         station.lat = lat
         station.lon = lon
-    msg.events.extend(_EVENTS)
+    from pyrocko import util
+
+    for event_hash in request.event_hashes:
+        ev = _EVENT_REGISTRY.get(event_hash)
+        if ev is None:
+            continue
+        event = msg.events.add()
+        event.lat = float(ev.lat)
+        event.lon = float(ev.lon)
+        event.mag = float(ev.magnitude) if ev.magnitude is not None else 0.0
+        event.depth = float(ev.depth) if ev.depth is not None else 0.0
+        event.name = (
+            str(getattr(ev, "region", "") or "")
+            or _short_event_name(getattr(ev, "name", None))
+            or "(Event)"
+        )
+        event.time = util.time_to_str(float(ev.time))[:19]
+        event.event_hash = event_hash
     if plates:
         msg.plate_boundaries.extend(plates)
     return msg
@@ -3574,44 +5270,100 @@ def gf_store_label(store_dir: str) -> str:
     return _gf_store_info_result(store_dir).label
 
 
+def _time_fractional_digits() -> int:
+    """Sub-second digits for saved marker times, derived from the data's sample
+    interval exactly as Qt derives them (``time_fractional_digits``,
+    `pile_viewer.py:1855`): 50 Hz data gets four decimals, not a fixed three."""
+    deltatmin = min((float(tr.deltat) for tr in _TRACES if tr.deltat > 0.0), default=0.0)
+    if deltatmin <= 0.0:
+        deltatmin = 0.001
+    return min(9, max(1, int(-math.floor(math.log10(deltatmin))) + 2))
+
+
 def _markers_to_text(req: data_pb2.MarkerFile) -> str:
     """Serialize markers to pyrocko's snuffler marker-file format."""
     pm = _marker_module()
     from pyrocko import model
     from pyrocko import moment_tensor as mtm
 
+    # Build the event objects first, keyed by the web-side identity hash: a
+    # phase pick associated with an event *in the same file* is linked through
+    # the shared ``model.Event`` object, so both rows write the same
+    # ``Event.get_hash()`` and ``associate_phases_to_events`` re-links them on
+    # any pyrocko side.
+    events: Dict[str, Any] = {}
+    for m in req.markers:
+        if not m.is_event:
+            continue
+        event_hash = m.event_hash if m.HasField("event_hash") and m.event_hash else ""
+        canonical = _EVENT_REGISTRY.get(event_hash) if event_hash else None
+        if canonical is not None:
+            events[event_hash] = canonical
+            continue
+        mt = None
+        if m.HasField("moment_tensor"):
+            t = m.moment_tensor
+            mt = mtm.MomentTensor(mnn=t.mnn, mee=t.mee, mdd=t.mdd, mne=t.mne, mnd=t.mnd, med=t.med)
+        ev: Any = model.Event(
+            time=float(m.tmin),
+            lat=float(m.lat) if m.HasField("lat") else 0.0,
+            lon=float(m.lon) if m.HasField("lon") else 0.0,
+            depth=float(m.depth) if m.HasField("depth") else 0.0,
+            magnitude=float(m.magnitude) if m.HasField("magnitude") else None,
+            # The event's own name — never the display label; a hand-made event
+            # is Qt's ``name='Event'`` (`marker.py:503`).
+            name=(m.event_name if m.HasField("event_name") and m.event_name else "Event"),
+            region=(m.region if m.HasField("region") and m.region else None),
+            catalog=(m.catalog if m.HasField("catalog") and m.catalog else None),
+            moment_tensor=mt,
+        )
+        if event_hash:
+            events[event_hash] = ev
+
     ms = []
     for m in req.markers:
         tmin = float(m.tmin)
         tmax = float(m.tmax)
         kind = int(m.kind)
-        ids = [(m.nslc.net, m.nslc.sta, m.nslc.loc, m.nslc.cha)] if m.HasField("nslc") else []
+        ids = [(n.net, n.sta, n.loc, n.cha) for n in m.nslc_ids]
         phase = m.phase if m.HasField("phase") else None
         polarity = int(m.polarity) if m.HasField("polarity") else None
         unc = float(m.uncertainty) if m.HasField("uncertainty") else None
         # Event markers save as real EventMarkers (origin + focal mechanism), not
-        # downgraded to plain markers; catalog events carry a mag label in `phase`,
-        # so this branch MUST precede the phase-marker check.
+        # downgraded to plain markers.
         if m.is_event:
-            mt = None
-            if m.HasField("moment_tensor"):
-                t = m.moment_tensor
-                mt = mtm.MomentTensor(
-                    mnn=t.mnn, mee=t.mee, mdd=t.mdd, mne=t.mne, mnd=t.mnd, med=t.med
+            ev = events.get(m.event_hash) if m.HasField("event_hash") else None
+            if ev is None:
+                # An event without a web-side hash still saves; rebuild inline.
+                mt = None
+                if m.HasField("moment_tensor"):
+                    t = m.moment_tensor
+                    mt = mtm.MomentTensor(
+                        mnn=t.mnn, mee=t.mee, mdd=t.mdd, mne=t.mne, mnd=t.mnd, med=t.med
+                    )
+                ev = model.Event(
+                    time=tmin,
+                    lat=float(m.lat) if m.HasField("lat") else 0.0,
+                    lon=float(m.lon) if m.HasField("lon") else 0.0,
+                    depth=float(m.depth) if m.HasField("depth") else 0.0,
+                    magnitude=float(m.magnitude) if m.HasField("magnitude") else None,
+                    name=(m.event_name if m.HasField("event_name") and m.event_name else "Event"),
+                    moment_tensor=mt,
                 )
-            ev = model.Event(
-                time=tmin,
-                lat=float(m.lat) if m.HasField("lat") else 0.0,
-                lon=float(m.lon) if m.HasField("lon") else 0.0,
-                depth=float(m.depth) if m.HasField("depth") else 0.0,
-                magnitude=float(m.magnitude) if m.HasField("magnitude") else None,
-                name=phase or "Event",
-                moment_tensor=mt,
-            )
-            ms.append(pm.EventMarker(ev, kind, event_hash=m.event_hash or None))
-        # A polarity or uncertainty is only meaningful on a PhaseMarker, so promote
-        # any marker that carries one even if it has no phase name yet.
-        elif phase or polarity is not None or unc is not None or m.HasField("event_hash"):
+            ms.append(pm.EventMarker(ev, kind))
+        # A polarity, uncertainty, angle or association is only meaningful on a
+        # PhaseMarker, so promote any marker that carries one even if it has no
+        # phase name yet.
+        elif (
+            phase
+            or polarity is not None
+            or unc is not None
+            or m.HasField("event_hash")
+            or m.HasField("automatic")
+            or m.HasField("incidence_angle")
+            or m.HasField("takeoff_angle")
+        ):
+            ev = events.get(m.event_hash) if m.HasField("event_hash") else None
             ms.append(
                 pm.PhaseMarker(
                     ids,
@@ -3621,87 +5373,156 @@ def _markers_to_text(req: data_pb2.MarkerFile) -> str:
                     phasename=phase,
                     polarity=polarity,
                     uncertainty=unc,
-                    # Phase-to-event association (snuffler set_event): the linked
-                    # event's hash rides the phase marker so it survives the file.
-                    event_hash=m.event_hash or None,
+                    automatic=bool(m.automatic) if m.HasField("automatic") else None,
+                    incidence_angle=(
+                        float(m.incidence_angle) if m.HasField("incidence_angle") else None
+                    ),
+                    takeoff_angle=(float(m.takeoff_angle) if m.HasField("takeoff_angle") else None),
+                    # Association: through the event object when its row is in
+                    # this file (both rows then share one hash); otherwise the
+                    # stored hash and event time ride along raw, pyrocko's own
+                    # fallback keys.
+                    event=ev,
+                    event_hash=(None if ev is not None else (m.event_hash or None)),
+                    event_time=(
+                        float(m.event_time) if ev is None and m.HasField("event_time") else None
+                    ),
                 )
             )
         else:
             ms.append(pm.Marker(ids, tmin, tmax, kind))
     path = "/tmp/markers_out.txt"
-    pm.save_markers(ms, path)
+    pm.save_markers(ms, path, fdigits=_time_fractional_digits())
     with open(path) as f:
         return f.read()
 
 
 def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
-    """Parse a pyrocko marker file into the SnufMarker messages the egui side adds."""
+    """Parse a pyrocko marker file into the SnufMarker messages the egui side adds.
+
+    Re-links phase picks to their events (``associate_phases_to_events``, which
+    Qt's own loader calls) and registers the loaded events so ``e`` activates
+    the real origin rather than rebuilding a zero-depth stand-in."""
     pm = _marker_module()
+    from pyrocko import orthodrome as od
 
     result = data_pb2.SnufMarkerList()
     path = "/tmp/markers_in.txt"
     with open(path, "w") as f:
         f.write(text)
-    try:
-        ms = pm.load_markers(path)
-    except Exception:
-        return result
+    # A malformed file raises out of here — the dispatch turns it into the
+    # error dialog Qt shows — rather than reporting success with zero markers,
+    # matching the station and event loaders beside it.
+    ms = pm.load_markers(path)
+    pm.associate_phases_to_events(ms)
     for mk in ms:
-        ids = mk.get_nslc_ids()
-        marker = result.markers.add()
-        marker.t = float(mk.tmin)
-        marker.tmax = float(mk.tmax)
-        marker.kind = int(mk.kind or 0)
-        marker.is_event = isinstance(mk, pm.EventMarker)
-        if ids:
-            marker.nslc.CopyFrom(_nslc_pb(list(ids[0])))
-        if isinstance(mk, pm.EventMarker):
-            ev = mk.get_event()
-            if ev is not None:
-                if ev.name:
-                    marker.phase = str(ev.name)[:48]
-                if ev.magnitude is not None:
-                    marker.magnitude = float(ev.magnitude)
-                if ev.depth is not None:
-                    marker.depth = float(ev.depth)
-                marker.lat = float(ev.lat)
-                marker.lon = float(ev.lon)
-                if ev.moment_tensor is not None:
-                    mnn, mee, mdd, mne, mnd, med = (float(x) for x in ev.moment_tensor.m6())
-                    marker.moment_tensor.mnn = mnn
-                    marker.moment_tensor.mee = mee
-                    marker.moment_tensor.mdd = mdd
-                    marker.moment_tensor.mne = mne
-                    marker.moment_tensor.mnd = mnd
-                    marker.moment_tensor.med = med
-            try:
-                marker.event_hash = mk.get_event_hash() or ""
-            except Exception:
-                pass
-        if isinstance(mk, pm.PhaseMarker):
-            try:
-                phase = mk.get_phasename()
-            except Exception:
-                phase = None
-            if phase is not None:
-                marker.phase = phase
-            try:
-                polarity = mk.get_polarity()
-            except Exception:
-                polarity = None
-            if polarity is not None:
-                marker.polarity = int(polarity)
-            # PhaseMarker stores uncertainty privately (no public getter).
-            unc = getattr(mk, "_uncertainty", None)
-            if unc is not None:
-                marker.uncertainty = float(unc)
-            # The associated event's hash (phase-to-event link), if any.
-            try:
-                ehash = mk.get_event_hash()
-            except Exception:
-                ehash = None
-            if ehash:
-                marker.event_hash = str(ehash)
+        # One bad row must not lose the whole file: parse each marker
+        # defensively and skip only the one that fails.
+        try:
+            ids = mk.get_nslc_ids()
+            # Built off-list and appended at the end so a half-parsed marker is
+            # dropped whole rather than kept truncated.
+            marker = snuffling_pb2.SnufMarker()
+            marker.t = float(mk.tmin)
+            marker.tmax = float(mk.tmax)
+            # Qt accepts any integer kind; the transport is unsigned 32-bit and
+            # the frontend colours 0..7, so fold negatives the way Python's
+            # modulo already does.
+            marker.kind = int(mk.kind or 0) % 256
+            marker.is_event = isinstance(mk, pm.EventMarker)
+            for nslc_id in ids:
+                marker.nslc_ids.add().CopyFrom(_nslc_pb(list(nslc_id)))
+            if isinstance(mk, pm.EventMarker):
+                ev = mk.get_event()
+                if ev is not None:
+                    if ev.name:
+                        marker.event_name = str(ev.name)[:96]
+                    if getattr(ev, "region", None):
+                        marker.region = str(ev.region)
+                    if getattr(ev, "catalog", None):
+                        marker.catalog = str(ev.catalog)
+                    if ev.magnitude is not None:
+                        marker.magnitude = float(ev.magnitude)
+                    if ev.depth is not None:
+                        marker.depth = float(ev.depth)
+                    marker.lat = float(ev.lat)
+                    marker.lon = float(ev.lon)
+                    if ev.moment_tensor is not None:
+                        mnn, mee, mdd, mne, mnd, med = (float(x) for x in ev.moment_tensor.m6())
+                        marker.moment_tensor.mnn = mnn
+                        marker.moment_tensor.mee = mee
+                        marker.moment_tensor.mdd = mdd
+                        marker.moment_tensor.mne = mne
+                        marker.moment_tensor.mnd = mnd
+                        marker.moment_tensor.med = med
+                try:
+                    ehash = mk.get_event_hash()
+                except Exception:
+                    ehash = None
+                if ehash:
+                    marker.event_hash = str(ehash)
+                    # Registered so activating the loaded event uses its real
+                    # origin (`_set_active_event` looks the hash up here).
+                    if ev is not None:
+                        _EVENT_REGISTRY[str(ehash)] = ev
+                if ev is not None and _ACTIVE_EVENT is not None:
+                    marker.dist_active_km = (
+                        float(
+                            od.distance_accurate50m(
+                                float(ev.lat),
+                                float(ev.lon),
+                                _ACTIVE_EVENT[0],
+                                _ACTIVE_EVENT[1],
+                            )
+                        )
+                        / 1000.0
+                    )
+            if isinstance(mk, pm.PhaseMarker):
+                try:
+                    phase = mk.get_phasename()
+                except Exception:
+                    phase = None
+                if phase is not None:
+                    marker.phase = phase
+                try:
+                    polarity = mk.get_polarity()
+                except Exception:
+                    polarity = None
+                if polarity is not None:
+                    marker.polarity = int(polarity)
+                # PhaseMarker stores these privately (no public getters).
+                unc = getattr(mk, "_uncertainty", None)
+                if unc is not None:
+                    marker.uncertainty = float(unc)
+                automatic = getattr(mk, "_automatic", None)
+                if automatic is not None:
+                    marker.automatic = bool(automatic)
+                inc = getattr(mk, "_incidence_angle", None)
+                if inc is not None:
+                    marker.incidence_angle = float(inc)
+                tko = getattr(mk, "_takeoff_angle", None)
+                if tko is not None:
+                    marker.takeoff_angle = float(tko)
+                # The associated event's hash and time (phase-to-event link) —
+                # after association the hash comes off the shared event object,
+                # so it matches the event row's own.
+                try:
+                    ehash = mk.get_event_hash()
+                except Exception:
+                    ehash = None
+                if ehash:
+                    marker.event_hash = str(ehash)
+                etime = None
+                try:
+                    etime = mk.get_event_time()
+                except Exception:
+                    etime = None
+                if etime is not None:
+                    marker.event_time = float(etime)
+            result.markers.add().CopyFrom(marker)
+        except Exception:
+            continue
+    result.event_state.CopyFrom(_event_state())
     return result
 
 
@@ -3777,17 +5598,6 @@ def _cake_load_model(cake: Any, name: str) -> Any:
     return cake.load_model(_cake_model_path(name))
 
 
-def _phase_color_id(name: str) -> int:
-    """Stable per-phase index into the egui marker palette (8 Tango colors).
-
-    In the spirit of :py:func:`pyrocko.plot.cake_plot.path2colorint`, but kept
-    deterministic and without the collision-avoidance pass, so the Rust side can
-    reuse the same color for a phase's markers, ray paths and the ray legend
-    with no extra bookkeeping crossing the boundary.
-    """
-    return sum(ord(ch) for ch in name) % 8
-
-
 def _cake_section(
     req: snuffling_pb2.SnufflingRequestParams,
 ) -> Tuple[str, List[str], float, bool, str]:
@@ -3828,20 +5638,34 @@ def _cake_wanted_phases(cake: Any, names: List[str]) -> Tuple[List[Any], List[st
 
 
 def _cake_stations() -> List[Tuple[str, str, float, float]]:
-    """``(net, sta, dist_deg, depth_m)`` for stations that have loaded traces.
+    """``(net, sta, dist_deg, depth_m)`` for the stations cake gets rays at.
 
-    Distances are great-circle degrees from the active event (which is what
-    ``cake.arrivals`` wants). Requires ``_ACTIVE_EVENT`` + ``_STATIONS``.
+    Qt's scope (`get_active_event_and_stations`, snuffling.py:806): stations
+    whose traces hold data within an hour of the event, one per distinct
+    station *entry* — a borehole and a surface sensor at one site are two,
+    resolved per trace through the location-specific key with the station-wide
+    fallback. Distances are great-circle degrees from the active event (which
+    is what ``cake.arrivals`` wants).
     """
     if _ACTIVE_EVENT is None:
         return []
-    elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
-    have = {(tr.nslc_id[0], tr.nslc_id[1]) for tr in _TRACES}
+    elat, elon, _edep, etime = _ACTIVE_EVENT
+    seen = set()
     out: List[Tuple[str, str, float, float]] = []
-    for (net, sta), (slat, slon, _elev, depth) in _stations_by_name().items():
-        if have and (net, sta) not in have:
+    for tr in _TRACES:
+        if tr.tmax < etime - 3600.0 or tr.tmin > etime + 3600.0:
             continue
-        out.append((net, sta, _dist_deg(elat, elon, slat, slon), depth))
+        net, sta, loc, _cha = tr.nslc_id
+        for key in ((net, sta, loc), (net, sta)):
+            entry = _STATIONS.get(key)
+            if entry is None:
+                continue
+            ident = (net, sta, entry)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            slat, slon, _elev, depth = entry
+            out.append((net, sta, _dist_deg(elat, elon, slat, slon), depth))
     return out
 
 
@@ -3870,7 +5694,7 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
     mod = _cake_load_model(cake, model)
     wanted, errors = _cake_wanted_phases(cake, phase_names)
 
-    result = snuffling_pb2.SnufflingResult(show_window=True)
+    result = snuffling_pb2.SnufflingResult(show_window=True, origin="cake")
     lines = ["%-14s %-8s %12s %8s %8s" % ("station", "phase", "t-rel[s]", "inc[deg]", "tko[deg]")]
     nstations = 0
     for net, sta, dist_deg, depth in _cake_stations():
@@ -3879,7 +5703,14 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
         # (cake_phase.py). This used to approximate a borehole from a negative
         # elevation because the station table carried no depth; it does now.
         rdepth = float(depth) if use_station_depth else 0.0
-        rays = mod.arrivals(phases=wanted, distances=[dist_deg], zstart=edepth, zstop=rdepth)
+        # Qt raytraces the direct distance *and* the major arc (360° minus it,
+        # cake_phase.py:146), which is where PKP/SKS-type late arrivals live.
+        rays = mod.arrivals(
+            phases=wanted,
+            distances=[dist_deg, 360.0 - dist_deg],
+            zstart=edepth,
+            zstop=rdepth,
+        )
         for ray in rays:
             name = ray.given_phase().name
             tt = float(ray.t) + tshift
@@ -3888,9 +5719,19 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
             marker = result.markers.add()
             marker.t = etime + tt
             marker.tmax = etime + tt
-            marker.kind = _phase_color_id(name)
+            # Qt's Cake Phase conventions (cake_phase.py:163): a fixed kind 2,
+            # `('*', '*')` for "any location, any channel" — an empty location
+            # means "the blank location" to pyrocko and matches nothing else —
+            # the angles on the marker itself, and the event association.
+            marker.kind = 2
             marker.phase = name
-            marker.nslc.CopyFrom(_nslc_pb([net, sta, "", "*"]))
+            marker.incidence_angle = inc
+            marker.takeoff_angle = tko
+            marker.nslc_ids.add().CopyFrom(_nslc_pb([net, sta, "*", "*"]))
+            if _ACTIVE_HASH:
+                marker.event_hash = _ACTIVE_HASH
+            if _ACTIVE_EVENT is not None:
+                marker.event_time = _ACTIVE_EVENT[3]
             lines.append(
                 "%-14s %-8s %12.3f %8.1f %8.1f" % ("%s.%s" % (net, sta), name, tt, inc, tko)
             )
@@ -3910,8 +5751,12 @@ def _command_glob(scope: Optional[str], pattern: str) -> str:
         fields = ["*", "*", "*", "*"]
         fields[idx[scope]] = pattern
         return ".".join(fields)
-    # No scope: a bare token without dots matches anywhere in the id.
-    return pattern if "." in pattern else "*%s*" % pattern
+    # No scope: the token is the glob itself, anchored over the full
+    # "net.sta.loc.cha" string exactly as snuffler passes it to `match_nslc`
+    # (pile_viewer.py:4326). A substring convenience here would make the
+    # documented `hide n <pattern>` form's bare tokens destructive typos:
+    # `hide n` would hide every channel whose id contains an n.
+    return pattern
 
 
 def _visibility_patterns(args: List[str]) -> List[str]:
@@ -4144,27 +5989,19 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
     For each visible trace, RMS is computed over fixed-length blocks across the
     visible window and emitted as a new low-rate trace (channel suffix '-RMS').
     With grouping on, a station's components are combined into one RMS trace.
-    Appends the derived traces and returns the updated scene. All numpy.
+    Replaces the derived traces and returns the updated scene.
     """
-    global _TRACES
-    tmin, tmax = float(req.view.tmin), float(req.view.tmax)
     rms = req.snufflings.rms
     hp = rms.rms_highpass if rms.HasField("rms_highpass") else None
     lp = rms.rms_lowpass if rms.HasField("rms_lowpass") else None
-    block = float(rms.rms_block) if rms.rms_block else max(1.0, (tmax - tmin) / 100.0)
+    block = float(rms.rms_block or 100.0)
     group = bool(rms.rms_group)
     logrms = bool(rms.rms_log)
 
-    # Drop previous RMS output, then work only on original traces. Qt marks
-    # snuffling-produced traces as tabu and RMS skips them.
-    _TRACES = [tr for tr in _TRACES if not tr.nslc_id[3].endswith("-RMS")]
-    src = [
-        tr
-        for tr in _visible_traces()
-        if not _is_tabu_trace(tr) and not tr.nslc_id[3].endswith("-RMS")
-    ]
-    if not src or block <= 0.0:
-        _mark_traces_changed()
+    # Cleanup precedes the chopper and filters so a failed rerun cannot leave
+    # the previous derived traces installed.
+    _replace_derived("rms", [])
+    if block <= 0.0:
         return _scene_meta()
 
     tpad = 0.0
@@ -4175,53 +6012,26 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
     def grouping(nslc: Tuple[str, str, str, str]) -> Tuple[str, str, str, str]:
         return nslc[:3] + (nslc[3][:-1],) if group else nslc
 
-    ptmin = min(float(tr.tmin) for tr in src)
-    if ptmin > tmin:
-        tmin = ptmin + tpad
-    ptmax = max(float(tr.tmax) for tr in src)
-    if ptmax < tmax:
-        tmax = ptmax - tpad
-
     targets: Dict[Tuple[str, str, str, str], ptrace.Trace] = {}
     completed: List[ptrace.Trace] = []
-    eps = block * 1e-6
-    nwin = int(((tmax - eps) - tmin) / block) + 1
-    if nwin <= 0:
-        _mark_traces_changed()
-        return _scene_meta()
-
-    def complete_chop(tr: ptrace.Trace, wmin: float, wmax: float) -> Optional[ptrace.Trace]:
-        try:
-            seg = tr.chop(wmin - tpad, wmax + tpad, inplace=False, include_last=False)
-        except ptrace.NoData:
-            return None
-
-        emin = float(seg.tmin) - (wmin - tpad)
-        emax = float(seg.tmax) + float(seg.deltat) - (wmax + tpad)
-        if abs(emin) <= 0.5 * float(seg.deltat) and abs(emax) <= 0.5 * float(seg.deltat):
-            return seg
-
-        if 0.0 < emin <= 5.0 * float(seg.deltat) and -5.0 * float(seg.deltat) <= emax < 0.0:
-            seg.extend(wmin - tpad, wmax + tpad - float(seg.deltat), fillmethod="repeat")
-            return seg
-
-        return None
-
-    for iwin in range(nwin):
-        wmin = tmin + iwin * block
-        wmax = min(tmin + (iwin + 1) * block, tmax)
-        tcur = wmin + 0.5 * block
+    for batch in _chopper_selected_traces(
+        req,
+        mode="visible",
+        tinc=block,
+        tpad=tpad,
+        want_incomplete=False,
+    ):
+        tcur = float(batch.tmin) + 0.5 * block
         rms_by_key: Dict[Tuple[str, str, str, str], List[float]] = {}
-        for source in src:
-            tr = complete_chop(source, wmin, wmax)
-            if tr is None or _is_tabu_trace(tr):
+        for tr in batch.traces:
+            if _is_tabu_trace(tr):
                 continue
             if lp is not None:
                 tr.lowpass(4, float(lp), nyquist_exception=True)
             if hp is not None:
                 tr.highpass(4, float(hp), nyquist_exception=True)
             try:
-                tr.chop(wmin, wmax)
+                tr.chop(batch.tmin, batch.tmax)
             except ptrace.NoData:
                 continue
             value = 0.0
@@ -4254,9 +6064,7 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
             targets[key].append(sample)
 
     completed.extend(targets.values())
-    _TRACES.extend(completed)
-
-    _mark_traces_changed()
+    _replace_derived("rms", completed)
     return _scene_meta()
 
 
@@ -4292,15 +6100,64 @@ class _BridgeServicer:
         return _make_example_scene()
 
     def empty_scene(self, request: bridge_pb2.Empty, data: Any) -> scene_pb2.SceneMeta:
+        # The replace path inside `_set_traces` clears the scene's events,
+        # stations and responses with the waveforms.
         _set_traces([])
-        _clear_event_context()
         return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
 
-    def load_bytes(self, request: data_pb2.LoadBytesRequest, data: Any) -> scene_pb2.SceneMeta:
-        path = _stage_bytes(request.name, bytes(request.content))
-        return _load_path_scene(
-            request.name, path, request.fmt, bool(request.append), request.source_id
-        )
+    def load_bytes(self, request: data_pb2.LoadBytesRequest, data: Any) -> data_pb2.LoadBytesResult:
+        content = bytes(request.content)
+        import hashlib
+
+        def result(loaded: bool) -> data_pb2.LoadBytesResult:
+            return data_pb2.LoadBytesResult(
+                scene=_scene_meta(), loaded=loaded, event_state=_event_state()
+            )
+
+        digest = hashlib.sha256(content).hexdigest()
+        if request.replace_source:
+            if not request.source_id:
+                raise ValueError("source replacement requires a source_id")
+            previous_digest = _SOURCE_DIGESTS.get(request.source_id)
+            if previous_digest is None:
+                raise ValueError(
+                    "waveform source %r was not registered by an initial load" % request.source_id
+                )
+            if digest == previous_digest:
+                return result(False)
+            if digest in _DIGEST_OWNERS:
+                traces = _load_path_traces(_stage_bytes(request.name, content), request.fmt)
+                _replace_source(request.source_id, [])
+                _SOURCE_DIGESTS[request.source_id] = digest
+                _SUPPRESSED_SOURCE_TRACES[request.source_id] = traces
+                _remove_digest_owner(previous_digest, request.source_id)
+                return result(True)
+            traces = _load_path_traces(_stage_bytes(request.name, content), request.fmt)
+            _replace_source(request.source_id, traces)
+            _SOURCE_DIGESTS[request.source_id] = digest
+            _SUPPRESSED_SOURCE_TRACES.pop(request.source_id, None)
+            _remove_digest_owner(previous_digest, request.source_id)
+            _add_digest_owner(digest, request.source_id)
+            return result(True)
+
+        # Refuse a file already in the pile, as Qt's pile refuses a known
+        # absolute path (pile.py:1115) — by content here, since a browser file
+        # has no path.
+        if request.append and digest in _DIGEST_OWNERS:
+            # Qt logs the refusal ("File already in pile", pile.py:1117);
+            # the worker console is this bridge's log.
+            print("[py.load] %s already in pile, skipped" % (request.name or "file"))
+            return result(False)
+
+        path = _stage_bytes(request.name, content)
+        traces = _load_path_traces(path, request.fmt)
+        _set_traces(traces, append=bool(request.append))
+        if request.source_id:
+            _SOURCE_TRACES[request.source_id] = traces
+            _SOURCE_DIGESTS[request.source_id] = digest
+        if request.append or request.source_id:
+            _add_digest_owner(digest, request.source_id)
+        return result(True)
 
     async def load_url(self, request: data_pb2.LoadUrlRequest, data: Any) -> scene_pb2.SceneMeta:
         name = request.url.rsplit("/", 1)[-1] or "data"
@@ -4332,7 +6189,13 @@ class _BridgeServicer:
                     "the download was truncated, or the index is stale"
                     % (label, request.sha256[:12], digest[:12])
                 )
-        return _load_bundle_result(raw, label)
+        result = _load_bundle_result(raw, label)
+        # A checksummed bundle came from the examples index (user files carry
+        # no checksum): it is boot/demo data, replaced by the first real load.
+        if request.sha256:
+            global _PILE_IS_EXAMPLE
+            _PILE_IS_EXAMPLE = True
+        return result
 
     def get_view(
         self, request: view_pb2.ViewParams, data: Any
@@ -4353,6 +6216,12 @@ class _BridgeServicer:
     async def run_snuffling(
         self, request: snuffling_pb2.NamedSnufflingRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
+        origin = {
+            "cake": "cake",
+            "stalta": "stalta",
+            "seisbench_picker": "seisbench",
+            "seismosizer": "seismosizer",
+        }.get(request.name, "")
         # Snuffling errors (e.g. cake) surface in the result text — which the UI
         # shows — rather than as a BridgeError, so the user sees the traceback.
         try:
@@ -4360,25 +6229,45 @@ class _BridgeServicer:
                 model = request.params.snufflings.cake.cake_model or ""
                 if not model.startswith(GF_STORE_PREFIX):
                     await _ensure_earth_models()
-            elif request.name == "seisbench_picker":
-                return await _seisbench_pick_result(request.params)
-            return _run_snuffling_result(request.name, request.params)
+            if request.name == "seisbench_picker":
+                result = await _seisbench_pick_result(request.params)
+            else:
+                result = _run_snuffling_result(request.name, request.params)
+            if origin and not result.origin:
+                result.origin = origin
+            return result
         except Exception as exc:  # noqa: BLE001 — surface, don't raise
-            return snuffling_pb2.SnufflingResult(
+            failure = snuffling_pb2.SnufflingResult(
                 show_window=True,
                 text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+                origin=origin,
             )
+            if origin in ("seisbench", "stalta"):
+                failure.scene.CopyFrom(_scene_meta())
+            return failure
 
     def rms_traces(
         self, request: snuffling_pb2.SnufflingRequestParams, data: Any
-    ) -> scene_pb2.SceneMeta:
-        return _rms_scene(request)
+    ) -> snuffling_pb2.SnufflingResult:
+        try:
+            return snuffling_pb2.SnufflingResult(
+                show_window=False,
+                origin="rms",
+                scene=_rms_scene(request),
+            )
+        except Exception as exc:  # noqa: BLE001 — return the cleaned scene with the failure
+            return snuffling_pb2.SnufflingResult(
+                show_window=True,
+                text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+                origin="rms",
+                scene=_scene_meta(),
+            )
 
     def run_command(self, request: data_pb2.CommandRequest, data: Any) -> data_pb2.CommandResult:
         return _command_result(request)
 
-    async def map_data(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.MapData:
-        return _map_data_result(await _plate_boundaries())
+    async def map_data(self, request: data_pb2.MapRequest, data: Any) -> data_pb2.MapData:
+        return _map_data_result(request, await _plate_boundaries())
 
     def station_distances(
         self, request: bridge_pb2.Empty, data: Any
@@ -4387,8 +6276,18 @@ class _BridgeServicer:
 
     def set_active_event(
         self, request: data_pb2.SetActiveEventRequest, data: Any
-    ) -> data_pb2.ActiveEventResult:
+    ) -> common_pb2.ActiveEventResult:
         return _set_active_event(request)
+
+    def update_event(
+        self, request: common_pb2.EventSnapshot, data: Any
+    ) -> common_pb2.ActiveEventResult:
+        return _update_event(request)
+
+    def remove_events(
+        self, request: data_pb2.RemoveEventsRequest, data: Any
+    ) -> common_pb2.ActiveEventResult:
+        return _remove_events(request)
 
     async def load_gf_store_url(
         self, request: data_pb2.StringRequest, data: Any
@@ -4406,8 +6305,9 @@ class _BridgeServicer:
     def load_station_xml(
         self, request: data_pb2.LoadStationXmlRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        # Same parsing as fetched FDSN responses: sets _STATIONXML (deconvolution)
-        # and harvests station coordinates (distance/azimuth sorting, cake).
+        # Same parsing as fetched FDSN responses: appends to _STATIONXMLS
+        # (deconvolution) and harvests station coordinates (distance/azimuth
+        # sorting, cake).
         return _load_responses_result(list(request.texts))
 
     def load_stations(
@@ -4461,6 +6361,51 @@ class _BridgeServicer:
         if request.with_mt and text.lstrip().startswith("<"):
             return _parse_events_quakeml(text)
         return _parse_events_result(text)
+
+    def export_waveforms(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.FileBlob:
+        """Qt's download Save trigger, waveform half (download.py:147): every
+        loaded original trace as one MiniSEED file via pyrocko's own writer;
+        derived (tabu) traces stay out, as they are not data."""
+        from pyrocko import io as pio
+
+        traces = [tr for tr in _TRACES if not _is_tabu_trace(tr)]
+        if not traces:
+            raise ValueError("No waveforms loaded to save.")
+        path = "/tmp/waveforms_out.mseed"
+        pio.save(traces, path)
+        with open(path, "rb") as f:
+            return bridge_pb2.FileBlob(
+                filename="waveforms.mseed",
+                content=f.read(),
+                mime="application/vnd.fdsn.mseed",
+            )
+
+    def export_stations(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.FileBlob:
+        """Qt's download Save trigger, station half: the coordinate table as a
+        pyrocko station file (`model.dump_stations`)."""
+        from pyrocko import model
+
+        stations = [
+            model.Station(
+                network=key[0],
+                station=key[1],
+                location=key[2],
+                lat=lat,
+                lon=lon,
+                elevation=elev,
+                depth=depth,
+            )
+            for key, (lat, lon, elev, depth) in _STATIONS.items()
+            if len(key) == 3
+        ]
+        if not stations:
+            raise ValueError("No station coordinates loaded to save.")
+        path = "/tmp/stations_out.txt"
+        model.dump_stations(stations, path)
+        with open(path) as f:
+            return bridge_pb2.FileBlob(
+                filename="stations.txt", content=f.read().encode(), mime="text/plain"
+            )
 
     async def fetch_stations(
         self, request: data_pb2.StationRequest, data: Any

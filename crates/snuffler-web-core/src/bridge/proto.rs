@@ -1,29 +1,23 @@
 pub use snuffler_web_proto::bridge::v1 as pb;
 
 // The decoded prost messages ARE the domain model, so there is no proto<->app
-// conversion layer here — only: (1) encode a request message to bytes, and
-// (2) unwrap the BridgeResult envelope (error variant -> CallError::Remote,
-// success variant -> the contained pb message). The `ys` buffer rides
-// out-of-band and is attached to ViewData here, never in the proto.
+// conversion layer here — only the DOM-only responses need their BridgeResult
+// envelope unwrapped (error variant -> CallError::Remote, success variant ->
+// the contained pb message).
+// The `ys` buffer rides out-of-band and is attached to ViewData here, never in
+// the proto.
 //
 // These are the DOM-only twins of the generated client's envelope handling: a
 // file picker or a directory read reaches pyrocko through bridge.js rather than
 // through the typed client, but comes back in the same envelope and so fails in
-// the same ways. `what` names the action for the error message; bridge.js has
-// already mapped it onto a real rpc.
+// the same ways.
+// `what` names the action for the error message; bridge.js has already mapped it
+// onto a real rpc.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::pb;
     use snuffler_web_proto::prost::Message;
     use snuffler_web_proto::{CallError, RemoteError};
-
-    pub fn encode_message<M: Message>(msg: &M) -> Vec<u8> {
-        let mut out = Vec::with_capacity(msg.encoded_len());
-        if msg.encode(&mut out).is_err() {
-            return Vec::new();
-        }
-        out
-    }
 
     pub fn decode_message<M: Message + Default>(
         bytes: &[u8],
@@ -55,28 +49,26 @@ mod wasm {
         CallError::UnexpectedPayload { method: what }
     }
 
-    pub fn scene_from_bytes(bytes: &[u8], what: &'static str) -> Result<pb::SceneMeta, CallError> {
-        match bridge_oneof(bytes, what)? {
-            pb::bridge_result::Result::Scene(m) => Ok(m),
-            _ => Err(unexpected(what)),
-        }
-    }
-
     /// A file load that may have been a whole dataset.
     ///
     /// `openFiles` picks the rpc from the bytes it read — a zip is a bundle and
     /// everything else is a waveform file — so the response is one of two envelope
-    /// variants. Both carry a scene; only a bundle also carries the station and
-    /// event results, which the caller applies exactly as a metadata load would.
+    /// variants.
+    /// Both carry a scene.
+    /// A bundle remains complete so its station/event result, requested view, and
+    /// dataset note all reach the shared installer.
+    pub enum DatasetResult {
+        Waveform(pb::LoadBytesResult),
+        Bundle(pb::BundleResult),
+    }
+
     pub fn scene_or_bundle_from_bytes(
         bytes: &[u8],
         what: &'static str,
-    ) -> Result<(pb::SceneMeta, Option<pb::SnufflingResult>), CallError> {
+    ) -> Result<DatasetResult, CallError> {
         match bridge_oneof(bytes, what)? {
-            pb::bridge_result::Result::Scene(scene) => Ok((scene, None)),
-            pb::bridge_result::Result::Bundle(bundle) => {
-                Ok((bundle.scene.unwrap_or_default(), bundle.info))
-            }
+            pb::bridge_result::Result::LoadBytes(load) => Ok(DatasetResult::Waveform(load)),
+            pb::bridge_result::Result::Bundle(bundle) => Ok(DatasetResult::Bundle(bundle)),
             _ => Err(unexpected(what)),
         }
     }

@@ -19,6 +19,9 @@ message MapEvent {
   double depth = 4; // metres (like pyrocko's map snuffling; popup divides by 1000)
   string name = 5;
   string time = 6;
+  // Identity linking the map dot to the event marker, so the map can show only
+  // the *selected* event markers, as Qt's map does (map/__init__.py:242).
+  string event_hash = 7;
 }
 
 // One tectonic plate boundary as a polyline of lon/lat vertices, parsed from
@@ -34,6 +37,16 @@ message MapData {
   repeated MapStation stations = 1;
   repeated MapEvent events = 2;
   repeated PlateBoundary plate_boundaries = 3;
+}
+
+// The frontend event-marker projection the map should display.
+// Python resolves these identities through its authoritative event registry;
+// `only_active_event` also limits stations to traces around that origin.
+message MapRequest {
+  repeated string event_hashes = 1;
+  bool only_active_event = 2;
+  optional string active_event_hash = 3;
+  optional double active_event_time = 4;
 }
 
 // Great-circle geometry from the active event to each known station (degrees),
@@ -61,15 +74,9 @@ message SetActiveEventRequest {
   Nslc nslc = 4; // single-station marker → Python derives lat/lon from _STATIONS
 }
 
-message EventKagan {
-  string event_hash = 1;
-  optional double kagan_deg = 2; // absent when either event lacks a moment tensor
-}
-
-message ActiveEventResult {
-  bool has_event = 1;
-  optional string active_hash = 2;
-  repeated EventKagan kagan = 3; // recomputed for every registry event vs the new active
+// Event hashes whose final frontend event marker was deleted.
+message RemoveEventsRequest {
+  repeated string event_hashes = 1;
 }
 
 // A ':' command line, plus the viewer context snuffler's command handlers read
@@ -99,9 +106,18 @@ message LoadBytesRequest {
   bool append = 3;
   bytes content = 4; // the file bytes themselves (Python stages them on the Pyodide FS)
   // Stable identity of the on-disk source (File System Access handle) this load
-  // came from. When set, the load REPLACES that source's previous traces instead
-  // of appending — the basis for "reload modified files".
+  // came from.
   string source_id = 5;
+  // True only after an initial load registered `source_id`: replace that
+  // source's previous traces instead of applying ordinary append semantics.
+  bool replace_source = 6;
+}
+
+message LoadBytesResult {
+  SceneMeta scene = 1;
+  // False when duplicate detection refused the bytes without changing the pile.
+  bool loaded = 2;
+  ActiveEventResult event_state = 3;
 }
 
 message LoadUrlRequest {
@@ -172,6 +188,15 @@ message StationRequest {
   string net = 2;
   string sta = 3;
   string cha = 4;
+  // Qt's download resolves stations at channel level with the location and the
+  // time span in the query (download.py:78); these complete the selection.
+  string loc = 5;
+  string start = 6; // UTC text; empty = no time constraint
+  string end = 7;
+  // Radius search around the active event's epicentre — Qt's primary download
+  // workflow ("everything within five degrees of this event"). When set, the
+  // query carries lat/lon/maxradius instead of the code selectors alone.
+  optional double radius_deg = 8;
 }
 
 message CatalogRequest {
@@ -190,7 +215,9 @@ message MarkerFileEntry {
   double tmax = 2;
   uint32 kind = 3;
   optional string phase = 4;
-  Nslc nslc = 5;
+  // All channels the marker applies to (pyrocko's `nslc_ids` list); empty =
+  // every track.
+  repeated Nslc nslc_ids = 5;
   optional int32 polarity = 6;
   // Phase-pick time uncertainty (seconds), drawn as ± brackets; set by shift-drag.
   optional double uncertainty = 7;
@@ -203,6 +230,17 @@ message MarkerFileEntry {
   optional double lon = 12;
   optional string event_hash = 13;
   optional MomentTensor moment_tensor = 14;
+  // `PhaseMarker` extras a faithful save needs: the automatic flag (`False` for
+  // a hand pick, never `None`), the angles, and the associated event's time.
+  optional bool automatic = 15;
+  optional double incidence_angle = 16;
+  optional double takeoff_angle = 17;
+  optional double event_time = 18;
+  // The event's own identity fields (`Event.name/region/catalog`), which Qt
+  // writes into a saved event row and the caption is composed from.
+  optional string event_name = 19;
+  optional string region = 20;
+  optional string catalog = 21;
 }
 
 message MarkerFile {
@@ -211,6 +249,7 @@ message MarkerFile {
 
 message SnufMarkerList {
   repeated SnufMarker markers = 1;
+  ActiveEventResult event_state = 2;
 }
 
 // One entry of `assets/examples/examples.json`: a dataset the app can fetch on

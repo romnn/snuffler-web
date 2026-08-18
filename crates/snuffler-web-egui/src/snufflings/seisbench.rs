@@ -3,7 +3,7 @@ use egui::Align;
 pub use snuffler_web_core::snufflings::seisbench::Config;
 
 use super::Action;
-use super::widgets::run_button;
+use super::widgets::{param_row, run_button};
 
 const LABEL_W: f32 = 160.0;
 const LOCAL_MODEL_BASE_URL: &str = "assets/models/";
@@ -69,7 +69,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
                     let clicked = ui
                         .selectable_value(&mut config.selected, idx, choice.label)
                         .clicked();
-                    if clicked && !config.override_thresholds {
+                    if clicked {
                         config.p_threshold = choice.p_threshold;
                         config.s_threshold = choice.s_threshold;
                     }
@@ -77,23 +77,23 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
             });
     });
 
+    // Always-visible threshold controls, as Qt's picker shows them; picking a
+    // model resets them to that export's calibrated defaults (which stand in
+    // for Qt's flat 0.3).
+    threshold_row(ui, "P threshold", &mut config.p_threshold);
+    threshold_row(ui, "S threshold", &mut config.s_threshold);
+    param_row(ui, "Rescaling factor", &mut config.scale_factor, 0.1, 10.0);
     ui.horizontal(|ui| {
         ui.add_space(LABEL_W);
-        if ui
-            .checkbox(&mut config.override_thresholds, "Override thresholds")
-            .changed()
-            && !config.override_thresholds
-        {
-            let choice = selected_model(config.selected);
-            config.p_threshold = choice.p_threshold;
-            config.s_threshold = choice.s_threshold;
-        }
+        ui.checkbox(&mut config.show_annotation_traces, "Show annotation traces");
     });
-
-    if config.override_thresholds {
-        threshold_row(ui, "P threshold", &mut config.p_threshold);
-        threshold_row(ui, "S threshold", &mut config.s_threshold);
-    }
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_W);
+        ui.checkbox(
+            &mut config.use_predefined_filters,
+            "Use pre-defined filters",
+        );
+    });
 
     if let Some(progress) = &runtime.progress {
         ui.add_space(4.0);

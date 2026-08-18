@@ -72,8 +72,12 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
         (_, WiggleTheme::SnufflerQt) => Palette {
             bg: Color32::from_rgb(255, 255, 255),
             trace: Color32::from_rgb(85, 87, 83),
-            grid: Color32::from_rgb(224, 224, 224),
-            zero: Color32::from_rgb(236, 236, 236),
+            // The zero line is a data reference and the grid is decoration, so
+            // the zero line always carries at least the grid's contrast. Under
+            // this theme it is snuffler's own: Qt draws the zero line with the
+            // current trace pen (pile_viewer.py:3431), aluminium5 by default.
+            grid: Color32::from_rgb(236, 236, 236),
+            zero: Color32::from_rgb(85, 87, 83),
             axis_text: Color32::from_rgb(85, 87, 83),
             sep: Color32::from_rgb(214, 214, 214),
             label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
@@ -82,8 +86,8 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
         (Theme::Light, WiggleTheme::SnufflerWeb) => Palette {
             bg: Color32::from_rgb(250, 250, 251),
             trace: Color32::from_rgb(38, 42, 51),
-            grid: Color32::from_rgb(226, 228, 233),
-            zero: Color32::from_rgb(235, 237, 241),
+            grid: Color32::from_rgb(235, 237, 241),
+            zero: Color32::from_rgb(226, 228, 233),
             axis_text: Color32::from_rgb(90, 96, 108),
             sep: Color32::from_rgb(223, 226, 232),
             label_bg: Color32::from_rgba_unmultiplied(250, 250, 251, 214),
@@ -92,8 +96,8 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
         (Theme::Dark, WiggleTheme::SnufflerWeb) => Palette {
             bg: Color32::from_rgb(20, 22, 28),
             trace: Color32::from_rgb(226, 229, 236),
-            grid: Color32::from_rgb(46, 50, 60),
-            zero: Color32::from_rgb(38, 42, 51),
+            grid: Color32::from_rgb(38, 42, 51),
+            zero: Color32::from_rgb(46, 50, 60),
             axis_text: Color32::from_rgb(150, 157, 172),
             sep: Color32::from_rgb(45, 49, 59),
             label_bg: Color32::from_rgba_unmultiplied(20, 22, 28, 214),

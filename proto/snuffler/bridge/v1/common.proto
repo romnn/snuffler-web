@@ -22,3 +22,33 @@ message MomentTensor {
   double mnd = 5;
   double med = 6;
 }
+
+// The canonical event registry entry shared by rendering, marker files, the map,
+// and every scientific consumer.
+message EventSnapshot {
+  string event_hash = 1;
+  double time = 2;
+  double lat = 3;
+  double lon = 4;
+  double depth = 5; // metres, like `pyrocko.model.Event.depth`
+  optional double magnitude = 6;
+  optional string name = 7;
+  optional string region = 8;
+  optional string catalog = 9;
+  optional MomentTensor moment_tensor = 10;
+}
+
+message EventKagan {
+  string event_hash = 1;
+  optional double kagan_deg = 2; // absent when either event lacks a moment tensor
+  // Distance from this event to the active one, in kilometres.
+  optional double dist_km = 3;
+}
+
+// A complete projection of Python's event registry and active-event metrics.
+message ActiveEventResult {
+  bool has_event = 1;
+  optional string active_hash = 2;
+  repeated EventKagan kagan = 3;
+  repeated EventSnapshot events = 4;
+}
