@@ -43,6 +43,13 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # The cold-cache build measures ~1 h, so this is room to spare while still
+    # bounding a wedged run — one whose step has already failed but whose runner
+    # never finishes, and which the cancel button does not always reach.
+    # GitHub's default would let that sit for 6 h, and because the concurrency
+    # group above deliberately never cancels a run in progress, every later push
+    # queues behind it for that whole time.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
 
@@ -244,6 +251,11 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # This job only publishes the artifact the build already produced, so past a
+    # few minutes it is the Pages API not answering rather than work in progress.
+    # It holds the same concurrency group, so bounding it matters as much as
+    # bounding the build.
+    timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
