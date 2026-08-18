@@ -85,9 +85,9 @@ def _p(*parts):
 # `pyrocko.io.<name>`.
 ALL_EXTS = {
     # pyrocko.pile's ordered trace index (the vendored pyavl). `pile.py` imports
-    # it at module top, so a wheel without it cannot import the pile at all;
-    # until a runtime carries this, web/bridge.py installs a pure-Python
-    # stand-in (`_ensure_avl`).
+    # it at module top, so a wheel without it cannot import the pile at all —
+    # and the bridge serves every view from a pile, so a runtime built without
+    # this one cannot open a file.
     "avl": _ext(
         "pyrocko.avl",
         [

@@ -369,89 +369,6 @@ def _visible_traces() -> List[ptrace.Trace]:
     return [tr for tr in _TRACES if _trace_selected(tr)]
 
 
-def _ensure_avl() -> None:
-    """Provide ``pyrocko.avl`` where the wheel lacks the C extension.
-
-    ``pyrocko.pile`` imports the vendored pyavl C module at its top, so a wheel
-    without it cannot import the pile at all. The Pyodide runtime gains the real
-    extension on its next rebuild (pybuild/setup.py builds it in ``_CORE``);
-    until that runtime ships, this stand-in covers exactly the surface
-    ``pile.Sorted`` touches — comparator-ordered inserts, inclusive ``span``
-    queries, indexed access and removal — over a bisected list, which is ample
-    for browser-sized piles. Where the real module exists (CPython, a rebuilt
-    runtime) it wins and this never engages.
-    """
-    import importlib
-    import sys
-
-    try:
-        importlib.import_module("pyrocko.avl")
-        return
-    except ImportError:
-        pass
-
-    import bisect
-    import functools
-    import types
-
-    class _AvlTree:
-        def __init__(self, values: Any, compare: Any) -> None:
-            self._cmp_key = functools.cmp_to_key(compare)
-            self._items = sorted(values, key=self._cmp_key)
-            self._keys = [self._cmp_key(v) for v in self._items]
-
-        def __len__(self) -> int:
-            return len(self._items)
-
-        def __getitem__(self, i: Any) -> Any:
-            return self._items[i]
-
-        def __iter__(self) -> Any:
-            return iter(self._items)
-
-        def iter(self) -> Any:
-            return iter(self._items)
-
-        def insert(self, value: Any) -> None:
-            key = self._cmp_key(value)
-            i = bisect.bisect_right(self._keys, key)
-            self._items.insert(i, value)
-            self._keys.insert(i, key)
-
-        def remove_at(self, i: int) -> Any:
-            del self._keys[i]
-            return self._items.pop(i)
-
-        def span(self, lo: Any, hi: Any = None) -> Tuple[int, int]:
-            # pyavl semantics: t[i:j] holds every element e with lo <= e <= hi;
-            # the one-argument form spans the elements equal to `lo`.
-            if hi is None:
-                hi = lo
-            return (
-                bisect.bisect_left(self._keys, self._cmp_key(lo)),
-                bisect.bisect_right(self._keys, self._cmp_key(hi)),
-            )
-
-        def min(self) -> Any:
-            return self._items[0]
-
-        def max(self) -> Any:
-            return self._items[-1]
-
-    module = types.ModuleType("pyrocko.avl")
-
-    def _new(values: Any = (), compare: Any = None) -> _AvlTree:
-        if compare is None:
-            compare = lambda a, b: (a > b) - (a < b)  # noqa: E731 — pyavl's default
-        return _AvlTree(list(values), compare)
-
-    setattr(module, "new", _new)
-    sys.modules["pyrocko.avl"] = module
-    import pyrocko
-
-    pyrocko.avl = module  # type: ignore[attr-defined]
-
-
 def _pile() -> Any:
     """The loaded traces as a real `pyrocko.pile.Pile`.
 
@@ -462,7 +379,6 @@ def _pile() -> Any:
     """
     global _PILE, _PILE_GEN
     if _PILE is None or _PILE_GEN != _DATA_GEN:
-        _ensure_avl()
         from pyrocko import pile as ppile
 
         p = ppile.Pile()
@@ -5185,8 +5101,8 @@ def _marker_module() -> Any:
 
     ``import pyrocko.gui.snuffler.marker`` would first execute
     ``pyrocko/gui/snuffler/__init__.py``, which eagerly imports the full Qt
-    snuffler application (``pile`` -> ``avl``, PyQt) — none of which exists in our
-    minimal Pyodide wheel. marker.py itself only needs util/plot/model/trace, so
+    snuffler application, and PyQt is not in our Pyodide wheel — nor could it be.
+    marker.py itself only needs util/plot/model/trace, so
     install a lightweight stub for the ``snuffler`` package (carrying the real
     directory on ``__path__``) and import the submodule through it.
     """
