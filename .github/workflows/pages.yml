@@ -16,8 +16,12 @@ name: GitHub Pages
 # determine those bytes. The cheap staging (stage-web.sh -> served/) always re-runs,
 # so editing orchestration / staging / the web app reuses the cache and only
 # re-stages (seconds); only a builder / patch / pin change forces the full rebuild.
-# NOTE: the cold-cache build runs on a GitHub-hosted runner (6 h / ~14 GB limits);
-# it has measured ~1 h, comfortably within budget.
+# NOTE: the cold-cache build runs on a GitHub-hosted runner (6 h limit) and has
+# measured ~1 h, comfortably within budget.
+# Disk is the tight resource here, not time: the from-source tree does not fit
+# beside the runner's preinstalled toolchains and the wasm build that follows it,
+# so the job frees the one up front and drops the other the moment served/ is
+# assembled (the two disk steps below).
 on:
   push:
     branches: [main]
@@ -41,6 +45,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # A cold cache builds Pyodide from source — CPython, emsdk and every package
+      # — and that tree does not fit on a stock runner beside everything else this
+      # job produces.
+      # None of the toolchains removed here are used: the Pyodide build runs inside
+      # the pyodide-env container, and everything else comes from mise or rustup.
+      # The preinstalled docker images go too; the pyodide-env image is pulled
+      # afterwards and is the only one this job wants.
+      - name: Free the runner's disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift \
+            /usr/local/share/powershell
+          docker image prune -af >/dev/null || true
+          sudo apt-get clean
+          df -h /
+
       - uses: Swatinem/rust-cache@v2
 
       - name: System deps (native egui backend, used by the wheel build env)
@@ -135,6 +157,37 @@ jobs:
       - name: Stage py-mt from cached artifacts
         if: steps.pyodide-out.outputs.cache-hit == 'true'
         run: docker/pyodide-mt/stage-web.sh
+
+      # The earliest point at which the builder's scratch tree is finished with:
+      # served/ is assembled, and the artifacts inside it are already uploaded by
+      # the save step above.
+      # What goes is the tree that PRODUCED them — the pyodide checkout with its
+      # emsdk and CPython submodules, and every package's build directory — plus
+      # out/, which is build.sh's second copy of the runtime, and the container
+      # image, which nothing after this uses.
+      # build-all.sh keeps all of it (KEEP=1) for local incremental rebuilds; CI
+      # gets that reuse from the cache instead.
+      #
+      # dist/ and dist-mt/ deliberately survive: they are exactly what the cache
+      # step stores, so keeping them means no reordering of these steps can void
+      # the ~1 h artifacts. Nothing here touches ~/.cargo or target/, which
+      # rust-cache saves in its post step — that save wants the freed room too.
+      #
+      # This is what leaves trunk the space to compile the wasm app and copy py-mt
+      # into dist/, which is where a cold run ran out of disk.
+      - name: Reclaim the Pyodide build tree
+        run: |
+          work=docker/pyodide-mt/.work
+          du -sh "$work" docker/pyodide-mt/out 2>/dev/null || true
+          if [ -d "$work/pyodide" ]; then
+            find "$work" -mindepth 1 -maxdepth 1 -not -name pyodide -exec rm -rf {} +
+            find "$work/pyodide" -mindepth 1 -maxdepth 1 \
+              -not -name dist -not -name dist-mt -exec rm -rf {} +
+          fi
+          rm -rf docker/pyodide-mt/out
+          docker system prune -af --volumes >/dev/null || true
+          du -sh "$work" 2>/dev/null || true
+          df -h /
 
       # Trunk's pre_build hooks run `buf generate` (whose protoc-gen-es plugin is
       # `bunx protoc-gen-es`) and `bun build` (which imports @bufbuild/protobuf).
