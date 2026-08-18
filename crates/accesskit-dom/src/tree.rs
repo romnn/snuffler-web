@@ -130,8 +130,36 @@ pub(crate) fn plan<'a>(
     visited.insert(root);
     // The root stands for the overlay itself, so its children start at the top.
     walk_children(root_node, None, &index, &mut visited, &policy, &mut out);
+    explicit_labels(&mut out);
     borrow_labels(&mut out, options.label_gap);
     out
+}
+
+/// Point controls at the label the toolkit named explicitly.
+///
+/// A `LabelledBy` relation in the AccessKit tree (egui's `Response::labelled_by`,
+/// which e.g. `ComboBox::from_label` sets) is the toolkit saying which text names
+/// the control, so it outranks the geometric borrow below. It matters most for
+/// combo boxes: their own accesskit label is the *selected value*, so without the
+/// relation the accessible name changes every time the value does.
+fn explicit_labels(plans: &mut [Plan<'_>]) {
+    let planned: FxHashSet<u64> = plans.iter().map(|item| item.id).collect();
+    for item in plans.iter_mut() {
+        if !item.proxy.interactive {
+            continue;
+        }
+        // Only a target that is itself projected can be pointed at: an
+        // `aria-labelledby` naming a missing element names nothing.
+        let label = item
+            .node
+            .labelled_by()
+            .iter()
+            .map(|id| id.0)
+            .find(|id| planned.contains(id));
+        if let Some(label) = label {
+            item.proxy.labelled_by = Some(label);
+        }
+    }
 }
 
 /// What the projection does with a node, resolved once from [`Options`] so the
@@ -363,7 +391,12 @@ fn descendant_text<'a>(
 fn borrow_labels(plans: &mut [Plan<'_>], label_gap: f64) {
     let mut borrowed: Vec<(usize, u64)> = Vec::new();
     for (position, item) in plans.iter().enumerate() {
-        if !item.proxy.interactive || !item.proxy.name.is_empty() {
+        // A control the toolkit labelled explicitly keeps that link; geometry
+        // only guesses for the ones nobody named.
+        if !item.proxy.interactive
+            || !item.proxy.name.is_empty()
+            || item.proxy.labelled_by.is_some()
+        {
             continue;
         }
         let (Some(bounds), Some(earlier)) = (item.node.bounds(), plans.get(..position)) else {
@@ -464,6 +497,40 @@ mod tests {
             },
         );
         assert!(plan_for(&plans, 1)?.proxy.hit_testable);
+        Ok(())
+    }
+
+    /// The toolkit's own `LabelledBy` relation names the control even when the
+    /// control carries a label of its own — a combo box's accesskit label is its
+    /// selected value, and "viridis" is not this control's name.
+    #[test]
+    fn an_explicit_labelled_by_relation_outranks_the_controls_own_label() -> eyre::Result<()> {
+        let root = with_children(Role::Window, &[1, 2]);
+        let mut combo = Node::new(Role::ComboBox);
+        combo.set_label("viridis");
+        combo.set_bounds(Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 90.0,
+            y1: 20.0,
+        });
+        combo.push_labelled_by(NodeId(2));
+        // The caption sits to the *right*, where egui's `from_label` puts it —
+        // outside the geometric borrow's reach on purpose.
+        let caption = label_at(
+            "Colormap",
+            Rect {
+                x0: 100.0,
+                y0: 0.0,
+                x1: 160.0,
+                y1: 20.0,
+            },
+        );
+
+        let update = update_of(vec![(0, root), (1, combo), (2, caption)], 0);
+        let plans = plan(&update, CANVAS_AREA, &Options::default());
+
+        assert_eq!(plan_for(&plans, 1)?.proxy.labelled_by, Some(2));
         Ok(())
     }
 
