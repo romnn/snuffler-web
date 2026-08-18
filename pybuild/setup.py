@@ -84,6 +84,25 @@ def _p(*parts):
 # the io extensions import as top-level `pyrocko.<name>` (like mseed_ext), not
 # `pyrocko.io.<name>`.
 ALL_EXTS = {
+    # pyrocko.pile's ordered trace index (the vendored pyavl). `pile.py` imports
+    # it at module top, so a wheel without it cannot import the pile at all;
+    # until a runtime carries this, web/bridge.py installs a pure-Python
+    # stand-in (`_ensure_avl`).
+    "avl": _ext(
+        "pyrocko.avl",
+        [
+            _p("ext", "pyavl-1.12", "avl.c"),
+            _p("ext", "pyavl-1.12", "avlmodule.c"),
+        ],
+        # The macros pyrocko's own setup.py defines for this extension, plus its
+        # warning suppressions for the 2005-era C.
+        extra_compile_args=[
+            "-DHAVE_AVL_VERIFY",
+            "-DAVL_FOR_PYTHON",
+            "-Wno-parentheses",
+            "-Wno-uninitialized",
+        ],
+    ),
     "signal_ext": _ext("pyrocko.signal_ext", [_p("ext", "signal_ext.c")]),
     "mseed_ext": _ext(
         "pyrocko.mseed_ext",
@@ -116,7 +135,7 @@ ALL_EXTS = {
 }
 
 # Extension sets selectable via PYROCKO_EXTS.
-_CORE = ["signal_ext", "mseed_ext"]
+_CORE = ["signal_ext", "mseed_ext", "avl"]
 _GF = _CORE + ["eikonal_ext", "okada_ext", "store_ext", "orthodrome_ext"]
 _GROUPS = {
     "minimal": _CORE,
