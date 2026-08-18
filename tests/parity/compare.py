@@ -37,6 +37,7 @@ CHECK_KINDS = (
     "tracks",
     "scales",
     "annotations",
+    "boxes",
     "stability",
     "menu_state",
     "controls",
@@ -298,29 +299,30 @@ def _compare_pair(
 def compare_tracks(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> List[Finding]:
     """Compare the stacking order, not just the membership.
 
-    Only Qt tracks that actually received a trace are considered: ``track_keys``
-    spans the whole pile, while the web only emits tracks that intersect the window,
-    and a track with nothing in it is not a layout difference.
+    Every Qt track is considered, occupied or not: ``track_keys`` spans the whole
+    pile, and the web now emits the same universe — a channel with no data in the
+    window keeps its labelled, empty row on both sides, so an empty row appearing
+    or vanishing *is* a layout difference.
     """
-    qt_populated = [track for track in qt.tracks if track.nslc_ids]
     # Membership per row, not one flat list of channels: a row can legitimately
     # carry several — the segments of a gapped channel, or every location of a
     # channel under the "Grouped by Location" subsorts — and flattening would call
     # a stack of two rows carrying two channels each the same as four rows of one.
-    qt_sequence = [sorted(track.nslc_ids) for track in qt_populated]
+    # An empty row contributes an empty entry, holding its place in the order.
+    qt_sequence = [sorted(track.nslc_ids) for track in qt.tracks]
     web_sequence = list(web.track_members)
 
     findings = [
         Finding(
             kind="tracks",
             subject="count",
-            ok=len(qt_populated) == len(web_sequence),
+            ok=len(qt.tracks) == len(web_sequence),
             detail=(
                 ""
-                if len(qt_populated) == len(web_sequence)
-                else f"Qt stacks {len(qt_populated)} tracks, the web stacks {len(web_sequence)}"
+                if len(qt.tracks) == len(web_sequence)
+                else f"Qt stacks {len(qt.tracks)} tracks, the web stacks {len(web_sequence)}"
             ),
-            metrics={"qt": len(qt_populated), "web": len(web_sequence)},
+            metrics={"qt": len(qt.tracks), "web": len(web_sequence)},
         )
     ]
 
@@ -434,57 +436,98 @@ def compare_scales(
 def compare_annotations(
     qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot, scenario: Scenario
 ) -> List[Finding]:
-    """The distance a distance-sorted track advertises, against the distance Qt
-    ordered it by. Only meaningful once a sort actually used station geometry."""
-    if scenario.state["sort"] != "distance":
+    """The sort value each track advertises, against the value Qt ordered it by.
+
+    Runs for every geo sort — distance, azimuth, backazimuth and the 12-block
+    sort — comparing the web's annotation against the string snuffler's own
+    formatter would print for Qt's geometry (`m_float`/`deg_float`/`sector_int`,
+    pile_viewer.py:75-140), so the check pins format and value at once.
+    """
+    sort = scenario.state["sort"]
+    if sort not in ("distance", "azimuth", "backazimuth", "azimuth_blocks"):
         return []
+
+    def fmt_m_float(metres: float) -> str:
+        if abs(metres) >= 10000.0:
+            return "%g km" % round(metres / 1000.0, 0)
+        if abs(metres) >= 1000.0:
+            return "%g km" % round(metres / 1000.0, 1)
+        return "%.5g m" % metres
+
+    def expected_for(geometry: Dict[str, Optional[float]]) -> str:
+        if sort == "distance":
+            return fmt_m_float(float(geometry["dist_m"]))
+        if sort == "azimuth":
+            return "%4.0f" % float(geometry["azimuth"])
+        if sort == "backazimuth":
+            return "%4.0f" % float(geometry["backazimuth"])
+        sector = "[%i]" % round((float(geometry["azimuth"]) + 15.0) / 30.0)
+        return "%s %s" % (sector, fmt_m_float(float(geometry["dist_m"])))
+
     findings: List[Finding] = []
     for index, nslc in enumerate(web.track_order):
         annotation = web.sort_annotations[index]
         subject = _nslc(nslc)
-        if not annotation:
-            findings.append(
-                Finding(
-                    kind="annotations",
-                    subject=subject,
-                    ok=False,
-                    detail="a distance sort left the track unannotated",
+        # A row that merges over locations reports '*' and usually resolves to
+        # one shared value — but under the 3D sort, co-located instruments at
+        # different depths split into *identical-looking* rows whose sort values
+        # differ (Qt puts the value inside the gather key; scenario 44 is built
+        # on it). The patterns alone cannot say which split row is which
+        # borehole, so those rows are pinned to the *set* of the station's
+        # per-location values instead of to one arbitrary fallback.
+        if nslc[2] == "*":
+            candidates = {
+                expected_for(geom)
+                for key, geom in qt.station_geometry.items()
+                if len(key) == 3
+                and (key[0], key[1]) == (nslc[0], nslc[1])
+                and geom["dist_m"] is not None
+            }
+            if len(candidates) > 1:
+                ok = annotation in candidates
+                findings.append(
+                    Finding(
+                        kind="annotations",
+                        subject=subject,
+                        ok=ok,
+                        detail=(
+                            ""
+                            if ok
+                            else (
+                                f"the web prints {annotation!r}, Qt's per-location "
+                                f"values are {sorted(candidates)}"
+                            )
+                        ),
+                        metrics={"expected_any_of": sorted(candidates), "web": annotation},
+                    )
                 )
-            )
-            continue
-        if annotation == "no coords":
-            continue
-        web_km = float(annotation.split()[0])
+                continue
         # Snuffler's own resolution order (`station_attrib`, pile_viewer.py:1379):
         # the location-specific station first, the station-wide one as the fallback.
-        # A track that merges over locations reports '*' for its location, and takes
-        # the fallback — which is right, because a merged row can only exist when its
-        # members share a distance.
         geometry = qt.station_geometry.get((nslc[0], nslc[1], nslc[2])) or qt.station_geometry.get(
             (nslc[0], nslc[1])
         )
         if geometry is None or geometry["dist_m"] is None:
+            # Qt skips a None sort value out of the label; the web must too.
+            ok = annotation == ""
             findings.append(
                 Finding(
                     kind="annotations",
                     subject=subject,
-                    ok=False,
-                    detail="Qt has no distance for this station",
+                    ok=ok,
+                    detail="" if ok else f"no Qt geometry, but the web wrote {annotation!r}",
                 )
             )
             continue
-        qt_km = float(geometry["dist_m"]) / 1000.0
-        delta = abs(qt_km - web_km)
-        # The label is printed to 0.1 km, so anything under half of that is a
-        # rounding artefact rather than a disagreement about geometry.
-        ok = delta <= 0.05
+        expected = expected_for(geometry)
+        ok = annotation == expected
         findings.append(
             Finding(
                 kind="annotations",
                 subject=subject,
                 ok=ok,
-                detail="" if ok else f"Qt {qt_km:.3f} km vs web {web_km:.1f} km",
-                metrics={"qt_km": qt_km, "web_km": web_km, "delta_km": delta},
+                detail="" if ok else f"Qt would print {expected!r}, the web prints {annotation!r}",
+                metrics={"expected": expected, "web": annotation},
             )
         )
     return findings
@@ -554,6 +597,81 @@ def compare_stability(run: web_oracle.WebRun) -> List[Finding]:
     return findings
 
 
+def compare_boxes(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> List[Finding]:
+    """The trace boxes both painters draw, compared in Qt's own pixels.
+
+    The web ships box *times* — the pile's coverage per row — while Qt records the
+    rects it filled. Projecting the times through the projection Qt painted with
+    puts both in one space, and the 1.5 px tolerance absorbs the two deliberate
+    sub-pixel differences: Qt clips the right edge one pixel inside the canvas
+    (`Projection.clipped` with `umax_pad=1`, `drawbox`, pile_viewer.py:2993), and
+    the web floors box width at one pixel where Qt strokes a zero-width rect.
+
+    This is the check that keeps a zoomed-far-out window honest. When
+    `min_deltat_allow` empties the fetch, presence, samples and scales all compare
+    nothing against nothing, and the boxes are the only painted geometry left —
+    exactly where the web once went blank while Qt kept its anchors.
+    """
+    if qt.box_projection is None:
+        return []
+    (xmin, xmax), (umin, umax) = qt.box_projection
+
+    def to_px(t: float) -> float:
+        return min(umax, max(umin, umin + (t - xmin) * ((umax - umin) / (xmax - xmin))))
+
+    tolerance_px = 1.5
+    bad: List[str] = []
+    total_qt = sum(len(row) for row in qt.boxes.values())
+    total_web = 0
+    nrows = max(len(web.boxes), max(qt.boxes.keys(), default=-1) + 1)
+
+    # Colour first, pixels second: co-located boxes on one row can sit within the
+    # pixel tolerance of each other, where a pixel-first sort pairs them
+    # differently on the two sides and reports a colour clash that is not there.
+    def order(box: Tuple[float, float, int]) -> Tuple[int, float, float]:
+        return (box[2], box[0], box[1])
+
+    for row in range(nrows):
+        qt_row = sorted(qt.boxes.get(row, []), key=order)
+        # Boxes wholly outside the window are skipped by the web painter, and the
+        # absolute style index only reaches pixels modulo the 7-slot `box_styles`
+        # palette, which is what Qt's fill-brush identity recovered.
+        web_row = sorted(
+            (
+                (to_px(tmin), to_px(tmax), style % 7)
+                for tmin, tmax, style in (web.boxes[row] if row < len(web.boxes) else [])
+                if tmax >= xmin and tmin <= xmax
+            ),
+            key=order,
+        )
+        total_web += len(web_row)
+        subject = _nslc(web.track_order[row]) if row < len(web.track_order) else f"row {row}"
+        if len(qt_row) != len(web_row):
+            bad.append(f"{subject}: {len(qt_row)} boxes in Qt, {len(web_row)} in web")
+            continue
+        for (q0, q1, qcolor), (w0, w1, wcolor) in zip(qt_row, web_row, strict=True):
+            if qcolor != wcolor:
+                bad.append(f"{subject}: colour {qcolor} in Qt, {wcolor} in web")
+                break
+            if abs(q0 - w0) > tolerance_px or abs(q1 - w1) > tolerance_px:
+                bad.append(f"{subject}: Qt [{q0:.2f}, {q1:.2f}] px vs web [{w0:.2f}, {w1:.2f}] px")
+                break
+    detail = ""
+    if bad:
+        shown = "; ".join(bad[:3])
+        more = f" (+{len(bad) - 3} more rows)" if len(bad) > 3 else ""
+        detail = shown + more
+    return [
+        Finding(
+            kind="boxes",
+            subject="",
+            ok=not bad,
+            detail=detail,
+            metrics={"qt": total_qt, "web": total_web, "rows": nrows},
+        )
+    ]
+
+
 def compare_all(
     qt: qt_oracle.QtSnapshot,
     run: web_oracle.WebRun,
@@ -566,6 +684,7 @@ def compare_all(
     findings.extend(compare_tracks(qt, web))
     findings.extend(compare_scales(qt, web, scenario))
     findings.extend(compare_annotations(qt, web, scenario))
+    findings.extend(compare_boxes(qt, web))
     findings.extend(compare_stability(run))
     return findings
 

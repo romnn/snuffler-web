@@ -1,0 +1,14 @@
+name = "demo-zoomed-out-far"
+title = "The demo zoomed two weeks out still shows one box per channel"
+dataset = "demo"
+tiers = [1]
+
+# 600 s of 50 Hz data in a two-week window: nothing is fetched, and with 18
+# overlapping traces the per-trace (<500) drawbox branch draws one box per channel
+# — the complement of eifel-zoomed-out-far's batched branch.
+[window]
+start_s = -604800.0
+length_s = 1209600.0
+
+[compare]
+reason = "an empty fetch is the point here: the boxes are the whole comparison"

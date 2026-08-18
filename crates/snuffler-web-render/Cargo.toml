@@ -15,3 +15,6 @@ snuffler-web-core = { path = "../snuffler-web-core", default-features = false }
 
 [dev-dependencies]
 color-eyre = { workspace = true }
+prost = { workspace = true }
+rayon = "1"
+resvg = { version = "0.47", default-features = false, features = ["text"] }

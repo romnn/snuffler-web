@@ -34,18 +34,33 @@ from harness import DIM, GREEN, HERE, RED, RESET, ROOT, YELLOW
 ARTIFACTS = harness.ARTIFACTS
 QT_JSON = ARTIFACTS / "inventory-qt.json"
 WEB_JSON = ARTIFACTS / "inventory-web.json"
+SCREENSHOTS = ARTIFACTS / "screenshots" / "tier2" / "inventory"
 
 
 def regenerate(want_qt: bool, want_web: bool) -> None:
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     if want_qt:
         subprocess.run(
-            [sys.executable, str(HERE / "inventory_qt.py"), "--out", str(QT_JSON)],
+            [
+                sys.executable,
+                str(HERE / "inventory_qt.py"),
+                "--out",
+                str(QT_JSON),
+                "--screenshots",
+                str(SCREENSHOTS),
+            ],
             check=True,
             cwd=ROOT,
         )
     if want_web:
-        command = ["bun", str(HERE / "inventory_web.ts"), "--out", str(WEB_JSON)]
+        command = [
+            "bun",
+            str(HERE / "inventory_web.ts"),
+            "--out",
+            str(WEB_JSON),
+            "--screenshots",
+            str(SCREENSHOTS),
+        ]
         # The web probe presses exactly the keys Qt turned out to bind, so the two
         # halves of the key diff are asking about the same set.
         if QT_JSON.exists():

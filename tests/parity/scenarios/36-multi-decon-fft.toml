@@ -11,5 +11,4 @@ fft_filtering = true
 remove_response = true
 
 [compare]
-expect_divergence = ["fft-decon-not-combined"]
-reason = "Qt folds the inverse response into the same transfer function it filters with"
+reason = "the inverse response folds into the same transfer function the FFT filter applies"

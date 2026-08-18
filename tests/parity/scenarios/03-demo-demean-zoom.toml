@@ -11,5 +11,4 @@ length_s = 60.0
 demean = true
 
 [compare]
-expect_divergence = ["demean-extent"]
-reason = "Qt removes the mean of the fetched window, the web removes the mean of the whole trace"
+reason = "the mean Demean removes is the mean of the fetched window on both sides"

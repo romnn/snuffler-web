@@ -13,6 +13,4 @@ lowpass = 2.0
 bandpass_lphp = true
 
 [compare]
-expect_divergence = ["filter-context-extent"]
-edge_trim_s = 8.0
 reason = "the lphp branch cascades a 4th-order lowpass and highpass instead of one bandpass"

@@ -12,8 +12,9 @@ Two things are deliberately *not* compared:
   read. Extending the a11y layer to expose them is the natural way to widen tier 3.
 * **Where a pick landed.** A fractional canvas position becomes a different time and a
   different track under the two layouts, and asserting on layout is exactly what the
-  plan rules out. The marker's *identity* — kind, phase, polarity, selection — is
-  compared; its time and channel are recorded for a human.
+  plan rules out. The marker's *identity* — kind, phase, polarity, selection, and
+  whether it is channel-scoped at all — is compared; its time and channel are
+  recorded for a human.
 
     python tests/parity/run_scenarios.py          # needs the app served
 """
@@ -39,6 +40,7 @@ ARTIFACTS = harness.ARTIFACTS
 PLAN = ARTIFACTS / "tier3-plan.json"
 QT_JSON = ARTIFACTS / "tier3-qt.json"
 WEB_JSON = ARTIFACTS / "tier3-web.json"
+SCREENSHOTS = ARTIFACTS / "screenshots" / "tier3"
 
 
 def web_menu_labels() -> Dict[str, Tuple[str, str]]:
@@ -102,6 +104,11 @@ def marker_identity(marker: Dict[str, Any]) -> Tuple[Any, ...]:
         str(marker.get("phase") or ""),
         marker.get("polarity"),
         bool(marker.get("selected", False)),
+        # Scoped-or-not, without which channel: the channel is where the pick
+        # landed, and that differs between the layouts by construction. That a
+        # double-click pick is bound to *a* track is placement-independent, and
+        # is exactly what an unscoped-pick regression would flip.
+        bool(marker.get("nslc")),
     )
 
 
@@ -199,14 +206,30 @@ def run(args: argparse.Namespace) -> int:
 
     if not args.no_qt:
         subprocess.run(
-            [sys.executable, str(HERE / "scenario_qt.py"), "--out", str(QT_JSON)]
+            [
+                sys.executable,
+                str(HERE / "scenario_qt.py"),
+                "--out",
+                str(QT_JSON),
+                "--screenshots",
+                str(SCREENSHOTS),
+            ]
             + [s.name for s in scenarios],
             check=True,
             cwd=ROOT,
         )
     if not args.no_web:
         subprocess.run(
-            ["bun", str(HERE / "scenario_web.ts"), "--plan", str(PLAN), "--out", str(WEB_JSON)],
+            [
+                "bun",
+                str(HERE / "scenario_web.ts"),
+                "--plan",
+                str(PLAN),
+                "--out",
+                str(WEB_JSON),
+                "--screenshots",
+                str(SCREENSHOTS),
+            ],
             check=True,
             cwd=ROOT,
         )

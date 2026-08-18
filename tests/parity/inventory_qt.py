@@ -274,7 +274,7 @@ def help_tables() -> Dict[str, List[Dict[str, str]]]:
     return sections
 
 
-def controls(frame: Any) -> List[Dict[str, Any]]:
+def controls(frame: Any) -> Tuple[List[Dict[str, Any]], Any]:
     """The bottom control strip, walked rather than listed.
 
     ``PileViewer.controls()`` builds the strip on demand — the window is what calls
@@ -303,10 +303,10 @@ def controls(frame: Any) -> List[Dict[str, Any]]:
                 widget.itemData(index) or widget.itemText(index) for index in range(widget.count())
             ]
         out.append(entry)
-    return sorted(out, key=lambda item: item["name"])
+    return sorted(out, key=lambda item: item["name"]), strip
 
 
-def collect(dataset: str = "demo") -> Dict[str, Any]:
+def collect(dataset: str = "demo", screenshots: Path | None = None) -> Dict[str, Any]:
     from scenario import DATASETS
 
     viewer = qt_oracle.QtViewer([corpus_build.path(DATASETS[dataset].waveforms)])
@@ -315,15 +315,21 @@ def collect(dataset: str = "demo") -> Dict[str, Any]:
         # Snufflings first: each one adds itself to the Snufflings menu as it is
         # loaded, so walking the menu before they exist would miss all of them.
         loaded = snufflings(viewer.view)
+        control_entries, control_strip = controls(viewer.frame)
         # Probing keys runs real handlers, several of which reach for the window the
         # viewer is in, so give it one before asking.
-        host = qt_oracle.host_window(viewer.frame)
+        host = qt_oracle.host_window(viewer.frame, control_strip)
         menus = list(walk_menu(viewer.frame.menu))
+        if screenshots is not None:
+            viewer.view.set_time_range(viewer.pile.tmin, viewer.pile.tmax)
+            viewer.view.sortingmode_change()
+            viewer.view.set_tracks_range((0, max(1, viewer.view.ntracks)))
+            qt_oracle.save_ui_screenshots(viewer.view, host, screenshots)
         return {
             "side": "qt",
             "menus": menus,
             "snufflings": loaded,
-            "controls": controls(viewer.frame),
+            "controls": control_entries,
             "help": help_tables(),
             # Probing keys drives real handlers, so it goes last: by the time it runs
             # everything else has already been read off an undisturbed viewer.
@@ -340,8 +346,9 @@ def collect(dataset: str = "demo") -> Dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, help="write JSON here instead of stdout")
+    parser.add_argument("--screenshots", type=Path)
     args = parser.parse_args()
-    inventory = collect()
+    inventory = collect(screenshots=args.screenshots)
     text = json.dumps(inventory, indent=2, sort_keys=False) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -11,6 +11,4 @@ length_s = 90.0
 highpass = 1.5
 
 [compare]
-expect_divergence = ["filter-context-extent"]
-edge_trim_s = 4.0
 reason = "the highpass-only branch, where the lowpass guard in _filter_seg does not apply"

@@ -10,5 +10,4 @@ tiers = [1]
 visible_length = 1000.0
 
 [compare]
-expect_divergence = ["min-deltat-allow"]
-reason = "Qt drops traces too finely sampled for the window; the web decimates them instead"
+reason = "both sides drop traces too finely sampled for the window (min_deltat_allow)"

@@ -5,7 +5,8 @@ descending value per unit of effort, and nothing here drives pixels over VNC.
 
 | | what it compares | needs |
 | --- | --- | --- |
-| `task test:parity` | the numbers each side is about to draw | nothing but Python |
+| `task test:parity` | the numbers each side is about to draw, plus the bridge snuffling tests | nothing but Python |
+| `task test:parity:bridge` | the bridge's snuffling behaviour against real pyrocko | nothing but Python |
 | `task test:parity:inventory` | the whole command surface, menus and keys | the app served |
 | `task test:parity:scenarios` | UI state through both GUIs, step by step | the app served |
 
@@ -279,9 +280,10 @@ it before the scenarios; `task test:parity:unit` runs it alone.
 
 ```sh
 task test:parity                       # tier 1, a few minutes, no browser
-task test:parity -- -v --png           # per-check detail, plus the offscreen Qt render
+task test:parity -- -v                 # per-check detail
 task test:parity -- demo-bandpass-zoom # one scenario
 task test:parity -- decon-freq-limits  # just the property grid
+task test:parity:bridge                # the bridge's snuffling tests alone
 
 mise run serve &                       # tiers 2 and 3 need the app served
 task test:parity:inventory
@@ -289,9 +291,16 @@ task test:parity:scenarios
 ```
 
 Artifacts land in `.artifacts/`: `tier1.json`, `tier2.json`, `tier3.json`, both
-inventories, and the Qt PNGs. Per the plan, the PNGs are for human review — nothing
-asserts on pixels, because egui and `QPainter` will never agree and a screenshot diff
-would drown real findings in noise.
+inventories, and screenshots grouped by tier and scenario.
+Tier 2 and Tier 3 write `qt-full.png`, `qt-waveforms.png`, `web-full.png`, and
+`web-waveforms.png` for each captured final state.
+The waveform files come from each application's own PNG export path.
+Tier 1 writes both Qt views plus `web-waveforms.png`; it has no `web-full.png`
+because that tier deliberately imports the Python bridge without running a browser.
+
+The PNGs are for human review only.
+Nothing asserts on pixels, because egui and `QPainter` will never agree and a
+screenshot diff would drown real findings in noise.
 
 Reuse a previous run's expensive half while iterating:
 
@@ -315,11 +324,14 @@ web_oracle.py       bridge._get_view_data -> snapshot
 compare.py          snapshot diff with per-field tolerances
 freq_limits.py      property grid for the one documented copy
 run_oracle.py       tier 1
+../../crates/snuffler-web-render/examples/parity_artifacts.rs
+                    browserless Tier 1 web waveform renderer
 inventory_qt.py     tier 2, Qt side
 inventory_web.ts    tier 2, web side
 run_inventory.py    tier 2
 scenario_qt.py      tier 3, Qt driver
 scenario_web.ts     tier 3, web driver
+parity_browser.ts   browser launch and renderer policy shared by tiers 2 and 3
 run_scenarios.py    tier 3
 parity_keys.ts      one key notation, shared by both web drivers
 known_gaps.toml     every accounted-for difference

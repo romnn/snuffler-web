@@ -300,6 +300,8 @@ tests/parity/
 Task targets, alongside the existing `test:*` group:
 
 - `task test:parity` — tier 1, the default; no serving, no browser.
+- `task test:parity:bridge` — the bridge's snuffling behaviour (marker scope,
+  aggregation, failure contracts) against real pyrocko; also part of tier 1's run.
 - `task test:parity:inventory` — tier 2; needs the app served for the web half.
 - `task test:parity:scenarios` — tier 3; needs the app served.
 

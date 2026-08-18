@@ -9,5 +9,4 @@ lowpass = 1.0
 allow_downsampling = true
 
 [compare]
-expect_divergence = ["allow-downsampling-meaning"]
-reason = "the same menu item means two different things on the two sides"
+reason = "Allow Downsampling anti-alias decimates the data itself, identically on both sides"

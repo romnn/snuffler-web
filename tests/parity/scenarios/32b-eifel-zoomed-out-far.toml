@@ -1,0 +1,16 @@
+name = "eifel-zoomed-out-far"
+title = "Zoomed two weeks out, the pile-backed trace boxes are all that is painted"
+dataset = "eifel"
+tiers = [1]
+
+# A two-week window around ninety seconds of 100-200 Hz data: min_deltat_allow
+# (prepare_cutout2, pile_viewer.py:3597) declines every channel at this width, both
+# fetches come back empty, and the trace boxes drawn from the pile are the only
+# geometry left on screen. With 1061 overlapping traces this also exercises the
+# >=500 batched drawbox branch (draw_trace_boxes, pile_viewer.py:3013).
+[window]
+start_s = -604800.0
+length_s = 1209600.0
+
+[compare]
+reason = "an empty fetch is the point here: the boxes are the whole comparison"

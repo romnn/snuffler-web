@@ -38,6 +38,7 @@ class Segment:
 
 @dataclass
 class WebSnapshot:
+    meta: view_pb2.ViewMeta
     window: Tuple[float, float]
     segments: List[Segment]
     # One entry per track, in the order the frontend stacks them.
@@ -52,6 +53,10 @@ class WebSnapshot:
     # always means two of its spans genuinely disagree.
     span_scales: List[Tuple[NslcId, Tuple[float, float, float]]] = field(default_factory=list)
     sort_annotations: List[str] = field(default_factory=list)
+    # Trace boxes per track, in track order: (tmin, tmax, style) as the ViewTrack
+    # carries them — the pile's coverage, present even when a track has no spans
+    # because the zoom put every channel below `min_deltat_allow`.
+    boxes: List[List[Tuple[float, float, int]]] = field(default_factory=list)
     raw_ys: Optional[np.ndarray] = None
 
 
@@ -107,6 +112,8 @@ def params(scenario: Scenario, tmin: float, tmax: float) -> view_pb2.ViewParams:
         fix_scale_ranges=bool(state["fix_scale_ranges"]),
         show_scale_ranges=bool(state["show_scale_ranges"]),
         show_scale_axes=bool(state["show_scale_axes"]),
+        visible_length=float(state["visible_length"]),
+        liberal_fetch=bool(state["liberal_fetch"]),
         # Every track, not a page: a scenario compares the whole stack or none of it.
         track_offset=0,
         track_count=1 << 32,
@@ -125,11 +132,13 @@ def snapshot(req: view_pb2.ViewParams) -> WebSnapshot:
     track_members: List[List[NslcId]] = []
     scales: List[Tuple[NslcId, Tuple[float, float, float]]] = []
     annotations: List[str] = []
+    boxes: List[List[Tuple[float, float, int]]] = []
 
     for track in meta.tracks:
         nslc: NslcId = (track.net, track.sta, track.loc, track.cha)
         order.append(nslc)
         annotations.append(track.sort_annotation)
+        boxes.append([(float(b.tmin), float(b.tmax), int(b.style)) for b in track.boxes])
         # One track, one or more spans: a channel that arrives in pieces draws every
         # piece on the same row, and so do the locations of a channel when the
         # subsort groups over them. Each span names the trace it came from, which is
@@ -167,12 +176,14 @@ def snapshot(req: view_pb2.ViewParams) -> WebSnapshot:
         track_members.append(members)
 
     return WebSnapshot(
+        meta=meta,
         window=(float(meta.view_tmin), float(meta.view_tmax)),
         segments=segments,
         track_order=order,
         track_members=track_members,
         span_scales=scales,
         sort_annotations=annotations,
+        boxes=boxes,
         raw_ys=ys,
     )
 
@@ -202,6 +213,7 @@ def pile_fingerprint() -> List[Tuple[Any, ...]]:
 
 @dataclass
 class WebRun:
+    request: view_pb2.ViewParams
     first: WebSnapshot
     second: WebSnapshot
     pile_before: List[Tuple[Any, ...]]
@@ -225,4 +237,10 @@ def run(scenario: Scenario, files: CorpusFiles) -> WebRun:
     before = pile_fingerprint()
     first = snapshot(req)
     second = snapshot(req)
-    return WebRun(first=first, second=second, pile_before=before, pile_after=pile_fingerprint())
+    return WebRun(
+        request=req,
+        first=first,
+        second=second,
+        pile_before=before,
+        pile_after=pile_fingerprint(),
+    )

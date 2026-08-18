@@ -12,9 +12,6 @@ highpass = 0.5
 lowpass = 2.0
 
 [compare]
-expect_divergence = ["filter-context-extent"]
-# Qt filters a tpad-padded chop of the window (tpad = 2/highpass = 4 s here); the
-# web filters the whole trace and slices. Both are settled well inside the window,
-# so trim a padding length from each end rather than relaxing the tolerance.
-edge_trim_s = 8.0
-reason = "interior of a filtered sub-window; the edges carry each side's own filter transient"
+# No edge trim: both sides filter the same tpad-padded chop of the window
+# (tpad = 2/highpass = 4 s here), so even the filter transient must agree.
+reason = "a filtered sub-window, transient and all: both sides filter the same padded chop"

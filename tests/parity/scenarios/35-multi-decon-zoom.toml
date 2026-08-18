@@ -12,5 +12,4 @@ length_s = 60.0
 remove_response = true
 
 [compare]
-expect_divergence = ["decon-context-extent"]
-reason = "whether the deconvolution is window-faithful, or only agrees over the whole extent"
+reason = "the deconvolution is window-faithful: restituting the padded chop, not the whole trace"

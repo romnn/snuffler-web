@@ -1,8 +1,8 @@
 """Tier 3: drive the offscreen Qt snuffler through a scenario's steps.
 
 The same widget the user clicks, driven the way the user drives it — menu actions
-triggered, keys delivered as real key events, picks placed through the picking methods
-the mouse handlers call. After every step it emits one snapshot in the schema
+triggered, keys delivered as real key events, picks placed through the real mouse
+handlers: double-click, swallowed release, press, release. After every step it emits one snapshot in the schema
 ``scenario_web.ts`` also emits, and :mod:`run_scenarios` diffs the two.
 
 Writes JSON on stdout, or to ``--out``.
@@ -51,12 +51,11 @@ class QtDriver:
         self.viewer = qt_oracle.QtViewer([waveforms])
         self.frame = self.viewer.frame
         self.view = self.viewer.view
+        self.controls = self.frame.controls()
+        self.marker_editor = self.frame.marker_editor()
         # Tier 1 needs no window — it only paints — but a driver that presses keys
         # does; see `qt_oracle.host_window`.
-        self.window = qt_oracle.host_window(self.frame)
-        # `controls()` is what the window calls to build the bottom strip; without it
-        # there is nothing for a `filter` step to drive.
-        self.controls = self.frame.controls()
+        self.window = qt_oracle.host_window(self.frame, self.controls, self.marker_editor)
         self.frame.resize(*qt_oracle.CANVAS_SIZE)
         self.view.resize(*qt_oracle.CANVAS_SIZE)
         self.view.set_time_range(self.viewer.pile.tmin, self.viewer.pile.tmax)
@@ -109,21 +108,37 @@ class QtDriver:
             qw.QApplication.sendEvent(self.view, qt_oracle.key_event(stroke))
 
     def pick(self, fx: float, fy: float) -> None:
-        """Place a marker where a double-click would.
+        """Place a marker the way a user's double-click does.
 
-        ``mouseDoubleClickEvent`` calls ``start_picking()`` and the release calls
-        ``stop_picking(x, y)``; both read the position from the cursor, so the cursor
-        is where the position has to be set. That is the real path, addressed
-        directly rather than through a synthetic event whose coordinates the handler
-        would ignore anyway.
+        The real path, driven through the real handlers: ``mouseDoubleClickEvent``
+        arms picking and sets ``ignore_releases`` so the double-click's own release
+        is swallowed, then the next press records ``picking_down`` and its release
+        commits the pick through ``stop_picking``. ``start_picking`` reads the
+        position from the cursor, so the cursor is placed first.
         """
         width, height = self.view.width(), self.view.height()
         axis = self.view.ax_height
         x = int(fx * width)
         y = int(axis + fy * (height - 2 * axis))
-        qg.QCursor.setPos(self.view.mapToGlobal(qc.QPoint(x, y)))
-        self.view.start_picking()
-        self.view.stop_picking(x, y)
+        pos = qc.QPoint(x, y)
+        gpos = self.view.mapToGlobal(pos)
+        qg.QCursor.setPos(gpos)
+
+        def mouse_event(kind: Any) -> Any:
+            return qg.QMouseEvent(
+                kind,
+                qc.QPointF(pos),
+                qc.QPointF(gpos),
+                qc.Qt.LeftButton,
+                qc.Qt.LeftButton,
+                qc.Qt.NoModifier,
+            )
+
+        self.view.mouseDoubleClickEvent(mouse_event(qc.QEvent.MouseButtonDblClick))
+        # Swallowed by ignore_releases — the release that ends the double-click.
+        self.view.mouseReleaseEvent(mouse_event(qc.QEvent.MouseButtonRelease))
+        self.view.mousePressEvent(mouse_event(qc.QEvent.MouseButtonPress))
+        self.view.mouseReleaseEvent(mouse_event(qc.QEvent.MouseButtonRelease))
 
     def snapshot(self, label: str, watch_menus: List[str]) -> Dict[str, Any]:
         view = self.view
@@ -175,7 +190,7 @@ class QtDriver:
         self.viewer.close()
 
 
-def run(scenario: Scenario) -> List[Dict[str, Any]]:
+def run(scenario: Scenario, screenshots: Path | None) -> List[Dict[str, Any]]:
     driver = QtDriver(corpus_build.path(DATASETS[scenario.dataset].waveforms))
     try:
         out = [driver.snapshot("start", scenario.watch_menus)]
@@ -183,6 +198,8 @@ def run(scenario: Scenario) -> List[Dict[str, Any]]:
             driver.apply(step)
             label = f"{index}:{step.action}:{step.target or step.action}"
             out.append(driver.snapshot(label, scenario.watch_menus))
+        if screenshots is not None:
+            qt_oracle.save_ui_screenshots(driver.view, driver.window, screenshots / scenario.name)
         return out
     finally:
         driver.close()
@@ -191,11 +208,13 @@ def run(scenario: Scenario) -> List[Dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--screenshots", type=Path)
     parser.add_argument("scenario", nargs="*")
     args = parser.parse_args()
 
     result = {
-        scenario.name: run(scenario) for scenario in load_all(tier=3, only=args.scenario or None)
+        scenario.name: run(scenario, args.screenshots)
+        for scenario in load_all(tier=3, only=args.scenario or None)
     }
     text = json.dumps(result, indent=2, default=str) + "\n"
     if args.out:

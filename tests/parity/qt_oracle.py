@@ -103,7 +103,18 @@ class QtSnapshot:
     station_geometry: Dict[Tuple[str, ...], Dict[str, Optional[float]]] = field(
         default_factory=dict
     )
+    # Trace boxes as `draw_trace_boxes` painted them: per track index, the filled
+    # rects in *pixels* — (left, right, palette slot in `box_styles`) — recorded
+    # off the real painter. Pixels rather than times, because Qt clips each rect
+    # to the canvas (right edge padded by one pixel) before drawing, and
+    # un-projecting would launder that back into times the painter never used.
+    boxes: Dict[int, List[Tuple[float, float, int]]] = field(default_factory=dict)
+    # The time projection the boxes were drawn through, ((tmin, tmax),
+    # (umin, umax)): what the comparator needs to put the web's box times into
+    # the same pixels. None when Qt never drew boxes this paint.
+    box_projection: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None
     png: Optional[bytes] = None
+    full_png: Optional[bytes] = None
 
 
 def assert_upstream_geometry() -> None:
@@ -207,7 +218,7 @@ def key_event(token: str) -> Any:
     raise KeyError(f"unknown key token {token!r}")
 
 
-def host_window(frame: Any) -> Any:
+def host_window(frame: Any, controls: Any = None, marker_editor: Any = None) -> Any:
     """Put a `PileViewer` inside the kind of window snuffler expects to live in.
 
     Not decoration. `keyPressEvent` ends in `update_status()`, which writes to
@@ -223,6 +234,15 @@ def host_window(frame: Any) -> Any:
 
     window = qw.QMainWindow()
     window.setCentralWidget(frame)
+    window.setMenuBar(frame.menu)
+    if controls is not None:
+        dock = qw.QDockWidget("Main Controls", window)
+        dock.setWidget(controls)
+        window.addDockWidget(qc.Qt.BottomDockWidgetArea, dock)
+    if marker_editor is not None:
+        dock = qw.QDockWidget("Markers", window)
+        dock.setWidget(marker_editor)
+        window.addDockWidget(qc.Qt.RightDockWidgetArea, dock)
     window.status_messages = gui_util.StatusMessages()
     window.statusBar().addPermanentWidget(window.status_messages)
     window.resize(*CANVAS_SIZE)
@@ -343,10 +363,13 @@ class QtViewer:
         cutout: List[Any] = []
         data_ranges: Dict[Any, Tuple[float, float]] = {}
         scales: Dict[Tuple[float, float], Tuple[float, float, float]] = {}
+        boxes: Dict[int, List[Tuple[float, float, int]]] = {}
+        box_projection: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
 
         original_cutout = view.prepare_cutout2
         original_minmax = pyrocko.trace.minmax
         original_make_scale = pyrocko.plot.AutoScaler.make_scale
+        original_boxes = view.draw_trace_boxes
 
         def record_cutout(*args: Any, **kwargs: Any) -> Any:
             traces = original_cutout(*args, **kwargs)
@@ -367,15 +390,62 @@ class QtViewer:
             )
             return out
 
+        def record_boxes(p: Any, time_projection: Any, track_projections: Any) -> Any:
+            """Run the real `draw_trace_boxes` with a painter that keeps each fill.
+
+            The one `fillRect` per box (`drawbox`, pile_viewer.py:2996) carries
+            everything the comparison needs: the clipped rect in pixels, and the
+            fill brush — a `box_styles` module singleton, so identity recovers the
+            palette slot (`istyle % 7`) the pixels actually show.
+            """
+            from pyrocko.gui.snuffler.pile_viewer import box_styles
+
+            fills: List[Tuple[Any, Any]] = []
+
+            class RecordingPainter:
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                def fillRect(self, rect: Any, brush: Any) -> Any:
+                    fills.append((qc.QRectF(rect), brush))
+                    return self._inner.fillRect(rect, brush)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+            out = original_boxes(RecordingPainter(p), time_projection, track_projections)
+            box_projection[:] = [
+                (
+                    tuple(float(v) for v in time_projection.get_in_range()),
+                    tuple(float(v) for v in time_projection.get_out_range()),
+                )
+            ]
+            # Rows are recovered from the rect's top edge: each row projection
+            # maps 0 to its own top, so the nearest one names the track.
+            tops = [(float(proj(0.0)), itrack) for itrack, proj in track_projections.items()]
+            for rect, brush in fills:
+                y = float(rect.top())
+                itrack = min(tops, key=lambda pair: abs(pair[0] - y))[1]
+                color = next(
+                    (i for i, style in enumerate(box_styles) if brush is style.fill_brush),
+                    -1,
+                )
+                boxes.setdefault(itrack, []).append(
+                    (float(rect.left()), float(rect.right()), color)
+                )
+            return out
+
         view.prepare_cutout2 = record_cutout  # type: ignore[method-assign]
         pyrocko.trace.minmax = record_minmax  # type: ignore[assignment]
         pyrocko.plot.AutoScaler.make_scale = record_make_scale  # type: ignore[method-assign]
+        view.draw_trace_boxes = record_boxes  # type: ignore[method-assign]
         try:
             pixmap = view.grab()
         finally:
             del view.prepare_cutout2
             pyrocko.trace.minmax = original_minmax  # type: ignore[assignment]
             pyrocko.plot.AutoScaler.make_scale = original_make_scale  # type: ignore[method-assign]
+            del view.draw_trace_boxes
 
         segments = [
             Segment(
@@ -404,6 +474,8 @@ class QtViewer:
             scales=scales,
             scaling_keys={segment.nslc: self.scaling_key(segment.nslc) for segment in segments},
             station_geometry=self.station_geometry(),
+            boxes=boxes,
+            box_projection=box_projection[0] if box_projection else None,
             png=_pixmap_png(pixmap) if want_png else None,
         )
 
@@ -453,6 +525,15 @@ def _pixmap_png(pixmap: Any) -> bytes:
     return bytes(buffer.data())
 
 
+def save_ui_screenshots(view: Any, window: Any, directory: Path) -> None:
+    """Save a full hosted window and the waveform canvas it contains."""
+    directory.mkdir(parents=True, exist_ok=True)
+    window.show()
+    qw.QApplication.processEvents()
+    view.savesvg(str(directory / "qt-waveforms.png"))
+    (directory / "qt-full.png").write_bytes(_pixmap_png(window.grab()))
+
+
 def run(scenario: Scenario, files: CorpusFiles, want_png: bool = False) -> QtSnapshot:
     """Snapshot one scenario through a freshly built viewer.
 
@@ -461,6 +542,7 @@ def run(scenario: Scenario, files: CorpusFiles, want_png: bool = False) -> QtSna
     into the next one's numbers.
     """
     viewer = QtViewer([files.waveforms])
+    host = None
     try:
         # In the order the scenario lists them, exactly as a user would load them.
         for extra in scenario.load:
@@ -473,6 +555,14 @@ def run(scenario: Scenario, files: CorpusFiles, want_png: bool = False) -> QtSna
                     viewer.load_responses(response)
         viewer.apply(scenario.state)
         tmin, tmax = scenario.window(viewer.pile.tmin, viewer.pile.tmax)
-        return viewer.snapshot(tmin, tmax, want_png=want_png)
+        snapshot = viewer.snapshot(tmin, tmax, want_png=want_png)
+        if want_png:
+            host = host_window(viewer.frame, viewer.frame.controls())
+            host.show()
+            qw.QApplication.processEvents()
+            snapshot.full_png = _pixmap_png(host.grab())
+        return snapshot
     finally:
+        if host is not None:
+            host.close()
         viewer.close()

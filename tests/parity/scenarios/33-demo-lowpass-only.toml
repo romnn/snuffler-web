@@ -7,5 +7,4 @@ tiers = [1]
 lowpass = 1.0
 
 [compare]
-expect_divergence = ["filter-demean-not-suppressed"]
-reason = "whether a filter stage removes a mean of its own when Demean is off"
+reason = "a filter stage must not remove a mean of its own when Demean is off"

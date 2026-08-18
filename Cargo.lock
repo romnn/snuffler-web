@@ -3415,6 +3415,9 @@ dependencies = [
  "ecolor",
  "emath",
  "png",
+ "prost",
+ "rayon",
+ "resvg",
  "snuffler-web-core",
 ]
 

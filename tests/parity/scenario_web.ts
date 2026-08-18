@@ -13,14 +13,20 @@
 //   bun tests/parity/scenario_web.ts --plan <plan.json> --out <snapshots.json>
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
 
+import {
+  BASE_URL,
+  BOOT_TIMEOUT_MS,
+  launchParityBrowser,
+  reportParityRenderer,
+  saveWebScreenshots,
+  waitForAppReady,
+} from "./parity_browser";
 import { pressKey } from "./parity_keys";
 
-const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
-const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
-const BOOT_TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 const OVERLAY = "#snuffler-a11y";
 
 interface PlanStep {
@@ -70,7 +76,7 @@ async function boot(page: Page): Promise<void> {
     .getByText("Importing pyrocko...")
     .first()
     .waitFor({ state: "hidden", timeout: BOOT_TIMEOUT_MS });
-  await page.waitForTimeout(2500);
+  await waitForAppReady(page);
 }
 
 async function openMenu(page: Page, menu: string): Promise<void> {
@@ -99,13 +105,9 @@ async function closeMenu(page: Page, menu: string, probeItem: string): Promise<v
 /// longer offers it: the app opens on a real recording now, and the synthetic pile is
 /// kept reachable for exactly this comparison.
 async function loadExample(page: Page): Promise<void> {
-  // The status line, not a sleep: the demo is requested before the worker boots, so
-  // how long it takes to arrive depends on the machine rather than on a constant.
-  await page
-    .getByText(/Ready · \d+ traces/)
-    .first()
-    .waitFor({ state: "visible", timeout: BOOT_TIMEOUT_MS });
-  await page.waitForTimeout(500);
+  // The demo is requested before the worker boots, so wait for the application
+  // lifecycle rather than visible wording or a machine-dependent delay.
+  await waitForAppReady(page);
 }
 
 /// Read one control-strip field back the way it is displayed.
@@ -180,12 +182,17 @@ async function applyStep(page: Page, step: PlanStep): Promise<void> {
     // that point, which is why the diff compares what the marker is, not where it is.
     const top = 34;
     const bottom = 210;
-    await page.locator("#the_canvas_id").dblclick({
-      position: {
-        x: (step.x ?? 0.5) * box.width,
-        y: top + (step.y ?? 0.5) * (box.height - top - bottom),
-      },
-    });
+    const position = {
+      x: (step.x ?? 0.5) * box.width,
+      y: top + (step.y ?? 0.5) * (box.height - top - bottom),
+    };
+    // The double-click *arms* picking, as Qt's does: a floating pick follows the
+    // cursor and the next press-release commits it. The pause between the two
+    // keeps the commit click outside egui's double-click window, where it would
+    // otherwise read as a triple click.
+    await page.locator("#the_canvas_id").dblclick({ position });
+    await page.waitForTimeout(600);
+    await page.locator("#the_canvas_id").click({ position });
     await page.waitForTimeout(900);
     return;
   }
@@ -230,7 +237,7 @@ async function readControls(page: Page): Promise<Record<string, number | null>> 
   };
 }
 
-/// The marker table, which the app publishes in full once the Marker editor is open.
+/// The marker table, which the app publishes in full once the Markers panel is open.
 ///
 /// Rows are a flat run of grid cells, so they are split on the type symbol each row
 /// starts with: ● for a plain marker, ▲ for an event marker. Selection is read off
@@ -259,16 +266,19 @@ async function readMarkers(page: Page): Promise<{ rows: MarkerRow[]; selected: n
     if (symbol !== "●" && symbol !== "▲") continue;
     const cell = (offset: number): string => cells[i + offset]?.text ?? "";
     const polarity = cell(4);
+    const nslcs = cell(7);
     rows.push({
-      kind: Number(cell(5)) || 0,
-      nslc: cell(6) === "—" ? [] : [cell(6)],
+      kind: Number(cell(6)) || 0,
+      nslc: nslcs === "" || nslcs === "—" ? [] : nslcs.split("|"),
       phase: cell(3) === "—" ? "" : cell(3),
       polarity: polarity === "—" ? null : Number(polarity),
       selected: cells[i]?.selected === "true",
       time: cell(1),
     });
-    // A row is fourteen grid cells wide; step past it rather than rescanning it.
-    i += 13;
+    // A row is sixteen grid cells wide (symbol, time, span, label, pol, unc,
+    // kind, NSLCs, dist, Kagan, mag, depth, lat, lon, hash, actions); step past
+    // it rather than rescanning it.
+    i += 15;
   }
 
   const flagged = rows.filter((row) => row.selected).length;
@@ -302,23 +312,29 @@ async function main(): Promise<void> {
   };
   const planPath = argOf("--plan");
   const outPath = argOf("--out");
+  const screenshotsPath = argOf("--screenshots");
   if (!planPath) throw new Error("--plan is required");
   const plans = JSON.parse(readFileSync(planPath, "utf8")) as Plan[];
 
-  const browser = await chromium.launch({ headless: HEADLESS });
+  const browser = await launchParityBrowser();
   const page = await browser.newPage();
   await page.setViewportSize({ width: 1600, height: 1000 });
   const result: Record<string, Snapshot[]> = {};
+  let rendererReported = false;
   try {
     for (const plan of plans) {
       await boot(page);
+      if (!rendererReported) {
+        await reportParityRenderer(page);
+        rendererReported = true;
+      }
       await loadExample(page);
       // The marker table is where marker state is readable, so it stays open for the
       // whole run rather than being toggled around each snapshot.
-      await openMenu(page, "View");
-      await page.getByRole("checkbox", { name: "Marker editor", exact: true }).first().click();
+      await openMenu(page, "Snufflings");
+      await page.getByRole("checkbox", { name: "Markers", exact: true }).first().click();
       await page.waitForTimeout(600);
-      await closeMenu(page, "View", "Marker editor");
+      await closeMenu(page, "Snufflings", "Markers");
 
       const snapshots = [await snapshot(page, "start", plan.watchMenus)];
       for (const step of plan.steps) {
@@ -326,6 +342,9 @@ async function main(): Promise<void> {
         snapshots.push(await snapshot(page, step.label, plan.watchMenus));
       }
       result[plan.name] = snapshots;
+      if (screenshotsPath) {
+        await saveWebScreenshots(page, join(screenshotsPath, plan.name));
+      }
     }
   } finally {
     await browser.close();

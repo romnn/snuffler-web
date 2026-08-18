@@ -17,13 +17,18 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
 
+import {
+  BASE_URL,
+  BOOT_TIMEOUT_MS,
+  launchParityBrowser,
+  reportParityRenderer,
+  saveWebScreenshots,
+  waitForAppReady,
+} from "./parity_browser";
 import { pressKey } from "./parity_keys";
 
-const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
-const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
-const BOOT_TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 const OVERLAY = "#snuffler-a11y";
 
 // The menu bar, in the order the app lays it out.
@@ -96,7 +101,7 @@ async function boot(page: Page, mode: "debug" | "pointer" = "debug"): Promise<vo
     .getByText("Importing pyrocko...")
     .first()
     .waitFor({ state: "hidden", timeout: BOOT_TIMEOUT_MS });
-  await page.waitForTimeout(2500);
+  await waitForAppReady(page);
 }
 
 /// Every named node currently projected into the DOM.
@@ -113,13 +118,23 @@ function readOverlay(): Node[] {
     const raw = el.getAttribute(attr);
     return raw === null ? null : Number(raw);
   };
-  const nameOf = (el: Element): string => {
-    const direct = el.getAttribute("aria-label");
-    if (direct) return direct.trim();
+  const labelledBy = (el: Element): string => {
     const via = el.getAttribute("aria-labelledby");
     if (!via) return "";
     const label = document.getElementById(via);
     return (label?.getAttribute("aria-label") ?? label?.textContent ?? "").trim();
+  };
+  const nameOf = (el: Element): string => {
+    // A combo box's own aria-label is its *selected value* (egui labels the
+    // widget with its text), so the caption it borrows through labelledby is
+    // the name — "Colormap", not whichever entry happens to be chosen.
+    if (el.getAttribute("role") === "combobox") {
+      const caption = labelledBy(el);
+      if (caption) return caption;
+    }
+    const direct = el.getAttribute("aria-label");
+    if (direct) return direct.trim();
+    return labelledBy(el);
   };
   return [...root.querySelectorAll("[data-ak]")]
     .map((el) => ({
@@ -320,10 +335,12 @@ async function collectHelp(
 
 /// Keys whose effect this probe deliberately does not trigger.
 ///
-/// `q` closes the viewer and ends the run; `r` and `R` re-read files and re-import the
-/// Python bridge, which is slow and leaves the page in a state later probes would have
-/// to recover from. All three are covered by the documented table instead.
-const UNPROBED_KEYS = new Set(["q", "r", "R"]);
+/// `Ctrl+P` belongs to the browser, and Qt's `q`/`x` pair closes its viewer while a
+/// page must not close its host tab.
+/// `r` and `R` re-read files and re-import the Python bridge, which is slow and leaves
+/// the page in a state later probes would have to recover from.
+/// These deliberate differences are enforced through the parity register instead.
+const UNPROBED_KEYS = new Set(["<ctrl> + p", "q", "r", "R", "x"]);
 
 /// A fingerprint of everything the app currently publishes about itself.
 ///
@@ -345,6 +362,37 @@ function overlaySignature(): string {
     .join("\n");
 }
 
+/// Wait for the accessibility projection to stop changing between animation frames.
+///
+/// A key is credited only for a settled before/after difference, so an unrelated
+/// asynchronous rebuild cannot turn an intentionally unbound key into a false match.
+async function settledOverlaySignature(page: Page): Promise<string> {
+  let previous = await page.evaluate(overlaySignature);
+  let consecutiveMatches = 0;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await page.waitForTimeout(100);
+    const current = await page.evaluate(overlaySignature);
+    if (current === previous) {
+      consecutiveMatches += 1;
+      if (consecutiveMatches === 2) return current;
+    } else {
+      consecutiveMatches = 0;
+      previous = current;
+    }
+  }
+  throw new Error("the accessibility overlay did not settle within two seconds");
+}
+
+/// Focus a proxy and press Enter, sidestepping playwright's hit-target
+/// stability wait: under machine load the overlay rebuilds faster than a
+/// pointer click can prove the element still, and the keyboard path needs only
+/// presence — the same reason `toggleMenu` is keyboard-driven.
+async function pressProxy(page: Page, selector: string): Promise<void> {
+  await page.$eval(selector, (el) => (el as HTMLElement).focus());
+  await page.waitForTimeout(120);
+  await page.keyboard.press("Enter");
+}
+
 /// Which keys the app answers to, asked by pressing them.
 ///
 /// The mirror of the Qt side, which asks its widget the same question through its own
@@ -361,23 +409,18 @@ function overlaySignature(): string {
 /// probe measuring the keys and not the picking path, which tier 3 covers.
 async function probeSetup(page: Page): Promise<void> {
   // The synthetic pile arrives with the page (`?demo=1`); the File menu no longer
-  // offers it, because the app opens on a real recording. Wait on the status line
-  // rather than a constant — the load is queued before the worker boots, so how long
-  // it takes is a property of the machine.
-  await page
-    .getByText(/Ready · \d+ traces/)
-    .first()
-    .waitFor({ state: "visible", timeout: BOOT_TIMEOUT_MS });
-  await page.waitForTimeout(500);
-  await page.getByRole("button", { name: "View", exact: true }).first().click();
+  // offers it, because the app opens on a real recording. Readiness comes from the
+  // application lifecycle rather than the visible status wording.
+  await waitForAppReady(page);
+  await pressProxy(page, `${OVERLAY} [aria-label="Snufflings"]`);
   await page.waitForTimeout(400);
-  await page.getByRole("checkbox", { name: "Marker editor", exact: true }).first().click();
+  await pressProxy(page, `${OVERLAY} [role=checkbox][aria-label="Markers"]`);
   await page.waitForTimeout(600);
-  await page.getByRole("button", { name: "View", exact: true }).first().click();
+  await pressProxy(page, `${OVERLAY} [aria-label="Snufflings"]`);
   await page.waitForTimeout(400);
-  await page.locator("#the_canvas_id").dblclick({ position: { x: 800, y: 400 } });
+  await page.locator("#the_canvas_id").dblclick({ position: { x: 800, y: 400 }, force: true });
   await page.waitForTimeout(900);
-  await page.locator("#the_canvas_id").click({ position: { x: 1200, y: 200 } });
+  await page.locator("#the_canvas_id").click({ position: { x: 1200, y: 200 }, force: true });
   await page.keyboard.press("Shift+A");
   await page.waitForTimeout(500);
 }
@@ -394,21 +437,24 @@ async function restoreBaseline(page: Page): Promise<boolean> {
       await page.waitForTimeout(200);
     }
     if (!(await page.$(`${OVERLAY} [role=dialog][aria-label="Markers"]`))) {
-      await page.getByRole("button", { name: "View", exact: true }).first().click();
+      await pressProxy(page, `${OVERLAY} [aria-label="Snufflings"]`);
       await page.waitForTimeout(300);
-      await page.getByRole("checkbox", { name: "Marker editor", exact: true }).first().click();
+      await pressProxy(page, `${OVERLAY} [role=checkbox][aria-label="Markers"]`);
       await page.waitForTimeout(400);
-      await page.getByRole("button", { name: "View", exact: true }).first().click();
+      await pressProxy(page, `${OVERLAY} [aria-label="Snufflings"]`);
       await page.waitForTimeout(300);
     }
     const clear = await page.$(`${OVERLAY} [aria-label="Clear all"]`);
     if (clear) {
       await clear.click({ timeout: 2000 });
+      const confirm = page.locator(`${OVERLAY} [aria-label="Really clear all?"]`).first();
+      await confirm.waitFor({ state: "attached", timeout: 2000 });
+      await confirm.click({ timeout: 2000 });
       await page.waitForTimeout(400);
     }
-    await page.locator("#the_canvas_id").dblclick({ position: { x: 800, y: 400 } });
+    await page.locator("#the_canvas_id").dblclick({ position: { x: 800, y: 400 }, force: true });
     await page.waitForTimeout(700);
-    await page.locator("#the_canvas_id").click({ position: { x: 1200, y: 200 } });
+    await page.locator("#the_canvas_id").click({ position: { x: 1200, y: 200 }, force: true });
     await page.keyboard.press("Shift+A");
     await page.waitForTimeout(400);
     return true;
@@ -419,7 +465,7 @@ async function restoreBaseline(page: Page): Promise<boolean> {
 
 async function probeKeys(page: Page, tokens: string[]): Promise<Record<string, string>> {
   await probeSetup(page);
-  let baseline = await page.evaluate(overlaySignature);
+  let baseline = await settledOverlaySignature(page);
 
   const out: Record<string, string> = {};
   for (const token of tokens) {
@@ -429,12 +475,12 @@ async function probeKeys(page: Page, tokens: string[]): Promise<Record<string, s
     }
     // A pointer click on the canvas is what hands the app back its shortcuts after
     // anything else has had focus; see scenario_web.ts.
-    await page.locator("#the_canvas_id").click({ position: { x: 1200, y: 200 } });
+    await page.locator("#the_canvas_id").click({ position: { x: 1200, y: 200 }, force: true });
     await page.waitForTimeout(200);
-    const before = await page.evaluate(overlaySignature);
+    const before = await settledOverlaySignature(page);
     await pressKey(page.keyboard, token);
     await page.waitForTimeout(450);
-    const after = await page.evaluate(overlaySignature);
+    const after = await settledOverlaySignature(page);
     out[token] = before === after ? "inert" : "changed";
 
     // Every key is measured from the same starting state, or the answer depends on
@@ -442,10 +488,10 @@ async function probeKeys(page: Page, tokens: string[]): Promise<Record<string, s
     // the next key needed is gone.
     if (before !== after) {
       const restored = await restoreBaseline(page);
-      if (!restored || (await page.evaluate(overlaySignature)) !== baseline) {
+      if (!restored || (await settledOverlaySignature(page)) !== baseline) {
         await boot(page, "pointer");
         await probeSetup(page);
-        baseline = await page.evaluate(overlaySignature);
+        baseline = await settledOverlaySignature(page);
       }
     }
   }
@@ -455,19 +501,23 @@ async function probeKeys(page: Page, tokens: string[]): Promise<Record<string, s
 async function main(): Promise<void> {
   const outIndex = process.argv.indexOf("--out");
   const outPath = outIndex >= 0 ? process.argv[outIndex + 1] : undefined;
+  const screenshotsIndex = process.argv.indexOf("--screenshots");
+  const screenshotsPath = screenshotsIndex >= 0 ? process.argv[screenshotsIndex + 1] : undefined;
   const probeIndex = process.argv.indexOf("--probe-keys");
   // The tokens to press, handed in by run_inventory.py: whatever Qt turned out to
   // bind, so the probe asks about exactly the keys the diff is about to ask about.
   const probeTokens: string[] =
     probeIndex >= 0 ? JSON.parse(readFileSync(process.argv[probeIndex + 1]!, "utf8")) : [];
 
-  const browser = await chromium.launch({ headless: HEADLESS });
+  const browser = await launchParityBrowser();
   const page = await browser.newPage();
   await page.setViewportSize({ width: 1600, height: 1000 });
   await installTreeAccumulator(page);
   try {
     await boot(page);
+    await reportParityRenderer(page);
     const base = await snapshot(page);
+    if (screenshotsPath) await saveWebScreenshots(page, screenshotsPath);
     const menus = await collectMenus(page, base.nodes);
     const controls = await collectControls(page, base.nodes);
     const help = await collectHelp(page);

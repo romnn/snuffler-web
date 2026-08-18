@@ -19,8 +19,12 @@ import harness  # isort: skip
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import traceback
+from pathlib import Path
 from typing import Any, Dict, List
 
 import compare
@@ -33,6 +37,7 @@ from harness import DIM, GREEN, RED, RESET, YELLOW
 from scenario import DATASETS, CorpusFiles, Scenario, load_all
 
 ARTIFACTS = harness.ARTIFACTS
+SCREENSHOTS = ARTIFACTS / "screenshots" / "tier1"
 
 # The one function pair with a written-down contract gets a property grid rather
 # than a scenario; it runs under this name so it can be selected like one.
@@ -85,7 +90,10 @@ def run_grid() -> bool:
 
 
 def run_scenario(
-    scenario: Scenario, register: gaps.Register, want_png: bool
+    scenario: Scenario,
+    register: gaps.Register,
+    want_png: bool,
+    render_inputs: Path | None,
 ) -> tuple[qt_oracle.QtSnapshot, List[compare.Finding], List[str], List[str]]:
     """One scenario through both oracles; returns (qt, findings, problems, defects)."""
     files = corpus_for(scenario)
@@ -93,8 +101,22 @@ def run_scenario(
     web_run = web_oracle.run(scenario, files)
     findings = compare.compare_all(qt, web_run, scenario)
     problems, defects_hit = gaps.evaluate(scenario.compare.expect_divergence, findings, register)
+    screenshot_dir = SCREENSHOTS / scenario.name
     if qt.png:
-        (ARTIFACTS / f"{scenario.name}.qt.png").write_bytes(qt.png)
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        (screenshot_dir / "qt-waveforms.png").write_bytes(qt.png)
+    if qt.full_png:
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        (screenshot_dir / "qt-full.png").write_bytes(qt.full_png)
+    if render_inputs is not None:
+        target = render_inputs / scenario.name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "params.pb").write_bytes(web_run.request.SerializeToString())
+        (target / "view.pb").write_bytes(web_run.first.meta.SerializeToString())
+        ys = web_run.first.raw_ys
+        if ys is None:
+            raise RuntimeError(f"{scenario.name}: web snapshot has no waveform payload")
+        (target / "ys.f32").write_bytes(ys.astype("<f4", copy=False).tobytes())
     return qt, findings, problems, defects_hit
 
 
@@ -119,6 +141,10 @@ def run(args: argparse.Namespace) -> int:
     failed: List[str] = []
     defects: Dict[str, List[str]] = {}
     total = len(scenarios)
+    render_inputs = (
+        Path(tempfile.mkdtemp(prefix="tier1-render-", dir=ARTIFACTS)) if args.png else None
+    )
+    rendered: List[str] = []
 
     if want_grid:
         total += 1
@@ -129,13 +155,16 @@ def run(args: argparse.Namespace) -> int:
         # One scenario crashing (a pyrocko pin bump renaming a menu item, a corpus
         # dataset misloading) must not take the rest of the evidence with it.
         try:
-            qt, findings, problems, defects_hit = run_scenario(scenario, register, args.png)
+            qt, findings, problems, defects_hit = run_scenario(
+                scenario, register, args.png, render_inputs
+            )
         except Exception:
             print(f"{RED}FAIL{RESET} {scenario.name:<34} the harness itself failed:")
             print("       " + traceback.format_exc().replace("\n", "\n       ").rstrip())
             failed.append(scenario.name)
             report.append({"scenario": scenario.name, "error": traceback.format_exc()})
             continue
+        rendered.append(scenario.name)
 
         for key in defects_hit:
             defects.setdefault(key, []).append(scenario.name)
@@ -187,6 +216,23 @@ def run(args: argparse.Namespace) -> int:
                 ],
             }
         )
+
+    if render_inputs is not None:
+        try:
+            subprocess.run(
+                [
+                    "task",
+                    "render:parity:tier1",
+                    "--",
+                    str(render_inputs),
+                    str(SCREENSHOTS),
+                    *rendered,
+                ],
+                check=True,
+                cwd=harness.ROOT,
+            )
+        finally:
+            shutil.rmtree(render_inputs)
 
     (ARTIFACTS / "tier1.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     print()
