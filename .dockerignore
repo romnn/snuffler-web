@@ -1,0 +1,55 @@
+# What the images build from is a curated subset of the tree — each Dockerfile
+# COPYs explicit paths — so this list is about the *cache*, not correctness:
+# anything reaching the daemon becomes part of a COPY's cache key, and a build
+# artifact that churns every time would invalidate layers no source change did.
+#
+# docker/pyodide-mt/served/ is deliberately NOT excluded: the ~70 MB threaded
+# Pyodide 314 runtime is a build INPUT the web image ships verbatim, prepared on
+# the host by `mise run fetch-pyodide` (or built by build-all.sh).
+
+.git
+.github
+.claude
+.agents
+**/.DS_Store
+
+# Build outputs. The images produce their own.
+target
+dist
+dist-py
+node_modules
+web/gen
+web/proto
+
+# Tool caches and scratch trees.
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.lycheecache
+scratchpad
+tests/parity/.artifacts
+tests/parity/corpus/data
+docker/pyodide-mt/.work
+docker/pyodide-mt/out
+docker/pyodide-pthread
+
+# Nothing here is an input to the web or proxy image: the Pyodide *builder*
+# (as against its output in served/), the Qt frontend's own image context, the
+# test suites, and the prose.
+docker/pyodide-mt/browser-test
+docker/pyodide-mt/patches
+docker/pyodide-mt/pyrocko
+qt
+tests
+plan
+typings
+snuffler-initial.png
+
+# The pyrocko checkout is 80 MB of source the image needs exactly two things
+# from — the cake earthmodels and the map's plate boundaries, both staged by
+# crates/snuffler-web-egui/index.html. Ship those two, leave the clone (and its
+# 26 MB of git objects) out of the context entirely.
+sources/**
+!sources/pyrocko/src/data/earthmodels/**
+!sources/pyrocko/src/gui/snuffler/snufflings/map/plates.kml

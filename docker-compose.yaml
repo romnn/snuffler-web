@@ -1,0 +1,63 @@
+# The local stack in containers: the site on 17683 and the proxy on 17684 — the
+# same two ports micromux uses, so a browser pointed at http://127.0.0.1:17683
+# behaves exactly as it does against `mise run serve`.
+#
+# The ports are not cosmetic. web/bridge.py only routes FDSN requests through the
+# proxy when the page itself is on a localhost origin, and both it and
+# snuffler-web-core hardcode 127.0.0.1:17684 as the proxy — which the BROWSER
+# resolves, not the web container. So the proxy has to be published on the host's
+# 17684 for /cors and /seedlink to be reachable at all; the two containers never
+# talk to each other.
+#
+#   docker compose up --build        # build both images from this checkout
+#   docker compose up                # run the published images
+#   docker compose --profile qt up   # the original PyQt5 snuffler over noVNC
+
+services:
+  web:
+    image: ghcr.io/romnn/snuffler-web/web:latest
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    ports:
+      - "127.0.0.1:17683:8080"
+    read_only: true
+    # nginx.conf keeps the pid and every temp path under /tmp precisely so the
+    # rest of the filesystem can be mounted read-only.
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  proxy:
+    image: ghcr.io/romnn/snuffler-web/proxy:latest
+    build:
+      context: .
+      dockerfile: docker/proxy/Dockerfile
+    ports:
+      - "127.0.0.1:17684:17684"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # The proxy is allowlisted, not open: /cors forwards only to the FDSN query
+    # endpoints the app knows and /seedlink only to known SeedLink hosts. A
+    # deployment that needs more adds exact targets here.
+    # environment:
+    #   SNUFFLER_PROXY_ALLOW_HTTP_TARGETS: "https://example.org/fdsnws/dataselect/1/query"
+    #   SNUFFLER_PROXY_ALLOW_TCP_TARGETS: "geofon.gfz.de:18000"
+
+  # The other frontend: the real, unmodified PyQt5 snuffler rendered headless and
+  # streamed over noVNC (see qt/README.md). Independent of the web app — its own
+  # image, its own port — so it only starts when asked for.
+  qt:
+    image: ghcr.io/romnn/snuffler-web/qt:latest
+    profiles: ["qt"]
+    build:
+      context: qt
+    ports:
+      - "127.0.0.1:6080:8080"
+    restart: unless-stopped

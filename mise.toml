@@ -156,6 +156,28 @@ env.SNUFFLER_EMBED_DATA = "0"
 env.NO_COLOR = "true"
 run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features svg-raster,gf,threads"
 
+# The site and the proxy as container images. The wasm app is built INSIDE the
+# web image; the Pyodide runtime is NOT — it is read from
+# docker/pyodide-mt/served, which fetch-pyodide (or build-all.sh) produces, so
+# that a 70 MB prebuilt artifact never becomes an input to a wasm compile.
+# See docker/web/Dockerfile and docker-compose.yaml.
+[tasks.docker-build]
+description = "Build the snuffler-web (nginx) and snuffler-proxy container images"
+depends = ["fetch-pyrocko"]
+run = """
+set -eu
+[ -d docker/pyodide-mt/served ] || {
+  echo "docker/pyodide-mt/served is missing - run 'mise run fetch-pyodide' first" >&2
+  exit 1
+}
+docker build -f docker/web/Dockerfile -t snuffler-web .
+docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
+"""
+
+[tasks.docker-serve]
+description = "Run the containerized stack -> http://127.0.0.1:17683 (proxy on 17684)"
+run = "docker compose up"
+
 # --- Qt frontend track: the ORIGINAL PyQt5 snuffler, streamed to the browser ---
 # Fully independent of the egui frontend (own Docker image + port). Needs Docker.
 # See qt/README.md and plan/qt-frontend-feasibility.md.

@@ -93,6 +93,76 @@ the threaded `py-mt/` runtime (pthread + OpenMP + SIMD, reachable via `?threads=
 stock 314.0.0 CDN fallback — differing only in multithreading + SIMD. No host
 emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
 
+## Docker
+
+Every service in this repo ships as a container image, built and published to the
+GitHub Container Registry on each push to `main` and each tag
+(`.github/workflows/docker.yaml`):
+
+| Image | What |
+|---|---|
+| `ghcr.io/romnn/snuffler-web/web` | the site — egui wasm frontend, Pyodide 314 runtime, example bundles — behind an unprivileged nginx on `:8080` |
+| `ghcr.io/romnn/snuffler-web/proxy` | `snuffler-web-proxy` on `:17684`: the allowlisted `/cors` and `/seedlink` endpoints |
+| `ghcr.io/romnn/snuffler-web/qt` | the original PyQt5 snuffler over noVNC on `:8080` (see [`qt/`](qt/)) |
+
+`latest`, `X.Y.Z` and `X.Y` follow the newest release tag; `edge` and `main`
+follow the default branch; every build is additionally tagged `sha-<commit>`.
+`web` and `proxy` are published for `linux/amd64` and `linux/arm64`.
+
+```sh
+docker compose up            # site on http://127.0.0.1:17683, proxy on :17684
+docker compose up --build    # build both from this checkout instead
+```
+
+The proxy is published on the **host's** 17684 for a reason: the app resolves it
+in the browser — `web/bridge.py` and `snuffler-web-core` both name
+`127.0.0.1:17684`, and only route through it when the page is on a localhost
+origin — so the two containers never talk to each other.
+
+### Building them
+
+The wasm frontend is built inside the image. The two heavy inputs are not, and
+must be on disk first — the same two commands a local checkout runs:
+
+```sh
+mise run fetch-pyrocko    # sources/pyrocko: two data files end up in the site
+mise run fetch-pyodide    # docker/pyodide-mt/served: the ~70 MB Pyodide runtime
+docker build -f docker/web/Dockerfile   -t snuffler-web   .
+docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
+```
+
+`mise run docker-build` does the same, fetching pyrocko for you; it checks for
+the Pyodide runtime rather than re-downloading it, so a locally *built* one is
+left alone. `mise run docker-serve` is `docker compose up`.
+
+Both Dockerfiles are laid out for cache reuse: `cargo-chef` compiles the
+dependency graph (including the `-Z build-std` std rebuild) in a layer keyed only
+on `Cargo.toml`/`Cargo.lock`, the mise toolchain and the JS dependencies get
+layers of their own, and the Pyodide runtime never enters the compile stages at
+all — so changing the runtime re-runs a copy, not a wasm build.
+
+The web image's compile stages are pinned to `linux/amd64` for both output
+architectures — what they emit is architecture-independent, and `mise.lock` pins
+the toolchain for `linux-x64` only (aqua has no `linux/arm64` binaryen at all).
+On an amd64 host, and on GitHub's runners, nothing is emulated; on an arm64 host
+those stages run under emulation and are slow.
+
+### What the web image does that a plain static host does not
+
+- Sets `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`, so the
+  page is cross-origin isolated from the first byte and `coi-serviceworker.js`
+  finds nothing left to do — unlike GitHub Pages, which cannot set headers.
+- Serves brotli and gzip copies compressed once at build time (`brotli -q 11`)
+  through `brotli_static`/`gzip_static`, and keeps a copy only where it actually
+  saves something — see [`docker/web/precompress.sh`](docker/web/precompress.sh).
+- Gives `.mjs` a `text/javascript` type, without which the browser refuses
+  Pyodide's loader outright.
+- Caches the content-hashed assets immutably and everything else with
+  `no-cache`, which is "revalidate", not "do not store": most of the site keeps a
+  stable url while its bytes change per build.
+- Runs as uid 101 on port 8080 with a read-only root filesystem — nothing outside
+  `/tmp` is written.
+
 ## Layout
 
 | Path | What |
@@ -108,6 +178,9 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
 | `crates/snuffler-web-proto/` | generated Rust protobuf crate |
 | `pybuild/` | `setup.py` (the pyrocko wheel build def, used by `docker/pyodide-mt`) + `fetch-pyrocko.sh` + `protoc-gen-mypy` |
 | `docker/pyodide-mt/` | the custom Pyodide 314 build (runtime + both wheels): `build-all.sh` |
+| `docker/web/` | the site image: Trunk build + unprivileged nginx, with its config and the build-time compressor |
+| `docker/proxy/` | the `snuffler-web-proxy` image |
+| `docker-compose.yaml` | both of the above on the ports micromux uses locally |
 | `dist-py/` | single-threaded CDN pyrocko wheel + `wheels.json` (served at `/py/`); gitignored, built by `build-all.sh` |
 | `sources/pyrocko/` | upstream pyrocko — **fetched on demand at a pinned commit, gitignored (not vendored)** |
 
