@@ -462,7 +462,7 @@ pub fn show(
             ui.separator();
             ui.checkbox(&mut state.wf_reverse, "Reverse");
             // Symmetry is a live constraint on the clip pair, exactly snuffler's
-            // (`set_symetry`, gui/util.py:817): switching it on snaps the band
+            // (`set_symetry`, gui/util.py:817): switching it on snaps the band // spellcheck:ignore-line
             // symmetric around 0.5 by the tighter side.
             if ui.checkbox(&mut state.wf_symmetry, "Symmetry").changed() && state.wf_symmetry {
                 let clip_max = 1.0 - state.wf_clip.0.min(1.0 - state.wf_clip.1);

@@ -8,6 +8,7 @@
 # dataset. Only the data is excluded; the prose beside it (example.toml, fetch.py,
 # README.md) is ours to spell correctly.
 [files]
+ignore-files = true
 extend-exclude = [
   "web/assets/models/*.onnx",
   "examples/*/meta/",
@@ -15,8 +16,23 @@ extend-exclude = [
   "examples/*/catalog.yaml",
 ]
 
-# numpy's np.arange is not a misspelling of "arrange".
+[default]
+extend-ignore-re = [
+  # "spellcheck:ignore-line" ignores the current line
+  "(?Rm)^.*(#|//|--|<!--|/\\*)\\s*spellcheck:ignore-line(\\s*(-->|\\*/\\}?))?\\s*$",
+
+  # "spellcheck:ignore-next-line" ignores the next line
+  "(?Rm)^.*(#|//|--|<!--|/\\*)\\s*spellcheck:ignore-next-line.*?\\n.*?$",
+
+  # "spellcheck:ignore-block" ignores all text in the following block (until the first empty line)
+  "(?s)(#|//|--|<!--|/\\*)\\s*spellcheck:ignore-block(.*?)(?:(?:\\r*\\n){2})",
+
+  # ignores any text within "spellcheck:ignore-start" and "spellcheck:ignore-end"
+  "(?s)(#|//|--|<!--|/\\*)\\s*spellcheck:ignore-start.*?\\n.*?(#|//|--|<!--|/\\*)\\s*spellcheck:ignore-end",
+]
+
 [default.extend-words]
+# numpy's np.arange is not a misspelling of "arrange".
 arange = "arange"
 # `.nd` is pyrocko's named-discontinuity earth-model file extension, not "and".
 nd = "nd"
@@ -24,8 +40,12 @@ nd = "nd"
 Pn = "Pn"
 # "NED" is the north-east-down coordinate convention moment tensors use, not "need".
 NED = "NED"
-# "Symetric" is upstream pyrocko's own spelling, in the tooltip of the waterfall
-# colorbar's symmetry toggle (`gui/util.py` ColorbarControl). The parity harness
-# matches that tooltip verbatim to pair it with the web port's "Symmetry", so
-# correcting it here would break the match rather than fix anything.
-Symetric = "Symetric"
+# `iy` is the y-axis loop index beside `ny` (scale-tick rows in paint.rs), the
+# usual partner of an `ix`.
+#
+# Upstream's own misspellings — the `Symetric` menu label, the `set_symetry`
+# method — are *not* listed here. They really are misspelled, and an entry would
+# stop the checker seeing that spelling anywhere in the repo, including where
+# someone meant to write it correctly; each is silenced at the line that quotes
+# it with `spellcheck:ignore-line` instead.
+iy = "iy"

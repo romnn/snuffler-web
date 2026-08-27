@@ -270,7 +270,7 @@ def _clear_event_context() -> None:
 def _clear_dataset_metadata() -> None:
     """Drop the non-waveform context of a replaced scene. The events, station
     coordinates and instrument responses all describe the dataset going away;
-    any of them surviving into the next scene mis-sorts it (stale
+    any of them surviving into the next scene sorts it wrongly (stale
     coordinates) or deconvolves an overlapping NSLC against the wrong
     response. Only scene *replacements* come through here — an example
     bundle, the boot example giving way to the first real load, EmptyScene, a
@@ -1588,7 +1588,7 @@ def _wf_rgba(
     zero-copy ``ys`` buffer; the frontend just reinterprets and blits. Mirrors the
     former Rust normalisation exactly: clip the ``[lo, hi]`` band by
     ``clip_lo/clip_hi``, optional reverse, then LUT lookup. Symmetry is not
-    handled here: in snuffler it constrains the clip *pair* (`set_symetry`,
+    handled here: in snuffler it constrains the clip *pair* (`set_symetry`,  # spellcheck:ignore-line
     gui/util.py:817), which the frontend enforces on the sliders themselves."""
     span = max(hi - lo, 1e-6)
     band_lo = lo + clip_lo * span
@@ -1616,7 +1616,7 @@ def _colorize_waterfall(meta: view_pb2.ViewMeta, ys: np.ndarray, req: view_pb2.V
     if not clip_hi > clip_lo:
         clip_lo, clip_hi = 0.0, 1.0
     # Symmetry is a constraint the frontend applies to the clip pair (snuffler's
-    # `set_symetry`), so by the time the band arrives here it is already
+    # `set_symetry`), so by the time the band arrives here it is already  # spellcheck:ignore-line
     # symmetric when it should be; no colour-side handling remains.
     reverse = bool(req.wf_reverse)
     for t in meta.tracks:
@@ -3764,7 +3764,7 @@ def _chopper_selected_traces(
     and channel patterns become `tmin`/`tmax`/`trace_selector` — or one over
     the visible window when nothing is selected (`fallback=True` there).
 
-    The viewer contributes its `mode` selector ANDed into the marker's, the
+    The viewer contributes its `mode` selector, intersected with the marker's, the
     composition Qt builds at snuffling.py:1072: the shown track rows for
     ``'inview'`` (the default there too), the hide/quick filters for
     ``'visible'``.

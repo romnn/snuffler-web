@@ -280,7 +280,7 @@ qt = "Snufflings/Run Snuffling/Spectrogram (builtin)"
 web = "Snufflings/Spectrogram (figure)"
 
 [[alias]]
-qt = "Symetric clip values"
+qt = "Symetric clip values"  # spellcheck:ignore-line
 web = "Symmetry"
 
 [[alias]]
@@ -1401,8 +1401,8 @@ The boot pile — the synthetic demo or a checksummed example bundle — is mark
 such in the bridge, and the first load that would append to it (File ▸ Open, the
 directory open, drag-and-drop, an FDSN download) replaces it instead. The replaced
 scene's context — events, station coordinates and instrument responses — goes
-with its waveforms, because any of it surviving would mis-sort the new data or
-deconvolve an overlapping NSLC against the old dataset's response. The same rule
+with its waveforms, because any of it surviving would sort the new data wrongly
+or deconvolve an overlapping NSLC against the old dataset's response. The same rule
 covers every scene replacement: switching example bundles no longer stacks each
 bundle's stations and responses onto the last's, EmptyScene empties the metadata
 too, and a live-stream reset starts clean. From then on every open path appends,
