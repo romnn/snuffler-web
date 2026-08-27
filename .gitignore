@@ -25,6 +25,7 @@
 /.pyodide-xbuildenv-*
 /.mypy_cache
 /.ruff_cache
+**/.venv
 
 # Playwright/debug screenshots
 /snuffler-*.png
@@ -43,9 +44,8 @@ docker/pyodide-mt/.work/
 docker/pyodide-mt/out/
 docker/pyodide-mt/served/
 
-# agent scratch + local uv lock (test artifacts)
+# Agent scratch.
 scratchpad/
-uv.lock
 
 # parity harness: generated corpus (manifest.json IS checked in) and run artifacts
 /tests/parity/corpus/data

@@ -89,8 +89,7 @@ downstream re-uploads.
 1. Write an `example.toml`: `[source]` for the queries, then `title`, `blurb`,
    `characteristics`, `citation`, and a `[state]` if the dataset has a view that
    makes its point.
-2. `uv run --no-project --python 3.12 --with numpy==2.4.3 --with ./sources/pyrocko
-   python scripts/fetch-example.py <slug>`.
+2. `uv run --project qt python scripts/fetch-example.py <slug>`.
 3. **Check what you actually got**, and write the blurb from that rather than from
    what the event ought to look like. Every number in the descriptions here was
    measured off the bytes: the ratio between MAJO's two broadbands collapsing from

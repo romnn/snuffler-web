@@ -1,12 +1,25 @@
-# Qt frontend track — the original PyQt5 snuffler, in the browser
+# Qt frontend track — the original PyQt5 snuffler
 
-A **second, fully-independent** way to run snuffler in the browser, alongside the
-Rust/egui frontend. This one runs the **real, unmodified PyQt5 snuffler** — so it
-is **100% feature-complete** — by rendering it on a headless X server and streaming
-the GUI to the browser over **noVNC**.
+This directory owns the real, unmodified PyQt5 snuffler environment.
+It can run natively on the developer's desktop or in a fully independent browser
+frontend that renders on a headless X server and streams the GUI over **noVNC**.
 
-It does not touch the egui frontend: separate Docker image, separate port (8090),
-separate commands. The two coexist.
+Neither mode touches the egui frontend.
+
+## Run natively
+
+The locked Python 3.12 project uses the same pinned Pyrocko source checkout as
+the parity oracle.
+`uv run` creates and updates `qt/.venv` automatically:
+
+```sh
+task snuffler
+task snuffler -- example.mseed
+```
+
+An explicit `uv sync --project qt` is optional.
+The `parity` dependency group adds pytest and protobuf only when the oracle tests
+need them.
 
 ## Why streaming, not WebAssembly
 
@@ -16,7 +29,7 @@ for the full, sourced investigation (no official PySide6 wasm, ABI mismatches, a
 2–4 month research-grade port with a ~50–60% feature ceiling). Streaming the real
 desktop app sidesteps all of that and gives **every** snuffler feature, today.
 
-## Run
+## Run in a browser
 
 Requires Docker.
 

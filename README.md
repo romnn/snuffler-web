@@ -66,6 +66,28 @@ mise run serve                  # trunk serve → http://127.0.0.1:17683
 micromux                        # optional full local stack: proxy + trunk serve
 ```
 
+Python tooling uses the locked Python 3.14 project at the repository root.
+`uv run` creates and updates `.venv` automatically, so no activation or separate
+sync step is required:
+
+```sh
+task lint:py
+task check:py
+```
+
+The native Qt application and its parity tests use a separate locked Python 3.12
+project under `qt/`:
+
+```sh
+task snuffler                         # fetch pinned pyrocko and launch its native GUI
+uv sync --project qt                 # optional: prepare qt/.venv without launching
+task test:parity:unit
+task test:parity:bridge
+```
+
+`pybuild/pyproject.toml` remains independent because it describes the Pyodide
+wheel build rather than a host development environment.
+
 `rustup` reads `rust-toolchain.toml` and installs the pinned nightly toolchain,
 `rust-src`, and the `wasm32-unknown-unknown` target automatically on first build.
 

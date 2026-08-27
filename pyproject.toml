@@ -1,3 +1,21 @@
+[project]
+name = "snuffler-web-tooling"
+version = "0.0.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "mypy==1.18.2",
+    "numpy==2.4.3",
+    "protobuf==7.34.1",
+    "ruff==0.14.8",
+    "types-protobuf==7.34.1.20260518",
+]
+
+[dependency-groups]
+codegen = ["mypy-protobuf==5.1.0"]
+
+[tool.uv]
+package = false
+
 [tool.mypy]
 # The interpreter bridge.py actually runs on: the wasm CPython in our Pyodide
 # build (pyodide-lock's info.python), not the host that runs mypy.
@@ -63,6 +81,19 @@ ignore_missing_imports = true
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+include = [
+    "pybuild/export_seisbench_models.py",
+    "pybuild/setup.py",
+    "qt/make_demo.py",
+    "scripts/build-examples.py",
+    "scripts/fetch-example.py",
+    "tests/parity/**/*.py",
+    "tests/seisbench_validate.py",
+    "typings/**/*.pyi",
+    "web/bootstrap.py",
+    "web/bridge.py",
+    "web/seisbench_infer.py",
+]
 
 [tool.ruff.format]
 quote-style = "double"

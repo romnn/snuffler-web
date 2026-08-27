@@ -1,0 +1,23 @@
+[project]
+name = "snuffler-web-native-qt"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==2.4.3",
+    "pyqt5==5.15.10",
+    "pyrocko",
+]
+
+[dependency-groups]
+parity = [
+    "numpy==2.4.3",
+    "protobuf==7.34.1",
+    "pytest==8.4.2",
+]
+
+[tool.uv]
+package = false
+default-groups = []
+
+[tool.uv.sources]
+pyrocko = { path = "../sources/pyrocko", editable = true }

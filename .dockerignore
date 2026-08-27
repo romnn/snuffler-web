@@ -23,6 +23,7 @@ web/proto
 
 # Tool caches and scratch trees.
 **/__pycache__
+**/.venv
 .mypy_cache
 .pytest_cache
 .ruff_cache

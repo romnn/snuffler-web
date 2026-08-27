@@ -18,14 +18,15 @@
 # wasm app, node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — the
 # Rust toolchain itself is pinned by rust-toolchain.toml.
 [tools]
-# Host Python for the uvx-run tooling (ruff, mypy). 3.14 matches the wasm
+# Host Python for the root uv tooling project.
+# 3.14 matches the wasm
 # interpreter (pyodide-lock's info.python), which docker/pyodide-mt/precompile.sh
 # needs: bytecode magic numbers are fixed per minor version, so only a 3.14 host
 # can emit .pyc the browser's interpreter accepts.
 python = "3.14"
 node = "24"
 bun = "latest"           # bunx prettier (JS/markdown formatting)
-uv = "latest"           # uv + uvx; uvx runs ruff/mypy + the mypy-protobuf Buf plugin
+uv = "latest"           # Project environments for Python tooling and the native Qt oracle.
 task = "latest"          # go-task: the check:*/lint:* tasks in taskfile.yaml (CI runs them too)
 typos = "latest"
 actionlint = "latest"

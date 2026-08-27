@@ -12,8 +12,7 @@ checked-in bytes: for a dataset the parity suite measures, that drifts
 ``tests/parity/corpus/manifest.json`` and the two have to move together. Re-fetch
 to change a dataset on purpose.
 
-    uv run --no-project --python 3.12 --with numpy==2.4.3 --with ./sources/pyrocko \\
-        python scripts/fetch-example.py <slug> [--dry-run]
+    uv run --project qt python scripts/fetch-example.py <slug> [--dry-run]
 """
 
 from __future__ import annotations

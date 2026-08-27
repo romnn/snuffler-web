@@ -2,6 +2,8 @@
 set -euo pipefail
 
 # buf local plugin: generates the typed Python BridgeServicer + dispatch from the
-# BridgeService rpc set (no grpc runtime, so it imports in Pyodide). Run via uv so
-# the protobuf runtime (for the CodeGeneratorRequest) is available without a venv.
-exec uv run --no-project --with protobuf==7.34.1 python3 "$(dirname "$0")/snuffler_py_plugin.py"
+# BridgeService rpc set (no grpc runtime, so it imports in Pyodide).
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(dirname "$script_dir")"
+
+exec uv run --project "$repo_dir" --only-group codegen python3 "$script_dir/snuffler_py_plugin.py"

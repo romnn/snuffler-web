@@ -12,6 +12,13 @@ tasks:
     cmds:
       - mise run serve
 
+  snuffler:
+    desc: "run the pinned native PyQt5 snuffler"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mise run fetch-pyrocko
+      - uv run --project qt snuffler {{.CLI_ARGS}}
+
   typos:
     desc: "check repository for typos"
     aliases: [spellcheck]
@@ -39,7 +46,7 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - buf generate
-      - uvx --from mypy==1.18.2 --with protobuf==7.34.1 --with types-protobuf==7.34.1.20260518 --with numpy==2.4.3 mypy {{.CLI_ARGS}}
+      - uv run mypy {{.CLI_ARGS}}
 
   check:ts:
     desc: "typecheck the TypeScript bridge glue (incl. generated protobuf messages) and the browser test suites"
@@ -112,7 +119,7 @@ tasks:
   format:py:
     desc: "format Python bridge code"
     cmds:
-      - uvx --from ruff==0.14.8 ruff format --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py scripts/build-examples.py scripts/fetch-example.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
+      - uv run ruff format --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
 
   format:js:
     desc: "format JavaScript bridge code"
@@ -159,13 +166,13 @@ tasks:
     desc: "lint Python bridge with ruff"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - uvx --from ruff==0.14.8 ruff check --cache-dir .ruff_cache --force-exclude web/bridge.py web/bootstrap.py web/seisbench_infer.py pybuild/export_seisbench_models.py pybuild/setup.py qt/make_demo.py scripts/build-examples.py scripts/fetch-example.py tests/seisbench_validate.py tests/parity typings {{.CLI_ARGS}}
+      - uv run ruff check --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
 
   test:seisbench:
     desc: "validate exported SeisBench ONNX models against pinned seisbench"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - uv run --with seisbench==0.11.7 --with torch --with obspy --with onnxruntime --with numpy python tests/seisbench_validate.py {{.CLI_ARGS}}
+      - uv run --no-project --with seisbench==0.11.7 --with torch --with obspy --with onnxruntime --with numpy python tests/seisbench_validate.py {{.CLI_ARGS}}
 
   test:seisbench:browser:
     desc: "validate SeisBench inference in the served wasm app (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
@@ -195,12 +202,12 @@ tasks:
       # findings to the register, so its edge cases are proven before any scenario
       # relies on them. Inlined rather than chained through test:parity:unit so
       # scenario names passed as CLI_ARGS never leak into pytest.
-      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with numpy==2.4.3 python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py
+      - uv run --project qt --only-group parity python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py
       # The bridge-level snuffling tests drive web/bridge.py's snuffling entry
       # points against real pyrocko, so they need the oracle environment; also
       # inlined so scenario names in CLI_ARGS never leak into pytest.
-      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py
-      - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
+      - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py
+      - uv run --project qt --group parity python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
 
   render:parity:tier1:
     desc: "render browserless Tier 1 web waveform artifacts from oracle output"
@@ -212,7 +219,7 @@ tasks:
     desc: "unit tests for the parity harness's own enforcement (gaps.evaluate, Register.load, the reload keep-list)"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with numpy==2.4.3 python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py {{.CLI_ARGS}}
+      - uv run --project qt --only-group parity python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py {{.CLI_ARGS}}
 
   test:parity:bridge:
     desc: "bridge behaviour against real pyrocko, no browser: snuffling marker scope, aggregation, failure contracts, and the Adaptive visible length"
@@ -220,7 +227,7 @@ tasks:
     cmds:
       - mise run fetch-pyrocko
       - buf generate
-      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py {{.CLI_ARGS}}
+      - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py {{.CLI_ARGS}}
 
   test:parity:inventory:
     desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
@@ -229,7 +236,7 @@ tasks:
       QT_QPA_PLATFORM: offscreen
     cmds:
       - mise run fetch-pyrocko
-      - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_inventory.py {{.CLI_ARGS}}
+      - uv run --project qt --group parity python tests/parity/run_inventory.py {{.CLI_ARGS}}
 
   test:parity:scenarios:
     desc: "tier 3 parity: one scenario through both GUIs (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
@@ -239,7 +246,7 @@ tasks:
     cmds:
       - mise run fetch-pyrocko
       - buf generate
-      - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_scenarios.py {{.CLI_ARGS}}
+      - uv run --project qt --group parity python tests/parity/run_scenarios.py {{.CLI_ARGS}}
 
   lint:
     desc: "lint Rust (host + wasm32) and Python workspace"

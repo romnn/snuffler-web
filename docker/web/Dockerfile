@@ -141,14 +141,11 @@ RUN cargo chef cook --release --recipe-path recipe.json \
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
-# `buf generate` shells out to two uv-run plugins (pybuild/protoc-gen-mypy and
-# protoc-gen-snuffler-py), which resolve their pinned environments over the
-# network on first use. Warm uv's cache in a layer of its own so the build below
-# does not pay for it on every source edit. Both plugins read a
-# CodeGeneratorRequest from stdin, so they are fed EOF and expected to fail: the
-# point is the resolved environment they leave behind.
-RUN uvx --from mypy-protobuf==5.1.0 protoc-gen-mypy </dev/null >/dev/null 2>&1 || true
-RUN uv run --no-project --with protobuf==7.34.1 python3 -c "import google.protobuf"
+# Both local protobuf plugins use the root tooling environment.
+# Sync it before copying application sources so dependency changes, rather than
+# ordinary source edits, determine whether this layer is rebuilt.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --only-group codegen
 
 # The app's own sources, plus the data it bakes in: the SeisBench weights and the
 # example datasets under web/ and examples/, and the two pyrocko files

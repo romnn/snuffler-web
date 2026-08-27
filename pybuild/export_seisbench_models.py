@@ -1,8 +1,8 @@
 """Export curated SeisBench models to ONNX for onnxruntime-web.
 
 Run:
-  uv run --with seisbench==0.11.7 --with torch --with onnx --with onnxruntime \
-      python pybuild/export_seisbench_models.py
+  uv run --no-project --with seisbench==0.11.7 --with torch --with onnx \
+      --with onnxruntime python pybuild/export_seisbench_models.py
 
 The runtime port in web/seisbench_infer.py is pinned to the same SeisBench
 version. Bump both together and rerun the parity test.
