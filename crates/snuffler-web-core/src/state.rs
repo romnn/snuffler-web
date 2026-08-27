@@ -189,6 +189,13 @@ impl WiggleTheme {
         matches!(self, WiggleTheme::SnufflerQt)
     }
 
+    /// The inverse of [`WiggleTheme::label`], for a theme restored from the
+    /// persisted settings.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.label() == value)
+    }
+
     /// Themes in menu order.
     pub const ALL: [WiggleTheme; 2] = [WiggleTheme::SnufflerQt, WiggleTheme::SnufflerWeb];
 }

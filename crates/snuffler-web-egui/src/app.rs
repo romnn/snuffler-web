@@ -8,7 +8,7 @@ use snuffler_web_core::bridge::{ExampleDataset, Repaint, Status};
 use snuffler_web_core::markers::Marker;
 use snuffler_web_core::session::Session;
 use snuffler_web_core::state::{
-    AppState, ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
+    ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
 };
 
 /// The dataset the app opens on when the URL asks for nothing in particular.
@@ -95,18 +95,30 @@ pub struct App {
     published_ready: Option<bool>,
 }
 
+/// Apply a wiggle theme's claim on the frontend's light/dark preference, and
+/// return the user's own preference to hold on to for as long as it is overruled.
+///
+/// Snuffler Qt takes the *whole* frontend light, not just the waveform: a white
+/// canvas inside dark chrome is neither theme, it just looks broken. The choice
+/// it overrules is not discarded — it comes back the moment a theme that has a
+/// dark variant is selected, and it is what gets persisted meanwhile.
+fn pin_theme(
+    ctx: &egui::Context,
+    theme: WiggleTheme,
+    chosen: egui::ThemePreference,
+) -> Option<egui::ThemePreference> {
+    if theme.forces_light() {
+        ctx.set_theme(egui::ThemePreference::Light);
+        (chosen != egui::ThemePreference::Light).then_some(chosen)
+    } else {
+        ctx.set_theme(chosen);
+        None
+    }
+}
+
 fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::TextStyle;
-    // The default wiggle theme decides the boot preference: Snuffler Qt pins the whole
-    // frontend light, so following the system into dark here would show white
-    // waveforms in dark chrome for the first frames and then snap.
-    ctx.set_theme(if AppState::default().wiggle_theme.forces_light() {
-        egui::ThemePreference::Light
-    } else {
-        egui::ThemePreference::System
-    });
-
     // egui's bundled proportional face is Ubuntu-Light, which renders very thin.
     // Register Ubuntu Regular as the primary proportional font (same typeface, one
     // weight up) and keep the built-in fonts as fallbacks for glyph coverage.
@@ -173,7 +185,15 @@ impl App {
         ));
         // The settings a reload keeps (the browser's `snuffler.pf`), applied
         // over the defaults before anything reads them.
-        crate::persist::restore(&mut session.state);
+        let restored = crate::persist::restore(&mut session.state);
+        // The restored wiggle theme decides what the light/dark preference is
+        // allowed to be: pinning it here, before the first frame, is what keeps a
+        // white-canvas theme from flashing through dark chrome on the way in.
+        let theme_before_pinning = pin_theme(
+            &cc.egui_ctx,
+            session.state.wiggle_theme,
+            restored.theme_preference,
+        );
         // What the app opens on. A `?url=` (with optional `?format=`) or a
         // `?example=<slug>` link is what it was opened *for*, so it takes that
         // place rather than replacing something a second later; `?demo=1` asks
@@ -208,7 +228,7 @@ impl App {
             frame_stats_ms: None,
             frame_stats_shown_fps: None,
             frame_stats_shown_at_s: 0.0,
-            theme_before_pinning: None,
+            theme_before_pinning,
             settings_saved: None,
             published_ready: None,
         }
@@ -606,15 +626,15 @@ impl App {
     /// Take the whole frontend light for a canvas-pinning theme, and give the user's
     /// own preference back when they leave it.
     fn apply_theme_pinning(&mut self, ctx: &egui::Context, theme: WiggleTheme) {
-        if theme.forces_light() {
-            let current = ctx.options(|o| o.theme_preference);
-            if current != egui::ThemePreference::Light {
-                self.theme_before_pinning = Some(current);
-            }
-            ctx.set_theme(egui::ThemePreference::Light);
-        } else if let Some(restored) = self.theme_before_pinning.take() {
-            ctx.set_theme(restored);
-        }
+        self.theme_before_pinning = pin_theme(ctx, theme, self.chosen_theme_preference(ctx));
+    }
+
+    /// The light/dark preference the user actually chose, which is not what egui
+    /// holds while a canvas-pinning theme has the frontend pinned light — that is
+    /// the theme's doing, not a choice, and persisting it would swallow the real one.
+    fn chosen_theme_preference(&self, ctx: &egui::Context) -> egui::ThemePreference {
+        self.theme_before_pinning
+            .unwrap_or_else(|| ctx.options(|o| o.theme_preference))
     }
 
     /// Acts on the requests the keyboard handler and menus can only flag:
@@ -1559,7 +1579,11 @@ impl eframe::App for App {
         // and pan/zoom state this request must reflect (see Session::request_view).
         self.session.request_view(visible_bins);
         self.publish_readiness();
-        crate::persist::save_if_changed(&self.session.state, &mut self.settings_saved);
+        crate::persist::save_if_changed(
+            &self.session.state,
+            self.chosen_theme_preference(&ctx),
+            &mut self.settings_saved,
+        );
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
