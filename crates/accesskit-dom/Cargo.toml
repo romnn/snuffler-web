@@ -1,8 +1,8 @@
 [package]
 name = "accesskit-dom"
-version = "0.1.0"
+version.workspace = true
 authors = ["Roman Dahm <contact@romnn.com>"]
-edition = "2024"
+edition.workspace = true
 description = "Project an AccessKit tree into live DOM elements: a web adapter for AccessKit"
 # Deliberately free of egui/eframe (enforced by `task lint:boundaries`): anything
 # that produces AccessKit tree updates can drive it. Flip `publish` once the

@@ -1,8 +1,8 @@
 [package]
 name = "snuffler-web-egui"
-version = "0.1.0"
+version.workspace = true
 authors = ["Roman Dahm <contact@romnn.com>"]
-edition = "2024"
+edition.workspace = true
 publish = false
 
 [[bin]]

@@ -1,8 +1,8 @@
 [package]
 name = "egui-a11y"
-version = "0.1.0"
+version.workspace = true
 authors = ["Roman Dahm <contact@romnn.com>"]
-edition = "2024"
+edition.workspace = true
 description = "Web accessibility for egui: wires an egui app to the accesskit-dom projection"
 # Deliberately independent of eframe: the only web-runner API the layer needs is
 # "hand me each pass's AccessKit update", and that wiring line stays in the app

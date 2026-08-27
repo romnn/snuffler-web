@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "accesskit-dom"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "accesskit",
  "color-eyre",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "egui-a11y"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "accesskit-dom",
  "egui",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "ecolor",
  "js-sys",
@@ -3353,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-cors-proxy"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "axum",
  "futures-util",
@@ -3363,7 +3363,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-egui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "console_error_panic_hook",
  "eframe",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-proto"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "color-eyre",
  "prost",
@@ -3395,7 +3395,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-proxy"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "axum",
  "clap",
@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-render"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "color-eyre",
  "ecolor",
@@ -3423,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "snuffler-web-tcp-ws-proxy"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "axum",
  "bytes",
