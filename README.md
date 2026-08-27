@@ -84,6 +84,7 @@ project under `qt/`:
 
 ```sh
 task snuffler                         # fetch pinned pyrocko and launch its native GUI
+task snuffler:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
 uv sync --project qt                 # optional: prepare qt/.venv without launching
 task test:parity:unit
 task test:parity:bridge

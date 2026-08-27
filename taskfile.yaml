@@ -140,6 +140,22 @@ tasks:
     cmds:
       - uv run --project qt snuffler {{.CLI_ARGS}}
 
+  snuffler:example:
+    desc: "open a repository example in the native PyQt5 snuffler"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    requires:
+      vars: [EXAMPLE]
+    preconditions:
+      - sh: test -f "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+        msg: "unknown example: {{.EXAMPLE}}"
+      - sh: test -f "examples/{{.EXAMPLE}}/catalog.yaml"
+        msg: "example has no event catalog: {{.EXAMPLE}}"
+      - sh: test -d "examples/{{.EXAMPLE}}/meta"
+        msg: "example has no StationXML directory: {{.EXAMPLE}}"
+    cmds:
+      - uv run --project qt snuffler {{.CLI_ARGS}} --events "examples/{{.EXAMPLE}}/catalog.yaml" --stationxml "examples/{{.EXAMPLE}}/meta/*.xml" "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+
   typos:
     desc: "check repository for typos"
     aliases: [spellcheck]

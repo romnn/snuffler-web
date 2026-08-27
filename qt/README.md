@@ -15,11 +15,17 @@ the parity oracle.
 ```sh
 task snuffler
 task snuffler -- example.mseed
+task snuffler:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
 ```
 
 An explicit `uv sync --project qt` is optional.
 The `parity` dependency group adds pytest and protobuf only when the oracle tests
 need them.
+Repository example directories also contain application metadata, an event
+catalogue, and StationXML files, so pass their slug to `snuffler:example` rather
+than passing the whole directory as waveform input.
+On macOS, add `-- --no-opengl` to either Snuffler task if Qt's OpenGL paint warning
+causes visible rendering problems.
 
 ## Why streaming, not WebAssembly
 
