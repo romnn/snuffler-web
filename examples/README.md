@@ -96,7 +96,7 @@ downstream re-uploads.
    5.4 to 1.4, Sumatra's second orbit at a fifth of the first, Ridgecrest's 6 km/s
    moveout. An example that claims something the data does not show teaches the
    wrong thing twice.
-4. `mise run build-examples` and check the size. Anything past ~20 MB deserves a
+4. `task build:examples` and check the size. Anything past ~20 MB deserves a
    second look — it is one click for a user on a phone.
 5. Add it to the parity corpus — every dataset here is in it, so this is not
    optional: its files in `CHECKED_IN` (`tests/parity/corpus/build.py`), a `Dataset`

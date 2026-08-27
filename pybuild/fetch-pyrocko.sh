@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# `mise run fetch-pyrocko` — fetch the pyrocko source on demand.
+# `task fetch:pyrocko` — fetch the pyrocko source on demand.
 #
 # pyrocko is NOT vendored in this repo (sources/ is gitignored). This clones the
 # exact, known-good commit (PYROCKO_REF) of pyrocko into sources/pyrocko, which
 # the wheel build (build-wheel.sh) and the bundled data assets (the cake
 # earthmodels and the map's plate boundaries, both referenced by index.html)
-# need. The pin lives in mise.toml ([env]); run via
-# `mise run fetch-pyrocko` so PYROCKO_REPO/PYROCKO_REF are set.
+# need. The pin lives in mise.toml ([env]); the Task workflow enters that
+# environment before invoking this script.
 #
 # Idempotent: a no-op once the pinned commit is already checked out.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-REPO="${PYROCKO_REPO:?PYROCKO_REPO not set — run via 'mise run fetch-pyrocko'}"
-REF="${PYROCKO_REF:?PYROCKO_REF not set — run via 'mise run fetch-pyrocko'}"
+REPO="${PYROCKO_REPO:?PYROCKO_REPO not set — run via 'task fetch:pyrocko'}"
+REF="${PYROCKO_REF:?PYROCKO_REF not set — run via 'task fetch:pyrocko'}"
 DEST="$ROOT/sources/pyrocko"
 
 if [ -d "$DEST/.git" ] && [ "$(git -C "$DEST" rev-parse HEAD 2>/dev/null)" = "$REF" ]; then

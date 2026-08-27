@@ -255,7 +255,7 @@ be compared to each other.
 - **Do not automate through noVNC.** Driving pixels over VNC to test something we
   can call as a function is strictly worse on every axis: slower, flakier, blind
   to numerical divergence, and hostage to the container's filesystem and network
-  restrictions. `mise run qt-serve` remains the right tool for a human checking
+  restrictions. `task qt:serve` remains the right tool for a human checking
   fidelity or exploring upstream behavior — that is what it was built for.
 
 ## Where it runs

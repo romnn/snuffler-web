@@ -34,14 +34,14 @@ desktop app sidesteps all of that and gives **every** snuffler feature, today.
 Requires Docker.
 
 ```sh
-mise run qt-build    # build the image (real PyQt5 snuffler + numpy/scipy/pyrocko + noVNC)
-mise run qt-serve    # run it
+task qt:build    # build the image (real PyQt5 snuffler + numpy/scipy/pyrocko + noVNC)
+task qt:serve    # run it
 # open http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote
 ```
 
-(6080 is the conventional noVNC port; change the mapping in `mise.toml` if it's taken.)
+(6080 is the conventional noVNC port; change the mapping in `taskfile.yaml` if it's taken.)
 
-`qt-serve` launches snuffler on a synthetic demo dataset (same noise + travelling
+`task qt:serve` launches snuffler on a synthetic demo dataset (same noise + travelling
 event as the egui example). Load your own MiniSEED/SAC via snuffler's File menu
 inside the streamed GUI.
 

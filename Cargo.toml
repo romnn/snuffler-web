@@ -41,7 +41,7 @@ lto = true
 codegen-units = 1
 strip = true
 
-# The profile `mise run serve` (and so micromux's "web" service) builds with: an
+# The profile `task serve` (and so micromux's "web" service) builds with: an
 # unoptimized wasm frontend renders at 10-20 fps, while the released Pages build is
 # smooth, so the dev server needs release-grade codegen too. It cannot just use
 # `--release`: fat LTO in a single codegen unit costs minutes per relink, which the

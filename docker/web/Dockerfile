@@ -8,10 +8,10 @@
 # step before `docker build`) and read out of the build context, because building
 # them from scratch means an emscripten toolchain and about an hour:
 #
-#   mise run fetch-pyodide  -> docker/pyodide-mt/served/   (~70 MB: the relinked
+#   task pyodide:fetch  -> docker/pyodide-mt/served/   (~70 MB: the relinked
 #       pthread + OpenMP + SIMD runtime and every wheel, already precompiled to
 #       bytecode. docker/pyodide-mt/build-all.sh is what produces one from source.)
-#   mise run fetch-pyrocko  -> sources/pyrocko/            (only two paths are
+#   task fetch:pyrocko  -> sources/pyrocko/            (only two paths are
 #       read: the cake earthmodels and the map's plate boundaries, both staged
 #       into the site by crates/snuffler-web-egui/index.html. pyrocko itself
 #       reaches the browser as a wheel inside the runtime above, not from here.)
@@ -52,7 +52,7 @@ FROM --platform=${BUILDER_PLATFORM} ${RUST_IMAGE} AS toolchain
 
 # NO_COLOR is "true", not the usual "1": trunk maps the variable onto a clap
 # flag that accepts only a boolean literal and rejects anything else outright,
-# which is why the mise tasks spell it the same way.
+# which is why the Task workflows spell it the same way.
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_TERM_COLOR=never \
     NO_COLOR=true
@@ -171,7 +171,7 @@ ARG SNUFFLER_GIT_COMMIT=""
 # subdirectory under nginx's root, which the final stage handles.
 ARG PUBLIC_URL="/"
 
-# Driven directly rather than through `mise run build`, so every knob that task
+# Driven directly rather than through `task build`, so every knob that workflow
 # sets has to be repeated here: build-std for the threaded wasm, and --no-sri
 # because the post-build hook rewrites wasm-bindgen-rayon's worker import after
 # Trunk has hashed it.

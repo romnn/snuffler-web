@@ -14,8 +14,8 @@
 # These stay in shared cargo config because they are wasm-only and inert for the
 # host `cargo check`/`clippy` passes: there is no link step, so the link-args are
 # ignored. The actual threaded LINK still needs `-Z build-std` so wasm std is
-# rebuilt with atomics; that remains build-scoped in the `mise run serve` /
-# `mise run build` tasks rather than in shared cargo config, so host-native test
+# rebuilt with atomics; that remains build-scoped in the `task serve` /
+# `task build` workflows rather than in shared cargo config, so host-native test
 # runs do not rebuild std.
 [target.wasm32-unknown-unknown]
 rustflags = [

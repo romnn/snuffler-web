@@ -15,7 +15,7 @@ effort with a realistic **~50–60 % feature ceiling**. This document records th
 **So the shipped Qt frontend does NOT use wasm.** It runs the *real, unmodified*
 PyQt5 snuffler server-side and streams it to the browser over noVNC —
 **100 % feature-complete**, working today, coexisting with the egui frontend
-(`mise run qt-build` / `qt-serve`). The wasm analysis below is the rationale.
+(`task qt:build` / `task qt:serve`). The wasm analysis below is the rationale.
 
 ## What is genuinely impossible (don't try these)
 

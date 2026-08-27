@@ -142,7 +142,7 @@ Wire it across the three build systems like the existing `threads` knob:
 - **Trunk:** add a conditional post_build copy hook (mirror the existing py-mt
   conditional-copy hook in `Trunk.toml`) that stages the `.onnx` files only when
   an env var such as `SNUFFLER_EMBED_DATA` is set.
-- **mise/taskfile:** the default `serve`/`build` tasks build with the feature and
+- **taskfile:** the default `serve`/`build` tasks build with the feature and
   set `SNUFFLER_EMBED_DATA=1` together (as they already pair `threads` with
   `CARGO_UNSTABLE_BUILD_STD`/`TRUNK_BUILD_NO_SRI`); document a lean variant that
   builds `--no-default-features` (re-adding needed defaults) and leaves it unset.

@@ -3,20 +3,141 @@ version: "3"
 tasks:
   default:
     cmds:
-      - task: run
+      - task: serve
 
-  run:
-    desc: "run the web app (delegates to `mise run serve`)"
-    ignore_error: true
+  fetch:pyrocko:
+    desc: "clone pyrocko at the pinned commit into sources/ (gitignored)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mise exec -- ./pybuild/fetch-pyrocko.sh
+
+  build:examples:
+    desc: "pack examples/ into the dataset bundles the app fetches on demand"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - python3 scripts/build-examples.py {{.CLI_ARGS}}
+
+  # Trunk canonicalizes every ignored watch path when its watcher starts and
+  # aborts if one is missing.
+  # `trunk build` never resolves the list, which is why CI does not hit this.
+  # The Pyodide builder creates this scratch tree only after it has run locally.
+  internal:dev-dirs:
+    internal: true
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mkdir -p docker/pyodide-mt/.work
+
+  pyodide:build:
+    desc: "build the custom threaded Pyodide 314 (BUILD_CDN=1 also builds the single-threaded wheel)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    cmds:
+      - docker/pyodide-mt/build-all.sh
+
+  # Pages publishes exactly the runtime directory assembled by stage-web.sh, so
+  # local development can download it instead of rebuilding Pyodide for an hour.
+  pyodide:fetch:
+    desc: "download the deployed Pyodide 314 runtime"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker/pyodide-mt/fetch-web.sh
+
+  # The threaded egui build runs heavy resvg export on a wasm-bindgen-rayon pool.
+  # The wasm atomics/link flags live in .cargo/config.toml.
+  # Build-std stays scoped to these tasks because the precompiled wasm32 standard
+  # library is single-threaded and host-native Cargo commands do not need it.
+  # The post-build hook rewrites wasm-bindgen-rayon's worker import, which would
+  # otherwise mismatch Trunk's subresource-integrity hash for that snippet.
+  # The serve profile keeps release-grade codegen without ship-only fat LTO.
+  # Task exports NO_COLOR=1 when color is disabled, but Trunk requires a literal
+  # boolean, so each command overrides it at the process boundary.
+  serve:
+    desc: "run the optimized, threaded web app"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko", "internal:dev-dirs"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
     interactive: true
     cmds:
-      - mise run serve
+      - NO_COLOR=true trunk serve --config crates/snuffler-web-egui/Trunk.toml --cargo-profile serve --features threads {{.CLI_ARGS}}
+
+  build:
+    desc: "build the threaded web app for release"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+    cmds:
+      - NO_COLOR=true trunk build --config crates/snuffler-web-egui/Trunk.toml --release --features threads {{.CLI_ARGS}}
+
+  # Lean builds fetch SeisBench weights from SNUFFLER_ONNX_MODEL_BASE_URL.
+  # SNUFFLER_EMBED_DATA must track `--no-default-features` because setting only
+  # one makes the app request model files the build did not stage.
+  serve:lean:
+    desc: "run the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko", "internal:dev-dirs"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+      SNUFFLER_EMBED_DATA: "0"
+    interactive: true
+    cmds:
+      - NO_COLOR=true trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features svg-raster,gf,threads {{.CLI_ARGS}}
+
+  build:lean:
+    desc: "build the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+      SNUFFLER_EMBED_DATA: "0"
+    cmds:
+      - NO_COLOR=true trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features svg-raster,gf,threads {{.CLI_ARGS}}
+
+  # The web image consumes the prebuilt Pyodide runtime rather than rebuilding
+  # it, so changing that runtime only repeats its staging and compression layers.
+  docker:build:
+    desc: "build the snuffler-web and snuffler-proxy container images"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    preconditions:
+      - sh: test -d docker/pyodide-mt/served
+        msg: "docker/pyodide-mt/served is missing - run 'task pyodide:fetch' first"
+    cmds:
+      - docker build -f docker/web/Dockerfile -t snuffler-web .
+      - docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
+
+  docker:serve:
+    desc: "run the containerized stack on ports 17683 and 17684"
+    dir: "{{.ROOT_DIR}}"
+    interactive: true
+    cmds:
+      - docker compose up
+
+  # The streamed Qt frontend is independent of the egui frontend and has its own
+  # Docker image and port.
+  qt:build:
+    desc: "build the original PyQt5 snuffler and noVNC image"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker build -t snuffler-qt qt
+
+  qt:serve:
+    desc: "run snuffler-qt at http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote"
+    dir: "{{.ROOT_DIR}}"
+    interactive: true
+    cmds:
+      - docker run --rm --name snuffler-qt -p 6080:8080 -v "{{.ROOT_DIR}}/qt/make_demo.py:/opt/snuffler/make_demo.py:ro" snuffler-qt
 
   snuffler:
     desc: "run the pinned native PyQt5 snuffler"
     dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
     cmds:
-      - mise run fetch-pyrocko
       - uv run --project qt snuffler {{.CLI_ARGS}}
 
   typos:
@@ -193,10 +314,10 @@ tasks:
   test:parity:
     desc: "tier 1 parity: Qt snuffler's own paint output vs web/bridge.py, plus the bridge snuffling tests; headless, no browser"
     dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
     env:
       QT_QPA_PLATFORM: offscreen
     cmds:
-      - mise run fetch-pyrocko
       - buf generate
       # The harness self-test runs first: the tiers trust gaps.evaluate to hold
       # findings to the register, so its edge cases are proven before any scenario
@@ -224,27 +345,27 @@ tasks:
   test:parity:bridge:
     desc: "bridge behaviour against real pyrocko, no browser: snuffling marker scope, aggregation, failure contracts, and the Adaptive visible length"
     dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
     cmds:
-      - mise run fetch-pyrocko
       - buf generate
       - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py {{.CLI_ARGS}}
 
   test:parity:inventory:
     desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
     dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
     env:
       QT_QPA_PLATFORM: offscreen
     cmds:
-      - mise run fetch-pyrocko
       - uv run --project qt --group parity python tests/parity/run_inventory.py {{.CLI_ARGS}}
 
   test:parity:scenarios:
     desc: "tier 3 parity: one scenario through both GUIs (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
     dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
     env:
       QT_QPA_PLATFORM: offscreen
     cmds:
-      - mise run fetch-pyrocko
       - buf generate
       - uv run --project qt --group parity python tests/parity/run_scenarios.py {{.CLI_ARGS}}
 

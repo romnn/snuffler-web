@@ -1,6 +1,6 @@
 # The local stack in containers: the site on 17683 and the proxy on 17684 — the
 # same two ports micromux uses, so a browser pointed at http://127.0.0.1:17683
-# behaves exactly as it does against `mise run serve`.
+# behaves exactly as it does against `task serve`.
 #
 # The ports are not cosmetic. web/bridge.py only routes FDSN requests through the
 # proxy when the page itself is on a localhost origin, and both it and

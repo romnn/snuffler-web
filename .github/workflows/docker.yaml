@@ -97,7 +97,7 @@ jobs:
       # The two inputs the web image reads from the build context rather than
       # building (see the header of docker/web/Dockerfile): the pyrocko checkout
       # it stages two data files out of, and the prebuilt threaded Pyodide 314
-      # runtime. Both are what `mise run fetch-pyrocko` / `fetch-pyodide` produce;
+      # runtime. Both are what `task fetch:pyrocko` / `task pyodide:fetch` produce;
       # they are driven directly here so the job needs no mise install, reading
       # the pyrocko pin out of mise.toml so it stays single-sourced.
       #

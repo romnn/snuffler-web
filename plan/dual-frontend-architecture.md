@@ -259,7 +259,7 @@ invariant to protect is the Pages deployment.
     the same commit: `taskfile.yaml` `-p` flags, inter-crate `path` deps,
     `micromux.yaml` (runs the `snuffler-proxy` binary), README, CI workflows.
   - **Trunk moves into the crate.** `trunk serve`/`build` run against
-    `crates/snuffler-web-egui/Trunk.toml` (either `cd` in the mise tasks or
+    `crates/snuffler-web-egui/Trunk.toml` (either `cd` in the Task workflows or
     `--config crates/snuffler-web-egui/Trunk.toml`). The hooks currently assume the
     repo root as working directory (`buf generate` reads root `buf.yaml`; `bun build
     web/bridge.ts` uses root-relative paths) — rewrite them against
@@ -275,9 +275,9 @@ invariant to protect is the Pages deployment.
     dist` in the moved Trunk.toml (repo-root `dist/` or crate-local — either is fine)
     and point `.github/workflows/pages.yaml`'s upload step and
     `docker/pyodide-mt/stage-web.sh`/post-build staging at the same location. Verify
-    with a full `mise run build` + a served `dist/` smoke test before merging.
+    with a full `task build` + a served `dist/` smoke test before merging.
   - `.cargo/config.toml` (wasm rustflags, aliases) is path-independent — unchanged.
-- **Effort:** about a day including CI verification (`task lint:fc`, `mise run build`,
+- **Effort:** about a day including CI verification (`task lint:fc`, `task build`,
   Pages workflow dry-run on a branch).
 
 ### 3. The egui-free data layer is interleaved under egui-owned files
@@ -401,7 +401,7 @@ setting + a request + a widget), but `App::ui` interleaves three separable jobs:
 2. **Workspace move + renames** (finding 2). Root goes virtual; app package →
    `crates/snuffler-web-egui` with its `index.html`/`Trunk.toml`/fonts; existing crates
    gain the `snuffler-web-` prefix; taskfile/micromux/CI/scripts updated. No Rust code
-   changes. Verify: `mise run build` end-to-end including the threaded build (the
+   changes. Verify: `task build` end-to-end including the threaded build (the
    post-build worker patch grep must match the bin name) and a Pages-workflow dry-run
    on a branch.
 3. **Extract `snuffler-web-core`** (finding 3): state, markers, timeaxis, seedlink

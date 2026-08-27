@@ -37,8 +37,7 @@ services:
     name: Trunk dev server
     working_dir: ./
     command:
-      - mise
-      - run
+      - task
       - serve
     ports:
       - 17683

@@ -8,7 +8,7 @@
 # main by build.sh); the parstack inner loops also carry #pragma omp simd.
 #
 # Prerequisites: build.sh (main + libomp + libomp-src for omp.h), numpy built
-# (packages.sh), and a fetched sources/pyrocko (mise run fetch-pyrocko).
+# (packages.sh), and a fetched sources/pyrocko (`task fetch:pyrocko`).
 # Usage:  docker/pyodide-mt/build-pyrocko.sh
 set -euo pipefail
 
@@ -20,7 +20,7 @@ src="$repo_root/sources/pyrocko"
 simd=" -msimd128"; [ "${SIMD:-1}" = "0" ] && simd=""
 
 [ -f "$build/dist/pyodide.asm.mjs" ] || { echo "ERROR: run build.sh first." >&2; exit 1; }
-[ -d "$src/src" ] || { echo "ERROR: run 'mise run fetch-pyrocko' first." >&2; exit 1; }
+[ -d "$src/src" ] || { echo "ERROR: run 'task fetch:pyrocko' first." >&2; exit 1; }
 # emscripten ships no omp.h; pyrocko's exts #include <omp.h>, so point at the
 # copy in the libomp source fetched by build.sh/libomp.
 ompinc_host="$build/libomp-src/system/lib/libomp/include"

@@ -132,7 +132,7 @@ three build systems):
   never sets it (the GitHub Pages workflow drives trunk directly) ships an app
   that asks for weights nobody copied — a green deploy that 404s on every pick.
   The hook also fails the build when a weight named by the manifest is missing.
-- **mise/taskfile**: the default `serve`/`build` tasks just build with the
+- **taskfile**: the default `serve`/`build` tasks just build with the
   feature; only the lean variant — `--no-default-features` (re-adding the needed
   defaults) — sets `SNUFFLER_EMBED_DATA=0` to match.
 

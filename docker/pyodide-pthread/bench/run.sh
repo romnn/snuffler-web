@@ -7,7 +7,7 @@
 # at 1/2/4/8 threads under node.
 #
 # Prerequisite: docker/pyodide-pthread/build.sh (libomp linked into main) and a
-# fetched sources/pyrocko checkout (mise run fetch-pyrocko).
+# fetched sources/pyrocko checkout (`task fetch:pyrocko`).
 # Usage: docker/pyodide-pthread/bench/run.sh
 set -euo pipefail
 
@@ -21,7 +21,7 @@ if [ ! -f "$build/dist/pyodide.mjs" ]; then
     echo "ERROR: run docker/pyodide-pthread/build.sh first." >&2; exit 1
 fi
 if [ ! -f "$kernel_src" ]; then
-    echo "ERROR: $kernel_src not found — run 'mise run fetch-pyrocko'." >&2; exit 1
+    echo "ERROR: $kernel_src not found — run 'task fetch:pyrocko'." >&2; exit 1
 fi
 
 mkdir -p "$build/bench"

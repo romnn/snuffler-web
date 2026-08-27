@@ -289,7 +289,7 @@ task test:parity -- demo-bandpass-zoom # one scenario
 task test:parity -- decon-freq-limits  # just the property grid
 task test:parity:bridge                # the bridge's snuffling tests alone
 
-mise run serve &                       # tiers 2 and 3 need the app served
+task serve &                           # tiers 2 and 3 need the app served
 task test:parity:inventory
 task test:parity:scenarios
 ```

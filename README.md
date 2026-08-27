@@ -21,11 +21,11 @@ separate commands and artifacts:
 
 - **egui — client-side (default).** A Rust/egui UI compiled to wasm that drives real
   pyrocko via Pyodide, running **entirely in the browser, no server**. This is what
-  the rest of this README covers (`mise run serve`).
+  the rest of this README covers (`task serve`).
 - **Original Qt — server-streamed (optional).** The *real, unmodified* PyQt5
   snuffler, rendered headless and streamed to the browser over noVNC — 100%
-  feature-complete, but runs **server-side** (Docker): `mise run qt-build` /
-  `qt-serve`, see [`qt/`](qt/). Qt-for-Python has no WebAssembly build, so this one
+  feature-complete, but runs **server-side** (Docker): `task qt:build` /
+  `task qt:serve`, see [`qt/`](qt/). Qt-for-Python has no WebAssembly build, so this one
   can't be client-side — see [`plan/qt-frontend-feasibility.md`](plan/qt-frontend-feasibility.md).
 
 ## Architecture
@@ -54,17 +54,21 @@ side and `buf generate` emits Python code plus mypy stubs for the Pyodide side.
 (`signal_ext`, and `mseed_ext` + bundled `libmseed`) into a Pyodide wheel; the
 rest of pyrocko ships as its normal pure-Python tree.
 
-## Toolchain (clone → mise → run)
+## Toolchain (clone → mise → Task)
 
 Everything is pinned in `mise.toml` + `rust-toolchain.toml`. With
 [mise](https://mise.jdx.dev) installed:
 
 ```sh
 mise install                    # node, bun, uv, trunk, binaryen, protoc (all pinned)
-mise run fetch-pyodide          # download the deployed custom Pyodide 314 into py-mt
-mise run serve                  # trunk serve → http://127.0.0.1:17683
+task pyodide:fetch              # download the deployed custom Pyodide 314 into py-mt
+task serve                      # trunk serve → http://127.0.0.1:17683
 micromux                        # optional full local stack: proxy + trunk serve
 ```
+
+Mise installs and selects pinned dependencies.
+Task is the single command surface for building, serving, checking, and testing
+the repository; `task --list` shows every available workflow.
 
 Python tooling uses the locked Python 3.14 project at the repository root.
 `uv run` creates and updates `.venv` automatically, so no activation or separate
@@ -92,20 +96,20 @@ wheel build rather than a host development environment.
 `rust-src`, and the `wasm32-unknown-unknown` target automatically on first build.
 
 **`serve` builds optimized.** An unoptimized wasm frontend renders at 10-20 fps,
-so `mise run serve` uses the `serve` cargo profile (`Cargo.toml`): release-grade
+so `task serve` uses the `serve` cargo profile (`Cargo.toml`): release-grade
 codegen, but without the fat LTO and `strip` that would make every rebuild in the
 watch loop slow and every browser panic unreadable. The first build after
 switching profiles recompiles the whole dependency graph (including `std`, which
 `-Z build-std` rebuilds for wasm atomics); after that, rebuilds are incremental.
 
-**pyrocko is not vendored.** `mise run fetch-pyrocko` clones it at a pinned,
+**pyrocko is not vendored.** `task fetch:pyrocko` clones it at a pinned,
 known-good commit (`PYROCKO_REF` in `mise.toml`) into the gitignored `sources/`
 (`build-all.sh` and `serve` depend on it, so it is pulled on demand).
 
 **The runtime can be downloaded instead of built.** Pages publishes exactly the
-directory `stage-web.sh` assembles, so `mise run fetch-pyodide` pulls the deployed
+directory `stage-web.sh` assembles, so `task pyodide:fetch` pulls the deployed
 runtime into `docker/pyodide-mt/served/` in seconds — no Docker, no emsdk, no
-hour. Build it with `build-all.sh` when the runtime itself is what you are
+hour. Build it with `task pyodide:build` when the runtime itself is what you are
 changing: a patch, a package pin, or `pybuild/setup.py`.
 
 **Both Pyodide paths run our custom Pyodide 314** (py3.14 / emscripten 5.0.3),
@@ -147,15 +151,14 @@ The wasm frontend is built inside the image. The two heavy inputs are not, and
 must be on disk first — the same two commands a local checkout runs:
 
 ```sh
-mise run fetch-pyrocko    # sources/pyrocko: two data files end up in the site
-mise run fetch-pyodide    # docker/pyodide-mt/served: the ~70 MB Pyodide runtime
-docker build -f docker/web/Dockerfile   -t snuffler-web   .
-docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
+task fetch:pyrocko    # sources/pyrocko: two data files end up in the site
+task pyodide:fetch    # docker/pyodide-mt/served: the ~70 MB Pyodide runtime
+task docker:build
 ```
 
-`mise run docker-build` does the same, fetching pyrocko for you; it checks for
+`task docker:build` fetches pyrocko for you and checks for
 the Pyodide runtime rather than re-downloading it, so a locally *built* one is
-left alone. `mise run docker-serve` is `docker compose up`.
+left alone. `task docker:serve` is `docker compose up`.
 
 Both Dockerfiles are laid out for cache reuse: `cargo-chef` compiles the
 dependency graph (including the `-Z build-std` std rebuild) in a layer keyed only
@@ -213,11 +216,11 @@ those stages run under emulation and are slow.
   loads are cached. See `plan/load-time-reduction.md` for how to cut that.
 - matplotlib is loaded only because `pyrocko.orthodrome` imports
   `matplotlib.path` at module top; it isn't otherwise used.
-- The egui frontend is browser-only: run it with `mise run serve` or pass
+- The egui frontend is browser-only: run it with `task serve` or pass
   `--config crates/snuffler-web-egui/Trunk.toml` to Trunk,
   not `cargo run`.
 - For non-CORS FDSN endpoints or browser-accessible SeedLink/ringserver streams,
-  run `micromux` instead of plain `mise run serve`. It starts Trunk on
+  run `micromux` instead of plain `task serve`. It starts Trunk on
   `127.0.0.1:17683` and `snuffler-web-proxy` on `127.0.0.1:17684`; local FDSN fetches
   use `/cors` through that proxy when available, and the same process exposes
   `/seedlink` and `/tcp` as WebSocket-to-raw-TCP tunnels.

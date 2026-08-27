@@ -26,7 +26,7 @@ image="pyodide/pyodide-env:20260211-chrome145-firefox146-py314"
 src="$repo_root/sources/pyrocko"
 
 [ -f "$build/dist/pyodide.asm.mjs" ] || { echo "ERROR: run build.sh first." >&2; exit 1; }
-[ -d "$src/src" ] || { echo "ERROR: run 'mise run fetch-pyrocko' first." >&2; exit 1; }
+[ -d "$src/src" ] || { echo "ERROR: run 'task fetch:pyrocko' first." >&2; exit 1; }
 
 # 1) Stage pyrocko src + libmseed + setup.py (mirrors build-pyrocko.sh).
 b="$build/pyrocko-build"

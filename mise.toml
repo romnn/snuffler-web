@@ -1,19 +1,21 @@
-# Self-contained, reproducible toolchain. A new contributor needs only `mise`:
+# Self-contained, reproducible toolchain.
+# Mise installs dependencies; Task owns every repository workflow:
 #
 #   mise install                    # node, bun, uv, trunk, binaryen, protoc (pinned)
-#   mise run fetch-pyrocko          # clone pyrocko (pinned) into sources/
-#   mise run fetch-pyodide          # download the deployed Pyodide 314 into py-mt
-#   mise run serve                  # trunk serve
+#   task fetch:pyrocko              # clone pyrocko (pinned) into sources/
+#   task pyodide:fetch              # download the deployed Pyodide 314 into py-mt
+#   task serve                      # trunk serve
 #
-# pyrocko is NOT vendored: `fetch-pyrocko` clones it (pinned to PYROCKO_REF) into
-# the gitignored sources/, pulled on demand by fetch-pyrocko/serve.
+# Pyrocko is NOT vendored: `task fetch:pyrocko` clones it at PYROCKO_REF into the
+# gitignored sources/, pulled on demand by the relevant Task workflows.
 #
 # The Pyodide runtime is our CUSTOM threaded Pyodide 314 build (py3.14 /
 # emscripten 5.0.3, pthread + OpenMP + SIMD), built in docker (docker/pyodide-mt)
 # — NOT via a host emsdk or xbuildenv — and produced by build-all.sh. (A
 # single-threaded wheel for a future non-threaded build is opt-in: BUILD_CDN=1.)
-# Building it takes an hour and needs Docker, so `fetch-pyodide` downloads the one
-# Pages deploys instead; build-pyodide is for changing the runtime itself.
+# Building it takes an hour and needs Docker, so `task pyodide:fetch` downloads the
+# one Pages deploys instead.
+# `task pyodide:build` is for changing the runtime itself.
 # So mise here pins only the *web* tooling around Rust (trunk/binaryen for the
 # wasm app, node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — the
 # Rust toolchain itself is pinned by rust-toolchain.toml.
@@ -27,7 +29,7 @@ python = "3.14"
 node = "24"
 bun = "latest"           # bunx prettier (JS/markdown formatting)
 uv = "latest"           # Project environments for Python tooling and the native Qt oracle.
-task = "latest"          # go-task: the check:*/lint:* tasks in taskfile.yaml (CI runs them too)
+task = "latest"          # The single workflow runner for local development and CI.
 typos = "latest"
 actionlint = "latest"
 zig = "latest"           # cargo-zigbuild backend for cargo-fc cross-target checks
@@ -66,126 +68,3 @@ lockfile_platforms = [
 # Known-good commit on main: v2026.06.02-24-g64ae99fb (2026-06-12).
 PYROCKO_REPO = "https://github.com/pyrocko/pyrocko.git"
 PYROCKO_REF = "64ae99fb2c65fbd32836d83d00de05cf405a4ff9"
-
-[tasks.fetch-pyrocko]
-description = "Clone pyrocko at the pinned commit into sources/ (gitignored)"
-run = "./pybuild/fetch-pyrocko.sh"
-
-# Runs as part of every build (scripts/trunk-post-build.sh); here for inspecting
-# what the Examples menu will offer without building the app.
-[tasks.build-examples]
-description = "Pack examples/ into the dataset bundles the app fetches on demand"
-run = "python3 scripts/build-examples.py"
-
-# trunk canonicalizes every `[watch] ignore` path when the watcher starts and
-# aborts if one is missing — so the serve tasks depend on this. (`trunk build`
-# never resolves the list, which is why CI does not hit it.) The one ignored dir
-# that is not guaranteed to exist is docker/pyodide-mt/.work: it is the Pyodide
-# builder's scratch tree, so it only appears once build-all.sh has run locally.
-[tasks.dev-dirs]
-description = "Create the gitignored scratch dir trunk's watcher expects to exist"
-hide = true
-run = "mkdir -p docker/pyodide-mt/.work"
-
-[tasks.build-pyodide]
-description = "Build the custom threaded Pyodide 314 (py-mt; BUILD_CDN=1 also builds the single-threaded wheel)"
-depends = ["fetch-pyrocko"]
-run = "./docker/pyodide-mt/build-all.sh"
-
-# The runtime the app needs, without the hour and the Docker toolchain that
-# build-pyodide wants: Pages publishes exactly the directory stage-web.sh
-# assembles, so it can simply be downloaded.
-[tasks.fetch-pyodide]
-description = "Download the deployed Pyodide 314 runtime into py-mt (seconds, against build-pyodide's hour)"
-run = "./docker/pyodide-mt/fetch-web.sh"
-
-# The web app is built THREADED: the egui wasm runs the heavy resvg PNG export on
-# a wasm-bindgen-rayon worker pool (the `threads` feature) so a big export never
-# freezes the UI. The wasm atomics/link flags live in .cargo/config.toml. The only
-# knob that must stay build-scoped here is `-Z build-std`: the precompiled wasm32
-# std is single-threaded, so std is rebuilt with atomics, and build-std is global
-# enough that we do not want it on every host-native cargo command.
-# NO_SRI: the post_build hook rewrites wasm-bindgen-rayon's worker import (see
-# Trunk.toml), which would otherwise mismatch Trunk's subresource-integrity hash
-# for that snippet. SRI on a same-origin, self-hosted bundle adds little anyway.
-#
-# The `serve` cargo profile (see Cargo.toml) is release-grade codegen without the
-# ship-only settings: the unoptimized wasm only managed 10-20 fps, but plain
-# `--release` would relink the whole thing under fat LTO on every save.
-[tasks.serve]
-description = "Run the web app (trunk serve) — optimized, threaded (off-main-thread PNG export)"
-depends = ["fetch-pyrocko", "dev-dirs"]
-env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
-env.TRUNK_BUILD_NO_SRI = "true"
-env.NO_COLOR = "true"
-run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --cargo-profile serve --features threads"
-
-[tasks.build]
-description = "Build the web app for release — threaded (off-main-thread PNG export)"
-depends = ["fetch-pyrocko"]
-env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
-env.TRUNK_BUILD_NO_SRI = "true"
-env.NO_COLOR = "true"
-run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --features threads"
-
-# Lean builds do not bundle `web/assets/models/*.onnx`; set
-# SNUFFLER_ONNX_MODEL_BASE_URL at build time to an HTTP directory containing the
-# files named in web/assets/seisbench_models.json. bridge.py proxies those remote
-# fetches through the local snuffler proxy when running on localhost.
-#
-# SNUFFLER_EMBED_DATA=0 is what stops the post_build hook from staging the weights
-# into dist, and it belongs ONLY here: it has to track `--no-default-features`
-# (which drops `embed-data`, so the app fetches from the remote base instead).
-# The default builds above deliberately set nothing — the hook stages by default,
-# so a build path that forgets this knob (as the Pages workflow did) still ships
-# the weights its app is going to ask for.
-[tasks.serve-lean]
-description = "Run the web app without bundled SeisBench model weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
-depends = ["fetch-pyrocko", "dev-dirs"]
-env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
-env.TRUNK_BUILD_NO_SRI = "true"
-env.SNUFFLER_EMBED_DATA = "0"
-env.NO_COLOR = "true"
-run = "trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features svg-raster,gf,threads"
-
-[tasks.build-lean]
-description = "Build the web app without bundled SeisBench model weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
-depends = ["fetch-pyrocko"]
-env.CARGO_UNSTABLE_BUILD_STD = "std,panic_abort"
-env.TRUNK_BUILD_NO_SRI = "true"
-env.SNUFFLER_EMBED_DATA = "0"
-env.NO_COLOR = "true"
-run = "trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features svg-raster,gf,threads"
-
-# The site and the proxy as container images. The wasm app is built INSIDE the
-# web image; the Pyodide runtime is NOT — it is read from
-# docker/pyodide-mt/served, which fetch-pyodide (or build-all.sh) produces, so
-# that a 70 MB prebuilt artifact never becomes an input to a wasm compile.
-# See docker/web/Dockerfile and docker-compose.yaml.
-[tasks.docker-build]
-description = "Build the snuffler-web (nginx) and snuffler-proxy container images"
-depends = ["fetch-pyrocko"]
-run = """
-set -eu
-[ -d docker/pyodide-mt/served ] || {
-  echo "docker/pyodide-mt/served is missing - run 'mise run fetch-pyodide' first" >&2
-  exit 1
-}
-docker build -f docker/web/Dockerfile -t snuffler-web .
-docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
-"""
-
-[tasks.docker-serve]
-description = "Run the containerized stack -> http://127.0.0.1:17683 (proxy on 17684)"
-run = "docker compose up"
-
-# --- Qt frontend track: the ORIGINAL PyQt5 snuffler, streamed to the browser ---
-# Fully independent of the egui frontend (own Docker image + port). Needs Docker.
-# See qt/README.md and plan/qt-frontend-feasibility.md.
-[tasks.qt-build]
-description = "Build the snuffler-qt Docker image (original PyQt5 snuffler + noVNC)"
-run = "docker build -t snuffler-qt qt"
-
-[tasks.qt-serve]
-description = "Run snuffler-qt -> open http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote"
-run = "docker run --rm --name snuffler-qt -p 6080:8080 -v \"$PWD/qt/make_demo.py:/opt/snuffler/make_demo.py:ro\" snuffler-qt"

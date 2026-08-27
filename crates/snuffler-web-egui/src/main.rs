@@ -1,7 +1,7 @@
 //! snuffler-web binary entry point: browser-only, mounted on the page canvas.
 
 #[cfg(not(target_arch = "wasm32"))]
-compile_error!("snuffler-web is browser-only. Run `mise run serve`.");
+compile_error!("snuffler-web is browser-only. Run `task serve`.");
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

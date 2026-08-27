@@ -95,7 +95,7 @@ manifest_model_files() {
 # The polarity is the whole point: as opt-in, the two switches disagreed silently
 # in exactly one direction — default features (app requests assets/models/) with
 # the env unset (nothing copied) — which is what the GitHub Pages workflow did,
-# since it drives trunk directly and never saw the mise task's env. The deploy
+# since it drove trunk directly and never saw the Task workflow's env. The deploy
 # succeeded and every pick run 404'd. Getting it wrong the other way round only
 # costs ~14 MB of unused files in dist.
 stage_seisbench_models() {
@@ -141,7 +141,7 @@ stage_seisbench_models() {
         done
         echo "  The default build has the \`embed-data\` feature on, so the app will" >&2
         echo "  request assets/models/<file> and 404. Export the weights, or build" >&2
-        echo "  lean (mise run build-lean, --no-default-features + a remote" >&2
+        echo "  lean (task build:lean, --no-default-features + a remote" >&2
         echo "  SNUFFLER_ONNX_MODEL_BASE_URL)." >&2
         exit 1
     fi
@@ -152,8 +152,8 @@ stage_seisbench_models() {
 # `-Oz` only buys download size, which no one is paying for over localhost, and it
 # is the single most expensive step of a rebuild (~60s on the app wasm) — it runs
 # on every save in trunk's watch loop, where it is pure latency. So it is skipped
-# for anything but a release build; `mise run serve` builds with the `serve` cargo
-# profile and TRUNK_PROFILE is `debug` there, while `mise run build` (and CI/Pages)
+# for anything but a release build; `task serve` builds with the `serve` cargo
+# profile and TRUNK_PROFILE is `debug` there, while `task build` (and CI/Pages)
 # passes --release and still gets the fully optimized wasm.
 optimize_app_wasm() {
     local optimized=()
@@ -197,7 +197,7 @@ optimize_app_wasm() {
 # which is the only thing a cache can be expected to honour.
 #
 # Rewriting the already-hashed main module means its name no longer matches its
-# bytes, so this requires the --no-sri builds (see mise.toml).
+# bytes, so this requires the --no-sri builds (see taskfile.yaml).
 patch_rayon_worker_import() {
     for dir in "${build_dirs[@]}"; do
         local main hash

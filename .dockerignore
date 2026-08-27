@@ -5,7 +5,7 @@
 #
 # docker/pyodide-mt/served/ is deliberately NOT excluded: the ~70 MB threaded
 # Pyodide 314 runtime is a build INPUT the web image ships verbatim, prepared on
-# the host by `mise run fetch-pyodide` (or built by build-all.sh).
+# the host by `task pyodide:fetch` (or built by `task pyodide:build`).
 
 .git
 .github

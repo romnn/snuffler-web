@@ -112,7 +112,7 @@ command_arguments = [
 # hashed layout it resolves to the site root (index.html) and the worker fails to
 # load — so the rayon pool never comes up. We rewrite it to the actual
 # `snuffler-web-<hash>.js`. No-op on the non-threaded build (no workerHelpers).
-# The threaded build also passes --no-sri (see mise.toml) so this edit doesn't
+# The threaded build also passes --no-sri (see taskfile.yaml) so this edit doesn't
 # trip Trunk's subresource-integrity hash for the snippet.
 #
 # The threaded Pyodide 314 runtime + wheels are staged into py-mt/ (loaded by
@@ -120,7 +120,7 @@ command_arguments = [
 # post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a
 # gitignored build artifact (docker/pyodide-mt/stage-web.sh) and so is absent on a
 # fresh checkout — where the build still succeeds but the app cannot boot past
-# "Downloading Python runtime…" until `mise run fetch-pyodide` has downloaded the
+# "Downloading Python runtime…" until `task pyodide:fetch` has downloaded the
 # deployed runtime (or build-all.sh has built one). The copy is skipped per file
 # when unchanged, to keep rebuilds cheap.
 [[hooks]]
