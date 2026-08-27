@@ -273,7 +273,7 @@ invariant to protect is the Pages deployment.
     silently breaks.
   - **Pages invariant:** the deploy workflow uploads Trunk's `dist/`. Set `[build]
     dist` in the moved Trunk.toml (repo-root `dist/` or crate-local — either is fine)
-    and point `.github/workflows/pages.yml`'s upload step and
+    and point `.github/workflows/pages.yaml`'s upload step and
     `docker/pyodide-mt/stage-web.sh`/post-build staging at the same location. Verify
     with a full `mise run build` + a served `dist/` smoke test before merging.
   - `.cargo/config.toml` (wasm rustflags, aliases) is path-independent — unchanged.
