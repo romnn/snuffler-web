@@ -1398,7 +1398,7 @@ fn go_to_selection(
         )
     };
     let (tmin, tmax) = snuffler_web_core::session::good_looking_time_range(
-        state.visible_length.samples(),
+        state.visible_length.jump_samples(),
         deltatmin,
         (state.tmin, state.tmax),
         tmin,

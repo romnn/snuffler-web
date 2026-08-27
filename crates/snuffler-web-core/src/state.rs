@@ -423,6 +423,9 @@ impl Colormap {
 /// Selecting an entry never moves the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisibleLength {
+    /// No budget: fetch every channel whatever its sampling rate and reduce what
+    /// comes back to what the canvas can show. See [`VisibleLength::samples`].
+    Adaptive,
     /// Up to 20,000 samples.
     Short,
     /// Up to 60,000 samples.
@@ -434,20 +437,52 @@ pub enum VisibleLength {
 }
 
 impl VisibleLength {
-    /// Returns the target sample count.
+    /// Upstream's own default budget (`config.py:73`, the first radio entry),
+    /// which is what a jump measures itself against when nothing else does.
+    const UPSTREAM_DEFAULT_SAMPLES: f64 = 20_000.0;
+
+    /// Returns the target sample count, or `None` for
+    /// [`VisibleLength::Adaptive`], which sets no target.
+    ///
+    /// Qt's four entries are a *fetch* budget: a channel sampled finer than the
+    /// window's share of it is not fetched at all, so widening the window makes
+    /// the high-rate channels disappear rather than coarsen. Adaptive spends the
+    /// budget the other way round — nothing is refused, and the bridge decimates
+    /// each fetched trace to the pixel budget the canvas asked for (`npx`), which
+    /// is what keeps a wide window affordable.
     #[must_use]
-    pub fn samples(self) -> f64 {
+    pub fn samples(self) -> Option<f64> {
         match self {
-            VisibleLength::Short => 20_000.0,
-            VisibleLength::Medium => 60_000.0,
-            VisibleLength::Long => 120_000.0,
-            VisibleLength::ExtraLong => 600_000.0,
+            VisibleLength::Adaptive => None,
+            VisibleLength::Short => Some(Self::UPSTREAM_DEFAULT_SAMPLES),
+            VisibleLength::Medium => Some(60_000.0),
+            VisibleLength::Long => Some(120_000.0),
+            VisibleLength::ExtraLong => Some(600_000.0),
         }
     }
+
+    /// Returns the sample count a window jump floors its width at
+    /// (`make_good_looking_time_range`, `pile_viewer.py:2766`).
+    ///
+    /// The jump needs a number even where the fetch wants none, so Adaptive lends
+    /// it upstream's default: `goto`, `g` and `G` land on the same window they
+    /// land on in Qt out of the box.
+    #[must_use]
+    pub fn jump_samples(self) -> f64 {
+        self.samples().unwrap_or(Self::UPSTREAM_DEFAULT_SAMPLES)
+    }
+
+    /// Whether this is the policy that fetches everything and decimates.
+    #[must_use]
+    pub const fn is_adaptive(self) -> bool {
+        matches!(self, VisibleLength::Adaptive)
+    }
+
     /// Returns the frontend label for this duration.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            VisibleLength::Adaptive => "Adaptive",
             VisibleLength::Short => "Short",
             VisibleLength::Medium => "Medium",
             VisibleLength::Long => "Long",
@@ -455,14 +490,32 @@ impl VisibleLength {
         }
     }
 
+    /// Returns what picking this entry does, for the menu's hover text.
+    #[must_use]
+    pub fn hint(self) -> &'static str {
+        match self {
+            VisibleLength::Adaptive => {
+                "Draw every channel whatever its sampling rate, reduced to what the \
+                 canvas can show. The four budgets below are snuffler's own, and drop \
+                 channels sampled finer than the window's share of them."
+            }
+            _ => {
+                "Snuffler's own fetch budget: channels sampled finer than this \
+                 window's share of it are not drawn at all."
+            }
+        }
+    }
+
     /// The inverse of [`VisibleLength::label`], for a choice restored from the
-    /// persisted settings (the labels are Qt's `snuffler.pf` setting keys).
+    /// persisted settings (the labels are Qt's `snuffler.pf` setting keys, plus
+    /// this frontend's own "Adaptive").
     #[must_use]
     pub fn from_wire(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|length| length.label() == value)
     }
     /// Durations in menu order.
-    pub const ALL: [VisibleLength; 4] = [
+    pub const ALL: [VisibleLength; 5] = [
+        VisibleLength::Adaptive,
         VisibleLength::Short,
         VisibleLength::Medium,
         VisibleLength::Long,
@@ -589,7 +642,7 @@ pub struct AppState {
     pub view_mode: ViewMode,
     /// Active time-domain trace theme.
     pub wiggle_theme: WiggleTheme,
-    /// Maximum duration allowed by the visible-length control.
+    /// The per-trace sample budget the visible-length control asks the bridge for.
     pub visible_length: VisibleLength,
     /// Whether trace extents have visible boxes.
     pub show_boxes: bool,
@@ -834,7 +887,7 @@ impl Default for AppState {
             subsort: Subsort::Nslc,
             view_mode: ViewMode::Wiggle,
             wiggle_theme: WiggleTheme::SnufflerQt,
-            visible_length: VisibleLength::Short,
+            visible_length: VisibleLength::Adaptive,
             show_boxes: true,
             clip_traces: true,
             // snuffler users expect colour-coded traces; default on.

@@ -199,7 +199,7 @@ tasks:
       # The bridge-level snuffling tests drive web/bridge.py's snuffling entry
       # points against real pyrocko, so they need the oracle environment; also
       # inlined so scenario names in CLI_ARGS never leak into pytest.
-      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python -m pytest -q tests/parity/test_bridge_snufflings.py
+      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py
       - uv run --no-project --python 3.12 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
 
   render:parity:tier1:
@@ -215,12 +215,12 @@ tasks:
       - uv run --no-project --python 3.12 --with pytest==8.4.2 --with numpy==2.4.3 python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py {{.CLI_ARGS}}
 
   test:parity:bridge:
-    desc: "bridge snuffling behaviour (marker scope, aggregation, failure contracts) against real pyrocko, no browser"
+    desc: "bridge behaviour against real pyrocko, no browser: snuffling marker scope, aggregation, failure contracts, and the Adaptive visible length"
     dir: "{{.ROOT_DIR}}"
     cmds:
       - mise run fetch-pyrocko
       - buf generate
-      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python -m pytest -q tests/parity/test_bridge_snufflings.py {{.CLI_ARGS}}
+      - uv run --no-project --python 3.12 --with pytest==8.4.2 --with pyqt5==5.15.10 --with numpy==2.4.3 --with protobuf==7.34.1 --with ./sources/pyrocko python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py {{.CLI_ARGS}}
 
   test:parity:inventory:
     desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"

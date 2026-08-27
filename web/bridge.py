@@ -1218,7 +1218,8 @@ def _prepare_cutout(
     tmin: float,
     tmax: float,
     *,
-    visible_length: float,
+    visible_length: Optional[float],
+    npx: int,
     hp: Optional[float],
     lp: Optional[float],
     demean: bool,
@@ -1236,7 +1237,9 @@ def _prepare_cutout(
     the same pyrocko code Qt calls.
 
     Stages, in the reference's order: derive `min_deltat_allow` — the finest
-    sampling the window can use, below which channels are not fetched at all;
+    sampling the window can use, below which channels are not fetched at all
+    (`visible_length` is None for this frontend's Adaptive policy, which drops
+    that floor entirely and decimates the payload instead);
     optionally snap the fetch window to an absolute power-of-two grid (Liberal
     Fetch); chop a tpad-padded window through `pile.chopper` (which degaps);
     demean each chop, skipping `tabu` traces; filter — one combined FFT pass, or
@@ -1259,21 +1262,29 @@ def _prepare_cutout(
     if p.is_empty():
         return []
 
-    nmax = float(visible_length) if visible_length > 0.0 else 20_000.0
     tsee = tmax - tmin
-    min_deltat_wo_decimate = tsee / nmax
-    min_deltat_w_decimate = min_deltat_wo_decimate / 32.0
+    if visible_length is None:
+        # Adaptive: no channel is refused, so there is no floor to derive. The
+        # decimation target is the canvas's own — two samples per bin, which is
+        # what a min/max envelope emits — and it is what 'Allow Downsampling'
+        # aims at here instead of a fixed budget's share of the window.
+        min_deltat_allow = 0.0
+        min_deltat_wo_decimate = tsee / max(1.0, 2.0 * float(npx))
+    else:
+        nmax = float(visible_length) if visible_length > 0.0 else 20_000.0
+        min_deltat_wo_decimate = tsee / nmax
+        min_deltat_w_decimate = min_deltat_wo_decimate / 32.0
 
-    min_deltat_allow = min_deltat_wo_decimate
-    if lp is not None:
-        target_deltat_lp = 0.25 / float(lp)
-        if target_deltat_lp > min_deltat_wo_decimate:
-            min_deltat_allow = min_deltat_w_decimate
+        min_deltat_allow = min_deltat_wo_decimate
+        if lp is not None:
+            target_deltat_lp = 0.25 / float(lp)
+            if target_deltat_lp > min_deltat_wo_decimate:
+                min_deltat_allow = min_deltat_w_decimate
 
-    # A power of *e*, not of ten — almost certainly an upstream slip for
-    # `log10`/`10**`, reproduced deliberately because it is the reference
-    # behaviour (see `min-deltat-allow` history in tests/parity).
-    min_deltat_allow = math.exp(int(math.floor(math.log(min_deltat_allow))))
+        # A power of *e*, not of ten — almost certainly an upstream slip for
+        # `log10`/`10**`, reproduced deliberately because it is the reference
+        # behaviour (see `min-deltat-allow` history in tests/parity).
+        min_deltat_allow = math.exp(int(math.floor(math.log(min_deltat_allow))))
 
     tmin_ = tmin
     tmax_ = tmax
@@ -1283,6 +1294,12 @@ def _prepare_cutout(
         tmax = math.ceil(tmax / tlen) * tlen
 
     tpad = min(_adequate_tpad(hp, lp), tsee * 3.0)
+
+    # The anti-alias downsample target only belongs in the key where the loop
+    # below actually runs: under Adaptive it follows `npx`, and keying on it
+    # unconditionally would throw the processed traces away on every resize.
+    decimate_ran = ads and lp is not None and not fft
+    decimate_key = _float_key(min_deltat_wo_decimate) if decimate_ran else None
 
     vec = (
         tmin,
@@ -1297,6 +1314,7 @@ def _prepare_cutout(
         fft,
         lphp,
         min_deltat_allow,
+        decimate_key,
         _float_key(rotate),
         ads,
         remove_resp,
@@ -1406,6 +1424,70 @@ def _slice_segment(
     if stop <= start:
         return None
     return y[start:stop], seg_tmin + start * deltat, deltat, start
+
+
+def _stable_bin_stride(samples_per_bin: float) -> int:
+    """Round a bin width up onto a quarter-octave ladder.
+
+    The envelope below bins on an absolute sample grid so that panning slides the
+    trace instead of reshuffling which samples are extrema. That only holds while
+    the stride itself holds still, and a stride taken straight from the window
+    would change with every pixel of zoom. Quantising to powers of 2**0.25 keeps
+    it constant across small zooms and never more than 19 % coarser than asked.
+    """
+    stride = max(1, int(math.ceil(samples_per_bin)))
+    if stride <= 1:
+        return 1
+    value = 1.0
+    while value < stride:
+        value *= 2.0**0.25
+    return max(1, int(math.ceil(value)))
+
+
+def _display_envelope(
+    y: np.ndarray, deltat: float, t0: float, bins: int
+) -> Tuple[np.ndarray, float, float]:
+    """Reduce a slice to about ``bins`` bins, as the min and max of each.
+
+    This is what the Adaptive visible length spends instead of refusing channels:
+    every channel is fetched at its own rate, and the payload is cut down here to
+    the resolution the canvas can draw. Two samples per bin — the bin's extremes,
+    in the order they occur — emitted at half the bin width, so the run stays a
+    uniform span (the renderer draws nothing else) and the peak inside each bin
+    survives, which plain subsampling would drop and an anti-alias decimation
+    would smooth away.
+
+    Bins are anchored to the trace's absolute sample grid rather than to the
+    slice, so a pan moves the trace without changing which sample is a peak.
+    Up to one bin at each end falls outside the grid and is dropped; the slice
+    carries four samples of margin for exactly that kind of trim.
+
+    Returns the payload with its new sample spacing and start time, or the input
+    unchanged when it is already at or below the target.
+    """
+    n = int(y.size)
+    if bins <= 0 or n <= 2 * bins:
+        return y, deltat, t0
+    stride = _stable_bin_stride(n / float(bins))
+    if stride < 2:
+        return y, deltat, t0
+    # Which absolute sample the slice starts on; deltat divides the trace's own
+    # tmin exactly, so this is the index pyrocko would give it.
+    base = int(math.floor(t0 / deltat + 0.5))
+    first_bin = -(-base // stride)
+    last_bin = (base + n) // stride
+    nbins = int(last_bin - first_bin)
+    if nbins < 2:
+        return y, deltat, t0
+    start = int(first_bin * stride - base)
+    block = np.asarray(y[start : start + nbins * stride], dtype=np.float64).reshape(nbins, stride)
+    lo = block.min(axis=1)
+    hi = block.max(axis=1)
+    rising = block.argmin(axis=1) <= block.argmax(axis=1)
+    out = np.empty(nbins * 2, dtype=np.float64)
+    out[0::2] = np.where(rising, lo, hi)
+    out[1::2] = np.where(rising, hi, lo)
+    return out, deltat * stride * 0.5, t0 + start * deltat
 
 
 def _waterfall_row_strips(
@@ -1781,7 +1863,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
 
     Returns (ViewMeta, ys).
     For wiggles `ys` holds uniform samples at the native or anti-alias-decimated
-    rate.
+    rate — or, under the Adaptive visible length, at the bin rate of the min/max
+    envelope `_display_envelope` reduced them to.
     For the waterfall it holds per-track normalized amplitude strips for the
     requested track page.
     """
@@ -1826,7 +1909,11 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     wf_abs = bool(req.wf_abs)
     wf_integrate = bool(req.wf_integrate)
     wf_color_scale = req.wf_color_scale or "lin"
-    visible_length = float(req.visible_length) if req.HasField("visible_length") else 20_000.0
+    # None is Adaptive: no fetch budget at all, decimated to `npx` on the way out.
+    adaptive_visible_length = bool(req.adaptive_visible_length)
+    visible_length: Optional[float] = None
+    if not adaptive_visible_length:
+        visible_length = float(req.visible_length) if req.HasField("visible_length") else 20_000.0
     liberal_fetch = bool(req.liberal_fetch)
 
     _VIEW_NOTICES.clear()
@@ -1834,6 +1921,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         tmin,
         tmax,
         visible_length=visible_length,
+        npx=npx,
         hp=hp,
         lp=lp,
         demean=demean,
@@ -1972,10 +2060,14 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if data_sliced is None:
                 continue
             yview, ytmin, deltat, _sample_offset = data_sliced
-            # The payload is the samples themselves, always: with Allow
-            # Downsampling on the data was already anti-alias decimated by
-            # `Trace.downsample` inside the cutout, exactly as Qt decimates —
-            # there is no separate display envelope to substitute for it.
+            # Under a fixed visible length the payload is the samples themselves,
+            # always: with Allow Downsampling on the data was already anti-alias
+            # decimated by `Trace.downsample` inside the cutout, exactly as Qt
+            # decimates — there is no separate display envelope to substitute for
+            # it. Adaptive is the case that needs one, because nothing bounded
+            # what was fetched.
+            if adaptive_visible_length:
+                yview, deltat, ytmin = _display_envelope(yview, deltat, ytmin, npx)
             if yview.size:
                 spans.append(
                     _SpanBuild(ytmin - tmin, deltat, int(yview.size), yview.astype("<f4"), tr)

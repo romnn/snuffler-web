@@ -52,6 +52,12 @@ message ViewParams {
   // The fetch window is the demean/filter extent, so this changes the numbers —
   // exactly as it does in Qt (pile_viewer.py:3618).
   bool liberal_fetch = 38;
+  // This frontend's own 'Adaptive' visible length, which replaces the budget
+  // rather than raising it: no `min_deltat_allow` floor, so no channel is ever
+  // refused, and what comes back is decimated to `npx` — a min/max envelope per
+  // bin, which is the resolution the canvas can draw anyway. `visible_length` is
+  // ignored while this is set, and is sent unset.
+  bool adaptive_visible_length = 39;
 }
 
 // One contiguous run of payload on a track.

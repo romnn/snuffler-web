@@ -38,13 +38,22 @@ const PNG_EXPORT_SCALE: f32 = 2.0;
 
 // `npx` is a per-trace bin budget for Python's min/max envelope. The display-scale
 // bin budget keeps transport and renderer work bounded when zoomed far out.
+//
+// One bin per physical pixel is what makes the envelope invisible: the two
+// extremes of a bin land in the pixel column they came from, so an Adaptive
+// window draws the same trace a fixed visible length draws from raw samples. The
+// total-points cap is a backstop for a very tall stack, not the usual governor —
+// set below what a screenful of rows at full width costs, it would coarsen every
+// trace to a fraction of the canvas's resolution and the traces would visibly
+// blockify.
 const MIN_VIEW_SAMPLE_BINS: f32 = 64.0;
 const MAX_VIEW_SAMPLE_BINS_PER_TRACE: f32 = 8192.0;
 const WIGGLE_BINS_PER_PHYSICAL_PIXEL: f32 = 1.0;
 const WATERFALL_BINS_PER_PHYSICAL_PIXEL: f32 = 1.0;
-const MAX_VISIBLE_WIGGLE_POINTS: f32 = 16_000.0;
+const MAX_VISIBLE_WIGGLE_POINTS: f32 = 160_000.0;
 const MAX_VISIBLE_WATERFALL_CELLS: f32 = 400_000.0;
-const WIGGLE_POINTS_PER_BIN: f32 = 4.0;
+/// The envelope emits a bin's minimum and its maximum, in the order they occur.
+const WIGGLE_POINTS_PER_BIN: f32 = 2.0;
 const WATERFALL_CELLS_PER_BIN: f32 = 2.0;
 
 /// The egui application: UI state plus the bridge to pyrocko (via Pyodide).
@@ -672,8 +681,10 @@ impl App {
                 for vl in VisibleLength::ALL {
                     // A target sample count, not a time cap: picking one never moves
                     // the window. It feeds `min_deltat_allow` in the bridge, exactly
-                    // as snuffler's radio group feeds `prepare_cutout2`.
-                    ui.selectable_value(&mut self.session.state.visible_length, vl, vl.label());
+                    // as snuffler's radio group feeds `prepare_cutout2` — except for
+                    // Adaptive, which is this frontend's own and feeds it nothing.
+                    ui.selectable_value(&mut self.session.state.visible_length, vl, vl.label())
+                        .on_hover_text(vl.hint());
                 }
             });
             ui.separator();

@@ -28,9 +28,13 @@ can drift the same way the first one can.
 
 The web side is `web/bridge.py`, imported directly with `PYTHONPATH=web/proto:web` and
 called at `_get_view_data` — the same entry point the Pyodide worker calls. Asking it
-for **undecimated** samples turns out to be simple: `allow_downsampling = false` makes
-`_decimate` return raw samples, which answers the plan's open question about how to
-compare like with like.
+for **undecimated** samples turns out to be simple: every scenario names one of Qt's
+fixed visible lengths, and on that path the payload *is* the chopped samples, at the
+trace's own rate unless `allow_downsampling` asked `Trace.downsample` for otherwise —
+which answers the plan's open question about how to compare like with like. The
+frontend's own Adaptive policy, which decimates instead of refusing channels, is the
+one thing tier 1 never asks for; it has no Qt counterpart, and
+`test_adaptive_visible_length.py` holds it to its own claims instead.
 
 Each scenario also runs the web side twice and fingerprints the loaded pile before and
 after, because a view computation must be a pure function of the data and must leave it

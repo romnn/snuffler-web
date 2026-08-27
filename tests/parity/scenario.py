@@ -33,7 +33,11 @@ SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 #
 # `visible_length` is Qt's `PileViewerMain.visible_length`, which despite the name
 # `prepare_cutout2` uses as a target *sample count* (`nmax`) when it decides which
-# sampling rates are worth fetching. 20000 is the upstream default.
+# sampling rates are worth fetching. 20000 is the upstream default. A float is all
+# it can be: the frontend's own Adaptive policy — its boot default, and no part of
+# snuffler — is deliberately unreachable from here, because there is nothing on the
+# Qt side to compare it against (`known_gaps.toml`,
+# `adaptive-visible-length-default`).
 DEFAULTS: Dict[str, Any] = {
     "highpass": None,
     "lowpass": None,

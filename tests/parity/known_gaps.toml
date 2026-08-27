@@ -1421,3 +1421,41 @@ stationxml loaded over it along — per-source ownership of stations and
 responses would preserve it, and is deliberately not built while every
 user-owned load path appends.
 """
+
+[[manual]]
+key = "adaptive-visible-length-default"
+bucket = "soft"
+title = "The default visible length is this frontend's own 'Adaptive', which snuffler does not have"
+enforce = "`tests/parity/test_adaptive_visible_length.py`, run with the tier-1 suite: it asserts the policy on both counts — a channel a fixed budget refuses is drawn under Adaptive, and the decimated payload keeps the extremes of the raw samples it replaced. What no tier can see is the *default*: tier 1 pins a Qt-comparable budget in every scenario (`scenario.DEFAULTS['visible_length']`, a float, which cannot spell Adaptive), and tier 3 does not snapshot the radio group."
+why = """
+Snuffler's Visible length is four fixed sample-count budgets, and the budget is
+spent by *refusing channels*: `prepare_cutout2` turns the chosen `nmax` into
+`min_deltat_allow` and does not fetch anything sampled finer than the window's
+share of it (pile_viewer.py:3597). On a Qt desktop that is a reasonable trade —
+the alternative is drawing a million samples into a 1500-pixel-wide track — and
+the first entry, Short, is upstream's default.
+
+Its cost is that widening the window makes data *disappear*: on the `tohoku`
+example the three 100 Hz strong-motion channels go blank at the default budget
+while the 20 Hz broadbands stay, which reads as missing data rather than as a
+fetch policy. This port has a cheaper way out of the same trade, because its
+canvas already tells the bridge how many bins it can draw (`npx`): fetch every
+channel, and decimate what comes back to the min and max of each bin. The peak
+inside a bin survives — which is the part that matters in a seismogram, and the
+part plain subsampling loses — so the drawn trace is the one the raw samples
+would have drawn. Verified: on `tohoku`, Adaptive and Short differ by ~1 % of
+pixels on the channels both fetch, and Adaptive additionally draws the three
+Short leaves blank.
+
+So this frontend adds a fifth entry, Adaptive, and boots into it. Qt's four are
+kept, unchanged and exact, next to it — the divergence is the *default*, not a
+replacement, and picking any of the four puts the port back on snuffler's own
+numbers.
+
+This is signed off rather than open work. The reason it is written down anyway is
+that it moves what the app shows out of the box, which is the loudest kind of
+difference a user meets and the easiest kind to mistake for a bug in either
+direction: a channel present here and absent in Qt is this entry, not a fetch
+defect, and a channel absent here after someone picks Short is upstream's
+behaviour faithfully reproduced, not a regression.
+"""

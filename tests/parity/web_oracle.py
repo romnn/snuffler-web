@@ -113,6 +113,10 @@ def params(scenario: Scenario, tmin: float, tmax: float) -> view_pb2.ViewParams:
         show_scale_ranges=bool(state["show_scale_ranges"]),
         show_scale_axes=bool(state["show_scale_axes"]),
         visible_length=float(state["visible_length"]),
+        # Never the frontend's own Adaptive policy: it has no counterpart in Qt,
+        # so tier 1 always asks both sides for the same fixed sample budget
+        # (`known_gaps.toml`, `adaptive-visible-length-default`).
+        adaptive_visible_length=False,
         liberal_fetch=bool(state["liberal_fetch"]),
         # Every track, not a page: a scenario compares the whole stack or none of it.
         track_offset=0,

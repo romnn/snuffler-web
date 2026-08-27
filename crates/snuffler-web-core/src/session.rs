@@ -102,7 +102,7 @@ impl Session {
     pub fn go_to_time(&mut self, time: f64, length: Option<f64>) {
         let target_tmax = time + length.unwrap_or(0.0);
         let (tmin, tmax) = good_looking_time_range(
-            self.state.visible_length.samples(),
+            self.state.visible_length.jump_samples(),
             self.scene_deltatmin(),
             (self.state.tmin, self.state.tmax),
             time,
@@ -359,7 +359,8 @@ impl Session {
             wf_reverse: state.wf_reverse,
             track_offset: state.track_offset as u64,
             track_count: state.ntracks_shown as u64,
-            visible_length: Some(state.visible_length.samples()),
+            visible_length: state.visible_length.samples(),
+            adaptive_visible_length: state.visible_length.is_adaptive(),
             liberal_fetch: state.liberal_fetch,
         }
     }
@@ -648,15 +649,22 @@ mod tests {
     }
 
     // Snuffler's visible_length is a sample-count target the bridge turns into
-    // min_deltat_allow; the boot default is upstream's first radio entry.
+    // min_deltat_allow. The boot default asks for no target at all: Adaptive
+    // fetches every channel and lets the bridge decimate to the canvas.
     #[test]
     fn view_request_carries_visible_length_and_liberal_fetch() {
         let mut session = session();
         session.state.liberal_fetch = true;
 
         let params = session.view_params(50);
-        assert_eq!(params.visible_length, Some(VisibleLength::Short.samples()));
+        assert_eq!(params.visible_length, None);
+        assert!(params.adaptive_visible_length);
         assert!(params.liberal_fetch);
+
+        session.state.visible_length = VisibleLength::Short;
+        let params = session.view_params(50);
+        assert_eq!(params.visible_length, VisibleLength::Short.samples());
+        assert!(!params.adaptive_visible_length);
     }
 
     #[test]
