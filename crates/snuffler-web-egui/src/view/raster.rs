@@ -11,6 +11,10 @@ use resvg::{tiny_skia, usvg};
 /// Embedded font so SVG `<text>` renders the same as the on-screen view — resvg
 /// has no system fonts to fall back on under wasm.
 const UBUNTU_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Regular.ttf");
+/// The canvas is drawn bold, so the exported PNG needs the bold face too — resvg
+/// resolves `font-weight: bold` against this database and would otherwise fall back
+/// to the regular one, exporting an image the app never showed.
+const UBUNTU_BOLD: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Bold.ttf");
 
 /// Rasterize `svg` to PNG bytes at `scale`× its declared point size, giving a
 /// crisp high-DPI image. `width`/`height` are the SVG viewBox size in points.
@@ -28,6 +32,7 @@ pub fn rasterize_svg(svg: &str, width: f32, height: f32, scale: f32) -> Option<V
     {
         let db = opt.fontdb_mut();
         db.load_font_data(UBUNTU_REGULAR.to_vec());
+        db.load_font_data(UBUNTU_BOLD.to_vec());
         db.set_sans_serif_family("Ubuntu");
     }
     let tree = usvg::Tree::from_str(svg, &opt).ok()?;

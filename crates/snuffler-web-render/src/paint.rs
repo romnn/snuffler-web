@@ -19,11 +19,14 @@ use crate::draw::DrawTarget;
 use crate::layout::Layout;
 use crate::palette::{Palette, Theme};
 
-const LABEL_PT: f32 = 12.5;
+/// Track labels and time-axis labels, a shade larger than the chrome's text and
+/// bold like snuffler's: Qt paints these with the application's default font at
+/// `setBold(True)`, which measures about 7 % wider than 12.5 pt did here.
+const LABEL_PT: f32 = 13.5;
 /// Snuffler's `MIN_LABEL_SIZE_PT` (`pile_viewer.py:44`): below this the label is
 /// drawn only on the hovered row, at exactly this size.
 const MIN_LABEL_SIZE_PT: f32 = 6.0;
-const AXIS_PT: f32 = 12.5;
+const AXIS_PT: f32 = 13.5;
 /// Size of the per-track y-range annotations ("Show scale ranges").
 const SCALE_PT: f32 = 10.0;
 
@@ -412,7 +415,7 @@ pub fn paint(
     // Stroke colors by coloring key; the row tints and the colored strokes both
     // look their key up here.
     let qt_colors = colors_exactly_like_qt(state.wiggle_theme);
-    let stroke_colors = if state.color_traces {
+    let stroke_colors = if state.color_traces() {
         stroke_color_map(
             &view.meta.color_keys,
             &view.meta.tracks,
@@ -777,7 +780,7 @@ pub fn paint(
                 Vec::new()
             };
 
-            let colored_strokes = state.color_traces;
+            let colored_strokes = state.color_traces();
             // One polyline per span, never one across them: the segments of a
             // gapped channel share a row but must not be joined by a line drawn
             // through data that is not there.
@@ -956,8 +959,8 @@ pub fn paint(
             let label_pos = pos2(track_area.left() + 10.0, mid);
             let size = target.measure(&t.label, pt);
             let bg = Rect::from_min_size(pos2(label_pos.x, label_pos.y - size.y * 0.5), size)
-                .expand(3.0);
-            target.fill_rect(bg, 3.0, pal.label_bg);
+                .expand(pal.label_pad);
+            target.fill_rect(bg, pal.label_rounding, pal.label_bg);
             target.text(label_pos, Align2::LEFT_CENTER, &t.label, pt, pal.axis_text);
         }
     }

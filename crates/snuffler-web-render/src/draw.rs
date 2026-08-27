@@ -108,7 +108,7 @@ impl SvgTarget {
              width=\"{w:.0}\" height=\"{h:.0}\" viewBox=\"{origin:.2} {origin:.2} {vw:.2} {vh:.2}\">"
         );
         out.push_str(
-            "<defs><style>text{font-family:'Ubuntu',system-ui,-apple-system,sans-serif;}</style>",
+            "<defs><style>text{font-family:'Ubuntu',system-ui,-apple-system,sans-serif;font-weight:bold;}</style>",
         );
         out.push_str(&self.defs);
         out.push_str("</defs>");
@@ -207,6 +207,13 @@ impl DrawTarget for SvgTarget {
         };
         let _ = write!(
             self.body,
+            // Bold because snuffler's canvas is: it sets a bold font before painting
+            // anything (pile_viewer.py:3203), and the egui target draws the same face,
+            // so an exported image matches what the app showed. The weight rides the
+            // element rather than the stylesheet above so that it survives a consumer
+            // with no CSS engine — the rasterizer behind the parity artifacts is one
+            // such, and its font database must carry the bold face for this to
+            // resolve (see `parity_artifacts.rs` and `view::raster`).
             "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\" text-anchor=\"{}\" dominant-baseline=\"{}\">{}</text>",
             pos.x,
             pos.y,

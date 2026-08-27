@@ -37,6 +37,14 @@ pub struct Palette {
     pub sep: Color32,
     /// Background behind track labels.
     pub label_bg: Color32,
+    /// Padding around a track label's text. Snuffler fills the text's own bounding
+    /// rect, unpadded (`draw_label`, gui/util.py:294), which is why the Qt theme
+    /// carries zero: a plate wider than its text reads as a box drawn over the
+    /// trace rather than as a backing the label sits on.
+    pub label_pad: f32,
+    /// Corner radius of that plate — square for snuffler's, which draws a plain
+    /// `fillRect`.
+    pub label_rounding: f32,
     /// Pointer crosshair.
     pub cursor: Color32,
 }
@@ -81,6 +89,8 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
             axis_text: Color32::from_rgb(85, 87, 83),
             sep: Color32::from_rgb(214, 214, 214),
             label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
+            label_pad: 0.0,
+            label_rounding: 0.0,
             cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
         },
         (Theme::Light, WiggleTheme::SnufflerWeb) => Palette {
@@ -91,6 +101,8 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
             axis_text: Color32::from_rgb(90, 96, 108),
             sep: Color32::from_rgb(223, 226, 232),
             label_bg: Color32::from_rgba_unmultiplied(250, 250, 251, 214),
+            label_pad: 3.0,
+            label_rounding: 3.0,
             cursor: Color32::from_rgba_unmultiplied(38, 42, 51, 46),
         },
         (Theme::Dark, WiggleTheme::SnufflerWeb) => Palette {
@@ -101,6 +113,8 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
             axis_text: Color32::from_rgb(150, 157, 172),
             sep: Color32::from_rgb(45, 49, 59),
             label_bg: Color32::from_rgba_unmultiplied(20, 22, 28, 214),
+            label_pad: 3.0,
+            label_rounding: 3.0,
             cursor: Color32::from_rgba_unmultiplied(226, 229, 236, 52),
         },
     }

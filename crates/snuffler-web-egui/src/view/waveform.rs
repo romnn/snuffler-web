@@ -191,7 +191,11 @@ pub fn render_svg(
     let mut target = SvgTarget::new(size.x, size.y, images, move |text, size| {
         measure_ctx.fonts_mut(|fonts| {
             fonts
-                .layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE)
+                .layout_no_wrap(
+                    text.to_owned(),
+                    crate::view::canvas_font(size),
+                    Color32::WHITE,
+                )
                 .size()
         })
     });

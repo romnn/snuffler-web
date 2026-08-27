@@ -29,7 +29,3 @@ target = "View/Show Zero Lines"
 [[step]]
 action = "menu"
 target = "Options/Demean"
-
-[compare]
-expect_divergence = ["color-traces-default"]
-reason = "one default differs; everything else must track"

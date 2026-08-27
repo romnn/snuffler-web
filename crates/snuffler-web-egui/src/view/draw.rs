@@ -54,7 +54,7 @@ impl DrawTarget for EguiTarget<'_> {
 
     fn text(&mut self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
         self.current()
-            .text(pos, align, text, egui::FontId::proportional(size), color);
+            .text(pos, align, text, crate::view::canvas_font(size), color);
     }
 
     fn measure(&self, text: &str, size: f32) -> Vec2 {
@@ -62,7 +62,7 @@ impl DrawTarget for EguiTarget<'_> {
             fonts
                 .layout_no_wrap(
                     text.to_owned(),
-                    egui::FontId::proportional(size),
+                    crate::view::canvas_font(size),
                     Color32::WHITE,
                 )
                 .size()

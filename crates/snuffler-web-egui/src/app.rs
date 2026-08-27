@@ -36,6 +36,10 @@ struct RightReadout {
 #[cfg(feature = "svg-raster")]
 const PNG_EXPORT_SCALE: f32 = 2.0;
 
+/// The egui font family the waveform canvas draws every label in — bold, as
+/// snuffler's canvas is. Registered in [`configure_look`].
+pub const CANVAS_FAMILY: &str = "canvas";
+
 // `npx` is a per-trace bin budget for Python's min/max envelope. The display-scale
 // bin budget keeps transport and renderer work bounded when zoomed far out.
 //
@@ -155,20 +159,50 @@ fn configure_look(ctx: &egui::Context) {
         .entry(Proportional)
         .or_default()
         .push("jetbrains_mono".to_owned());
+    // Everything snuffler paints onto its canvas is bold: `TimeAx.drawit` sets it on
+    // the axis (pile_viewer.py:543), and the paint pass sets a bold font before it
+    // draws anything else (pile_viewer.py:3203, applied at :3229), which is what
+    // makes its track labels and tick numbers read at a glance. The canvas asks for
+    // this family by name; the chrome around it keeps the regular one.
+    fonts.font_data.insert(
+        "ubuntu_bold".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Ubuntu-Bold.ttf"
+        ))),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(CANVAS_FAMILY.into()),
+        vec![
+            "ubuntu_bold".to_owned(),
+            // Fallbacks for what Ubuntu Bold has no glyph for — the arrows and the
+            // per-track ± the regular stack already covers.
+            "jetbrains_mono".to_owned(),
+            "Ubuntu-Light".to_owned(),
+        ],
+    );
     ctx.set_fonts(fonts);
 
-    let mut style = (*ctx.global_style()).clone();
-    style.text_styles = [
-        (TextStyle::Heading, FontId::new(19.0, Proportional)),
-        (TextStyle::Body, FontId::new(14.5, Proportional)),
-        (TextStyle::Monospace, FontId::new(13.5, Monospace)),
-        (TextStyle::Button, FontId::new(14.5, Proportional)),
-        (TextStyle::Small, FontId::new(12.0, Proportional)),
-    ]
-    .into();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(8.0, 4.0);
-    ctx.set_global_style(style);
+    // Both styles, not the active one: egui keeps a `Style` per theme, and
+    // `set_global_style` writes only whichever is current — so the sizes below
+    // vanished the moment the boot theme was applied, and would have vanished again
+    // on any light/dark switch. `all_styles_mut` is what makes them the app's.
+    ctx.all_styles_mut(|style| {
+        // Some 18 % over egui's defaults, which are tuned for dense tool windows
+        // rather than for an app somebody reads for hours while measuring a
+        // seismogram against it. The canvas is *not* scaled with this: its labels are
+        // held to snuffler's own metrics (`LABEL_PT`, `AXIS_PT` in the render crate)
+        // and growing them here would walk that parity back.
+        style.text_styles = [
+            (TextStyle::Heading, FontId::new(22.0, Proportional)),
+            (TextStyle::Body, FontId::new(17.0, Proportional)),
+            (TextStyle::Monospace, FontId::new(16.0, Monospace)),
+            (TextStyle::Button, FontId::new(17.0, Proportional)),
+            (TextStyle::Small, FontId::new(14.5, Proportional)),
+        ]
+        .into();
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+    });
 }
 
 impl App {
@@ -739,10 +773,19 @@ impl App {
                 egui::Checkbox::new(&mut self.session.state.clip_traces, "Clip traces"),
             );
             ui.checkbox(&mut self.session.state.show_boxes, "Show boxes");
-            ui.add_enabled(
-                !waterfall,
-                egui::Checkbox::new(&mut self.session.state.color_traces, "Color traces"),
-            );
+            // Backed by an Option like the separators below: the checkbox shows what
+            // the theme is actually doing, and clicking it records a choice that
+            // outlives a theme switch.
+            let mut colored = self.session.state.color_traces();
+            if ui
+                .add_enabled(
+                    !waterfall,
+                    egui::Checkbox::new(&mut colored, "Color traces"),
+                )
+                .changed()
+            {
+                self.session.state.show_color_traces = Some(colored);
+            }
             ui.checkbox(&mut self.session.state.antialiasing, "Antialiasing");
             ui.separator();
             ui.add_enabled(

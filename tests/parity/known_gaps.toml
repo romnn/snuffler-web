@@ -422,31 +422,6 @@ keep their inline descriptions and hover text as before. Signed off: the index t
 menu owes the user is there, in the shape the architecture has.
 """
 
-[[numeric]]
-key = "color-traces-default"
-bucket = "soft"
-checks = ["menu_state"]
-title = "'Color Traces' starts on in the web port and off in Qt"
-why = """
-Qt adds the menu item without a `setChecked`, so it starts unchecked; the web starts
-it on, and that is the deliberate choice. Colour is how the web frontend distinguishes
-the members of a location-grouped row, and its own Snuffler Web theme is built around
-coloured strokes rather than a wash behind them — booting monochrome would hide the
-thing the port does better than upstream until the user found a checkbox.
-
-This entry used to add that the difference was "menu state, never pixels", because
-the flag was inert under the default Snuffler Qt theme. That is no longer true, and
-the reason is a fix: the Qt theme now colors its strokes exactly as snuffler does
-(see `color-traces-theming`), so the option is live in every theme and the port boots
-*colored* where snuffler boots monochrome. Owning that is the point — the two sides
-now do the same thing with the flag and disagree only about where it starts, which is
-a smaller and far more honest difference than an option that quietly did nothing.
-
-No tier observes the pixel half; tier 3 pins the checkbox. Strict, because the
-checkbox disagreeing at boot is exactly what that tier reads: if either side's
-default moves, this entry has to move with it.
-"""
-
 [[feature]]
 qt_prefix = "<ctrl> + "
 bucket = "soft"
@@ -550,38 +525,58 @@ back to the per-track label when the coloring key is empty, so single-location d
 stays varied where snuffler would paint every trace alike. It does not claim to be
 snuffler; the Qt theme is where fidelity lives, and it is light-only for the reason
 `qt-theme-residual-chrome` gives.
+
+The *default* follows the same split, and used to be a divergence in its own right
+(`color-traces-default`, removed with the entry that excused it). Qt adds the menu
+item without a `setChecked` (`pile_viewer.py:1076`), so upstream boots monochrome
+strokes over colored trace boxes; the port booted colored under every theme, which
+made the theme claiming fidelity the one place the difference showed. `Color Traces`
+is now backed by an `Option<bool>` that follows the theme until the user sets it:
+off under Snuffler Qt, on under Snuffler Web, honoured under both once chosen. Tier
+3 reads the boot checkbox and now sees the two agree — which is why nothing excuses
+this any more.
 """
 
 [[manual]]
 key = "qt-theme-residual-chrome"
 bucket = "soft"
 todo = true
-title = "What the Snuffler Qt theme still does not copy, on the time axis"
-enforce = "a pixel check on the wiggle canvas against a `qt_oracle` PNG of the same scenario — the oracle already renders one (`want_png`), and nothing yet diffs it"
+title = "What the Snuffler Qt theme has been held against snuffler, and what has not"
+enforce = "a pixel check on the wiggle canvas against a `qt_oracle` PNG of the same scenario — the oracle already renders one (`want_png`), and nothing yet diffs it. Until that exists the comparisons below are an agent reading the two PNGs side by side, which is what the screenshots are written for."
 why = """
 The Snuffler Qt theme is the one that claims fidelity, so what it still gets wrong
-belongs written down rather than assumed cosmetic. Verified against a rendered
-`qt_oracle` PNG of `bonin-subsort-grouped`.
+belongs written down rather than assumed cosmetic. Verified against rendered
+`qt_oracle` PNGs of `bonin-subsort-grouped` and `demo-raw-full`.
 
-**The time axis is bold in Qt and regular here.** `TimeAx.drawit` sets
-`font.setBold(True)` (`pile_viewer.py:542`) before drawing tick labels; the port draws
-them at `AXIS_PT` in the default weight. One line to change, left until something
-actually compares the rendering, because guessing at font metrics without a pixel diff
-is how the axis layout drifts.
+**The canvas text is bold now, as snuffler's is.** `TimeAx.drawit` sets
+`font.setBold(True)` (`pile_viewer.py:542`) for the tick labels, and the paint pass
+sets a bold font before it draws anything else (`:3203`, applied at `:3229`), so every
+label snuffler puts on its canvas is bold. This entry used to record that the port
+drew them in the default weight — measurably: on `demo-raw-full` a tick label carried
+0.081 of its box in ink against Qt's 0.183. The port now ships Ubuntu Bold and draws
+the canvas in it (`view::canvas_font`, and `font-weight` on the SVG path so an export
+matches), which closed that to 0.154 against 0.221 and the glyph width to within 3 %.
+A pixel check would still say it better than a measurement of one label does.
 
-**The axis label layout is snuffler's now.** The second and third rows draw centred
+**The axis label layout is snuffler's.** The second and third rows draw centred
 under the tick that earned them with the left-edge fallback when none did, the
 abbreviation ladder steps `l0` to `l0_brief` to nothing against `pinc_approx*0.9`,
 and the between-ticks formats take their half-interval `ushift` — all in
 `timeaxis.rs`/`paint.rs`, pinned by unit tests against values from snuffler's own
-`TimeScaler`. What remains of the axis is the bold weight alone, which needs the
-same pixel check as the rest of this entry to land honestly.
+`TimeScaler`.
+
+**The track label chip is snuffler's too.** `draw_label` fills the text's own
+bounding rect with a white brush at alpha 100 (`gui/util.py:294`, `pile_viewer.py:3230`)
+— square and unpadded. The port had the brush right and the geometry wrong, padding it
+three pixels and rounding the corners, which read as a box over the trace rather than a
+backing under the text; `Palette::label_pad`/`label_rounding` are zero under this theme
+and keep the rounded plate for Snuffler Web, which was designed with it.
 
 Recorded because it was *found*, not because it was designed: it turned up on a direct
 question about whether this theme was fully at parity, in a part of the rendering no
 tier looks at. Treat the list above as what has been examined rather than as what
-differs — the track label chip, the marker drawing, the scale annotations and the whole
-waterfall path have never been held against snuffler at all.
+differs — the marker drawing, the scale annotations and the whole waterfall path have
+never been held against snuffler at all.
 
 **Scope: light only, and that is now structural.** This entry used to carry a second
 half about a dark variant of this theme. There is no such thing any more.

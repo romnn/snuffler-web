@@ -175,6 +175,20 @@ impl WiggleTheme {
         matches!(self, WiggleTheme::SnufflerWeb)
     }
 
+    /// Whether this theme colors the trace strokes by their coloring key, absent an
+    /// explicit choice from the user.
+    ///
+    /// Snuffler adds `Color Traces` to its View menu without a `setChecked`
+    /// (`pile_viewer.py:1076`), so upstream boots monochrome over colored trace
+    /// boxes. [`Self::SnufflerQt`] is the theme that claims fidelity, so it boots
+    /// the same way. [`Self::SnufflerWeb`] is built the other way round — colored
+    /// strokes are how it tells the members of a location-grouped row apart — and
+    /// booting it monochrome would hide that until the user found a checkbox.
+    #[must_use]
+    pub const fn default_color_traces(self) -> bool {
+        matches!(self, WiggleTheme::SnufflerWeb)
+    }
+
     /// Whether this theme pins the canvas to light regardless of the app's
     /// light/dark preference.
     ///
@@ -656,7 +670,12 @@ pub struct AppState {
     /// Whether traces are clipped to their own rows.
     pub clip_traces: bool,
     /// Whether traces use NSLC-derived colors.
-    pub color_traces: bool,
+    ///
+    /// `None` follows the theme, which is what keeps the Snuffler Qt theme booting
+    /// the way snuffler boots (see [`WiggleTheme::default_color_traces`]); `Some` is
+    /// the user overriding that, honoured under both themes. Read it through
+    /// [`AppState::color_traces`], never directly.
+    pub show_color_traces: Option<bool>,
     /// Whether line tessellation uses feathered antialiasing.
     pub antialiasing: bool,
     /// Whether each row displays its numeric amplitude range.
@@ -898,7 +917,7 @@ impl Default for AppState {
             show_boxes: true,
             clip_traces: true,
             // snuffler users expect colour-coded traces; default on.
-            color_traces: true,
+            show_color_traces: None,
             antialiasing: false,
             show_scale_ranges: false,
             show_scale_axes: false,
@@ -1042,6 +1061,14 @@ impl AppState {
     pub fn track_separators(&self) -> bool {
         self.show_track_separators
             .unwrap_or_else(|| self.wiggle_theme.default_track_separators())
+    }
+
+    /// Whether trace strokes are colored: the user's choice if they made one,
+    /// otherwise whatever the current theme does by default.
+    #[must_use]
+    pub fn color_traces(&self) -> bool {
+        self.show_color_traces
+            .unwrap_or_else(|| self.wiggle_theme.default_color_traces())
     }
 
     /// Whether markers of this kind are currently drawn/selectable (the

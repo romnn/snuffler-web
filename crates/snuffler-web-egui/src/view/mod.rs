@@ -14,3 +14,15 @@ pub mod marker_table;
 #[cfg(feature = "svg-raster")]
 pub mod raster;
 pub mod waveform;
+
+/// The font every label on the waveform canvas is drawn and measured in.
+///
+/// Bold, because snuffler's canvas is (see `CANVAS_FAMILY`), and one function so
+/// the painter and the SVG export cannot measure in one face and draw in another.
+#[must_use]
+pub fn canvas_font(size: f32) -> egui::FontId {
+    egui::FontId::new(
+        size,
+        egui::FontFamily::Name(crate::app::CANVAS_FAMILY.into()),
+    )
+}

@@ -22,6 +22,10 @@ const HEIGHT: f32 = 900.0;
 const EXPORT_SCALE: f32 = 2.0;
 const UBUNTU_REGULAR: &[u8] =
     include_bytes!("../../snuffler-web-egui/assets/fonts/Ubuntu-Regular.ttf");
+/// The canvas draws every label bold, so the artifact rasterizer needs the face
+/// resvg will resolve `font-weight: bold` to; without it the artifacts would come
+/// back regular and quietly disagree with what the browser shows.
+const UBUNTU_BOLD: &[u8] = include_bytes!("../../snuffler-web-egui/assets/fonts/Ubuntu-Bold.ttf");
 
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
@@ -144,6 +148,7 @@ fn rasterize_svg(svg: &str) -> eyre::Result<Vec<u8>> {
     {
         let database = options.fontdb_mut();
         database.load_font_data(UBUNTU_REGULAR.to_vec());
+        database.load_font_data(UBUNTU_BOLD.to_vec());
         database.set_sans_serif_family("Ubuntu");
     }
     let tree = usvg::Tree::from_str(svg, &options).wrap_err("parse rendered SVG")?;
