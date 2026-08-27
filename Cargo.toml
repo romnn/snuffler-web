@@ -25,6 +25,10 @@ targets = [
 [workspace.metadata.cargo-fc.subcommands.udeps]
 maximal_features = true
 
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+
 [profile.release]
 # Optimize for size: this is a render-only wasm frontend — all heavy computation
 # runs in Pyodide — so a smaller download matters more than peak CPU throughput.

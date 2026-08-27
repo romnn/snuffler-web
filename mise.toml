@@ -39,7 +39,7 @@ protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, mat
 # emits, so we pin a recent binaryen here for a reproducible build.
 "aqua:WebAssembly/binaryen" = "130"
 
-# cargo plugins
+# Cargo plugins
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"
 "github:rust-cross/cargo-zigbuild" = "latest"
 "aqua:rustsec/rustsec/cargo-audit" = "latest"
@@ -48,6 +48,10 @@ protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, mat
 "github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc", minimum_release_age = "0" }  # provides `cargo fc`
 "github:romnn/cargo-watchdoc" = { version = "latest", minimum_release_age = "0" }
 "github:trunk-rs/trunk" = "0.21.14"
+
+# Developer tooling
+"github:romnn/micromux" = { version = "latest", minimum_release_age = "0" }
+"github:romnn/bumpversion" = { version = "latest", matching_regex = "^bumpversion", minimum_release_age = "0" }
 
 [settings]
 lockfile = true
