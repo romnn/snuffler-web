@@ -18,6 +18,12 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, note: &BundleAbout) {
     egui::Window::new("About this dataset")
         .open(&mut open)
         .default_size([560.0, 420.0])
+        // Collapsed on arrival. This window opens itself whenever a dataset
+        // that describes itself loads, so expanded it would land on top of the
+        // very waveforms it is describing; the title bar still says there is
+        // something to read, one click away. `default_open` sets the initial
+        // state only — once expanded, egui remembers that.
+        .default_open(false)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])

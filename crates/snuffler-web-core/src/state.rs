@@ -702,8 +702,8 @@ pub struct AppState {
     pub show_snuffling: bool,
 
     /// Whether the window showing what the loaded dataset says about itself is
-    /// open. It opens itself once, when a dataset that says something loads; the
-    /// text lives in the bridge, with the scene it describes.
+    /// open. It opens itself once, collapsed, when a dataset that says something
+    /// loads; the text lives in the bridge, with the scene it describes.
     pub show_dataset_note: bool,
 
     /// Vertical track layout. `track_height` (pixels per row, `0.0` until the
