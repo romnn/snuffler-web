@@ -83,6 +83,24 @@ pub enum CallError {
     #[error(transparent)]
     Remote(#[from] RemoteError),
 
+    /// Cancellation won before the dispatcher committed.
+    #[error("{method}: cancelled")]
+    Cancelled {
+        /// The rpc that was cancelled.
+        method: &'static str,
+    },
+
+    /// The defensive session generation check refused a commit.
+    #[error("{method}: stale session generation (expected {expected}, actual {actual})")]
+    Stale {
+        /// The rpc whose result could not commit.
+        method: &'static str,
+        /// Generation captured at dispatch.
+        expected: u64,
+        /// Generation current at commit.
+        actual: u64,
+    },
+
     /// The bytes that came back are not a `BridgeResult` at all.
     #[error("{method}: the response was not a decodable BridgeResult")]
     Decode {
@@ -145,6 +163,7 @@ mod tests {
     impl BridgeTransport for Canned {
         fn unary(
             &self,
+            _operation: crate::bridge::v1::Operation,
             _method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<Vec<u8>, TransportError>> {
@@ -153,6 +172,7 @@ mod tests {
 
         fn unary_with_buffer(
             &self,
+            _operation: crate::bridge::v1::Operation,
             _method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<(Vec<u8>, Vec<f32>), TransportError>> {
@@ -167,6 +187,7 @@ mod tests {
     impl BridgeTransport for Dead {
         fn unary(
             &self,
+            _operation: crate::bridge::v1::Operation,
             method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<Vec<u8>, TransportError>> {
@@ -175,6 +196,7 @@ mod tests {
 
         fn unary_with_buffer(
             &self,
+            _operation: crate::bridge::v1::Operation,
             method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<(Vec<u8>, Vec<f32>), TransportError>> {

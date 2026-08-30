@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+import "google/protobuf/descriptor.proto";
+
+enum ActivityLane {
+  ACTIVITY_LANE_UNSPECIFIED = 0;
+  ACTIVITY_LANE_JOB = 1;
+  ACTIVITY_LANE_VIEW = 2;
+}
+
+enum ActivityPolicy {
+  ACTIVITY_POLICY_UNSPECIFIED = 0;
+  ACTIVITY_POLICY_QUEUE = 1;
+  ACTIVITY_POLICY_DEDUP = 2;
+  ACTIVITY_POLICY_LATEST_WINS = 3;
+  ACTIVITY_POLICY_EXCLUSIVE = 4;
+}
+
+enum ActivityEffect {
+  ACTIVITY_EFFECT_UNSPECIFIED = 0;
+  ACTIVITY_EFFECT_READ = 1;
+  ACTIVITY_EFFECT_MUTATE = 2;
+}
+
+enum ActivityCancel {
+  ACTIVITY_CANCEL_UNSPECIFIED = 0;
+  ACTIVITY_CANCEL_NOT_CANCELLABLE = 1;
+  ACTIVITY_CANCEL_COOPERATIVE = 2;
+  ACTIVITY_CANCEL_INTERRUPT = 3;
+}
+
+message Activity {
+  string label = 1;
+  ActivityLane lane = 2;
+  ActivityPolicy policy = 3;
+  ActivityEffect effect = 4;
+  bool background = 5;
+  ActivityCancel cancel = 6;
+  bool supersedes = 7;
+  bool marker_output = 8;
+}
+
+extend google.protobuf.MethodOptions {
+  Activity activity = 51000;
+}

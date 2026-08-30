@@ -95,6 +95,7 @@ include = [
     "scripts/build-examples.py",
     "scripts/fetch-example.py",
     "tests/parity/**/*.py",
+    "tests/codegen_missing_activity.py",
     "tests/seisbench_validate.py",
     "typings/**/*.pyi",
     "web/bootstrap.py",
