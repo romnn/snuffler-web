@@ -97,7 +97,6 @@ let interruptBuffer = new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT);
 const pending = new Map<string, Pending>();
 let mlDevice = ProtoMlDevice.WASM;
 const operationEvents: Uint8Array[] = [];
-const operationHistory: Uint8Array[] = [];
 let latestRuntimeInfo: RuntimeInfo | null = null;
 
 function pendingKey(epoch: number, id: number): string {
@@ -136,11 +135,7 @@ function handleWorkerEvent(msg: WorkerEventMessage, epoch: number): void {
       break;
     case "operation":
       operationEvents.push(msg.event.slice());
-      operationHistory.push(msg.event.slice());
       if (operationEvents.length > 256) operationEvents.splice(0, operationEvents.length - 256);
-      if (operationHistory.length > 256) {
-        operationHistory.splice(0, operationHistory.length - 256);
-      }
       break;
   }
 }
@@ -459,10 +454,6 @@ export async function call(
 
 export function takeOperationEvents(): Uint8Array[] {
   return operationEvents.splice(0);
-}
-
-export function operationEventHistory(): Uint8Array[] {
-  return operationHistory.slice();
 }
 
 export async function addCakeModel(jobId: bigint) {

@@ -41,7 +41,6 @@ interface BridgeModule {
     jobId: bigint
   ): Promise<{ result: Uint8Array }>;
   seisbenchDevice(): string;
-  operationEventHistory(): Uint8Array[];
   takeOperationEvents(): Uint8Array[];
 }
 
@@ -203,7 +202,9 @@ async function callBridge(
           return {
             result: Array.from(out.result),
             device: bridge.seisbenchDevice(),
-            events: bridge.operationEventHistory().map((bytes) => Array.from(bytes)),
+            // This harness stubs the egui module and owns the bridge alone, so
+            // draining here yields exactly the events this call produced.
+            events: bridge.takeOperationEvents().map((bytes) => Array.from(bytes)),
           };
         },
         payload
