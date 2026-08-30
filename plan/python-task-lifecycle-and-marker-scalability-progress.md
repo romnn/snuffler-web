@@ -37,6 +37,30 @@ Follow-up gates: `task lint:fc`, `task check`, 124 unit tests, 34 bridge-parity 
 PhaseNet WebGPU and CPU-fallback browser passes, and 33/33 served canvas/accessibility checks pass.
 A live Eifel PhaseNet cancellation returned to `Ready · 1061 traces` with no console error.
 
+## Round-3 hardening (implementation review, 2026-08-30)
+
+A second cross-vendor adversarial pass (recorded in the review file's "Round 3" section) drove a
+merge-readiness sweep. Cancellation: the commit gate accepts both computing states (a safe-point
+resume may legally outrun the view's release) and clears the interrupt byte on loss;
+transaction/view setup moved inside `call()`'s protecting try. Sessions: one deep clone per
+transaction with shallow snapshot/delta capture; view caches swap with the projected state, so
+interleaved views stop paying a whole-pile copy plus double cache rebuild; `_SESSION_STORE`
+survives Shift+R and runtime loss resets the Rust-side generation fence. Recovery: idle worker
+death is now observed via epoch tracking in `sync_runtime`. Live ingest: a failed batch clears
+the mailbox instead of dispatching its successors; the lag notice fires once per episode.
+Ledger: started events cannot resurrect a Cancelling job; supersession happens only for admitted
+submissions; pruned records answer terminal; flows honor cancellation at child boundaries;
+figure renders queue instead of joining on params changes; the marker editor's destructive
+buttons gate on marker-producing jobs. Performance: revision-keyed activity snapshots, single-pass
+failure resolution, report-based marker edits, generation-keyed figure requests, cursor-based
+SeedLink framing, and assorted clone removals. Simplification: `SnapshotReader`,
+`Outcome::Stopped`, `ACTIVITY_POLICY_EXCLUSIVE`, the cooperative/interrupt cancel split, the
+production operation-history ring, and the marker-budget error apparatus are gone; per-language
+activity tables carry only consumed fields; the wasm bridge module split into
+`bridge/web/{mod,live,dispatch}.rs`; a `clippy.toml` seam guards bare spawns. New gates: the
+execution-control transition table runs under `task check:ts`, three ledger regressions cover
+the new guards, and two parity tests pin reload generation and view-projection identity.
+
 ## Deviations
 
 - `JobState::Queued` no longer stores a second queue position or an unused reason, and
@@ -47,6 +71,16 @@ A live Eifel PhaseNet cancellation returned to `Ready · 1061 traces` with no co
   cancellation/commit CAS remains authoritative while ownership handoff is linearizable.
 - View-lane activity waits 500 ms before entering the navbar fold, per the follow-up product
   requirement. The ledger still tracks and schedules it immediately.
+- `SnapshotReader` was deleted rather than implemented (round 3): no handler read through it,
+  and the plan's isolation invariant — handlers can never reach committed `Trace` objects — is
+  enforced by the installed workspace clone instead of a capability object.
+- `Outcome::Stopped` was deleted (round 3): flows keep one ledger handle and terminate
+  `Cancelled` at a child boundary, so a partial-progress terminal variant never had a producer.
+- The activity metadata surface was narrowed (round 3): `ACTIVITY_POLICY_EXCLUSIVE` and the
+  `COOPERATIVE`/`INTERRUPT` cancel split are gone from the .proto (nothing consumed either
+  distinction; the cancellation ladder is uniform for every cancellable rpc), and each language's
+  generated table carries only the fields it consumes, while all three generators still validate
+  the full declaration.
 
 ## Discoveries
 
