@@ -176,7 +176,7 @@ service BridgeService {
     option (activity) = {
       label: "Loading example"
       lane: ACTIVITY_LANE_JOB
-      policy: ACTIVITY_POLICY_EXCLUSIVE
+      policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
       cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
       supersedes: true
@@ -186,7 +186,7 @@ service BridgeService {
     option (activity) = {
       label: "Clearing scene"
       lane: ACTIVITY_LANE_JOB
-      policy: ACTIVITY_POLICY_EXCLUSIVE
+      policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
       cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
       supersedes: true
@@ -205,9 +205,9 @@ service BridgeService {
     option (activity) = {
       label: "Loading URL"
       lane: ACTIVITY_LANE_JOB
-      policy: ACTIVITY_POLICY_EXCLUSIVE
+      policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
       supersedes: true
     };
   }
@@ -225,9 +225,9 @@ service BridgeService {
     option (activity) = {
       label: "Loading dataset"
       lane: ACTIVITY_LANE_JOB
-      policy: ACTIVITY_POLICY_EXCLUSIVE
+      policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
       supersedes: true
     };
   }
@@ -256,7 +256,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
       effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_INTERRUPT
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult) {
@@ -265,7 +265,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_INTERRUPT
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
       marker_output: true
     };
   }
@@ -275,7 +275,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_INTERRUPT
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc RunCommand(CommandRequest) returns (CommandResult) {
@@ -293,7 +293,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_LATEST_WINS
       effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc StationDistances(Empty) returns (StationDistanceList) {
@@ -338,7 +338,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc MarkersToText(MarkerFile) returns (StringValue) {
@@ -403,7 +403,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc CatalogSearch(CatalogRequest) returns (SnufflingResult) {
@@ -412,7 +412,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
       marker_output: true
     };
   }
@@ -422,7 +422,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   // Qt's download Save trigger (download.py:147): the loaded waveforms as
@@ -433,7 +433,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_INTERRUPT
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc ExportStations(Empty) returns (FileBlob) {
@@ -451,7 +451,7 @@ service BridgeService {
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_COOPERATIVE
+      cancel: ACTIVITY_CANCEL_CANCELLABLE
     };
   }
   rpc WarmDeferred(Empty) returns (StringValue) {

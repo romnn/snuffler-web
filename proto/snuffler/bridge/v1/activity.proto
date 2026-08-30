@@ -11,11 +11,13 @@ enum ActivityLane {
 }
 
 enum ActivityPolicy {
+  // There is deliberately no EXCLUSIVE: the job lane holds one permit, so
+  // exclusion is what QUEUE already gives, and cross-lane exclusion is a
+  // separate flag the ledger consumes.
   ACTIVITY_POLICY_UNSPECIFIED = 0;
   ACTIVITY_POLICY_QUEUE = 1;
   ACTIVITY_POLICY_DEDUP = 2;
   ACTIVITY_POLICY_LATEST_WINS = 3;
-  ACTIVITY_POLICY_EXCLUSIVE = 4;
 }
 
 enum ActivityEffect {
@@ -25,10 +27,13 @@ enum ActivityEffect {
 }
 
 enum ActivityCancel {
+  // Cancellable is one capability, not a cooperative/interrupt pair: every
+  // cancellable rpc gets the same ladder (queued removal, safe-point checks,
+  // interpreter interrupt, restart escalation), and the dispatcher's rollback
+  // makes the interrupt safe for all of them.
   ACTIVITY_CANCEL_UNSPECIFIED = 0;
   ACTIVITY_CANCEL_NOT_CANCELLABLE = 1;
-  ACTIVITY_CANCEL_COOPERATIVE = 2;
-  ACTIVITY_CANCEL_INTERRUPT = 3;
+  ACTIVITY_CANCEL_CANCELLABLE = 2;
 }
 
 message Activity {

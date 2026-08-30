@@ -131,15 +131,13 @@ def main() -> None:
                 "resp": f"{resp_mod}.{resp_cls}",
                 "variant": variant,
                 "buffer": resp_cls in BUFFER_RESPONSES,
+                # Only the fields this language consumes are emitted (Python:
+                # the dispatcher's lane branch and MUTATE-transaction decision;
+                # TS: the worker's lane assertions). Every field was validated
+                # non-UNSPECIFIED above regardless.
                 "activity": {
-                    "label": activity.label,
                     "lane": enum_name(activity, "lane").removeprefix("ACTIVITY_LANE_"),
-                    "policy": enum_name(activity, "policy").removeprefix("ACTIVITY_POLICY_"),
                     "effect": enum_name(activity, "effect").removeprefix("ACTIVITY_EFFECT_"),
-                    "background": activity.background,
-                    "cancel": enum_name(activity, "cancel").removeprefix("ACTIVITY_CANCEL_"),
-                    "supersedes": activity.supersedes,
-                    "marker_output": activity.marker_output,
                 },
             }
         )
@@ -159,24 +157,15 @@ def main() -> None:
     out.append("")
     out.append("")
     out.append("class ActivityMeta(NamedTuple):")
-    out.append("    label: str")
     out.append("    lane: str")
-    out.append("    policy: str")
     out.append("    effect: str")
-    out.append("    background: bool")
-    out.append("    cancel: str")
-    out.append("    supersedes: bool")
-    out.append("    marker_output: bool")
     out.append("")
     out.append("")
     out.append("ACTIVITY_BY_METHOD: Dict[str, ActivityMeta] = {")
     for mm in methods:
         activity = mm["activity"]
         out.append(
-            f'    "{mm["wire"]}": ActivityMeta('
-            f'{activity["label"]!r}, {activity["lane"]!r}, {activity["policy"]!r}, '
-            f'{activity["effect"]!r}, {activity["background"]!r}, {activity["cancel"]!r}, '
-            f'{activity["supersedes"]!r}, {activity["marker_output"]!r}),'
+            f'    "{mm["wire"]}": ActivityMeta({activity["lane"]!r}, {activity["effect"]!r}),'
         )
     out.append("}")
     out.append("")
@@ -273,28 +262,14 @@ def main() -> None:
     ]
     for mm in methods:
         activity = mm["activity"]
-        ts.append(f"  [BridgeMethod.{mm['local']}]: {{")
-        ts.append(f"    label: {activity['label']!r},")
-        ts.append(f"    lane: {activity['lane']!r},")
-        ts.append(f"    policy: {activity['policy']!r},")
-        ts.append(f"    effect: {activity['effect']!r},")
-        ts.append(f"    background: {str(activity['background']).lower()},")
-        ts.append(f"    cancel: {activity['cancel']!r},")
-        ts.append(f"    supersedes: {str(activity['supersedes']).lower()},")
-        ts.append(f"    markerOutput: {str(activity['marker_output']).lower()},")
-        ts.append("  },")
+        ts.append(f"  [BridgeMethod.{mm['local']}]: {{ lane: {activity['lane']!r} }},")
     ts += [
         "} as const satisfies Record<BridgeMethodId, ActivityMeta>;",
         "",
+        "// Only the field the worker consumes (its per-lane busy assertions); the",
+        "// full activity declaration lives in the .proto and the Rust ledger.",
         "export type ActivityMeta = {",
-        "  label: string;",
         '  lane: "JOB" | "VIEW";',
-        '  policy: "QUEUE" | "DEDUP" | "LATEST_WINS" | "EXCLUSIVE";',
-        '  effect: "READ" | "MUTATE";',
-        "  background: boolean;",
-        '  cancel: "NOT_CANCELLABLE" | "COOPERATIVE" | "INTERRUPT";',
-        "  supersedes: boolean;",
-        "  markerOutput: boolean;",
         "};",
         "",
     ]

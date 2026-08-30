@@ -125,32 +125,33 @@ fn activity_methods(
     Ok(methods)
 }
 
+/// Executor-owned operations with no rpc: they never cross the worker, so their
+/// metadata is declared here rather than in the .proto. Shared by the enum
+/// listing and the match arms so the two cannot drift.
+const LOCAL_OPERATIONS: [(&str, &str, &str, bool); 7] = [
+    ("ReloadSnufflings", "Reloading snufflings", "Job", true),
+    ("ExportSvg", "Exporting SVG", "Local", false),
+    ("ExportPng", "Exporting PNG", "Local", false),
+    ("MarkersToFile", "Serializing markers", "Local", false),
+    ("SaveMarkers", "Saving markers", "Local", false),
+    ("SaveWaveforms", "Saving waveforms", "Local", false),
+    ("WatchPoll", "Checking watched files", "Local", false),
+];
+
 fn activity_prelude(methods: &[(&str, &ActivityOption)]) -> String {
-    let local = [
-        ("ReloadSnufflings", "Reloading snufflings", "Job", true),
-        ("ExportSvg", "Exporting SVG", "Local", false),
-        ("ExportPng", "Exporting PNG", "Local", false),
-        ("MarkersToFile", "Serializing markers", "Local", false),
-        ("SaveMarkers", "Saving markers", "Local", false),
-        ("SaveWaveforms", "Saving waveforms", "Local", false),
-        ("WatchPoll", "Checking watched files", "Local", false),
-    ];
     let mut out = String::new();
     out.push_str(
         r"#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lane { Job, View, Local }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Policy { Queue, Dedup, LatestWins, Exclusive }
+pub enum Policy { Queue, Dedup, LatestWins }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Effect { Read, Mutate }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum CancelCap { NotCancellable, Cooperative, Interrupt }
+pub enum CancelCap { NotCancellable, Cancellable }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActivityMeta {
     pub label: &'static str,
     pub lane: Lane,
     pub policy: Policy,
-    pub effect: Effect,
     pub background: bool,
     pub cancel: CancelCap,
     pub supersedes: bool,
@@ -164,7 +165,7 @@ pub enum Operation {
     for (name, _) in methods {
         let _ = writeln!(out, "    {name},");
     }
-    for (name, _, _, _) in local {
+    for (name, _, _, _) in LOCAL_OPERATIONS {
         let _ = writeln!(out, "    {name},");
     }
     out.push_str("}\nimpl Operation {\n    pub const fn activity(self) -> ActivityMeta {\n        match self {\n");
@@ -179,11 +180,13 @@ fn write_rpc_activity(
         let lane = enum_value(activity.lane, &["Unspecified", "Job", "View"], "lane", name)?;
         let policy = enum_value(
             activity.policy,
-            &["Unspecified", "Queue", "Dedup", "LatestWins", "Exclusive"],
+            &["Unspecified", "Queue", "Dedup", "LatestWins"],
             "policy",
             name,
         )?;
-        let effect = enum_value(
+        // Effect is consumed only by the Python dispatcher; it is still
+        // validated here so an rpc cannot ship with it unspecified.
+        enum_value(
             activity.effect,
             &["Unspecified", "Read", "Mutate"],
             "effect",
@@ -191,13 +194,13 @@ fn write_rpc_activity(
         )?;
         let cancel = enum_value(
             activity.cancel,
-            &["Unspecified", "NotCancellable", "Cooperative", "Interrupt"],
+            &["Unspecified", "NotCancellable", "Cancellable"],
             "cancel",
             name,
         )?;
         let _ = writeln!(
             out,
-            "            Self::{name} => ActivityMeta {{ label: {}, lane: Lane::{lane}, policy: Policy::{policy}, effect: Effect::{effect}, background: {}, cancel: CancelCap::{cancel}, supersedes: {}, marker_output: {}, exclusive_both_lanes: false }},",
+            "            Self::{name} => ActivityMeta {{ label: {}, lane: Lane::{lane}, policy: Policy::{policy}, background: {}, cancel: CancelCap::{cancel}, supersedes: {}, marker_output: {}, exclusive_both_lanes: false }},",
             rust_string(&activity.label),
             activity.background,
             activity.supersedes,
@@ -208,20 +211,11 @@ fn write_rpc_activity(
 }
 
 fn finish_activity(mut out: String) -> String {
-    let local = [
-        ("ReloadSnufflings", "Reloading snufflings", "Job", true),
-        ("ExportSvg", "Exporting SVG", "Local", false),
-        ("ExportPng", "Exporting PNG", "Local", false),
-        ("MarkersToFile", "Serializing markers", "Local", false),
-        ("SaveMarkers", "Saving markers", "Local", false),
-        ("SaveWaveforms", "Saving waveforms", "Local", false),
-        ("WatchPoll", "Checking watched files", "Local", false),
-    ];
-    for (name, label, lane, exclusive_both_lanes) in local {
+    for (name, label, lane, exclusive_both_lanes) in LOCAL_OPERATIONS {
         let background = name == "WatchPoll";
         let _ = writeln!(
             out,
-            "            Self::{name} => ActivityMeta {{ label: {}, lane: Lane::{lane}, policy: Policy::Queue, effect: Effect::Read, background: {background}, cancel: CancelCap::NotCancellable, supersedes: false, marker_output: false, exclusive_both_lanes: {exclusive_both_lanes} }},",
+            "            Self::{name} => ActivityMeta {{ label: {}, lane: Lane::{lane}, policy: Policy::Queue, background: {background}, cancel: CancelCap::NotCancellable, supersedes: false, marker_output: false, exclusive_both_lanes: {exclusive_both_lanes} }},",
             rust_string(label),
         );
     }
@@ -344,14 +338,14 @@ impl prost_build::ServiceGenerator for BridgeClientGen {
 /// `method` is `&'static str` because every method id is a compile-time constant
 /// generated from the .proto — nothing can name an rpc that is not in the schema.
 pub trait BridgeTransport {
-    #[allow(async_fn_in_trait, reason = "the generated client is internal to this workspace")]
+    #[expect(async_fn_in_trait, reason = "the generated client is internal to this workspace")]
     async fn unary(
         &self,
         operation: Operation,
         method: &'static str,
         request: Vec<u8>,
     ) -> Result<Vec<u8>, crate::TransportError>;
-    #[allow(async_fn_in_trait, reason = "the generated client is internal to this workspace")]
+    #[expect(async_fn_in_trait, reason = "the generated client is internal to this workspace")]
     async fn unary_with_buffer(
         &self,
         operation: Operation,
