@@ -45,7 +45,7 @@ pub struct TrackGeom {
     pub top_shift: f32,
     /// Clamped fractional row offset.
     pub scroll: f32,
-    /// Track height to retain in application state.
+    /// Track height to retain, or zero while automatic fitting remains active.
     pub height: f32,
 }
 
@@ -60,10 +60,11 @@ pub struct TrackGeom {
 pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom {
     let area = area_h.max(1.0);
     let total_f = total.max(1) as f32;
-    let mut height = if state.track_height > 0.0 {
-        state.track_height
-    } else {
+    let automatic = state.track_height <= 0.0;
+    let mut height = if automatic {
         area / DEFAULT_NTRACKS_SHOWN as f32
+    } else {
+        state.track_height
     };
     height = height.clamp(MIN_TRACK_H, area.max(MIN_TRACK_H));
 
@@ -80,7 +81,7 @@ pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom 
             n_draw,
             top_shift: 0.0,
             scroll,
-            height: row_h,
+            height: if automatic { 0.0 } else { row_h },
         }
     } else {
         let row_h = height;
@@ -97,7 +98,7 @@ pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom 
             n_draw,
             top_shift,
             scroll,
-            height,
+            height: if automatic { 0.0 } else { height },
         }
     }
 }
@@ -131,7 +132,7 @@ pub fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> L
 
 #[cfg(test)]
 mod tests {
-    use snuffler_web_core::state::AppState;
+    use snuffler_web_core::state::{AppState, DEFAULT_NTRACKS_SHOWN};
 
     use super::track_geometry;
 
@@ -160,5 +161,18 @@ mod tests {
         assert_eq!(geometry.off, 2);
         assert_eq!(geometry.n_draw, 3);
         assert!((geometry.top_shift - 10.0).abs() < f32::EPSILON);
+    }
+
+    /// A transient one-track view cannot turn automatic fitting into a one-track preference.
+    #[test]
+    fn automatic_height_survives_a_transient_one_track_view() {
+        let mut state = AppState::default();
+        let transient = track_geometry(&state, 1, 480.0);
+        state.track_height = transient.height;
+
+        let loaded = track_geometry(&state, 100, 480.0);
+
+        assert!(state.track_height.abs() < f32::EPSILON);
+        assert_eq!(loaded.n_draw, DEFAULT_NTRACKS_SHOWN);
     }
 }

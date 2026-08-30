@@ -289,6 +289,9 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
         end: state.cat_end.clone(),
         minmag: state.cat_minmag,
         with_mt: state.cat_with_mt,
+        marker_budget: Some(snuffler_web_core::bridge::ProtoMarkerBudget {
+            max_markers: snuffler_web_core::marker_store::MarkerBudget::standard().get(),
+        }),
     })
 }
 

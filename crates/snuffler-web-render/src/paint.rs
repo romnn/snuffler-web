@@ -1165,7 +1165,7 @@ fn draw_marker_snippets(
         target.line(r.right_bottom(), r.left_bottom(), 2.0, col);
         target.line(r.left_bottom(), r.left_top(), 2.0, col);
     };
-    for (i, m) in state.markers.iter().enumerate() {
+    for (id, m) in state.markers.iter_with_ids() {
         // The same visibility filter the marker layers apply — Qt's strict
         // window overlap, written without the negation — plus Qt's per-trace
         // pattern match against this concrete trace.
@@ -1177,7 +1177,7 @@ fn draw_marker_snippets(
         {
             continue;
         }
-        let col = m.color_for(state.hovered_marker == Some(i));
+        let col = m.color_for(state.hovered_marker == Some(id));
         if m.is_span() {
             let Some((i0, i1)) = chop(m) else {
                 continue;
@@ -1316,17 +1316,7 @@ fn marker_label(m: &Marker) -> String {
 /// markers × spans pass per frame is exactly the cost the count readout
 /// exists to avoid.
 fn markers_overloaded(state: &AppState) -> bool {
-    let deltat_max = state
-        .markers
-        .iter()
-        .map(|m| m.tmax - m.tmin)
-        .fold(0.0, f64::max);
-    let in_window = state
-        .markers
-        .iter()
-        .filter(|m| m.tmin >= state.tmin - deltat_max && m.tmin <= state.tmax)
-        .count();
-    in_window > 2000
+    state.markers.overload_count(state.tmin, state.tmax) > 2000
 }
 
 /// Draws every visible marker the way snuffler layers them (`drawit`,
@@ -1416,11 +1406,11 @@ fn draw_markers(
     // Per-track layer (`Marker.draw_trace`): events draw nothing here
     // (`EventMarker.draw_trace` is a pass). An unscoped marker matches every
     // trace, so it paints these on every row, exactly as Qt does.
-    for (i, m) in state.markers.iter().enumerate() {
+    for (id, m) in state.markers.iter_with_ids() {
         if m.is_event || !shown(m) {
             continue;
         }
-        let hovered = state.hovered_marker == Some(i);
+        let hovered = state.hovered_marker == Some(id);
         let col = m.color_for(hovered);
         let u_min = x_of(m.tmin);
         let u_max = x_of(m.tmax);
@@ -1479,11 +1469,11 @@ fn draw_markers(
     }
 
     // Overview layer (`Marker.draw` via `draw_visible_markers`), painted on top.
-    for (i, m) in state.markers.iter().enumerate() {
+    for (id, m) in state.markers.iter_with_ids() {
         if !shown(m) {
             continue;
         }
-        let hovered = state.hovered_marker == Some(i);
+        let hovered = state.hovered_marker == Some(id);
         let col = m.color_for(hovered);
         let u_min = x_of(m.tmin);
         let u_max = x_of(m.tmax);
@@ -1928,7 +1918,7 @@ mod tests {
             let t = state.tmin + f64::from(k) * 0.01;
             let mut m = snuffler_web_core::markers::Marker::new(t, t, 0);
             m.selected = k < 5;
-            state.markers.push(m);
+            state.markers.insert(m);
         }
         let view = ViewData {
             meta: ViewMeta {
@@ -1972,7 +1962,7 @@ mod tests {
             let t0 = state.tmin + f64::from(k) * 0.02;
             state
                 .markers
-                .push(snuffler_web_core::markers::Marker::new(t0, t0 + 0.5, 2));
+                .insert(snuffler_web_core::markers::Marker::new(t0, t0 + 0.5, 2));
         }
         let mut row = track("XX", "STA01", "", "HHZ", "XX.STA01..HHZ");
         row.spans = vec![ViewSpan {
@@ -2059,7 +2049,7 @@ mod tests {
                 tmax: 400.0,
                 ..AppState::default()
             };
-            state.markers.push(marker);
+            state.markers.insert(marker);
             let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
                 Vec2::new(text.len() as f32 * size * 0.5, size)
             });
@@ -2198,6 +2188,8 @@ mod tests {
                 tracks: vec![track("HHZ", "12.3 km"), track("HHN", "")],
                 notices: Vec::new(),
                 color_keys: Vec::new(),
+                session_generation: 0,
+                view_sequence: 0,
             },
             ys: Vec::new(),
         };

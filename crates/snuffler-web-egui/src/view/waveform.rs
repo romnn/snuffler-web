@@ -19,13 +19,14 @@ use egui::{
 
 use crate::view::draw::{EguiTarget, RasterImage, SvgTarget};
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
+use snuffler_web_core::marker_store::{MarkerCandidates, MarkerId};
 use snuffler_web_core::markers::{Marker, PHASE_KEYS};
 use snuffler_web_core::state::{
     ActiveEventReq, AppState, DEFAULT_NTRACKS_SHOWN, MAX_TRACK_H, MIN_TRACK_H, PickingState,
     ScalingGroup, SortMode, ViewDrag, ViewMode,
 };
 use snuffler_web_render::layout::{AXIS_H, compute_layout, track_geometry};
-use snuffler_web_render::paint::{marker_matches_track, marker_row_spans, paint};
+use snuffler_web_render::paint::{marker_matches_track, paint};
 use snuffler_web_render::palette::{Theme, canvas_theme, palette};
 
 /// Qt clamps the floating pick to the system's working time range
@@ -39,6 +40,25 @@ const WORKING_TMAX: f64 = 60_904_915_200.0;
 const SCROLLBAR_W: f32 = 12.0;
 const PAINT_PERF_LOG_INTERVAL_MS: f64 = 1_000.0;
 const PAINT_PERF_SLOW_MS: f64 = 8.0;
+/// Maximum endpoint candidates inspected for one pointer position.
+const MAX_HIT_CANDIDATES: usize = 256;
+
+#[derive(Clone, Copy, Debug, Default)]
+enum MarkerHit {
+    #[default]
+    None,
+    Marker(MarkerId),
+    Overloaded(usize),
+}
+
+impl MarkerHit {
+    fn marker(self) -> Option<MarkerId> {
+        match self {
+            Self::Marker(id) => Some(id),
+            Self::None | Self::Overloaded(_) => None,
+        }
+    }
+}
 
 thread_local! {
     static LAST_PAINT_PERF_LOG_MS: Cell<f64> = const { Cell::new(0.0) };
@@ -330,23 +350,40 @@ pub fn show(
             .then(|| lay.off + ((p.y - lay.top0) / lay.row_h).max(0.0) as usize)
     });
 
+    let pointer_hit = wave_resp
+        .hover_pos()
+        .filter(|position| lay.track_area.contains(*position))
+        .map_or(MarkerHit::None, |position| {
+            marker_hit_at(
+                state,
+                lay.visible,
+                lay.track_area,
+                lay.top0,
+                lay.row_h,
+                lay.view_tmin,
+                lay.window,
+                lay.rect,
+                position,
+            )
+        });
+    state.marker_hit_overload = match pointer_hit {
+        MarkerHit::Overloaded(count) => Some(count),
+        MarkerHit::None | MarkerHit::Marker(_) => None,
+    };
+    state.hovered_marker = if state.picking.is_none()
+        && state.view_drag.is_none()
+        && state.uncertainty_drag_last_y.is_none()
+    {
+        pointer_hit.marker()
+    } else {
+        None
+    };
+
     // Transient hover crosshair — drawn only on screen, never in an export.
     if let Some(p) = wave_resp.hover_pos()
         && lay.track_area.contains(p)
     {
-        if marker_hit_at(
-            state,
-            lay.visible,
-            lay.track_area,
-            lay.top0,
-            lay.row_h,
-            lay.view_tmin,
-            lay.window,
-            lay.rect,
-            p,
-        )
-        .is_some()
-        {
+        if matches!(pointer_hit, MarkerHit::Marker(_)) {
             ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
         }
         painter.line_segment(
@@ -373,6 +410,7 @@ pub fn show(
         rect,
         lay.track_area,
         &t_at_x,
+        pointer_hit,
     );
     wave_resp
 }
@@ -470,27 +508,43 @@ fn marker_hit_at(
     window: f64,
     rect: Rect,
     pos: egui::Pos2,
-) -> Option<usize> {
+) -> MarkerHit {
     if !area.contains(pos) {
-        return None;
+        return MarkerHit::None;
     }
-    let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
-    let tol = 5.0;
-    for (idx, marker) in state.markers.iter().enumerate() {
+    let time = view_tmin + f64::from((pos.x - rect.left()) / rect.width().max(1.0)) * window;
+    let tolerance = 5.0 * window / f64::from(rect.width().max(1.0));
+    let candidates = state
+        .markers
+        .candidates_near(time, tolerance, MAX_HIT_CANDIDATES);
+    let MarkerCandidates::Exact(ids) = candidates else {
+        let MarkerCandidates::Overloaded { count } = candidates else {
+            return MarkerHit::None;
+        };
+        return MarkerHit::Overloaded(count);
+    };
+    let row = ((pos.y - top0) / row_h.max(1.0)).floor().max(0.0) as usize;
+    let Some(track) = visible.get(row) else {
+        return MarkerHit::None;
+    };
+    for id in ids {
+        let Some(marker) = state.markers.by_id(id) else {
+            continue;
+        };
         if !state.marker_kind_visible(marker.kind) {
             continue;
         }
-        let row_hit = marker_row_spans(marker, area, top0, visible, row_h)
-            .iter()
-            .any(|(top, bot)| pos.y >= *top && pos.y <= *bot);
+        let row_hit = marker.nslc_ids.is_empty()
+            || marker
+                .nslc_ids
+                .iter()
+                .any(|nslc| marker_matches_track(nslc, track));
         if !row_hit {
             continue;
         }
-        if (pos.x - x_of(marker.tmin)).abs() < tol || (pos.x - x_of(marker.tmax)).abs() < tol {
-            return Some(idx);
-        }
+        return MarkerHit::Marker(id);
     }
-    None
+    MarkerHit::None
 }
 #[expect(
     clippy::too_many_arguments,
@@ -509,6 +563,7 @@ fn handle_interaction(
     rect: Rect,
     track_area: Rect,
     t_at_x: &impl Fn(f32) -> f64,
+    pointer_hit: MarkerHit,
 ) {
     let modifiers = ui.input(|i| i.modifiers);
     // Plain wheel scrolling arrives via `smooth_scroll_delta`, but egui re-routes
@@ -579,23 +634,6 @@ fn handle_interaction(
     // the edge — that overshoot *is* the auto-pan signal.
     let t_at_x_unclamped =
         |x: f32| view_tmin + f64::from((x - rect.left()) / rect.width().max(1.0)) * window;
-
-    // The hovered marker — snuffler's `alerted` state, maintained by `hoovering`
-    // only while no drag or pick is in flight (pile_viewer.py:2126): it feeds
-    // the brightened shade, the grey dashed guides, and the status-line
-    // metadata readout.
-    state.hovered_marker = if state.picking.is_none()
-        && state.view_drag.is_none()
-        && state.uncertainty_drag_last_y.is_none()
-    {
-        resp.hover_pos().and_then(|p| {
-            marker_hit_at(
-                state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
-            )
-        })
-    } else {
-        None
-    };
 
     // Interactive picking, armed by a double-click (single-shot) or Escape
     // (batch). A floating pick follows the cursor; press → (drag) → release
@@ -677,7 +715,7 @@ fn handle_interaction(
             for existing in &mut state.markers {
                 existing.selected = false;
             }
-            state.markers.push(m);
+            state.markers.insert(m);
             state.picking = pk.batch.then(|| PickingState {
                 batch: true,
                 down_t: None,
@@ -707,26 +745,16 @@ fn handle_interaction(
     // (pile_viewer.py:2042), so a hand tremor while clicking a marker cannot
     // rezoom the view. Shift adds to the selection instead of replacing it.
     let pressed_marker = ui
-        .input(|i| {
-            i.pointer
-                .primary_pressed()
-                .then(|| i.pointer.interact_pos())
-        })
-        .flatten()
-        .and_then(|p| {
-            marker_hit_at(
-                state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
-            )
-        });
+        .input(|i| i.pointer.primary_pressed())
+        .then(|| pointer_hit.marker())
+        .flatten();
     if let Some(hit) = pressed_marker {
         if !modifiers.shift {
             for m in &mut state.markers {
                 m.selected = false;
             }
         }
-        if let Some(m) = state.markers.get_mut(hit) {
-            m.selected = true;
-        }
+        state.markers.edit(hit, |marker| marker.selected = true);
     }
 
     if resp.drag_started_by(egui::PointerButton::Primary)
@@ -751,11 +779,8 @@ fn handle_interaction(
         && modifiers.shift
         && let Some(p) = resp.interact_pointer_pos()
     {
-        if let Some(hit) = marker_hit_at(
-            state, visible, track_area, top0, row_h, view_tmin, window, rect, p,
-        ) && let Some(m) = state.markers.get_mut(hit)
-        {
-            m.selected = true;
+        if let Some(hit) = pointer_hit.marker() {
+            state.markers.edit(hit, |marker| marker.selected = true);
         }
         state.uncertainty_drag_last_y = Some(p.y);
     }

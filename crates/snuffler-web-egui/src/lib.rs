@@ -13,9 +13,6 @@ mod app;
 // `?example=<slug>` links: read one on boot, publish one after a load.
 #[cfg(target_arch = "wasm32")]
 mod deep_link;
-// Progress overlay shown while an off-thread job runs (threaded build).
-#[cfg(all(target_arch = "wasm32", feature = "threads"))]
-mod job;
 // Settings that survive a reload (the browser's `snuffler.pf`).
 #[cfg(target_arch = "wasm32")]
 mod persist;
@@ -30,7 +27,7 @@ pub use a11y::snuffler_a11y_action;
 pub use app::App;
 
 // Off-main-thread work runs on a wasm-bindgen-rayon worker pool (the `threads`
-// feature; see `job` + `AGENTS.md`). The `pub use` is what makes wasm-bindgen-rayon
+// feature; see `app` + `AGENTS.md`). The `pub use` is what makes wasm-bindgen-rayon
 // generate the worker entry point, so it must live in the crate root and be public.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 pub use wasm_bindgen_rayon::init_thread_pool;

@@ -90,7 +90,7 @@ impl FigureWindows {
             mt: None,
         };
         if self.requests.get(kind) != Some(&request) {
-            session.bridge.render_figure(request.clone());
+            let _submission = session.bridge.render_figure(request.clone());
             self.requests.insert(kind.to_owned(), request);
         }
 
@@ -126,7 +126,7 @@ impl FigureWindows {
             }),
         };
         if self.requests.get("beachball") != Some(&request) {
-            bridge.render_figure(request.clone());
+            let _submission = bridge.render_figure(request.clone());
             self.requests.insert("beachball".to_owned(), request);
         }
 
@@ -155,10 +155,14 @@ impl FigureCache {
     pub fn show(&mut self, ui: &mut egui::Ui, bridge: &Bridge, kind: &str) {
         let generation = bridge.figure_gen(kind);
         if generation == 0 {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Rendering figure…");
-            });
+            if bridge.figure_job(kind).is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Rendering figure…");
+                });
+            } else {
+                ui.label("No figure has been rendered yet.");
+            }
             return;
         }
         let Some(figure) = bridge.figure(kind) else {

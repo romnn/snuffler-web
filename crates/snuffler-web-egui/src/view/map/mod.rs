@@ -354,7 +354,7 @@ fn toolbar(
     let data = bridge.map_data();
     let now = ctx.input(|i| i.time);
     if refresh || now - st.last_poll > POLL_SECONDS {
-        bridge.fetch_map_data(request);
+        let _submission = bridge.fetch_map_data(request);
         st.last_poll = now;
     }
     ctx.request_repaint_after(std::time::Duration::from_secs_f64(POLL_SECONDS));
@@ -440,7 +440,7 @@ mod tests {
             let mut marker = Marker::new(time, time, 0);
             marker.is_event = true;
             marker.event_hash = Some(hash.to_owned());
-            state.markers.push(marker);
+            state.markers.insert(marker);
         }
 
         assert_eq!(map_request(&state, false).event_hashes, ["visible"]);

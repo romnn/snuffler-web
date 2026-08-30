@@ -5,6 +5,7 @@ use egui::Color32;
 use snuffler_web_core::bridge::{
     Bridge, EventSnapshot, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
 };
+use snuffler_web_core::marker_store::MarkerId;
 use snuffler_web_core::markers::{MARKER_COLORS, Marker, MarkerColumn};
 use snuffler_web_core::state::AppState;
 
@@ -12,7 +13,10 @@ use snuffler_web_core::state::AppState;
 pub struct MarkerTable {
     sort: MarkerColumn,
     sort_ascending: bool,
-    edit: Option<(MarkerColumn, usize, String)>,
+    edit: Option<(MarkerColumn, MarkerId, String)>,
+    order: Vec<MarkerId>,
+    order_key: Option<(u64, MarkerColumn, bool)>,
+    station_distances_requested: Option<(u64, u64)>,
 }
 
 impl Default for MarkerTable {
@@ -21,6 +25,9 @@ impl Default for MarkerTable {
             sort: MarkerColumn::Time,
             sort_ascending: true,
             edit: None,
+            order: Vec::new(),
+            order_key: None,
+            station_distances_requested: None,
         }
     }
 }
@@ -37,7 +44,18 @@ impl MarkerTable {
             return None;
         }
 
-        bridge.ensure_station_distances(bridge.snuffling_gen());
+        let distance_key = (bridge.snuffling_gen(), bridge.active_event_gen());
+        if self.station_distances_requested != Some(distance_key) {
+            let _submission = bridge.ensure_station_distances(distance_key.0);
+            self.station_distances_requested = Some(distance_key);
+        }
+        if self
+            .edit
+            .as_ref()
+            .is_some_and(|(_, id, _)| state.markers.by_id(*id).is_none())
+        {
+            self.edit = None;
+        }
         let mut open = true;
         let mut output = TableOutput::default();
         egui::Window::new("Markers")
@@ -46,13 +64,21 @@ impl MarkerTable {
             .show(ctx, |ui| {
                 marker_toolbar(ui, state);
                 ui.separator();
-                self.table(ui, state, bridge, &mut output);
+                self.table(ui, state, &mut output);
             });
         state.show_marker_editor = open;
 
         if let Some(row) = output.replace_selection {
-            for (i, marker) in state.markers.iter_mut().enumerate() {
-                marker.selected = i == row;
+            let ids: Vec<MarkerId> = state.markers.iter_with_ids().map(|(id, _)| id).collect();
+            for id in ids {
+                let selected = id == row;
+                if state
+                    .markers
+                    .by_id(id)
+                    .is_some_and(|marker| marker.selected != selected)
+                {
+                    let _ = state.markers.edit(id, |marker| marker.selected = selected);
+                }
             }
         }
         if let Some(time) = output.center_time {
@@ -61,55 +87,66 @@ impl MarkerTable {
             state.tmax = time + window / 2.0;
         }
         for event in output.event_updates {
-            bridge.update_event(event);
+            let _submission = bridge.update_event(event);
         }
         output.beachball
     }
 
-    fn table(
-        &mut self,
-        ui: &mut egui::Ui,
-        state: &mut AppState,
-        bridge: &Bridge,
-        output: &mut TableOutput,
-    ) {
-        // Sort through an index permutation so marker identity and insertion order remain stable.
-        let order = self.row_order(state, bridge);
+    fn table(&mut self, ui: &mut egui::Ui, state: &mut AppState, output: &mut TableOutput) {
+        self.ensure_order(state);
         let (mut sort, mut ascending) = (self.sort, self.sort_ascending);
         let mut edit = self.edit.take();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("marker_table")
-                .striped(true)
-                .num_columns(16)
-                .spacing([10.0, 3.0])
-                .show(ui, |ui| {
-                    marker_headers(ui, &mut sort, &mut ascending);
-                    for &row in &order {
-                        let Some(marker) = state.markers.get_mut(row) else {
-                            continue;
-                        };
-                        marker_row(ui, row, marker, &mut edit, output);
-                    }
-                });
-        });
+        let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            row_height,
+            self.order.len().saturating_add(1),
+            |ui, rows| {
+                egui::Grid::new("marker_table")
+                    .striped(true)
+                    .num_columns(16)
+                    .spacing([10.0, 3.0])
+                    .show(ui, |ui| {
+                        for visible_row in rows {
+                            if visible_row == 0 {
+                                marker_headers(ui, &mut sort, &mut ascending);
+                                continue;
+                            }
+                            let Some(&id) = self.order.get(visible_row - 1) else {
+                                continue;
+                            };
+                            let _ = state.markers.edit(id, |marker| {
+                                marker_row(ui, id, marker, &mut edit, output);
+                            });
+                        }
+                    });
+            },
+        );
+        if self.sort != sort || self.sort_ascending != ascending {
+            self.order_key = None;
+        }
         self.sort = sort;
         self.sort_ascending = ascending;
         self.edit = edit;
     }
 
-    /// A permutation of marker indices sorted by the current marker-table column
-    /// (numeric, like Qt's sort role; a time tiebreak keeps it deterministic). The
-    /// underlying `Vec` order is never reordered so per-row actions map correctly.
-    fn row_order(&self, state: &AppState, bridge: &Bridge) -> Vec<usize> {
+    /// Refreshes the stable marker identities sorted by the current table column.
+    ///
+    /// The insertion order is never reordered, and the permutation remains valid until the marker
+    /// store or sort selection changes.
+    fn ensure_order(&mut self, state: &AppState) {
+        let key = (state.markers.generation(), self.sort, self.sort_ascending);
+        if self.order_key == Some(key) {
+            return;
+        }
         let ms = &state.markers;
-        let mut order: Vec<usize> = (0..ms.len()).collect();
+        let mut order: Vec<MarkerId> = ms.iter_with_ids().map(|(id, _)| id).collect();
         let (col, asc) = (self.sort, self.sort_ascending);
-        let _ = bridge;
         // Qt's Dist [km]: this *event* to the active event (marker_editor.py:502),
         // precomputed in Python; rows without one sort last.
         let dist_of = |m: &Marker| -> f64 { m.dist_active_km.unwrap_or(f64::INFINITY) };
         order.sort_by(|&a, &b| {
-            let (Some(ma), Some(mb)) = (ms.get(a), ms.get(b)) else {
+            let (Some(ma), Some(mb)) = (ms.by_id(a), ms.by_id(b)) else {
                 return std::cmp::Ordering::Equal;
             };
             let ord = match col {
@@ -166,7 +203,8 @@ impl MarkerTable {
             let ord = ord.then_with(|| ma.tmin.total_cmp(&mb.tmin));
             if asc { ord } else { ord.reverse() }
         });
-        order
+        self.order = order;
+        self.order_key = Some(key);
     }
 }
 
@@ -176,7 +214,7 @@ struct TableOutput {
     beachball: Option<[f64; 6]>,
     /// A plain row click replaces the whole selection with this row (Qt table
     /// semantics); applied after the draw pass because it touches every marker.
-    replace_selection: Option<usize>,
+    replace_selection: Option<MarkerId>,
     event_updates: Vec<EventSnapshot>,
 }
 
@@ -273,9 +311,9 @@ fn marker_headers(ui: &mut egui::Ui, sort: &mut MarkerColumn, ascending: &mut bo
 
 fn marker_row(
     ui: &mut egui::Ui,
-    row: usize,
+    row: MarkerId,
     marker: &mut Marker,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
     output: &mut TableOutput,
 ) {
     let event_before = event_snapshot(marker);
@@ -378,9 +416,9 @@ fn event_snapshot(marker: &Marker) -> Option<EventSnapshot> {
 
 fn marker_identity_cells(
     ui: &mut egui::Ui,
-    row: usize,
+    row: MarkerId,
     marker: &mut Marker,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
 ) {
     let polarity = match marker.polarity {
         Some(1) => "+",
@@ -424,9 +462,9 @@ fn marker_identity_cells(
 
 fn marker_geometry_cells(
     ui: &mut egui::Ui,
-    row: usize,
+    row: MarkerId,
     marker: &mut Marker,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
 ) {
     // Qt's Dist [km] (marker_editor.py:502): this *event* to the active event,
     // '%.5g' of kilometres, blank for anything that is not an event marker.
@@ -588,8 +626,8 @@ pub fn sort_header(
 /// toFloat validity check). Non-editable cells render as a plain label.
 pub fn edit_num_cell(
     ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-    row: usize,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+    row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<f64>,
     prec: usize,
@@ -629,8 +667,8 @@ pub fn edit_num_cell(
 /// commit-on-blur behaviour; empty commits clear the value.
 pub fn edit_text_cell(
     ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-    row: usize,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+    row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<String>,
     editable: bool,
@@ -641,8 +679,8 @@ pub fn edit_text_cell(
 
 fn edit_text_cell_with_display(
     ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-    row: usize,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+    row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<String>,
     editable: bool,

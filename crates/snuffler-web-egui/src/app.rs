@@ -1,10 +1,21 @@
+use std::cell::Cell;
+use std::fmt::Write as _;
+
 use egui::FontId;
+use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::snufflings::Action as SnufflingAction;
 use crate::view::marker_table::markers_to_file;
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
-use snuffler_web_core::bridge::{ExampleDataset, Repaint, Status};
+use snuffler_web_core::activity::{
+    CancelCap, JobError, JobHandle, JobRecord, JobState, Outcome, Progress, RuntimeState,
+};
+#[cfg(feature = "svg-raster")]
+use snuffler_web_core::activity::{Operation, Submission};
+#[cfg(feature = "svg-raster")]
+use snuffler_web_core::bridge::BridgeError;
+use snuffler_web_core::bridge::{ExampleDataset, Repaint};
 use snuffler_web_core::markers::Marker;
 use snuffler_web_core::session::Session;
 use snuffler_web_core::state::{
@@ -19,9 +30,35 @@ const BOOT_EXAMPLE: &str = "sumatra-2004-12-26-m9.1-surface-waves";
 /// that rewrites itself at 60 Hz is unreadable.
 const FRAME_STATS_REFRESH_INTERVAL_S: f64 = 0.25;
 const FRAME_STATS_EMA_ALPHA: f64 = 0.2;
+
+#[cfg(all(feature = "svg-raster", feature = "threads"))]
+struct PngExport {
+    receiver: std::sync::mpsc::Receiver<Option<Vec<u8>>>,
+    filename: String,
+    job: JobHandle,
+}
 /// The widest the readout can get (the rate is capped at 60), used to reserve a
 /// width that does not change as the number does.
 const FRAME_STATS_WIDEST: &str = "60 fps";
+
+thread_local! {
+    static EXPORTED_FRAME_MS: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// Returns the current frame-cost estimate for browser performance tests.
+#[wasm_bindgen]
+#[must_use]
+pub fn snuffler_frame_stats() -> String {
+    EXPORTED_FRAME_MS.with(|frame_ms| {
+        let frame_ms = frame_ms.get();
+        let fps = if frame_ms > 0.0 {
+            (1000.0 / frame_ms).clamp(0.0, 60.0)
+        } else {
+            0.0
+        };
+        format!("{{\"emaMs\":{frame_ms:.3},\"fps\":{fps:.3}}}")
+    })
+}
 
 /// How much of the right-hand readout the menu row can afford this frame.
 struct RightReadout {
@@ -82,7 +119,7 @@ pub struct App {
     /// pool, paired with the download filename. Only the threaded build runs the
     /// export off-thread; otherwise it rasterizes synchronously (no receiver).
     #[cfg(all(feature = "svg-raster", feature = "threads"))]
-    export_rx: Option<(std::sync::mpsc::Receiver<Option<Vec<u8>>>, String)>,
+    export_rx: Option<PngExport>,
     /// Smoothed egui CPU time per frame, in milliseconds.
     frame_stats_ms: Option<f64>,
     /// The frame rate the top bar is currently showing, and when it last changed.
@@ -237,13 +274,13 @@ impl App {
         // twice, visible without touching a single control. All are issued
         // before the worker has booted; the transport queues them.
         if let Some((url, format)) = crate::deep_link::requested_url() {
-            session.bridge.load_url(url, format);
+            let _submission = session.bridge.load_url(url, format);
         } else {
-            match crate::deep_link::requested_example() {
+            let _submission = match crate::deep_link::requested_example() {
                 Some(slug) => session.bridge.open_example(slug),
                 None if crate::deep_link::wants_demo() => session.bridge.load_example(),
                 None => session.bridge.open_example(BOOT_EXAMPLE.to_owned()),
-            }
+            };
         }
         Self {
             session,
@@ -294,6 +331,7 @@ impl App {
             None => frame_ms,
         };
         self.frame_stats_ms = Some(avg_ms);
+        EXPORTED_FRAME_MS.with(|frame_ms| frame_ms.set(avg_ms));
 
         let now_s = ui.input(|i| i.time);
         if self.frame_stats_shown_fps.is_some()
@@ -370,6 +408,13 @@ impl App {
             };
             waveform::render_svg(ctx, &self.session.state, &view, size, theme, 0.0)
         };
+        let submission = self
+            .session
+            .bridge
+            .begin_local(Operation::ExportPng, Some("waveform view".to_owned()));
+        let Submission::Accepted(job) = submission else {
+            return;
+        };
 
         #[cfg(feature = "threads")]
         if crate::pool::ready() {
@@ -383,38 +428,76 @@ impl App {
                     PNG_EXPORT_SCALE,
                 ));
             });
-            self.export_rx = Some((rx, export_filename("png")));
+            self.export_rx = Some(PngExport {
+                receiver: rx,
+                filename: export_filename("png"),
+                job,
+            });
             return;
         }
 
-        if let Some(png) =
-            crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE)
-        {
-            self.session
+        let png = crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE);
+        self.session.bridge.finish_local(
+            job,
+            png.as_ref().map_or_else(
+                || {
+                    Err(BridgeError::browser(
+                        "rendering a PNG",
+                        "rasterization failed",
+                    ))
+                },
+                |_| Ok(()),
+            ),
+        );
+        if let Some(png) = png {
+            let _submission = self
+                .session
                 .bridge
                 .save_image_png(png, export_filename("png"));
         }
     }
 
-    /// Deliver a finished off-thread PNG export, or keep the progress overlay up
-    /// (and frames coming) while the rayon pool is still rasterizing.
+    /// Delivers a finished off-thread PNG export while the navbar activity keeps
+    /// frames coming and communicates that rasterization is still running.
     #[cfg(all(feature = "svg-raster", feature = "threads"))]
     fn poll_png_export(&mut self, ctx: &egui::Context) {
-        let status = self.export_rx.as_ref().map(|(rx, _)| rx.try_recv());
+        let status = self
+            .export_rx
+            .as_ref()
+            .map(|export| export.receiver.try_recv());
         match status {
             Some(Ok(png)) => {
-                if let Some((_, filename)) = self.export_rx.take()
-                    && let Some(png) = png
-                {
-                    self.session.bridge.save_image_png(png, filename);
+                if let Some(export) = self.export_rx.take() {
+                    self.session.bridge.finish_local(
+                        export.job,
+                        png.as_ref().map_or_else(
+                            || {
+                                Err(BridgeError::browser(
+                                    "rendering a PNG",
+                                    "rasterization failed",
+                                ))
+                            },
+                            |_| Ok(()),
+                        ),
+                    );
+                    if let Some(png) = png {
+                        let _submission = self.session.bridge.save_image_png(png, export.filename);
+                    }
                 }
             }
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {
-                crate::job::progress_overlay(ctx, "Rendering PNG…");
                 ctx.request_repaint();
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                self.export_rx = None;
+                if let Some(export) = self.export_rx.take() {
+                    self.session.bridge.finish_local(
+                        export.job,
+                        Err(BridgeError::browser(
+                            "rendering a PNG",
+                            "worker disconnected",
+                        )),
+                    );
+                }
             }
             None => {}
         }
@@ -478,7 +561,7 @@ impl App {
             )
             .clicked()
         {
-            self.session.bridge.open_files();
+            let _submission = self.session.bridge.open_files();
             ui.close();
         }
         if ui
@@ -489,7 +572,7 @@ impl App {
             )
             .clicked()
         {
-            self.session.bridge.open_directory();
+            let _submission = self.session.bridge.open_directory();
             ui.close();
         }
         if ui
@@ -500,7 +583,7 @@ impl App {
             )
             .clicked()
         {
-            self.session.bridge.reload_files();
+            let _submission = self.session.bridge.reload_files();
             ui.close();
         }
     }
@@ -517,7 +600,7 @@ impl App {
             // plus a download size — without a floor they wrap to one word per
             // line in a column narrow enough to be unreadable.
             ui.set_min_width(320.0);
-            self.session.bridge.list_examples(false);
+            let _submission = self.session.bridge.list_examples(false);
             match self.session.bridge.examples() {
                 None => {
                     ui.label("Loading…");
@@ -525,7 +608,7 @@ impl App {
                 Some(Err(error)) => {
                     ui.label(format!("Unavailable: {error}"));
                     if ui.button("Retry").clicked() {
-                        self.session.bridge.list_examples(true);
+                        let _submission = self.session.bridge.list_examples(true);
                     }
                 }
                 Some(Ok(examples)) if examples.is_empty() => {
@@ -539,7 +622,7 @@ impl App {
                             .on_hover_text(example_hover(&example))
                             .clicked()
                         {
-                            self.session.bridge.load_bundle(
+                            let _submission = self.session.bridge.load_bundle(
                                 example.url.clone(),
                                 example.sha256.clone(),
                                 example.title.clone(),
@@ -566,7 +649,7 @@ impl App {
             )
             .clicked()
         {
-            self.session.bridge.load_station_xml();
+            let _submission = self.session.bridge.load_station_xml();
             ui.close();
         }
         if ui
@@ -574,7 +657,7 @@ impl App {
             .on_hover_text("Load a local pyrocko station file (coordinates for sorting/cake/map).")
             .clicked()
         {
-            self.session.bridge.load_stations();
+            let _submission = self.session.bridge.load_stations();
             ui.close();
         }
         if ui
@@ -582,16 +665,17 @@ impl App {
             .on_hover_text("Load a local pyrocko event file (event markers + active event).")
             .clicked()
         {
-            self.session.bridge.load_events();
+            let _submission = self.session.bridge.load_events();
             ui.close();
         }
     }
 
     fn file_marker_items(&mut self, ui: &mut egui::Ui) {
         if ui.button("Save markers…").clicked() {
-            self.session
+            let _submission = self
+                .session
                 .bridge
-                .save_markers(markers_to_file(&self.session.state.markers));
+                .save_markers(markers_to_file(self.session.state.markers.as_slice()));
             ui.close();
         }
         if ui
@@ -613,11 +697,11 @@ impl App {
                 .filter(|marker| marker.selected)
                 .cloned()
                 .collect();
-            self.session.bridge.save_markers(markers_to_file(&selected));
+            let _submission = self.session.bridge.save_markers(markers_to_file(&selected));
             ui.close();
         }
         if ui.button("Load markers…").clicked() {
-            self.session.bridge.load_markers();
+            let _submission = self.session.bridge.load_markers();
             ui.close();
         }
     }
@@ -675,7 +759,7 @@ impl App {
     /// actions that need the bridge, the export machinery, or a DOM call.
     fn consume_keyboard_requests(&mut self) {
         if std::mem::take(&mut self.session.state.open_files_requested) {
-            self.session.bridge.open_files();
+            let _submission = self.session.bridge.open_files();
         }
         if let Some(selected) = self.session.state.save_markers_requested.take() {
             let markers: Vec<Marker> = if selected {
@@ -687,10 +771,10 @@ impl App {
                     .cloned()
                     .collect()
             } else {
-                self.session.state.markers.clone()
+                self.session.state.markers.iter().cloned().collect()
             };
             if !(selected && markers.is_empty()) {
-                self.session.bridge.save_markers(markers_to_file(&markers));
+                let _submission = self.session.bridge.save_markers(markers_to_file(&markers));
             }
         }
         if std::mem::take(&mut self.session.state.export_image_requested) {
@@ -703,17 +787,7 @@ impl App {
 
     fn view_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("View", |ui| {
-            ui.label("Theme");
-            // Snuffler Qt owns its canvas: snuffler is white-only, so a dark variant
-            // of that theme would be a different theme wearing the name. The control
-            // stays visible and says why rather than vanishing under some themes.
-            let pinned = self.session.state.wiggle_theme.forces_light();
-            ui.add_enabled_ui(!pinned, egui::global_theme_preference_buttons)
-                .response
-                .on_disabled_hover_text(
-                    "Only the Snuffler Web theme has light and dark. Snuffler itself \
-                     draws on white, so the Snuffler Qt theme stays there.",
-                );
+            self.theme_menu_items(ui);
             ui.separator();
 
             if ui
@@ -825,6 +899,20 @@ impl App {
                 ui.close();
             }
         });
+    }
+
+    fn theme_menu_items(&mut self, ui: &mut egui::Ui) {
+        ui.label("Theme");
+        // Snuffler Qt owns its canvas: snuffler is white-only, so a dark variant
+        // of that theme would be a different theme wearing the name.
+        // The control stays visible and says why rather than vanishing under some themes.
+        let pinned = self.session.state.wiggle_theme.forces_light();
+        ui.add_enabled_ui(!pinned, egui::global_theme_preference_buttons)
+            .response
+            .on_disabled_hover_text(
+                "Only the Snuffler Web theme has light and dark. Snuffler itself \
+                 draws on white, so the Snuffler Qt theme stays there.",
+            );
     }
 
     fn options_menu(&mut self, ui: &mut egui::Ui) {
@@ -991,7 +1079,7 @@ impl App {
                 file.name
             };
             let format = guess_fmt(&name);
-            self.session.bridge.load_file(name, bytes.to_vec(), format);
+            let _submission = self.session.bridge.load_file(name, bytes.to_vec(), format);
         }
     }
 
@@ -1047,34 +1135,30 @@ impl App {
         // The status line is the one place the app tells you that something
         // finished, failed, or is still running, and none of it is tied to a
         // widget you would be focused on — so it is announced as it changes.
-        let (status, urgency) = match self.session.bridge.status() {
-            Status::Booting => {
-                ui.spinner();
-                (
-                    ui.label("Starting Python (Pyodide)…"),
-                    crate::a11y::Urgency::Polite,
-                )
+        let (runtime, jobs) = self.session.bridge.activity_snapshot();
+        let now_s = js_sys::Date::now() / 1000.0;
+        if let Some(delay) = next_activity_reveal_delay(&jobs, now_s) {
+            ctx.request_repaint_after(delay);
+        }
+        let active = active_job(&jobs, now_s);
+        let (status, urgency) = show_primary_activity(ui, &runtime, &jobs, active, total_tracks);
+        if matches!(runtime, RuntimeState::Ready)
+            && let Some((handle, record)) = active
+        {
+            let queued = matches!(record.state(), JobState::Queued);
+            let cancellable = queued
+                || (record.operation().activity().cancel != CancelCap::NotCancellable
+                    && !matches!(record.state(), JobState::Cancelling { .. }));
+            if cancellable && ui.small_button("Cancel").clicked() {
+                let _disposition = self.session.bridge.cancel(handle);
             }
-            Status::Loading(message) => {
-                ui.spinner();
-                (ui.label(message), crate::a11y::Urgency::Polite)
+            if let JobState::Cancelling { since_s } = record.state()
+                && js_sys::Date::now() / 1000.0 - since_s > 5.0
+                && ui.small_button("Restart Python").clicked()
+            {
+                self.session.bridge.restart_runtime();
             }
-            Status::Ready => (
-                ui.label(format!("Ready · {total_tracks} traces")),
-                crate::a11y::Urgency::Polite,
-            ),
-            Status::Error(error) => {
-                let label = ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
-                // pyrocko's traceback now survives the trip as part of the typed
-                // error, and the status line is one sentence wide — hovering is
-                // what turns "it failed" into something reportable.
-                let label = match error.traceback() {
-                    Some(traceback) => label.on_hover_text(traceback),
-                    None => label,
-                };
-                (label, crate::a11y::Urgency::Urgent)
-            }
-        };
+        }
         crate::a11y::announce_changes(ctx, &status, urgency);
         if let Some(error) = self.session.bridge.diagnostic() {
             ui.separator();
@@ -1147,7 +1231,7 @@ impl App {
             .session
             .state
             .hovered_marker
-            .and_then(|idx| self.session.state.markers.get(idx))
+            .and_then(|id| self.session.state.markers.by_id(id))
             .map(snuffler_web_core::markers::Marker::hover_message)
             .filter(|msg| !msg.is_empty());
         if let Some(msg) = hover_msg {
@@ -1155,7 +1239,19 @@ impl App {
             let label = ui.label(msg);
             crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
         }
+        self.show_marker_hit_overload(ui, ctx);
         self.show_cursor_time(ui, ctx);
+    }
+
+    fn show_marker_hit_overload(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(count) = self.session.state.marker_hit_overload else {
+            return;
+        };
+        ui.separator();
+        let label = ui.label(format!(
+            "{count} marker endpoints under the pointer; zoom in to select one"
+        ));
+        crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
     }
 
     /// How much of the build stamp and frame rate the right of the menu row can
@@ -1313,7 +1409,8 @@ impl App {
                 waveform::render_svg(ctx, &self.session.state, &view, size, theme, margin)
             });
             if let Some(svg) = svg {
-                self.session
+                let _submission = self
+                    .session
                     .bridge
                     .save_image_svg(svg, export_filename("svg"));
             }
@@ -1367,7 +1464,8 @@ impl App {
             && let Some(png) =
                 crate::view::draw::encode_png(&image.region(&crop, Some(points_per_pixel)))
         {
-            self.session
+            let _submission = self
+                .session
                 .bridge
                 .save_image_png(png, export_filename("png"));
         }
@@ -1422,7 +1520,9 @@ impl App {
                 self.session.snufflings.polarization.open_plot();
                 self.figures.invalidate("polarization");
             }
-            SnufflingAction::Run(name) => self.session.bridge.run_snuffling(name.into(), params),
+            SnufflingAction::Run(name) => {
+                let _submission = self.session.bridge.run_snuffling(name.into(), params);
+            }
             SnufflingAction::ReloadSnufflings => {
                 self.session.state.reload_snufflings_requested = true;
             }
@@ -1431,17 +1531,24 @@ impl App {
                 // ISO stamps; `format_full` writes a space, so swap in the 'T'.
                 let iso =
                     |t: f64| snuffler_web_core::timeaxis::format_full(t).replacen(' ', "T", 1);
-                self.session
-                    .bridge
-                    .catalog_search(snuffler_web_core::bridge::CatalogRequest {
-                        datacenter: "geofon".to_owned(),
-                        start: iso(self.session.state.tmin),
-                        end: iso(self.session.state.tmax),
-                        minmag,
-                        with_mt: self.session.state.cat_with_mt,
-                    });
+                let _submission =
+                    self.session
+                        .bridge
+                        .catalog_search(snuffler_web_core::bridge::CatalogRequest {
+                            datacenter: "geofon".to_owned(),
+                            start: iso(self.session.state.tmin),
+                            end: iso(self.session.state.tmax),
+                            minmag,
+                            with_mt: self.session.state.cat_with_mt,
+                            marker_budget: Some(snuffler_web_core::bridge::ProtoMarkerBudget {
+                                max_markers:
+                                    snuffler_web_core::marker_store::MarkerBudget::standard().get(),
+                            }),
+                        });
             }
-            SnufflingAction::Rms => self.session.bridge.rms_traces(params),
+            SnufflingAction::Rms => {
+                let _submission = self.session.bridge.rms_traces(params);
+            }
             SnufflingAction::CakePlotModel => {
                 self.session.snufflings.cake.open_model_plot();
                 self.figures.invalidate("cake_model");
@@ -1450,15 +1557,19 @@ impl App {
                 self.session.snufflings.cake.open_rays_plot();
                 self.figures.invalidate("cake_rays");
             }
-            SnufflingAction::AddCakeModel => self.session.bridge.add_cake_model(),
+            SnufflingAction::AddCakeModel => {
+                let _submission = self.session.bridge.add_cake_model();
+            }
             SnufflingAction::LoadGfStoreUrl => {
                 let url = self.session.snufflings.seismosizer.load_url();
                 if !url.trim().is_empty() {
-                    self.session.bridge.load_gf_store_url(url);
+                    let _submission = self.session.bridge.load_gf_store_url(url);
                 }
             }
             #[cfg(feature = "gf")]
-            SnufflingAction::AddGfStore => self.session.bridge.add_gf_store(),
+            SnufflingAction::AddGfStore => {
+                let _submission = self.session.bridge.add_gf_store();
+            }
         }
     }
 
@@ -1482,16 +1593,16 @@ impl App {
         }
         let downloads = crate::view::forms::download(ctx, &mut self.session.state);
         if let Some(request) = downloads.waveforms {
-            self.session.bridge.download_waveforms(request);
+            let _submission = self.session.bridge.download_waveforms(request);
         }
         if let Some(request) = downloads.stations {
-            self.session.bridge.fetch_stations(request);
+            let _submission = self.session.bridge.fetch_stations(request);
         }
         if let Some(request) = downloads.responses {
-            self.session.bridge.fetch_responses(request);
+            let _submission = self.session.bridge.fetch_responses(request);
         }
         if downloads.save {
-            self.session.bridge.save_waveforms_and_stations();
+            let _submission = self.session.bridge.save_waveforms_and_stations();
         }
 
         let seedlink = crate::view::forms::seedlink(
@@ -1508,12 +1619,12 @@ impl App {
                 self.session.bridge.stop_seedlink();
             }
             Some(crate::view::forms::SeedlinkIntent::SaveBuffer) => {
-                self.session.bridge.save_waveforms();
+                let _submission = self.session.bridge.save_waveforms();
             }
             None => {}
         }
         if let Some(request) = crate::view::forms::catalog(ctx, &mut self.session.state) {
-            self.session.bridge.catalog_search(request);
+            let _submission = self.session.bridge.catalog_search(request);
         }
         crate::view::map::window(
             ctx,
@@ -1563,6 +1674,157 @@ fn example_hover(example: &ExampleDataset) -> String {
 /// A timestamped export name (`snuffler-20260816-142530.png`): a fixed name
 /// collides into `snuffler (1).png` on the second export, and the stamp says
 /// which session a file in the downloads folder came from.
+fn active_job(jobs: &[(JobHandle, JobRecord)], now_s: f64) -> Option<(JobHandle, &JobRecord)> {
+    jobs.iter()
+        .filter(|(_, record)| {
+            !matches!(record.state(), JobState::Done(_)) && record.feedback_delay(now_s).is_none()
+        })
+        .max_by_key(|(handle, record)| {
+            (
+                !record.operation().activity().background,
+                matches!(
+                    record.state(),
+                    JobState::Running { .. } | JobState::Dispatching | JobState::Cancelling { .. }
+                ),
+                handle.id().get(),
+            )
+        })
+        .map(|(handle, record)| (*handle, record))
+}
+
+fn next_activity_reveal_delay(
+    jobs: &[(JobHandle, JobRecord)],
+    now_s: f64,
+) -> Option<std::time::Duration> {
+    jobs.iter()
+        .filter(|(_, record)| !matches!(record.state(), JobState::Done(_)))
+        .filter_map(|(_, record)| record.feedback_delay(now_s))
+        .min()
+}
+
+fn unresolved_failure(jobs: &[(JobHandle, JobRecord)]) -> Option<&JobError> {
+    jobs.iter()
+        .filter(|(handle, record)| {
+            matches!(record.state(), JobState::Done(Outcome::Failed(_)))
+                && !jobs.iter().any(|(newer, candidate)| {
+                    newer.id().get() > handle.id().get()
+                        && candidate.operation() == record.operation()
+                })
+        })
+        .max_by_key(|(handle, _)| handle.id().get())
+        .and_then(|(_, record)| match record.state() {
+            JobState::Done(Outcome::Failed(error)) => Some(error),
+            _ => None,
+        })
+}
+
+fn active_job_text(record: &JobRecord, queued: usize) -> String {
+    let mut text = record.operation().activity().label.to_owned();
+    if let Some(detail) = record.detail() {
+        text.push_str(" · ");
+        text.push_str(detail);
+    }
+    match record.state() {
+        JobState::Running {
+            progress: Progress::Fraction {
+                fraction, phase, ..
+            },
+            ..
+        } => {
+            text = format!(
+                "{phase} · {:.0}%",
+                (fraction * 100.0).round().clamp(0.0, 100.0)
+            );
+        }
+        JobState::Running {
+            progress: Progress::Count { done, total, phase },
+            ..
+        } => {
+            text = total.map_or_else(
+                || format!("{phase} · {done}"),
+                |total| format!("{phase} · {done}/{total}"),
+            );
+        }
+        JobState::Running {
+            since_s,
+            progress: Progress::Indeterminate,
+            ..
+        } => {
+            let elapsed = (js_sys::Date::now() / 1000.0 - since_s).max(0.0);
+            if elapsed >= 5.0 {
+                text = format!("{text} · still working ({elapsed:.0}s)");
+            }
+        }
+        _ => {}
+    }
+    if matches!(record.state(), JobState::Cancelling { .. }) {
+        text = format!("Cancelling {text}…");
+    }
+    if queued > 0 {
+        let _ = write!(text, " · {queued} queued");
+    }
+    text
+}
+
+fn show_primary_activity(
+    ui: &mut egui::Ui,
+    runtime: &RuntimeState,
+    jobs: &[(JobHandle, JobRecord)],
+    active: Option<(JobHandle, &JobRecord)>,
+    total_tracks: usize,
+) -> (egui::Response, crate::a11y::Urgency) {
+    match runtime {
+        RuntimeState::Booting(_) => {
+            ui.spinner();
+            (
+                ui.label("Starting Python (Pyodide)…"),
+                crate::a11y::Urgency::Polite,
+            )
+        }
+        RuntimeState::Restarting => {
+            ui.spinner();
+            (
+                ui.label("Restarting Python (Pyodide)…"),
+                crate::a11y::Urgency::Urgent,
+            )
+        }
+        RuntimeState::Failed(error) => {
+            let label = ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
+            let label = error
+                .traceback()
+                .map_or(label.clone(), |traceback| label.on_hover_text(traceback));
+            (label, crate::a11y::Urgency::Urgent)
+        }
+        RuntimeState::Ready => {
+            if let Some((_, record)) = active {
+                ui.spinner();
+                let queued = jobs
+                    .iter()
+                    .filter(|(_, record)| matches!(record.state(), JobState::Queued))
+                    .count();
+                return (
+                    ui.label(active_job_text(record, queued)),
+                    crate::a11y::Urgency::Polite,
+                );
+            }
+            if let Some(error) = unresolved_failure(jobs) {
+                let label = ui.colored_label(egui::Color32::RED, format!("Error: {error}"));
+                let label = match error {
+                    JobError::Bridge(error) => error
+                        .traceback()
+                        .map_or(label.clone(), |traceback| label.on_hover_text(traceback)),
+                    JobError::Rejected(_) | JobError::RuntimeLost => label,
+                };
+                return (label, crate::a11y::Urgency::Urgent);
+            }
+            (
+                ui.label(format!("Ready · {total_tracks} traces")),
+                crate::a11y::Urgency::Polite,
+            )
+        }
+    }
+}
+
 fn export_filename(ext: &str) -> String {
     let now_s = js_sys::Date::now() / 1000.0;
     let stamp: String = snuffler_web_core::timeaxis::format_full(now_s)
