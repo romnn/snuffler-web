@@ -8,20 +8,30 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
   BootProgressSchema,
+  BridgeResultSchema,
   MlDevice,
   MlDeviceStatusSchema,
-  SeisbenchProgressSchema,
+  OperationEventSchema,
+  OperationProgressSchema,
+  OperationStartedSchema,
+  StringValueSchema,
   WorkerEventSchema,
   type WorkerEvent,
 } from "./proto/snuffler/bridge/v1/bridge_pb.js";
-import { rpc } from "./rpc.js";
 import {
-  WORKER_MOUNT_GF_STORE,
-  WORKER_RELOAD_SNUFFLINGS,
-  WORKER_WARM_DEFERRED,
-} from "./worker_command.js";
+  beginCommit,
+  cancellationRequested,
+  executionControl,
+  markExecutionDone,
+  setInterpreterOwner,
+} from "./execution_control.js";
+import { BridgeActivity, BridgeMethod, rpc } from "./rpc.js";
+import { WORKER_RELOAD_SNUFFLINGS } from "./worker_command.js";
 
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
+const epochParameter = Number(new URL(self.location.href).searchParams.get("epoch") || 0);
+const RUNTIME_EPOCH =
+  Number.isSafeInteger(epochParameter) && epochParameter >= 0 ? epochParameter >>> 0 : 0;
 
 // TextDecoder.decode() throws "The provided ArrayBufferView value must not be
 // shared" when handed a view backed by a SharedArrayBuffer in this engine. Our
@@ -62,6 +72,11 @@ let pyodideReadyPromise: Promise<any> | null = null;
 let py: any = null;
 let bridge: any = null;
 let gfStoreCounter = 0;
+let activeSeisbenchJobId = 0n;
+let activeJobControl: Int32Array | null = null;
+let activeViewControl: Int32Array | null = null;
+let activeJobExcludesView = false;
+let pyodideInterrupt: Uint8Array | null = null;
 const GET_VIEW_METHOD = rpc("getView");
 const BRIDGE_PERF_LOG = false;
 type BridgePerf = Record<string, number>;
@@ -162,8 +177,11 @@ function responseHeadersFor(url: string, bytes: Uint8Array): Headers {
 }
 
 function postWorkerEvent(event: WorkerEvent["event"]) {
-  const bytes = toBinary(WorkerEventSchema, create(WorkerEventSchema, { event }));
-  self.postMessage({ type: "workerEvent", event: bytes }, [bytes.buffer]);
+  const bytes = toBinary(
+    WorkerEventSchema,
+    create(WorkerEventSchema, { event, runtimeEpoch: RUNTIME_EPOCH })
+  );
+  self.postMessage({ type: "workerEvent", epoch: RUNTIME_EPOCH, event: bytes }, [bytes.buffer]);
 }
 
 function postMlDevice(device: MlDevice) {
@@ -181,13 +199,113 @@ function postBootProgress(fraction: number, label: string) {
 }
 
 function postSeisbenchProgress(fraction: number, label: string) {
+  if (activeSeisbenchJobId === 0n) return;
+  postOperationProgress(
+    activeSeisbenchJobId,
+    0,
+    null,
+    String(label || "Running SeisBench picker"),
+    fraction
+  );
+}
+
+function postOperationProgress(
+  jobId: bigint,
+  done: number,
+  total: number | null,
+  phase: string,
+  fraction?: number
+) {
+  if (jobId === 0n) return;
   postWorkerEvent({
-    case: "seisbench",
-    value: create(SeisbenchProgressSchema, {
-      fraction: Math.max(0, Math.min(1, Number(fraction))),
-      label: String(label || "Running SeisBench picker"),
+    case: "operation",
+    value: create(OperationEventSchema, {
+      jobId,
+      event: {
+        case: "progress",
+        value: create(OperationProgressSchema, {
+          done: BigInt(Math.max(0, Math.trunc(done))),
+          total: total == null ? undefined : BigInt(Math.max(0, Math.trunc(total))),
+          fraction: fraction == null ? undefined : Math.max(0, Math.min(1, Number(fraction))),
+          phase,
+        }),
+      },
     }),
   });
+}
+
+function postOperationStarted(jobId: bigint) {
+  postWorkerEvent({
+    case: "operation",
+    value: create(OperationEventSchema, {
+      jobId,
+      event: { case: "started", value: create(OperationStartedSchema) },
+    }),
+  });
+}
+
+function acquireInterpreter(msg: any, control: Int32Array, interrupt: Uint8Array): "JOB" | "VIEW" {
+  const activity = msg.method === WORKER_RELOAD_SNUFFLINGS ? null : BridgeActivity[msg.method];
+  if (msg.method !== WORKER_RELOAD_SNUFFLINGS && !activity) {
+    throw new Error(`protocol fault: unknown Python method ${String(msg.method)}`);
+  }
+  const lane = activity?.lane ?? "JOB";
+  if (lane === "VIEW") {
+    if (activeViewControl) {
+      throw new Error("protocol fault: a second view request reached the Python worker");
+    }
+    if (activeJobExcludesView) {
+      throw new Error("protocol fault: a view request overlapped an exclusive Python job");
+    }
+    activeViewControl = control;
+    if (activeJobControl) {
+      setInterpreterOwner(activeJobControl, false, interrupt);
+      // The job keeps its cancellation state while suspended; its interrupt is
+      // re-armed when the view releases the interpreter.
+    }
+    setInterpreterOwner(control, true, interrupt);
+  } else {
+    if (activeJobControl) {
+      throw new Error("protocol fault: a second job request reached the Python worker");
+    }
+    const excludesView = msg.method === WORKER_RELOAD_SNUFFLINGS;
+    if (excludesView && activeViewControl) {
+      throw new Error("protocol fault: an exclusive Python job overlapped a view request");
+    }
+    activeJobControl = control;
+    activeJobExcludesView = excludesView;
+    setInterpreterOwner(control, activeViewControl == null, interrupt);
+  }
+  return lane;
+}
+
+function releaseInterpreter(
+  lane: "JOB" | "VIEW",
+  control: Int32Array,
+  interrupt: Uint8Array
+): void {
+  let suspendedJob: Int32Array | null = null;
+  if (lane === "VIEW" && activeViewControl === control) {
+    activeViewControl = null;
+    suspendedJob = activeJobControl;
+  } else if (lane === "JOB" && activeJobControl === control) {
+    activeJobControl = null;
+    activeJobExcludesView = false;
+  }
+  markExecutionDone(control, interrupt);
+  if (suspendedJob) setInterpreterOwner(suspendedJob, true, interrupt);
+}
+
+function operationCallbacks(msg: any, control: Int32Array, interrupt: Uint8Array) {
+  const reporter = (done: number, total: number, phase: string): boolean => {
+    if (cancellationRequested(control)) return false;
+    postOperationProgress(BigInt(msg.jobId || 0), done, total < 0 ? null : total, phase);
+    return true;
+  };
+  const beginRequestCommit = (): boolean => {
+    return beginCommit(control, interrupt);
+  };
+  return { reporter, beginRequestCommit };
 }
 
 function responseContentLength(response: Response): number {
@@ -416,12 +534,12 @@ async function startPyodidePrefetch(): Promise<{
 
 // The generated proto modules + bridge.py, staged into the Pyodide FS once Python
 // is up. They are plain static files with no dependency on the runtime, so fetch
-// them in parallel with it rather than one at a time after it (11 serial requests
-// on the critical path cost 11 round trips on a real connection).
+// them in parallel with it rather than one at a time after it.
 async function fetchBridgeSources(): Promise<Array<[string, string]>> {
   const protoDir = "proto/snuffler/bridge/v1";
   const files = [
     ...[
+      "activity_pb2.py",
       "common_pb2.py",
       "scene_pb2.py",
       "view_pb2.py",
@@ -737,10 +855,19 @@ async function snufflerOrtInfer(modelUrl: string, input: any, dims: any, label?:
 }
 
 (globalThis as any).__snufflerOrtInfer = snufflerOrtInfer;
+(globalThis as any).__snufflerYieldToMacrotask = (() => {
+  const channel = new MessageChannel();
+  const pending: Array<() => void> = [];
+  channel.port1.onmessage = () => pending.shift()?.();
+  return () =>
+    new Promise<void>((resolve) => {
+      pending.push(resolve);
+      channel.port2.postMessage(0);
+    });
+})();
 (globalThis as any).__snufflerSeisbenchProgress = (frac: number, label: string) => {
   postSeisbenchProgress(frac, label);
 };
-
 async function fetchOk(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`fetch ${url}: ${r.status} ${r.statusText}`);
@@ -874,6 +1001,7 @@ async function boot() {
       try {
         self.postMessage({
           type: "runtime",
+          epoch: RUNTIME_EPOCH,
           threaded: true,
           simd: true,
           pthreads: py.runPython(
@@ -950,18 +1078,14 @@ function bridgeResult(res, perf: BridgePerf | null = null) {
   }
 }
 
-// Extract the string from a bridge.call_text() {"text", "error"} reply. The
-// error variant is surfaced as a plain JS Error; bridge.py returns the message as
-// a field (rather than raising) so it crosses as data, and the TextDecoder shim
-// above now also covers Python strings/exceptions decoded off the shared heap.
-function callText(res) {
-  try {
-    const error = res.get("error");
-    if (error) throw new Error(error);
-    return res.get("text") || "";
-  } finally {
-    destroyMaybe(res);
-  }
+function textBridgeResult(value: string) {
+  const result = toBinary(
+    BridgeResultSchema,
+    create(BridgeResultSchema, {
+      result: { case: "text", value: create(StringValueSchema, { value }) },
+    })
+  );
+  return { result: result.buffer, transfer: [result.buffer] };
 }
 
 // The worker is a DUMB RELAY: it forwards the generated method id + request bytes
@@ -970,35 +1094,47 @@ function callText(res) {
 // envelope (plus the zero-copy ys buffer for getView). It spells no
 // method names of its own, so nothing here can drift from the .proto.
 //
-// The ONE exception is mounting a live directory handle for a GF store: that is a
-// DOM object that can't ride a proto, so the worker mounts it into the Pyodide FS
-// and then relays GfStoreLabel for the registered store's label.
+// MountGfStore is a typed rpc, but its registered directory handle rides beside
+// the protobuf request because browser handles cannot be serialized into it.
 async function handleRequest(msg, workerRecvMs: number) {
   await boot();
-  const tracePerf: BridgePerf | null =
-    BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
-      ? {
-          worker_recv_ms: workerRecvMs,
-          request_bytes: msg.request ? msg.request.byteLength || 0 : 0,
-          data_bytes: msg.data ? msg.data.byteLength || 0 : 0,
-        }
-      : null;
-  if (msg.method === WORKER_RELOAD_SNUFFLINGS) {
-    // Re-fetch bridge.py (the snuffling logic) and importlib.reload it, preserving
-    // the loaded pile + catalog/station/command state across the reload so the
-    // session is not lost (snuffler's Shift+R reloads code, not data).
-    // The list of what survives lives in bridge.py itself (`_RELOAD_KEEP` behind
-    // `_reload_snapshot`/`_reload_restore`) — a TypeScript copy of Python global
-    // names went stale once and silently dropped session state.
-    // The hasattr guard only bridges a dev session whose in-memory module
-    // predates the snapshot functions.
-    for (const mod of ["seisbench_infer.py"]) {
-      const modSrc = await (await fetchOk(resolveUrl(mod))).text();
-      py.FS.writeFile(`/${mod}`, modSrc);
-    }
-    const src = await (await fetchOk(resolveUrl("bridge.py"))).text();
-    py.FS.writeFile("/bridge.py", src);
-    py.runPython(`
+  if (!pyodideInterrupt) {
+    pyodideInterrupt = new Uint8Array(msg.interrupt as SharedArrayBuffer);
+    py.setInterruptBuffer(pyodideInterrupt);
+  }
+  const interrupt = pyodideInterrupt;
+  if (!interrupt) throw new Error("Pyodide interrupt buffer is unavailable");
+  const control = executionControl(msg.control as SharedArrayBuffer);
+  const lane = acquireInterpreter(msg, control, interrupt);
+  const jobId = BigInt(msg.jobId || 0);
+  if (msg.method === BridgeMethod.runSnuffling) activeSeisbenchJobId = jobId;
+  postOperationStarted(jobId);
+  const { reporter, beginRequestCommit } = operationCallbacks(msg, control, interrupt);
+  try {
+    const tracePerf: BridgePerf | null =
+      BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
+        ? {
+            worker_recv_ms: workerRecvMs,
+            request_bytes: msg.request ? msg.request.byteLength || 0 : 0,
+            data_bytes: msg.data ? msg.data.byteLength || 0 : 0,
+          }
+        : null;
+    if (msg.method === WORKER_RELOAD_SNUFFLINGS) {
+      // Re-fetch bridge.py (the snuffling logic) and importlib.reload it, preserving
+      // the loaded pile + catalog/station/command state across the reload so the
+      // session is not lost (snuffler's Shift+R reloads code, not data).
+      // The list of what survives lives in bridge.py itself (`_RELOAD_KEEP` behind
+      // `_reload_snapshot`/`_reload_restore`) — a TypeScript copy of Python global
+      // names went stale once and silently dropped session state.
+      // The hasattr guard only bridges a dev session whose in-memory module
+      // predates the snapshot functions.
+      for (const mod of ["seisbench_infer.py"]) {
+        const modSrc = await (await fetchOk(resolveUrl(mod))).text();
+        py.FS.writeFile(`/${mod}`, modSrc);
+      }
+      const src = await (await fetchOk(resolveUrl("bridge.py"))).text();
+      py.FS.writeFile("/bridge.py", src);
+      py.runPython(`
 import importlib, bridge
 for _m in ('seisbench_infer',):
     if _m in importlib.sys.modules:
@@ -1013,37 +1149,35 @@ finally:
     if hasattr(bridge, '_reload_restore'):
         bridge._reload_restore(_saved)
 `);
-    return { text: "ok" };
-  }
-  if (msg.method === WORKER_WARM_DEFERRED) {
-    // Python is single-threaded here, so this cannot run *inside* another rpc —
-    // it takes the interpreter for the duration and the next rpc queues behind
-    // it, which is why it is sent only once the first scene is already painted.
-    const t0 = performance.now();
-    const warmed = pyList(py.runPython("bootstrap.warm()"));
-    console.log(
-      `[bridge-worker] warmed ${warmed.join(",") || "nothing"} in ${Math.round(
-        performance.now() - t0
-      )} ms`
-    );
-    return { text: "ok" };
-  }
-  if (msg.method === WORKER_MOUNT_GF_STORE) {
-    gfStoreCounter += 1;
-    const mount = "/gfstores/" + gfStoreCounter;
-    try {
-      py.FS.mkdir("/gfstores");
-    } catch (_e) {
-      // Already exists.
+      return textBridgeResult("ok");
     }
-    py.FS.mkdir(mount);
-    await py.mountNativeFS(mount, msg.handle);
-    return { text: callText(await bridge.call_text(rpc("gfStoreLabel"), null, mount)) };
+    if (msg.method === BridgeMethod.mountGfStore) {
+      gfStoreCounter += 1;
+      const mount = "/gfstores/" + gfStoreCounter;
+      try {
+        py.FS.mkdir("/gfstores");
+      } catch (_e) {
+        // Already exists.
+      }
+      py.FS.mkdir(mount);
+      await py.mountNativeFS(mount, msg.handle);
+      return bridgeResult(
+        await bridge.call(msg.method, msg.request, mount, reporter, beginRequestCommit)
+      );
+    }
+    const pyCallT0 = performance.now();
+    const res = await bridge.call(
+      msg.method,
+      msg.request,
+      msg.data ?? null,
+      reporter,
+      beginRequestCommit
+    );
+    if (tracePerf) tracePerf.py_call_ms = performance.now() - pyCallT0;
+    return bridgeResult(res, tracePerf);
+  } finally {
+    releaseInterpreter(lane, control, interrupt);
   }
-  const pyCallT0 = performance.now();
-  const res = await bridge.call(msg.method, msg.request, msg.data ?? null);
-  if (tracePerf) tracePerf.py_call_ms = performance.now() - pyCallT0;
-  return bridgeResult(res, tracePerf);
 }
 
 // Booting Python is this worker's whole purpose and takes seconds, so start it on
@@ -1056,18 +1190,32 @@ void boot().catch(() => {});
 self.onmessage = (event) => {
   const workerRecvMs = performance.now();
   const msg = event.data || {};
+  if (msg.epoch !== RUNTIME_EPOCH) {
+    self.postMessage({
+      epoch: RUNTIME_EPOCH,
+      id: msg.id,
+      ok: false,
+      error: `runtime epoch mismatch: worker=${RUNTIME_EPOCH} request=${String(msg.epoch)}`,
+    });
+    return;
+  }
+  const jobId = typeof msg.jobId === "bigint" ? msg.jobId : BigInt(msg.jobId || 0);
   handleRequest(msg, workerRecvMs)
     .then((result: any) => {
       const transfer = result.transfer || [];
       const { transfer: _transfer, ...payload } = result;
       if (payload.perf) payload.perf.worker_post_epoch_ms = Date.now();
-      self.postMessage({ id: msg.id, ok: true, ...payload }, transfer);
+      self.postMessage({ epoch: RUNTIME_EPOCH, id: msg.id, ok: true, ...payload }, transfer);
     })
     .catch((e) => {
       self.postMessage({
+        epoch: RUNTIME_EPOCH,
         id: msg.id,
         ok: false,
         error: e && e.message ? e.message : String(e),
       });
+    })
+    .finally(() => {
+      if (activeSeisbenchJobId === jobId) activeSeisbenchJobId = 0n;
     });
 };

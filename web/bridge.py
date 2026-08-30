@@ -13,6 +13,8 @@ pyrocko itself is left completely unmodified; we only call its public API
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import io
 import math
 import os
@@ -20,6 +22,7 @@ import re
 import time
 import traceback
 from collections import OrderedDict
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from importlib import import_module
 from typing import (
@@ -35,6 +38,7 @@ from typing import (
     Protocol,
     Tuple,
     cast,
+    overload,
 )
 from urllib.parse import quote
 
@@ -54,6 +58,11 @@ from snuffler.bridge.v1 import (
 
 NslcId = Tuple[str, str, str, str]
 TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
+OperationReporter = Callable[[int, int, str], bool]
+CommitGate = Callable[[], bool]
+_OPERATION_REPORTER: ContextVar[Optional[OperationReporter]] = ContextVar(
+    "operation_reporter", default=None
+)
 
 
 class AutoScalerLike(Protocol):
@@ -148,6 +157,12 @@ def _clear_view_cache() -> None:
     _TF_CACHE.clear()
     _PILE = None
     _PILE_GEN = None
+
+
+def _invalidate_interrupted_view() -> None:
+    _clear_view_cache()
+    _VIEW_NOTICES.clear()
+    _OLD_DATA_RANGES.clear()
 
 
 def _mark_traces_changed() -> None:
@@ -476,7 +491,7 @@ def _fdsn_base(name: str, default: str = "geofon") -> str:
     return _FDSN.get(name, _FDSN[default])
 
 
-_STAGE_DIR = "/staged"
+_STAGE_DIR = "/tmp/snuffler-staged"
 _STAGE_COUNTER = 0
 
 
@@ -548,6 +563,22 @@ def _seisbench_progress(frac: float, label: str) -> None:
         js.__snufflerSeisbenchProgress(float(frac), label)
     except Exception:
         pass
+
+
+def _operation_progress(done: int, total: Optional[int], phase: str) -> None:
+    reporter = _OPERATION_REPORTER.get()
+    if reporter is not None and not reporter(done, -1 if total is None else total, phase):
+        raise KeyboardInterrupt
+
+
+async def _operation_safe_point(done: int, total: Optional[int], phase: str) -> None:
+    _operation_progress(done, total, phase)
+    try:
+        import js
+
+        await js.__snufflerYieldToMacrotask()
+    except ImportError:
+        await asyncio.sleep(0)
 
 
 async def _pyfetch_fdsn(url: str) -> Any:
@@ -1955,7 +1986,12 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     )
     perf_prepare = time.monotonic()
 
-    meta = view_pb2.ViewMeta(view_tmin=tmin, view_tmax=tmax)
+    meta = view_pb2.ViewMeta(
+        view_tmin=tmin,
+        view_tmax=tmax,
+        session_generation=_SESSION_STORE.generation,
+        view_sequence=req.view_sequence,
+    )
     meta.color_keys.extend(_pile_color_keys(subsort))
     ys_parts: List[np.ndarray] = []
     range_traces: List[ptrace.Trace] = []
@@ -3695,7 +3731,7 @@ async def _seisbench_pick_result(
                     marker.phase = phase
                     marker.automatic = True
                     marker.incidence_angle = float(val)
-                    marker.nslc_ids.add().CopyFrom(_nslc_pb(list(nslc)))
+                    _intern_marker_nslc(result, marker, nslc)
                     n_p, n_s = (n_p + 1, n_s) if phase == "P" else (n_p, n_s + 1)
         completed_windows += 1
     if not stations_picked:
@@ -3799,7 +3835,7 @@ def _chopper_selected_traces(
         )
 
 
-def _run_snuffling_result(
+async def _run_snuffling_result(
     name: str, req: snuffling_pb2.SnufflingRequestParams
 ) -> snuffling_pb2.SnufflingResult:
     """Run a built-in snuffling over the current window."""
@@ -3849,11 +3885,9 @@ def _run_snuffling_result(
         result = snuffling_pb2.SnufflingResult(show_window=False, origin="stalta")
         lwin = tshort * ratio
         derived: List[ptrace.Trace] = []
-        # Cleanup precedes the chopper and every filter operation, matching Qt's
-        # ticket lifecycle even when a later batch fails.
-        _replace_derived("stalta", [])
         deltat_min = min((tr.deltat for tr in _TRACES if tr.deltat > 0.0), default=0.01)
         tinc = max(lwin * 2.0, 500_000.0 * deltat_min)
+        batches_done = 0
         for batch in _chopper_selected_traces(
             req,
             mode="visible",
@@ -3863,6 +3897,8 @@ def _run_snuffling_result(
             tpad=lwin,
             want_incomplete=False,
         ):
+            batches_done += 1
+            await _operation_safe_point(batches_done, None, "STA/LTA windows")
             sumtrace = None
             isum = 0
             for tr in batch.traces:
@@ -3885,7 +3921,7 @@ def _run_snuffling_result(
                     for tp in tpeaks:
                         marker = result.markers.add()
                         marker.t = float(tp)
-                        marker.nslc_ids.add().CopyFrom(_nslc_pb(list(original_nslc)))
+                        _intern_marker_nslc(result, marker, original_nslc)
                 # Qt renames the level trace into location `cg` keeping the
                 # channel (stalta.py:189) and tags it tabu.
                 tr.set_codes(location="cg")
@@ -3917,7 +3953,7 @@ def _run_snuffling_result(
                     for tp in tpeaks:
                         marker = result.markers.add()
                         marker.t = float(tp)
-                        marker.nslc_ids.add().CopyFrom(_nslc_pb(["*", "*", "*", "*"]))
+                        _intern_marker_nslc(result, marker, ("*", "*", "*", "*"))
                 if show_level_traces:
                     derived.append(sumtrace)
         _replace_derived("stalta", derived if show_level_traces else [])
@@ -4097,14 +4133,14 @@ def _append_mseed_scene(
     """Append live MiniSEED records and merge adjacent segments by NSLC/time."""
     global _TRACES
     del source
-    if reset:
-        # The common replacement path retires file provenance, derived data,
-        # dataset metadata, and the boot-example flag as one invariant.
-        _set_traces([])
     if not raw:
         return _scene_meta()
 
     traces = list(pio.load(_stage_bytes("live.mseed", raw), format="mseed"))
+    if reset:
+        # Parsing has succeeded, so replacement and insertion now belong to the
+        # same dispatcher transaction. Malformed batch zero leaves the old scene.
+        _set_traces([])
     if start_time > 0.0:
         traces = _trim_live_traces(traces, start_time)
     if not traces:
@@ -4824,6 +4860,131 @@ class _DatasetState(NamedTuple):
     event_registry: "OrderedDict[str, Any]"
     stationxmls: List[Any]
     warned_no_response: "set[NslcId]"
+    hidden: List[str]
+    reduce: Optional[List[str]]
+    scaling_hooks: "OrderedDict[str, Tuple[Optional[float], Optional[float]]]"
+    response_gen: int
+    gf_stores: Dict[str, str]
+
+
+class SessionSnapshot(NamedTuple):
+    generation: int
+    state: _DatasetState
+
+
+class SnapshotReader:
+    def __init__(self, snapshot: SessionSnapshot) -> None:
+        self._snapshot = snapshot
+
+    @property
+    def generation(self) -> int:
+        return self._snapshot.generation
+
+    def traces(self) -> List[ptrace.Trace]:
+        return list(_clone_dataset_state(self._snapshot.state).traces)
+
+
+class SessionDelta(NamedTuple):
+    state: _DatasetState
+
+
+class CommitOutcome(NamedTuple):
+    expected: int
+    actual: int
+    committed: bool
+
+
+def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
+    trace_copies: Dict[int, ptrace.Trace] = {}
+
+    def clone_trace(trace: ptrace.Trace) -> ptrace.Trace:
+        cloned = trace_copies.get(id(trace))
+        if cloned is None:
+            cloned = trace.copy(data=True)
+            trace_copies[id(trace)] = cloned
+        return cloned
+
+    def clone_traces(traces: Iterable[ptrace.Trace]) -> List[ptrace.Trace]:
+        return [clone_trace(trace) for trace in traces]
+
+    return _DatasetState(
+        traces=clone_traces(state.traces),
+        source_traces=OrderedDict(
+            (source_id, clone_traces(traces)) for source_id, traces in state.source_traces.items()
+        ),
+        source_digests=dict(state.source_digests),
+        suppressed_source_traces={
+            source_id: clone_traces(traces)
+            for source_id, traces in state.suppressed_source_traces.items()
+        },
+        digest_owners={digest: set(owners) for digest, owners in state.digest_owners.items()},
+        derived_traces={
+            origin: clone_traces(traces) for origin, traces in state.derived_traces.items()
+        },
+        derived_events=copy.deepcopy(state.derived_events),
+        pile_is_example=state.pile_is_example,
+        stations=dict(state.stations),
+        active_event=state.active_event,
+        active_hash=state.active_hash,
+        active_mt=copy.deepcopy(state.active_mt),
+        event_registry=copy.deepcopy(state.event_registry),
+        stationxmls=copy.deepcopy(state.stationxmls),
+        warned_no_response=set(state.warned_no_response),
+        hidden=list(state.hidden),
+        reduce=None if state.reduce is None else list(state.reduce),
+        scaling_hooks=OrderedDict(state.scaling_hooks),
+        response_gen=state.response_gen,
+        gf_stores=dict(state.gf_stores),
+    )
+
+
+class SessionStore:
+    def __init__(self) -> None:
+        self._generation = 0
+        self._active_snapshot: Optional[SessionSnapshot] = None
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def snapshot(self) -> SessionSnapshot:
+        return SessionSnapshot(self._generation, _clone_dataset_state(_dataset_state()))
+
+    def workspace(self, snapshot: SessionSnapshot) -> SnapshotReader:
+        self._active_snapshot = snapshot
+        _install_dataset_state(_clone_dataset_state(snapshot.state))
+        return SnapshotReader(snapshot)
+
+    def delta(self) -> SessionDelta:
+        return SessionDelta(_clone_dataset_state(_dataset_state()))
+
+    def restore(self, snapshot: SessionSnapshot) -> None:
+        _install_dataset_state(snapshot.state)
+
+    def rollback(self, snapshot: SessionSnapshot) -> None:
+        self.restore(snapshot)
+        self._active_snapshot = None
+
+    def enter_view(self) -> Optional[SessionDelta]:
+        if self._active_snapshot is None:
+            return None
+        workspace = self.delta()
+        self.restore(self._active_snapshot)
+        return workspace
+
+    def exit_view(self, workspace: Optional[SessionDelta]) -> None:
+        if workspace is not None:
+            _install_dataset_state(workspace.state)
+
+    def commit(self, expected: int, delta: SessionDelta) -> CommitOutcome:
+        actual = self._generation
+        if expected != actual:
+            self._active_snapshot = None
+            return CommitOutcome(expected, actual, False)
+        _install_dataset_state(delta.state)
+        self._generation += 1
+        self._active_snapshot = None
+        return CommitOutcome(expected, self._generation, True)
 
 
 def _dataset_state() -> _DatasetState:
@@ -4847,6 +5008,11 @@ def _dataset_state() -> _DatasetState:
         event_registry=OrderedDict(_EVENT_REGISTRY),
         stationxmls=list(_STATIONXMLS),
         warned_no_response=set(_WARNED_NO_RESPONSE),
+        hidden=list(_HIDDEN),
+        reduce=None if _REDUCE is None else list(_REDUCE),
+        scaling_hooks=OrderedDict(_SCALING_HOOKS),
+        response_gen=_RESPONSE_GEN,
+        gf_stores=dict(_GF_STORES),
     )
 
 
@@ -4856,6 +5022,7 @@ def _install_dataset_state(state: _DatasetState) -> None:
     global _SOURCE_DIGESTS, _SOURCE_TRACES
     global _SUPPRESSED_SOURCE_TRACES
     global _EVENT_REGISTRY, _STATIONS, _STATIONXMLS, _WARNED_NO_RESPONSE
+    global _GF_STORES, _HIDDEN, _REDUCE, _RESPONSE_GEN, _SCALING_HOOKS
     _TRACES = list(state.traces)
     _SOURCE_TRACES = OrderedDict(
         (source_id, list(traces)) for source_id, traces in state.source_traces.items()
@@ -4875,7 +5042,15 @@ def _install_dataset_state(state: _DatasetState) -> None:
     _EVENT_REGISTRY = OrderedDict(state.event_registry)
     _STATIONXMLS = list(state.stationxmls)
     _WARNED_NO_RESPONSE = set(state.warned_no_response)
+    _HIDDEN = list(state.hidden)
+    _REDUCE = None if state.reduce is None else list(state.reduce)
+    _SCALING_HOOKS = OrderedDict(state.scaling_hooks)
+    _RESPONSE_GEN = state.response_gen
+    _GF_STORES = dict(state.gf_stores)
     _mark_traces_changed()
+
+
+_SESSION_STORE = SessionStore()
 
 
 def _empty_dataset_state(traces: List[ptrace.Trace]) -> _DatasetState:
@@ -4895,6 +5070,11 @@ def _empty_dataset_state(traces: List[ptrace.Trace]) -> _DatasetState:
         event_registry=OrderedDict(),
         stationxmls=[],
         warned_no_response=set(),
+        hidden=[],
+        reduce=None,
+        scaling_hooks=OrderedDict(),
+        response_gen=0,
+        gf_stores={},
     )
 
 
@@ -5439,7 +5619,7 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
             marker.kind = int(mk.kind or 0) % 256
             marker.is_event = isinstance(mk, pm.EventMarker)
             for nslc_id in ids:
-                marker.nslc_ids.add().CopyFrom(_nslc_pb(list(nslc_id)))
+                _intern_marker_nslc(result, marker, nslc_id)
             if isinstance(mk, pm.EventMarker):
                 ev = mk.get_event()
                 if ev is not None:
@@ -5735,7 +5915,7 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
             marker.phase = name
             marker.incidence_angle = inc
             marker.takeoff_angle = tko
-            marker.nslc_ids.add().CopyFrom(_nslc_pb([net, sta, "*", "*"]))
+            _intern_marker_nslc(result, marker, (net, sta, "*", "*"))
             if _ACTIVE_HASH:
                 marker.event_hash = _ACTIVE_HASH
             if _ACTIVE_EVENT is not None:
@@ -5991,7 +6171,7 @@ def _command_result(request: data_pb2.CommandRequest) -> data_pb2.CommandResult:
             return _command_error("No such command: %s" % cmd)
 
 
-def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
+async def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
     """Blockwise root-mean-square derived traces (pyrocko's RMS snuffling).
 
     For each visible trace, RMS is computed over fixed-length blocks across the
@@ -6006,9 +6186,6 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
     group = bool(rms.rms_group)
     logrms = bool(rms.rms_log)
 
-    # Cleanup precedes the chopper and filters so a failed rerun cannot leave
-    # the previous derived traces installed.
-    _replace_derived("rms", [])
     if block <= 0.0:
         return _scene_meta()
 
@@ -6029,6 +6206,7 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
         tpad=tpad,
         want_incomplete=False,
     ):
+        await _operation_safe_point(len(completed) + len(targets), None, "RMS windows")
         tcur = float(batch.tmin) + 0.5 * block
         rms_by_key: Dict[Tuple[str, str, str, str], List[float]] = {}
         for tr in batch.traces:
@@ -6094,6 +6272,83 @@ def _nslc_pb(value: Any) -> common_pb2.Nslc:
         msg.loc = str(value[2] if len(value) > 2 else "")
         msg.cha = str(value[3] if len(value) > 3 else "")
     return msg
+
+
+_MARKER_NSLC_CACHE: "OrderedDict[int, Dict[NslcId, int]]" = OrderedDict()
+
+
+def _intern_marker_nslc(result: Any, marker: Any, value: Any) -> None:
+    key: NslcId = (
+        str(value[0]) if len(value) > 0 else "",
+        str(value[1]) if len(value) > 1 else "",
+        str(value[2]) if len(value) > 2 else "",
+        str(value[3]) if len(value) > 3 else "",
+    )
+    table = _MARKER_NSLC_CACHE.get(id(result))
+    if table is None:
+        table = {
+            (nslc.net, nslc.sta, nslc.loc, nslc.cha): index
+            for index, nslc in enumerate(result.nslc_table)
+        }
+        _MARKER_NSLC_CACHE[id(result)] = table
+        while len(_MARKER_NSLC_CACHE) > 64:
+            _MARKER_NSLC_CACHE.popitem(last=False)
+    index = table.get(key)
+    if index is None:
+        index = len(result.nslc_table)
+        result.nslc_table.add().CopyFrom(_nslc_pb(key))
+        table[key] = index
+    marker.nslc_indexes.append(index)
+
+
+DEFAULT_MARKER_BUDGET = 20_000
+MAX_MARKER_BUDGET = 100_000
+
+
+def _marker_limit(budget: Any) -> int:
+    requested = int(getattr(budget, "max_markers", 0) or DEFAULT_MARKER_BUDGET)
+    return max(1, min(requested, MAX_MARKER_BUDGET))
+
+
+@overload
+def _truncate_marker_result(
+    result: snuffling_pb2.SnufflingResult, budget: Any
+) -> snuffling_pb2.SnufflingResult: ...
+
+
+@overload
+def _truncate_marker_result(
+    result: data_pb2.SnufMarkerList, budget: Any
+) -> data_pb2.SnufMarkerList: ...
+
+
+def _truncate_marker_result(result: Any, budget: Any) -> Any:
+    limit = _marker_limit(budget)
+    count = len(result.markers)
+    result.marker_budget = limit
+    if count <= limit:
+        _MARKER_NSLC_CACHE.pop(id(result), None)
+        return result
+    ranked = sorted(
+        enumerate(result.markers),
+        key=lambda item: (
+            -float(item[1].incidence_angle) if item[1].HasField("incidence_angle") else 0.0,
+            float(item[1].t),
+            item[0],
+        ),
+    )[:limit]
+    ranked.sort(key=lambda item: item[0])
+    kept = []
+    for _, marker in ranked:
+        copy_marker = snuffling_pb2.SnufMarker()
+        copy_marker.CopyFrom(marker)
+        kept.append(copy_marker)
+    del result.markers[:]
+    for marker in kept:
+        result.markers.add().CopyFrom(marker)
+    result.markers_dropped = count - limit
+    _MARKER_NSLC_CACHE.pop(id(result), None)
+    return result
 
 
 class _BridgeServicer:
@@ -6213,13 +6468,17 @@ class _BridgeServicer:
     async def render_figure(
         self, request: figure_pb2.FigureRequest, data: Any
     ) -> figure_pb2.FigureResult:
+        _operation_progress(0, 3, "Preparing figure")
         # Cake figures need the earth-model data files staged first (same as the
         # cake 'Run' snuffling); other figures compute from loaded traces.
         if request.kind in ("cake_model", "cake_rays"):
             model = request.params.snufflings.cake.cake_model or ""
             if not model.startswith(GF_STORE_PREFIX):
                 await _ensure_earth_models()
-        return _render_figure(request)
+        _operation_progress(1, 3, "Rendering figure")
+        result = _render_figure(request)
+        _operation_progress(3, 3, "Encoding figure")
+        return result
 
     async def run_snuffling(
         self, request: snuffling_pb2.NamedSnufflingRequest, data: Any
@@ -6230,46 +6489,26 @@ class _BridgeServicer:
             "seisbench_picker": "seisbench",
             "seismosizer": "seismosizer",
         }.get(request.name, "")
-        # Snuffling errors (e.g. cake) surface in the result text — which the UI
-        # shows — rather than as a BridgeError, so the user sees the traceback.
-        try:
-            if request.name == "cake":
-                model = request.params.snufflings.cake.cake_model or ""
-                if not model.startswith(GF_STORE_PREFIX):
-                    await _ensure_earth_models()
-            if request.name == "seisbench_picker":
-                result = await _seisbench_pick_result(request.params)
-            else:
-                result = _run_snuffling_result(request.name, request.params)
-            if origin and not result.origin:
-                result.origin = origin
-            return result
-        except Exception as exc:  # noqa: BLE001 — surface, don't raise
-            failure = snuffling_pb2.SnufflingResult(
-                show_window=True,
-                text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-                origin=origin,
-            )
-            if origin in ("seisbench", "stalta"):
-                failure.scene.CopyFrom(_scene_meta())
-            return failure
+        if request.name == "cake":
+            model = request.params.snufflings.cake.cake_model or ""
+            if not model.startswith(GF_STORE_PREFIX):
+                await _ensure_earth_models()
+        if request.name == "seisbench_picker":
+            result = await _seisbench_pick_result(request.params)
+        else:
+            result = await _run_snuffling_result(request.name, request.params)
+        if origin and not result.origin:
+            result.origin = origin
+        return _truncate_marker_result(result, request.params.marker_budget)
 
-    def rms_traces(
+    async def rms_traces(
         self, request: snuffling_pb2.SnufflingRequestParams, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        try:
-            return snuffling_pb2.SnufflingResult(
-                show_window=False,
-                origin="rms",
-                scene=_rms_scene(request),
-            )
-        except Exception as exc:  # noqa: BLE001 — return the cleaned scene with the failure
-            return snuffling_pb2.SnufflingResult(
-                show_window=True,
-                text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-                origin="rms",
-                scene=_scene_meta(),
-            )
+        return snuffling_pb2.SnufflingResult(
+            show_window=False,
+            origin="rms",
+            scene=await _rms_scene(request),
+        )
 
     def run_command(self, request: data_pb2.CommandRequest, data: Any) -> data_pb2.CommandResult:
         return _command_result(request)
@@ -6308,7 +6547,7 @@ class _BridgeServicer:
     def load_markers(
         self, request: data_pb2.LoadMarkersRequest, data: Any
     ) -> data_pb2.SnufMarkerList:
-        return _markers_from_text(request.text)
+        return _truncate_marker_result(_markers_from_text(request.text), request.marker_budget)
 
     def load_station_xml(
         self, request: data_pb2.LoadStationXmlRequest, data: Any
@@ -6326,7 +6565,7 @@ class _BridgeServicer:
     def load_events(
         self, request: data_pb2.LoadEventsRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        return _load_events_result(request.text)
+        return _truncate_marker_result(_load_events_result(request.text), request.marker_budget)
 
     def add_cake_model(
         self, request: data_pb2.AddCakeModelRequest, data: Any
@@ -6341,6 +6580,7 @@ class _BridgeServicer:
     async def download_waveforms(
         self, request: data_pb2.WaveformDownloadRequest, data: Any
     ) -> scene_pb2.SceneMeta:
+        _operation_progress(0, None, "Downloading waveforms")
         resp = await _pyfetch_fdsn(_dataselect_url(request))
         if resp.status == 204:
             return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
@@ -6349,17 +6589,28 @@ class _BridgeServicer:
         raw = bytes(await resp.bytes())
         if not raw:
             return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
+        _operation_progress(len(raw), len(raw), "Parsing waveforms")
         return _load_waveform_path_scene(_stage_bytes("fdsn.mseed", raw))
 
     def ingest_mini_seed(
         self, request: data_pb2.IngestMiniSeedRequest, data: Any
-    ) -> scene_pb2.SceneMeta:
-        return _append_mseed_scene(
-            request.source,
-            bytes(request.content),
-            request.start_time,
-            request.reset,
-            request.retain_seconds,
+    ) -> data_pb2.IngestMiniSeedResult:
+        if request.batch_seq_last < request.batch_seq_first:
+            raise ValueError("SeedLink batch sequence range is reversed")
+        if request.reset and request.batch_seq_first != 0:
+            raise ValueError("SeedLink reset must be batch zero")
+        return data_pb2.IngestMiniSeedResult(
+            scene=_append_mseed_scene(
+                request.source,
+                bytes(request.content),
+                request.start_time,
+                request.reset,
+                request.retain_seconds,
+            ),
+            stream_id=request.stream_id,
+            session_epoch=request.session_epoch,
+            ack_seq_first=request.batch_seq_first,
+            ack_seq_last=request.batch_seq_last,
         )
 
     async def catalog_search(
@@ -6367,8 +6618,8 @@ class _BridgeServicer:
     ) -> snuffling_pb2.SnufflingResult:
         text = await _fetch_fdsn_text_or_empty(_event_url(request))
         if request.with_mt and text.lstrip().startswith("<"):
-            return _parse_events_quakeml(text)
-        return _parse_events_result(text)
+            return _truncate_marker_result(_parse_events_quakeml(text), request.marker_budget)
+        return _truncate_marker_result(_parse_events_result(text), request.marker_budget)
 
     def export_waveforms(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.FileBlob:
         """Qt's download Save trigger, waveform half (download.py:147): every
@@ -6425,6 +6676,19 @@ class _BridgeServicer:
     ) -> snuffling_pb2.SnufflingResult:
         return _load_responses_result([await _fetch_fdsn_text_or_empty(_response_url(request))])
 
+    def warm_deferred(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
+        import bootstrap
+
+        warmed = bootstrap.warm()
+        return bridge_pb2.StringValue(value=",".join(warmed))
+
+    def mount_gf_store(
+        self, request: bridge_pb2.MountGfStoreRequest, data: Any
+    ) -> bridge_pb2.StringValue:
+        if not request.handle_id or not data:
+            raise ValueError("mounting a GF store requires a registered directory handle")
+        return bridge_pb2.StringValue(value=gf_store_label(str(data)))
+
     def gf_store_label(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
         return bridge_pb2.StringValue(value=gf_store_label(data or ""))
 
@@ -6432,24 +6696,81 @@ class _BridgeServicer:
 _SERVICER = _BridgeServicer()
 
 
-async def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
+async def call(
+    method: str,
+    request: Any = b"",
+    data: Any = None,
+    reporter: Any = None,
+    begin_commit: Any = None,
+) -> Dict[str, Any]:
     """Dispatch a bridge method through the generated typed servicer; always
     return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Async because some
     rpcs do network I/O (pyfetch); never raises — any exception becomes a
     BridgeError (the request is decoded off a JS proxy here, before dispatch)."""
-    return await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+    token = _OPERATION_REPORTER.set(cast(Optional[OperationReporter], reporter))
+    commit_gate = cast(Optional[CommitGate], begin_commit)
 
+    def finish_dispatch(
+        result: Dict[str, Any], snapshot: Optional[SessionSnapshot]
+    ) -> Dict[str, Any]:
+        if commit_gate is not None and not commit_gate():
+            if snapshot is not None:
+                _SESSION_STORE.rollback(snapshot)
+            cancelled = bridge_pb2.BridgeResult()
+            cancelled.cancelled.SetInParent()
+            return {"result": cancelled.SerializeToString()}
+        if snapshot is not None:
+            _SESSION_STORE.rollback(snapshot)
+        return result
 
-async def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
-    """For the worker's GF-store mount, which needs the gfStoreLabel string back:
-    dispatch, then unwrap the StringValue (or the error). Never raises — see
-    AGENTS.md."""
-    env = await call(method, request, data)
-    result = bridge_pb2.BridgeResult()
-    result.ParseFromString(env["result"])
-    which = result.WhichOneof("result")
-    if which == "error":
-        return {"text": "", "error": f"{result.error.kind}: {result.error.message}"}
-    if which == "text":
-        return {"text": result.text.value, "error": ""}
-    return {"text": "", "error": f"unexpected bridge result variant: {which}"}
+    activity = bridge_dispatch.ACTIVITY_BY_METHOD[method]
+    if activity.lane == "VIEW":
+        workspace = _SESSION_STORE.enter_view()
+        try:
+            result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+            envelope = bridge_pb2.BridgeResult.FromString(result["result"])
+            if envelope.WhichOneof("result") == "cancelled":
+                _invalidate_interrupted_view()
+                result = await bridge_dispatch.dispatch(
+                    _SERVICER, method, _raw_bytes(request), data
+                )
+            return finish_dispatch(result, None)
+        finally:
+            _SESSION_STORE.exit_view(workspace)
+            _OPERATION_REPORTER.reset(token)
+    snapshot = _SESSION_STORE.snapshot() if activity.effect == "MUTATE" else None
+    if snapshot is not None:
+        _SESSION_STORE.workspace(snapshot)
+    try:
+        result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+        if snapshot is None:
+            return finish_dispatch(result, None)
+        envelope = bridge_pb2.BridgeResult.FromString(result["result"])
+        if envelope.WhichOneof("result") in ("error", "cancelled", "stale"):
+            return finish_dispatch(result, snapshot)
+        if commit_gate is not None and not commit_gate():
+            _SESSION_STORE.rollback(snapshot)
+            cancelled = bridge_pb2.BridgeResult()
+            cancelled.cancelled.SetInParent()
+            return {"result": cancelled.SerializeToString()}
+        delta = _SESSION_STORE.delta()
+        _SESSION_STORE.restore(snapshot)
+        committed = _SESSION_STORE.commit(snapshot.generation, delta)
+        if committed.committed:
+            return result
+        stale = bridge_pb2.BridgeResult()
+        stale.stale.expected = committed.expected
+        stale.stale.actual = committed.actual
+        return {"result": stale.SerializeToString()}
+    except KeyboardInterrupt:
+        if snapshot is not None:
+            _SESSION_STORE.rollback(snapshot)
+        cancelled = bridge_pb2.BridgeResult()
+        cancelled.cancelled.SetInParent()
+        return {"result": cancelled.SerializeToString()}
+    except BaseException:
+        if snapshot is not None:
+            _SESSION_STORE.rollback(snapshot)
+        raise
+    finally:
+        _OPERATION_REPORTER.reset(token)
