@@ -965,3 +965,47 @@ def test_seismosizer_cleanup_preserves_a_newer_event_with_the_same_hash() -> Non
     assert bridge._EVENT_REGISTRY["shared"] is replacement
     assert bridge._ACTIVE_HASH == "shared"
     assert bridge._ACTIVE_EVENT == (3.0, 4.0, 0.0, 20.0)
+
+
+def test_reload_snapshot_carries_the_session_store() -> None:
+    # Shift+R must not reset the session generation Rust fences view replies
+    # with: a fresh store at generation zero would leave every later view
+    # rejected as stale.
+    store = bridge._SESSION_STORE
+    saved = bridge._reload_snapshot()
+    try:
+        assert saved.get("_SESSION_STORE") is store
+    finally:
+        bridge._reload_restore(saved)
+    assert bridge._SESSION_STORE is store
+
+
+def test_view_projection_is_shallow_and_preserves_workspace_identity() -> None:
+    # An interleaved view projects committed state without deep-copying the
+    # workspace, and reinstalls the same trace objects afterwards — a handler
+    # suspended at a safe point may still hold references into the workspace,
+    # and replacing them with clones would silently drop its later mutations
+    # from the committed delta.
+    load([make_trace("XX", "AAA", "BHZ", 0.0, 512, 1.0)])
+    snapshot = bridge._SESSION_STORE.snapshot()
+    bridge._SESSION_STORE.workspace(snapshot)
+    try:
+        held = bridge._TRACES[0]
+        committed = snapshot.state.traces[0]
+        assert held is not committed
+
+        bridge._SESSION_STORE.enter_view()
+        assert bridge._TRACES[0] is committed
+        bridge._SESSION_STORE.exit_view()
+        assert bridge._TRACES[0] is held
+
+        held.set_ydata(held.get_ydata() * 2.0)
+        delta = bridge._SESSION_STORE.delta()
+        bridge._SESSION_STORE.restore(snapshot)
+        outcome = bridge._SESSION_STORE.commit(snapshot.generation, delta)
+        assert outcome.committed
+        assert bridge._TRACES[0] is held
+    finally:
+        if bridge._SESSION_STORE._active_snapshot is not None:
+            bridge._SESSION_STORE.rollback(snapshot)
+        load([])

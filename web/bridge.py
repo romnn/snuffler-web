@@ -19,6 +19,7 @@ import io
 import math
 import os
 import re
+import shutil
 import time
 import traceback
 from collections import OrderedDict
@@ -205,6 +206,9 @@ _RELOAD_KEEP = (
     "_PLATES",
     "_SEISBENCH_MODEL_URLS",
     "_STAGE_COUNTER",
+    # The session store carries the generation Rust fences view replies with; a
+    # reload that reset it to zero would leave every later view stale-rejected.
+    "_SESSION_STORE",
 )
 
 
@@ -3119,16 +3123,30 @@ async def _load_gf_store_url(base_url: str) -> bridge_pb2.StringValue:
     if not manifest.ok:
         raise RuntimeError("no .manifest at %s (HTTP %s)" % (base, manifest.status))
     files = [line.strip() for line in (await manifest.string()).splitlines() if line.strip()]
-    root = "/gfstores/store%d" % len(_GF_STORES)
-    os.makedirs(root, exist_ok=True)
-    for rel in files:
-        resp = await pyfetch(base + "/" + rel)
-        if not resp.ok:
-            raise RuntimeError("fetch %s: HTTP %s" % (rel, resp.status))
-        dest = "%s/%s" % (root, rel)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as handle:
-            handle.write(bytes(await resp.bytes()))
+    # Download into a per-attempt staging tree and move it into place only once
+    # every file landed: the session transaction rolls back _GF_STORES on
+    # failure or cancellation, but not the filesystem, and a later attempt
+    # reuses this root — stale files from a half-downloaded manifest must not
+    # shadow the new store's contents.
+    global _STAGE_COUNTER
+    _STAGE_COUNTER += 1
+    staging = "/gfstores/.staging%d" % _STAGE_COUNTER
+    os.makedirs(staging, exist_ok=True)
+    try:
+        for rel in files:
+            resp = await pyfetch(base + "/" + rel)
+            if not resp.ok:
+                raise RuntimeError("fetch %s: HTTP %s" % (rel, resp.status))
+            dest = "%s/%s" % (staging, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as handle:
+                handle.write(bytes(await resp.bytes()))
+        root = "/gfstores/store%d" % len(_GF_STORES)
+        shutil.rmtree(root, ignore_errors=True)
+        os.replace(staging, root)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return bridge_pb2.StringValue(value=_gf_store_info_result(root).label)
 
 
@@ -4872,18 +4890,6 @@ class SessionSnapshot(NamedTuple):
     state: _DatasetState
 
 
-class SnapshotReader:
-    def __init__(self, snapshot: SessionSnapshot) -> None:
-        self._snapshot = snapshot
-
-    @property
-    def generation(self) -> int:
-        return self._snapshot.generation
-
-    def traces(self) -> List[ptrace.Trace]:
-        return list(_clone_dataset_state(self._snapshot.state).traces)
-
-
 class SessionDelta(NamedTuple):
     state: _DatasetState
 
@@ -4938,25 +4944,86 @@ def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
     )
 
 
+class _ViewLaneCaches(NamedTuple):
+    data_gen: int
+    cutout_vec: Optional[Tuple[Any, ...]]
+    cutout_traces: Optional[List[ptrace.Trace]]
+    cutout_notices: List[str]
+    tf_cache: Dict[Tuple[Any, ...], np.ndarray]
+    pile: Optional[Any]
+    pile_gen: Optional[int]
+    box_styles: Dict[Tuple[Any, ...], int]
+    box_styles_gen: Optional[int]
+
+
+def _capture_view_caches() -> _ViewLaneCaches:
+    return _ViewLaneCaches(
+        data_gen=_DATA_GEN,
+        cutout_vec=_CUTOUT_VEC,
+        cutout_traces=_CUTOUT_TRACES,
+        cutout_notices=list(_CUTOUT_NOTICES),
+        tf_cache=dict(_TF_CACHE),
+        pile=_PILE,
+        pile_gen=_PILE_GEN,
+        box_styles=dict(_BOX_STYLES),
+        box_styles_gen=_BOX_STYLES_GEN,
+    )
+
+
+def _install_view_caches(caches: _ViewLaneCaches) -> None:
+    global _CUTOUT_VEC, _CUTOUT_TRACES, _DATA_GEN, _PILE, _PILE_GEN, _BOX_STYLES_GEN
+    _DATA_GEN = caches.data_gen
+    _CUTOUT_VEC = caches.cutout_vec
+    _CUTOUT_TRACES = caches.cutout_traces
+    _CUTOUT_NOTICES[:] = caches.cutout_notices
+    _TF_CACHE.clear()
+    _TF_CACHE.update(caches.tf_cache)
+    _PILE = caches.pile
+    _PILE_GEN = caches.pile_gen
+    _BOX_STYLES.clear()
+    _BOX_STYLES.update(caches.box_styles)
+    _BOX_STYLES_GEN = caches.box_styles_gen
+
+
 class SessionStore:
+    # Clone economy: workspace() pays the transaction's single deep clone (the
+    # only objects a handler can mutate). snapshot() and delta() capture shallow
+    # state — fresh containers over objects the respective install path never
+    # lets the other side mutate — so an interleaved view and the commit itself
+    # cost container copies, not a full copy of every trace's samples.
+    #
+    # The view projection is owned by the store (not by call()'s locals), the
+    # workspace reference survives until reinstalled, and the cache stash is
+    # gated on a completed projection — so a partial enter_view/exit_view
+    # self-heals on the next cycle instead of orphaning the workspace or
+    # letting job caches masquerade as committed-view caches. This is healing,
+    # not atomicity: interrupts cannot reach the view lane today (GetView is
+    # NOT_CANCELLABLE and the ownership handoff clears the byte), and that
+    # gate is what a cancellable view rpc would have to replace. View-lane
+    # caches swap together with the dataset state: the view keeps caches built
+    # against the committed snapshot across interleaves, and the job never
+    # sees them.
     def __init__(self) -> None:
         self._generation = 0
         self._active_snapshot: Optional[SessionSnapshot] = None
+        self._view_workspace: Optional[SessionDelta] = None
+        self._view_caches: Optional[_ViewLaneCaches] = None
+        self._job_caches: Optional[_ViewLaneCaches] = None
+        self._view_projected = False
 
     @property
     def generation(self) -> int:
         return self._generation
 
     def snapshot(self) -> SessionSnapshot:
-        return SessionSnapshot(self._generation, _clone_dataset_state(_dataset_state()))
+        return SessionSnapshot(self._generation, _dataset_state())
 
-    def workspace(self, snapshot: SessionSnapshot) -> SnapshotReader:
+    def workspace(self, snapshot: SessionSnapshot) -> None:
         self._active_snapshot = snapshot
         _install_dataset_state(_clone_dataset_state(snapshot.state))
-        return SnapshotReader(snapshot)
 
     def delta(self) -> SessionDelta:
-        return SessionDelta(_clone_dataset_state(_dataset_state()))
+        return SessionDelta(_dataset_state())
 
     def restore(self, snapshot: SessionSnapshot) -> None:
         _install_dataset_state(snapshot.state)
@@ -4964,27 +5031,65 @@ class SessionStore:
     def rollback(self, snapshot: SessionSnapshot) -> None:
         self.restore(snapshot)
         self._active_snapshot = None
+        # The rollback reinstalled the state the view caches were built
+        # against, so the now-direct view lane keeps them instead of
+        # rebuilding the pile and cutout from scratch.
+        if self._view_caches is not None:
+            _install_view_caches(self._view_caches)
+        self._drop_view_projection()
 
-    def enter_view(self) -> Optional[SessionDelta]:
+    def enter_view(self) -> None:
         if self._active_snapshot is None:
-            return None
-        workspace = self.delta()
-        self.restore(self._active_snapshot)
-        return workspace
+            return
+        if self._view_workspace is None:
+            self._view_workspace = SessionDelta(_dataset_state())
+            self._job_caches = _capture_view_caches()
+        self._view_projected = False
+        _install_dataset_state(self._active_snapshot.state)
+        if self._view_caches is not None:
+            _install_view_caches(self._view_caches)
+        self._view_projected = True
 
-    def exit_view(self, workspace: Optional[SessionDelta]) -> None:
-        if workspace is not None:
-            _install_dataset_state(workspace.state)
+    def exit_view(self) -> None:
+        # The workspace reference is dropped only after the reinstall: an
+        # interrupt landing mid-way then leaves it captured, and the next
+        # enter_view/exit_view cycle re-projects and re-installs the same
+        # workspace instead of orphaning the job's state. The caches are
+        # stashed only when the projection completed — an interrupt inside
+        # enter_view would otherwise let job-era caches masquerade as
+        # committed-view caches on the next interleave.
+        workspace = self._view_workspace
+        if workspace is None:
+            return
+        if self._view_projected:
+            self._view_caches = _capture_view_caches()
+        self._view_projected = False
+        _install_dataset_state(workspace.state)
+        if self._job_caches is not None:
+            _install_view_caches(self._job_caches)
+        self._job_caches = None
+        self._view_workspace = None
 
     def commit(self, expected: int, delta: SessionDelta) -> CommitOutcome:
         actual = self._generation
         if expected != actual:
+            # Defensive: the job lane is serialized, so a mismatch means a
+            # protocol fault upstream; kept as a typed guard because a wrong
+            # commit is a one-way door.
             self._active_snapshot = None
+            self._drop_view_projection()
             return CommitOutcome(expected, actual, False)
         _install_dataset_state(delta.state)
         self._generation += 1
         self._active_snapshot = None
+        self._drop_view_projection()
         return CommitOutcome(expected, self._generation, True)
+
+    def _drop_view_projection(self) -> None:
+        self._view_workspace = None
+        self._view_caches = None
+        self._job_caches = None
+        self._view_projected = False
 
 
 def _dataset_state() -> _DatasetState:
@@ -6725,8 +6830,8 @@ async def call(
 
     activity = bridge_dispatch.ACTIVITY_BY_METHOD[method]
     if activity.lane == "VIEW":
-        workspace = _SESSION_STORE.enter_view()
         try:
+            _SESSION_STORE.enter_view()
             result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
             envelope = bridge_pb2.BridgeResult.FromString(result["result"])
             if envelope.WhichOneof("result") == "cancelled":
@@ -6735,13 +6840,28 @@ async def call(
                     _SERVICER, method, _raw_bytes(request), data
                 )
             return finish_dispatch(result, None)
+        except KeyboardInterrupt:
+            # Defensive only: no interrupt can reach the view lane today —
+            # GetView is the sole VIEW rpc and is NOT_CANCELLABLE, and the
+            # ownership handoff clears the byte before a view runs. If a
+            # cancellable view rpc is ever added, revisit enter_view/exit_view
+            # first: they self-heal from a partial projection (retained
+            # workspace, gated cache stash) but are not fully atomic. The typed
+            # envelope keeps the reply structured so Rust retries the view.
+            cancelled = bridge_pb2.BridgeResult()
+            cancelled.cancelled.SetInParent()
+            return {"result": cancelled.SerializeToString()}
         finally:
-            _SESSION_STORE.exit_view(workspace)
+            _SESSION_STORE.exit_view()
             _OPERATION_REPORTER.reset(token)
-    snapshot = _SESSION_STORE.snapshot() if activity.effect == "MUTATE" else None
-    if snapshot is not None:
-        _SESSION_STORE.workspace(snapshot)
+    snapshot: Optional[SessionSnapshot] = None
     try:
+        # Setup runs inside the protecting try: a cancellation interrupt during
+        # the workspace clone must surface as the typed cancelled envelope, not
+        # escape as a transport error with _active_snapshot left installed.
+        if activity.effect == "MUTATE":
+            snapshot = _SESSION_STORE.snapshot()
+            _SESSION_STORE.workspace(snapshot)
         result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
         if snapshot is None:
             return finish_dispatch(result, None)
