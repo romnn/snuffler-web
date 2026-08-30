@@ -52,7 +52,7 @@ pub const PHASE_KEYS: [&str; 9] = [
 ];
 
 /// A time annotation, optional seismic phase pick, or catalog event.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Marker {
     /// Start time (epoch seconds).
     pub tmin: f64,

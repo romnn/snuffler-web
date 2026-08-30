@@ -4,7 +4,7 @@
 //! `config.py`) so every frontend exposes the same settings.
 
 use crate::command::CommandLine;
-use crate::markers::Marker;
+use crate::marker_store::{MarkerId, MarkerStore};
 
 /// Number of tracks the auto-fit track height targets on first load, and the
 /// reset target for the "=" key.
@@ -725,12 +725,14 @@ pub struct AppState {
     /// loads; the text lives in the bridge, with the scene it describes.
     pub show_dataset_note: bool,
 
-    /// Vertical track layout. `track_height` (pixels per row, `0.0` until the
-    /// first layout auto-fits [`DEFAULT_NTRACKS_SHOWN`]) and `snap_tracks` (align
-    /// rows to perfect trace boundaries) are the user-facing controls;
-    /// `track_scroll` is the fractional index of the topmost visible row.
-    /// `ntracks_shown`/`track_offset` are caches the waveform layout recomputes
-    /// each frame; the view request reads them to fetch only on-screen tracks.
+    /// Vertical track layout.
+    ///
+    /// `track_height` is pixels per row, with `0.0` keeping automatic
+    /// [`DEFAULT_NTRACKS_SHOWN`] fitting active until the user chooses a height.
+    /// `snap_tracks` aligns rows to perfect trace boundaries, while `track_scroll`
+    /// is the fractional index of the topmost visible row.
+    /// `ntracks_shown` and `track_offset` are caches the waveform layout recomputes
+    /// each frame so the view request fetches only on-screen tracks.
     pub track_height: f32,
     /// Whether visible rows are aligned to complete trace boundaries.
     pub snap_tracks: bool,
@@ -742,7 +744,7 @@ pub struct AppState {
     pub track_offset: usize,
 
     /// User, catalog, and snuffling annotations in insertion order.
-    pub markers: Vec<Marker>,
+    pub markers: MarkerStore,
     /// The controls panel's marker-kind picker highlight: the last kind applied
     /// through it. Fresh picks are always kind 0, as snuffler's are — nothing
     /// reads this as a default for new markers.
@@ -806,7 +808,9 @@ pub struct AppState {
     /// marker `alerted` flag (`pile_viewer.py:2168`): the hovered marker brightens
     /// to its selected shade, its guides go dashed (grey when unselected), and
     /// its metadata is posted to the status line.
-    pub hovered_marker: Option<usize>,
+    pub hovered_marker: Option<MarkerId>,
+    /// Number of marker endpoints under the pointer when exact hit-testing is overloaded.
+    pub marker_hit_overload: Option<usize>,
     /// "Snuffler controls" / "About" help windows.
     pub show_help: bool,
     /// Whether the about window is open.
@@ -935,13 +939,13 @@ impl Default for AppState {
             snuffling_text: String::new(),
             show_snuffling: false,
             show_dataset_note: false,
-            // 0.0 = auto-fit DEFAULT_NTRACKS_SHOWN on the first layout.
+            // Zero keeps the default automatic fitting active.
             track_height: 0.0,
             snap_tracks: true,
             track_scroll: 0.0,
             ntracks_shown: DEFAULT_NTRACKS_SHOWN,
             track_offset: 0,
-            markers: Vec::new(),
+            markers: MarkerStore::default(),
             marker_kind: 0,
             reload_requested: false,
             reload_snufflings_requested: false,
@@ -962,6 +966,7 @@ impl Default for AppState {
             pending_s_chord: false,
             hover_track_row: None,
             hovered_marker: None,
+            marker_hit_overload: None,
             show_help: false,
             show_about: false,
             show_snuffling_help: false,
@@ -1109,10 +1114,9 @@ mod tests {
 
     #[test]
     fn marker_deletion_queues_only_hashes_without_a_remaining_event() {
-        let mut state = AppState {
-            markers: vec![event("shared", true, true), event("shared", false, false)],
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.markers.insert(event("shared", true, true));
+        state.markers.insert(event("shared", false, false));
 
         state.remove_selected_markers();
 
@@ -1132,7 +1136,8 @@ mod tests {
         assert!(state.markers.is_empty());
         assert_eq!(state.remove_event_hashes, ["shared"]);
 
-        state.markers = vec![event("other", false, false), Marker::new(1.0, 1.0, 0)];
+        state.markers.insert(event("other", false, false));
+        state.markers.insert(Marker::new(1.0, 1.0, 0));
         state.clear_markers();
 
         // Clear-all queues its event while plain markers have no registry state.

@@ -17,225 +17,56 @@
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
+use crate::activity::{
+    ActivityLedger, CancelRequest, JobError, JobHandle, JobRecord, Operation, Outcome,
+    RuntimeState, Submission,
+};
+#[cfg(target_arch = "wasm32")]
+use crate::activity::{JobState, Progress};
+
 mod error;
+mod jobs;
 mod proto;
+mod runtime;
 
 pub use error::{
     BridgeError, MarshalError, ReloadError, ReloadFailureReason, ReloadSourceError, SeedlinkError,
 };
+pub use jobs::{CommandOutcome, FigureData, ReadyTile, TileRequest, ViewData};
+use jobs::{FigureSlot, TileState};
+#[cfg(target_arch = "wasm32")]
+use jobs::{TILE_BATCH, TILE_BATCHES_IN_FLIGHT};
+pub use runtime::{
+    LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, RuntimeInfo, SeedlinkParams,
+    SeisbenchProgress,
+};
+#[cfg(target_arch = "wasm32")]
+use runtime::{LiveIngestBatch, SessionEpoch, StreamId};
+use runtime::{LiveIngestMailbox, LiveIngestState};
 pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 
 // The decoded protobuf messages ARE the app-facing domain model — no parallel
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    ActiveEventResult, BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest,
-    CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest,
-    IngestMiniSeedRequest, MapData, MapRequest, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
-    PolarizationSnufflingParams, ReloadBatchResult, RemoveEventsRequest, RmsSnufflingParams,
-    SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest,
-    SnufflingParams, SnufflingRequestParams, SnufflingResult, SnufflingSpan,
-    SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest,
-    TraceBox, ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
+    ActiveEventResult, BrowserFileManifest, BrowserSourceAck, BrowserSourceAckList, BundleAbout,
+    BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, EventKagan, EventSnapshot,
+    ExampleDataset, FigureRequest, IngestMiniSeedRequest, MapData, MapRequest,
+    MarkerBudget as ProtoMarkerBudget, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
+    PolarizationSnufflingParams, RemoveEventsRequest, RmsSnufflingParams, SceneMeta,
+    SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest, SnufflingParams,
+    SnufflingRequestParams, SnufflingResult, SnufflingSpan, SpectrogramSnufflingParams,
+    SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, TraceBox, ViewMeta, ViewParams,
+    ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
 
 /// Local-file header of a zip archive, which is how a dataset bundle is
 /// recognized wherever one can arrive.
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
-/// Visible live waveform window once enough samples have arrived.
-pub const LIVE_FOLLOW_SECONDS: f64 = 300.0;
-/// Amount of live data kept in the Pyodide trace pile before older samples are
-/// discarded.
-pub const LIVE_RETAIN_SECONDS: f64 = 1800.0;
-
-/// Metadata for the currently active `SeedLink` acquisition session.
-#[derive(Clone, Copy, Debug)]
-pub struct LiveSeedlinkSession {
-    /// Epoch time when the current live source was started by the user.
-    pub started_at: f64,
-    /// Width of the live-follow viewport, in seconds.
-    pub follow_seconds: f64,
-}
-
-/// A view: prost metadata plus the out-of-band `f32` sample buffer (`ys` rides
-/// alongside the proto, never inside it — see the worker transfer).
-#[derive(Clone, Debug, Default)]
-pub struct ViewData {
-    /// Track metadata and the absolute time represented by the sample buffer.
-    pub meta: ViewMeta,
-    /// Out-of-band waveform samples or packed waterfall cells.
-    pub ys: Vec<f32>,
-}
-
-impl ViewData {
-    /// Raw uniform samples or waterfall cells for one span as a flat slice.
-    #[must_use]
-    pub fn samples<'a>(&'a self, span: &ViewSpan) -> &'a [f32] {
-        let off = usize::try_from(span.offset).unwrap_or(usize::MAX);
-        let cnt = usize::try_from(span.count).unwrap_or(usize::MAX);
-        let end = off.saturating_add(cnt).min(self.ys.len());
-        self.ys.get(off.min(self.ys.len())..end).unwrap_or(&[])
-    }
-}
-
-/// A rendered pyrocko/matplotlib figure: PNG bytes, or a non-empty `error` string
-/// the window shows as text (a figure that fails never takes down the viewer —
-/// mirroring how snuffling errors surface). The frontend decodes the PNG into a
-/// texture once per `FigureSlot::generation`; the texture carries its own size.
-#[derive(Clone, Debug, Default)]
-pub struct FigureData {
-    /// Encoded matplotlib PNG, empty until a successful render lands.
-    pub png: Vec<u8>,
-    /// Render failure text, empty when `png` is valid.
-    pub error: String,
-}
-
-/// User-entered parameters for a live `SeedLink` acquisition.
-#[derive(Clone, Debug, Default)]
-pub struct SeedlinkParams {
-    /// `SeedLink` server hostname.
-    pub host: String,
-    /// `SeedLink` TCP port.
-    pub port: String,
-    /// Network selector.
-    pub net: String,
-    /// Station selector.
-    pub sta: String,
-    /// Channel selector expression.
-    pub selectors: String,
-    /// Width of the live-follow viewport in seconds (Qt's `--follow N`);
-    /// non-positive falls back to [`LIVE_FOLLOW_SECONDS`].
-    pub follow_s: f64,
-    /// Seconds of live data to keep before older samples are discarded.
-    /// A bound is not optional on wasm32's single fixed-size heap — Qt keeps
-    /// everything — but the number is the user's; non-positive falls back to
-    /// [`LIVE_RETAIN_SECONDS`].
-    pub retain_s: f64,
-}
-
-/// One figure window's latest render, keyed by figure kind in `Inner::figures`.
-/// `gen` bumps on every fresh render so the frontend re-decodes the image only then;
-/// `in_flight` de-dupes concurrent requests for the same kind.
-#[derive(Clone, Debug, Default)]
-struct FigureSlot {
-    data: FigureData,
-    generation: u64,
-    in_flight: bool,
-}
-
-/// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
-/// turns them into a texture and caches it there).
-enum TileState {
-    InFlight,
-    Ready(u32, u32, Vec<u8>),
-    Consumed,
-    Failed,
-}
-
-/// A map tile the view wants on screen, and where to get it.
-///
-/// The view submits every visible tile at once ([`Bridge::request_tiles`]) rather
-/// than one call per tile, so the scheduler can order the whole screenful by
-/// `priority` instead of by whatever order the loop happened to walk in.
-#[derive(Clone, Debug)]
-pub struct TileRequest {
-    /// Integer zoom level.
-    pub z: u8,
-    /// Tile column.
-    pub x: u32,
-    /// Tile row.
-    pub y: u32,
-    /// Fully substituted URL for the currently selected basemap.
-    pub url: String,
-    /// Fetch order; lower goes first. The view scores by distance from the middle
-    /// of the screen, which is where the eye is.
-    pub priority: i32,
-}
-
-/// A decoded tile, handed to the view exactly once so it can upload a texture.
-#[derive(Clone, Debug)]
-pub struct ReadyTile {
-    /// Integer zoom level.
-    pub z: u8,
-    /// Tile column.
-    pub x: u32,
-    /// Tile row.
-    pub y: u32,
-    /// Decoded width in pixels.
-    pub width: u32,
-    /// Decoded height in pixels.
-    pub height: u32,
-    /// Unmultiplied RGBA samples, `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
-}
-
-/// Tiles started in one crossing of the wasm boundary. Sized to keep a screenful
-/// moving without letting a burst of stale requests outlive the view that wanted
-/// them — the queue is re-scored every frame, so anything not yet started is
-/// free to be replaced.
-const TILE_BATCH: usize = 8;
-
-/// Batches allowed to be in flight at once. Two keeps the connection busy while
-/// one batch is finishing, without queueing so deeply that a fast zoom leaves a
-/// long tail of tiles nobody is looking at any more.
-const TILE_BATCHES_IN_FLIGHT: usize = 2;
-
-/// Current lifecycle state of the asynchronous pyrocko bridge.
-#[derive(Clone, Debug, Default)]
-pub enum Status {
-    /// Pyodide and the worker have not finished initializing.
-    #[default]
-    Booting,
-    /// A user-visible operation is in progress.
-    Loading(String),
-    /// The bridge can accept requests.
-    Ready,
-    /// The latest operation failed. The variant says which layer gave out, and
-    /// [`BridgeError::traceback`] recovers pyrocko's traceback when it was
-    /// pyrocko that raised.
-    Error(BridgeError),
-}
-
-/// How a ':' command line executed by pyrocko turned out.
-#[derive(Clone, Debug)]
-pub enum CommandOutcome {
-    /// The command ran; any view change it asked for has been applied.
-    Succeeded,
-    /// The command was rejected, with the message to show under the input.
-    Failed(String),
-}
-
-/// The Python runtime the worker booted, read back from the live interpreter
-/// rather than assumed from the build, so the About window reports what is
-/// actually running.
-#[derive(Clone, Debug)]
-pub struct RuntimeInfo {
-    /// `sys.version`'s first token, e.g. `3.14.0`.
-    pub python: String,
-    /// `numpy.__version__`.
-    pub numpy: String,
-    /// `pyrocko.__version__`, or `unknown` on a build that does not carry one.
-    pub pyrocko: String,
-    /// True once pthreads are confirmed live in the interpreter — meaning the
-    /// py-mt build came up with `OpenMP` and SIMD, not a single-threaded fallback.
-    pub threaded: bool,
-    /// `navigator.hardwareConcurrency` as seen by the worker; 0 when unavailable.
-    pub cores: u32,
-}
-
-/// Progress reported by the in-browser `SeisBench` runtime.
-#[derive(Clone, Debug)]
-pub struct SeisbenchProgress {
-    /// Completed fraction in the inclusive range `0.0..=1.0`.
-    pub fraction: f32,
-    /// Current model-loading or inference phase.
-    pub label: String,
-}
-
 #[derive(Default)]
 struct Inner {
-    status: Status,
+    activity: ActivityLedger,
     /// Latest recoverable failure that should remain visible without making the
     /// bridge operationally unavailable.
     diagnostic: Option<BridgeError>,
@@ -251,26 +82,22 @@ struct Inner {
     figures: std::collections::HashMap<String, FigureSlot>,
     snuffling: Option<SnufflingResult>,
     snuffling_gen: u64,
-    seisbench_in_flight: bool,
-    last_seisbench_progress: Option<SeisbenchProgress>,
-    next_seisbench_progress_poll_s: f64,
     /// A custom model name the user just uploaded ("Add Model"), for the frontend to
     /// add to the Cake Phase dropdown and select.
     pending_cake_model: Option<String>,
     map: Option<MapData>,
     map_request: Option<MapRequest>,
     map_request_gen: u64,
-    map_in_flight: bool,
+    map_job: Option<JobHandle>,
     /// Great-circle distance (degrees) from the active event to each station,
     /// keyed by (net, sta), for the marker editor's distance column. Refetched
     /// when the snuffling generation it was computed for changes.
     station_dists: std::collections::HashMap<(String, String), f64>,
     station_dists_gen: Option<(u64, u64)>,
-    station_dists_in_flight: bool,
+    station_dists_job: Option<JobHandle>,
     /// Bumped whenever Python returns a canonical event-state projection.
     active_event_gen: u64,
     event_state: Option<ActiveEventResult>,
-    event_request_gen: u64,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
     /// Bumped by [`Bridge::clear_tiles`]. Tiles are keyed by `(z, x, y)` alone, so
     /// a fetch still in flight when the basemap changes would otherwise land in
@@ -282,7 +109,11 @@ struct Inner {
     tile_queue: Vec<TileRequest>,
     /// How many batches are out; see [`TILE_BATCHES_IN_FLIGHT`].
     tile_batches: usize,
-    view_in_flight: Option<ViewParams>,
+    view_job: Option<(JobHandle, ViewParams)>,
+    view_last_error: Option<BridgeError>,
+    view_retry_after_s: f64,
+    next_view_sequence: u64,
+    python_session_generation: u64,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
     view_request_gen: u64,
@@ -292,6 +123,11 @@ struct Inner {
     /// to close itself or show the error.
     command_outcome: Option<CommandOutcome>,
     live_seedlink_started_at: Option<f64>,
+    session_epoch: u64,
+    next_stream_id: u64,
+    live_ingest: LiveIngestState,
+    ingest_job: Option<JobHandle>,
+    ingest_mailbox: LiveIngestMailbox,
     /// Follow-viewport width of the active live session, from its start form
     /// (0.0 while no session runs; readers fall back to the default).
     live_seedlink_follow_s: f64,
@@ -299,7 +135,8 @@ struct Inner {
     /// opened rather than compiled in — so a deployment can gain an example
     /// without a new wasm build. `None` until it has been asked for.
     examples: Option<Result<Vec<ExampleDataset>, BridgeError>>,
-    examples_in_flight: bool,
+    examples_job: Option<JobHandle>,
+    warm_requested: bool,
     /// The view a just-loaded bundle asked for, for the frontend to apply — the
     /// bridge does not own the sort state, so it parks it here the way a fetched
     /// cake model waits in `pending_cake_model`.
@@ -318,15 +155,6 @@ struct Inner {
     /// than something the frontend should have to infer by watching for the
     /// generation to change.
     dataset_note_unseen: bool,
-}
-
-fn finish_reload_batch(inner: &mut Inner, diagnostic: Option<BridgeError>) {
-    inner.status = Status::Ready;
-    inner.diagnostic = diagnostic;
-}
-
-fn record_diagnostic(inner: &mut Inner, error: BridgeError) {
-    inner.diagnostic = Some(error);
 }
 
 fn install_bundle_presentation(
@@ -386,10 +214,93 @@ impl Bridge {
         }
     }
 
-    /// Returns the latest bridge lifecycle state.
+    /// Returns runtime health and an owned snapshot of all visible jobs.
     #[must_use]
-    pub fn status(&self) -> Status {
-        self.inner.borrow().status.clone()
+    pub fn activity_snapshot(&self) -> (RuntimeState, Vec<(JobHandle, JobRecord)>) {
+        #[cfg(target_arch = "wasm32")]
+        web::sync_runtime(&self.inner);
+        let inner = self.inner.borrow();
+        (
+            inner.activity.runtime().clone(),
+            inner
+                .activity
+                .records()
+                .map(|(handle, record)| (handle, record.clone()))
+                .collect(),
+        )
+    }
+
+    /// Registers executor-owned local work before it leaves the render loop.
+    pub fn begin_local(&self, operation: Operation, detail: Option<String>) -> Submission {
+        #[cfg(target_arch = "wasm32")]
+        let now_s = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now_s = 0.0;
+        self.inner
+            .borrow_mut()
+            .activity
+            .submit_local(operation, detail, now_s)
+    }
+
+    /// Records the sole terminal result for executor-owned local work.
+    pub fn finish_local(&self, handle: JobHandle, result: Result<(), BridgeError>) {
+        let outcome = match result {
+            Ok(()) => Outcome::Succeeded,
+            Err(error) => Outcome::Failed(JobError::Bridge(error)),
+        };
+        self.inner.borrow_mut().activity.complete(handle, outcome);
+        self.repaint.request_repaint();
+    }
+
+    /// Requests cancellation without allowing repeated UI actions to resubmit work.
+    #[must_use]
+    pub fn cancel(&self, handle: JobHandle) -> proto::pb::CancelDisposition {
+        #[cfg(target_arch = "wasm32")]
+        let now_s = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now_s = 0.0;
+        let request = self
+            .inner
+            .borrow_mut()
+            .activity
+            .request_cancel(handle, now_s);
+        let disposition = match request {
+            CancelRequest::Cancelled => proto::pb::CancelDisposition::Queued,
+            CancelRequest::Interrupt | CancelRequest::AlreadyCancelling => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    match web::cancel_job(handle) {
+                        Ok(disposition) => disposition,
+                        Err(error) => {
+                            self.inner.borrow_mut().diagnostic = Some(error);
+                            proto::pb::CancelDisposition::Cancelling
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    proto::pb::CancelDisposition::Cancelling
+                }
+            }
+            CancelRequest::TooLate => proto::pb::CancelDisposition::TooLate,
+            CancelRequest::NotFound => proto::pb::CancelDisposition::NotFound,
+            CancelRequest::NotCancellable => proto::pb::CancelDisposition::NotCancellable,
+        };
+        if disposition == proto::pb::CancelDisposition::TooLate {
+            self.inner
+                .borrow_mut()
+                .activity
+                .mark_cancel_too_late(handle);
+        }
+        self.repaint.request_repaint();
+        disposition
+    }
+
+    /// Replaces an unresponsive Python worker after cancellation escalation.
+    pub fn restart_runtime(&self) {
+        #[cfg(target_arch = "wasm32")]
+        web::restart_runtime(&self.inner);
+        self.repaint.request_repaint();
     }
 
     /// Returns the latest recoverable diagnostic while the bridge remains ready.
@@ -431,40 +342,27 @@ impl Bridge {
         let progress = self
             .inner
             .borrow()
-            .seisbench_in_flight
-            .then(web::seisbench_progress)
-            .flatten();
-        (web::seisbench_device(), progress)
-    }
-
-    /// Polls `SeisBench` progress at a bounded rate and schedules another repaint.
-    #[cfg(target_arch = "wasm32")]
-    pub fn refresh_seisbench_progress(&self, now: f64) {
-        let repaint = self.repaint.clone();
-        {
-            let mut i = self.inner.borrow_mut();
-            if !i.seisbench_in_flight {
-                return;
-            }
-            if now < i.next_seisbench_progress_poll_s {
-                repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                return;
-            }
-            i.next_seisbench_progress_poll_s = now + 0.1;
-        }
-        if let Some(progress) = web::seisbench_progress() {
-            let pct = (progress.fraction * 100.0).round().clamp(0.0, 100.0);
-            let mut i = self.inner.borrow_mut();
-            let changed = i.last_seisbench_progress.as_ref().is_none_or(|last| {
-                (last.fraction - progress.fraction).abs() > f32::EPSILON
-                    || last.label != progress.label
+            .activity
+            .records()
+            .find_map(|(_, record)| {
+                if record.operation() != Operation::RunSnuffling
+                    || record.detail() != Some("seisbench_picker")
+                {
+                    return None;
+                }
+                let JobState::Running {
+                    progress: Progress::Fraction { fraction, phase },
+                    ..
+                } = record.state()
+                else {
+                    return None;
+                };
+                Some(SeisbenchProgress {
+                    fraction: *fraction,
+                    label: phase.to_string(),
+                })
             });
-            if changed {
-                i.status = Status::Loading(format!("{} · {pct:.0}%", progress.label));
-                i.last_seisbench_progress = Some(progress);
-            }
-        }
-        repaint.request_repaint_after(std::time::Duration::from_millis(17));
+        (web::seisbench_device(), progress)
     }
 
     /// Returns the latest scene metadata snapshot.
@@ -523,6 +421,16 @@ impl Bridge {
             .figures
             .get(kind)
             .map_or(0, |slot| slot.generation)
+    }
+
+    /// Returns the ledger handle behind a pending figure render.
+    #[must_use]
+    pub fn figure_job(&self, kind: &str) -> Option<JobHandle> {
+        self.inner
+            .borrow()
+            .figures
+            .get(kind)
+            .and_then(|slot| slot.job)
     }
 
     /// The latest rendered figure for a kind (PNG bytes or an error string).
@@ -686,10 +594,7 @@ impl Bridge {
     #[must_use]
     pub fn view_is_settled(&self) -> bool {
         let i = self.inner.borrow();
-        matches!(i.status, Status::Ready)
-            && i.view.is_some()
-            && i.desired.is_none()
-            && i.view_in_flight.is_none()
+        i.view.is_some() && i.desired.is_none() && i.view_job.is_none()
     }
 }
 
@@ -706,7 +611,12 @@ mod web {
 
     use super::proto::{self, pb};
     use super::*;
+    use crate::activity::RuntimeEpoch;
+    use snuffler_web_proto::prost::Message as _;
     use std::cell::{Cell, RefCell as StdRefCell};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::spawn_local;
@@ -724,33 +634,40 @@ mod web {
         // bridge.py and ships the out-of-band ys buffer alongside the proto. This is
         // the custom transport the typed service client rides on.
         #[wasm_bindgen(js_name = call, catch)]
-        async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>)
-        -> Result<JsValue, JsValue>;
+        async fn js_call(
+            method: &str,
+            request: Vec<u8>,
+            data: Vec<u8>,
+            job_id: u64,
+        ) -> Result<JsValue, JsValue>;
+
+        #[wasm_bindgen(js_name = takeOperationEvents)]
+        fn js_take_operation_events() -> js_sys::Array;
 
         #[wasm_bindgen(js_name = seisbenchDevice)]
         fn js_seisbench_device() -> String;
 
-        #[wasm_bindgen(js_name = seisbenchProgressFraction)]
-        fn js_seisbench_progress_fraction() -> f32;
-
-        #[wasm_bindgen(js_name = seisbenchProgressLabel)]
-        fn js_seisbench_progress_label() -> String;
-
-        #[wasm_bindgen(js_name = clearSeisbenchProgress)]
-        fn js_clear_seisbench_progress();
-
         #[wasm_bindgen(js_name = runtimeInfo)]
         fn js_runtime_info() -> JsValue;
+
+        #[wasm_bindgen(js_name = currentRuntimeEpoch)]
+        fn js_current_runtime_epoch() -> u32;
+
+        #[wasm_bindgen(js_name = cancelJob, catch)]
+        fn js_cancel_job(request: Vec<u8>) -> Result<Vec<u8>, JsValue>;
+
+        #[wasm_bindgen(js_name = restartRuntime)]
+        fn js_restart_runtime(reason: &str) -> u32;
 
         // DOM-only calls keep bespoke externs: they drive browser APIs (file
         // pickers, downloads, the File System Access API, tile fetch+decode) that
         // can't be expressed as a uniform request->response RPC.
         #[wasm_bindgen(js_name = addCakeModel, catch)]
-        async fn js_add_cake_model() -> Result<JsValue, JsValue>;
+        async fn js_add_cake_model(job_id: u64) -> Result<JsValue, JsValue>;
 
         #[cfg(feature = "gf")]
         #[wasm_bindgen(js_name = addGfStore, catch)]
-        async fn js_add_gf_store() -> Result<JsValue, JsValue>;
+        async fn js_add_gf_store(job_id: u64) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = fetchTiles, catch)]
         async fn js_fetch_tiles(
@@ -763,6 +680,8 @@ mod web {
 
         #[wasm_bindgen(js_name = reloadFiles, catch)]
         async fn js_reload_files() -> Result<JsValue, JsValue>;
+        #[wasm_bindgen(js_name = acknowledgeSources)]
+        fn js_acknowledge_sources(bytes: Vec<u8>);
         #[wasm_bindgen(js_name = clearOpenSources)]
         fn js_clear_open_sources();
 
@@ -770,7 +689,7 @@ mod web {
         async fn js_open_directory() -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = reloadSnufflings, catch)]
-        async fn js_reload_snufflings() -> Result<JsValue, JsValue>;
+        async fn js_reload_snufflings(job_id: u64) -> Result<JsValue, JsValue>;
 
         #[wasm_bindgen(js_name = downloadFile, catch)]
         async fn js_download_file(
@@ -791,11 +710,253 @@ mod web {
         #[wasm_bindgen(js_name = loadEvents, catch)]
         async fn js_load_events() -> Result<JsValue, JsValue>;
 
-        #[wasm_bindgen(js_name = savePng)]
-        fn js_save_png(bytes: &[u8], filename: &str);
+        #[wasm_bindgen(js_name = savePng, catch)]
+        async fn js_save_png(bytes: Vec<u8>, filename: String) -> Result<JsValue, JsValue>;
 
-        #[wasm_bindgen(js_name = saveSvg)]
-        fn js_save_svg(svg: &str, filename: &str);
+        #[wasm_bindgen(js_name = saveSvg, catch)]
+        async fn js_save_svg(svg: String, filename: String) -> Result<JsValue, JsValue>;
+    }
+
+    pub(super) fn sync_runtime(inner: &Rc<RefCell<Inner>>) {
+        let info = js_runtime_info();
+        let ready = !info.is_null() && !info.is_undefined();
+        {
+            let mut state = inner.borrow_mut();
+            if ready && !matches!(state.activity.runtime(), RuntimeState::Ready) {
+                state.activity.set_runtime(RuntimeState::Ready);
+            }
+        }
+        drain_operation_events(inner);
+    }
+
+    pub(super) fn cancel_job(handle: JobHandle) -> Result<pb::CancelDisposition, BridgeError> {
+        let request = pb::CancelJobRequest {
+            job_id: handle.id().get(),
+        }
+        .encode_to_vec();
+        let bytes = js_cancel_job(request).map_err(|error| {
+            BridgeError::browser("cancelling Python work", jsval_to_string(error))
+        })?;
+        let reply: pb::CancelJobReply = proto::decode_message(&bytes, "cancelJob")?;
+        pb::CancelDisposition::try_from(reply.disposition).map_err(|_| {
+            BridgeError::browser("cancelling Python work", "unknown cancellation disposition")
+        })
+    }
+
+    pub(super) fn restart_runtime(inner: &Rc<RefCell<Inner>>) {
+        let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
+        inner.borrow_mut().activity.runtime_lost(epoch);
+        js_restart_runtime("Python did not stop after cancellation");
+    }
+
+    fn drain_operation_events(inner: &Rc<RefCell<Inner>>) {
+        for value in js_take_operation_events().iter() {
+            let Ok(bytes) = value.dyn_into::<js_sys::Uint8Array>() else {
+                set_bridge_error(
+                    inner,
+                    BridgeError::browser("reading Python progress", "event was not bytes"),
+                );
+                continue;
+            };
+            let event = match pb::WorkerEvent::decode(bytes.to_vec().as_slice()) {
+                Ok(event) => event,
+                Err(error) => {
+                    set_bridge_error(
+                        inner,
+                        BridgeError::browser("decoding Python progress", error.to_string()),
+                    );
+                    continue;
+                }
+            };
+            if event.runtime_epoch != js_current_runtime_epoch() {
+                continue;
+            }
+            let Some(pb::worker_event::Event::Operation(operation)) = event.event else {
+                continue;
+            };
+            match operation.event {
+                Some(pb::operation_event::Event::Started(_)) => {
+                    inner
+                        .borrow_mut()
+                        .activity
+                        .mark_wire_running(operation.job_id, js_sys::Date::now() / 1000.0);
+                }
+                Some(pb::operation_event::Event::Progress(progress)) => {
+                    let phase = progress.phase.into();
+                    let value = match progress.fraction {
+                        None => Progress::Count {
+                            done: progress.done,
+                            total: progress.total,
+                            phase,
+                        },
+                        Some(fraction) => {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                reason = "wire progress is normalized before conversion to the UI's f32"
+                            )]
+                            let fraction = fraction.clamp(0.0, 1.0) as f32;
+                            Progress::Fraction { fraction, phase }
+                        }
+                    };
+                    inner
+                        .borrow_mut()
+                        .activity
+                        .update_wire_progress(operation.job_id, value);
+                }
+                Some(pb::operation_event::Event::Heartbeat(_)) | None => {}
+            }
+        }
+    }
+
+    struct DispatchPermit {
+        inner: Rc<RefCell<Inner>>,
+        handle: JobHandle,
+    }
+
+    thread_local! {
+        static ACTIVE_LEDGER_JOBS: StdRefCell<Vec<(JobHandle, crate::activity::Lane)>> =
+            const { StdRefCell::new(Vec::new()) };
+    }
+
+    fn require_registered_job(
+        operation: pb::Operation,
+        method: &'static str,
+    ) -> Result<JobHandle, TransportError> {
+        ACTIVE_LEDGER_JOBS.with(|active| {
+            active
+                .borrow()
+                .iter()
+                .find(|(_, lane)| *lane == operation.activity().lane)
+                .map(|(handle, _)| *handle)
+                .map_or_else(
+                    || {
+                        Err(TransportError::new(
+                            method,
+                            "Python call has no registered activity job",
+                        ))
+                    },
+                    Ok,
+                )
+        })
+    }
+
+    impl Future for DispatchPermit {
+        type Output = bool;
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if this.inner.borrow().activity.is_terminal(this.handle) {
+                return Poll::Ready(false);
+            }
+            if this
+                .inner
+                .borrow_mut()
+                .activity
+                .try_dispatch(this.handle, context.waker())
+            {
+                Poll::Ready(true)
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    fn submit_job<F>(
+        inner: Rc<RefCell<Inner>>,
+        repaint: Repaint,
+        operation: Operation,
+        detail: Option<String>,
+        dedup_key: Vec<u8>,
+        work: F,
+    ) -> Submission
+    where
+        F: Future<Output = Result<(), BridgeError>> + 'static,
+    {
+        sync_runtime(&inner);
+        let submission = inner.borrow_mut().activity.submit(
+            operation,
+            detail,
+            dedup_key,
+            js_sys::Date::now() / 1000.0,
+        );
+        if operation.activity().supersedes {
+            let active: Vec<JobHandle> = inner
+                .borrow()
+                .activity
+                .records()
+                .filter(|(handle, record)| {
+                    *handle != submission.handle()
+                        && record.operation().activity().lane == crate::activity::Lane::Job
+                        && matches!(
+                            record.state(),
+                            JobState::Dispatching | JobState::Running { .. }
+                        )
+                })
+                .map(|(handle, _)| handle)
+                .collect();
+            for handle in active {
+                let cancel = inner
+                    .borrow_mut()
+                    .activity
+                    .request_cancel(handle, js_sys::Date::now() / 1000.0);
+                if matches!(
+                    cancel,
+                    CancelRequest::Interrupt | CancelRequest::AlreadyCancelling
+                ) {
+                    match cancel_job(handle) {
+                        Ok(pb::CancelDisposition::TooLate) => {
+                            inner.borrow_mut().activity.mark_cancel_too_late(handle);
+                        }
+                        Ok(_) => {}
+                        Err(error) => inner.borrow_mut().diagnostic = Some(error),
+                    }
+                }
+            }
+        }
+        if let Submission::Accepted(handle) = submission {
+            let scheduled_inner = inner.clone();
+            let scheduled_repaint = repaint.clone();
+            spawn_local(async move {
+                let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
+                let dispatch = DispatchPermit {
+                    inner: scheduled_inner.clone(),
+                    handle,
+                }
+                .await;
+                if !dispatch {
+                    scheduled_repaint.request_repaint();
+                    return;
+                }
+                scheduled_repaint.request_repaint();
+                ACTIVE_LEDGER_JOBS.with(|active| {
+                    active
+                        .borrow_mut()
+                        .push((handle, operation.activity().lane));
+                });
+                let result = work.await;
+                ACTIVE_LEDGER_JOBS.with(|active| {
+                    active.borrow_mut().retain(|(active, _)| *active != handle);
+                });
+                let runtime_info = js_runtime_info();
+                let runtime_missing = runtime_info.is_null() || runtime_info.is_undefined();
+                if result.is_err() && runtime_missing {
+                    scheduled_inner.borrow_mut().activity.runtime_lost(epoch);
+                } else {
+                    let outcome = match result {
+                        Ok(()) => Outcome::Succeeded,
+                        Err(BridgeError::Call(CallError::Cancelled { .. })) => Outcome::Cancelled,
+                        Err(BridgeError::Call(CallError::Stale { .. })) => Outcome::Stale,
+                        Err(error) => Outcome::Failed(JobError::Bridge(error)),
+                    };
+                    scheduled_inner
+                        .borrow_mut()
+                        .activity
+                        .complete(handle, outcome);
+                }
+                scheduled_repaint.request_repaint();
+            });
+        }
+        submission
     }
 
     fn jsval_to_string(v: JsValue) -> String {
@@ -844,17 +1005,6 @@ mod web {
         })
     }
 
-    pub(super) fn seisbench_progress() -> Option<SeisbenchProgress> {
-        let fraction = js_seisbench_progress_fraction();
-        if !(0.0..=1.0).contains(&fraction) {
-            return None;
-        }
-        Some(SeisbenchProgress {
-            fraction,
-            label: js_seisbench_progress_label(),
-        })
-    }
-
     fn js_bytes(v: JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
         use wasm_bindgen::JsCast;
 
@@ -863,18 +1013,40 @@ mod web {
             .map(|arr| arr.to_vec())
     }
 
-    fn picker_result<T>(
+    fn browser_manifest(
         result: Result<JsValue, JsValue>,
         field: &'static str,
         action: &'static str,
-        decode: impl FnOnce(&[u8], &'static str) -> Result<T, CallError>,
-    ) -> Result<Option<T>, BridgeError> {
+    ) -> Result<BrowserFileManifest, BridgeError> {
         let value = result.map_err(|error| BridgeError::browser(action, jsval_to_string(error)))?;
         let bytes = js_bytes(value, field)?;
-        if bytes.is_empty() {
-            return Ok(None);
+        proto::decode_message(&bytes, field).map_err(Into::into)
+    }
+
+    fn manifest_texts(manifest: BrowserFileManifest) -> Result<Vec<String>, BridgeError> {
+        if manifest.cancelled {
+            return Ok(Vec::new());
         }
-        decode(&bytes, field).map(Some).map_err(Into::into)
+        if manifest.files.is_empty() && !manifest.failures.is_empty() {
+            return Err(BridgeError::browser(
+                "reading selected files",
+                manifest
+                    .failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.name, failure.detail))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
+        manifest
+            .files
+            .into_iter()
+            .map(|file| {
+                String::from_utf8(file.content).map_err(|error| {
+                    BridgeError::browser("decoding a selected text file", error.to_string())
+                })
+            })
+            .collect()
     }
 
     async fn download_bytes(
@@ -968,10 +1140,12 @@ mod web {
     impl pb::BridgeTransport for WorkerTransport {
         async fn unary(
             &self,
+            operation: pb::Operation,
             method: &'static str,
             request: Vec<u8>,
         ) -> Result<Vec<u8>, TransportError> {
-            let obj = js_call(method, request, Vec::new())
+            let job = require_registered_job(operation, method)?;
+            let obj = js_call(method, request, Vec::new(), job.id().get())
                 .await
                 .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
             object_uint8(&obj, "result").map_err(|e| TransportError::new(method, e.to_string()))
@@ -979,12 +1153,14 @@ mod web {
 
         async fn unary_with_buffer(
             &self,
+            operation: pb::Operation,
             method: &'static str,
             request: Vec<u8>,
         ) -> Result<(Vec<u8>, Vec<f32>), TransportError> {
+            let job = require_registered_job(operation, method)?;
             let marshal = |e: MarshalError| TransportError::new(method, e.to_string());
             if !BRIDGE_TRANSPORT_PERF_LOG {
-                let obj = js_call(method, request, Vec::new())
+                let obj = js_call(method, request, Vec::new(), job.id().get())
                     .await
                     .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
                 return Ok((
@@ -994,7 +1170,7 @@ mod web {
             }
             let t0 = js_sys::Date::now();
             let request_bytes = request.len();
-            let obj = js_call(method, request, Vec::new())
+            let obj = js_call(method, request, Vec::new(), job.id().get())
                 .await
                 .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
             let js_done = js_sys::Date::now();
@@ -1018,6 +1194,12 @@ mod web {
 
     fn client() -> pb::BridgeServiceClient<WorkerTransport> {
         pb::BridgeServiceClient::new(WorkerTransport)
+    }
+
+    fn marker_budget() -> pb::MarkerBudget {
+        pb::MarkerBudget {
+            max_markers: crate::marker_store::MarkerBudget::standard().get(),
+        }
     }
 
     thread_local! {
@@ -1054,9 +1236,11 @@ mod web {
             repaint: Repaint,
             params: SeedlinkParams,
             started_at: f64,
+            stream: StreamId,
+            session: SessionEpoch,
         ) -> Result<Self, SeedlinkError> {
             let conn = seedlink_connection(&params)?;
-            let first_batch = Rc::new(Cell::new(true));
+            let next_seq = Rc::new(Cell::new(0_u64));
             let retain_s = if params.retain_s > 0.0 {
                 params.retain_s
             } else {
@@ -1074,11 +1258,13 @@ mod web {
                 repaint.clone(),
                 conn.source.clone(),
                 started_at,
-                first_batch,
+                stream,
+                session,
+                next_seq,
                 retain_s,
             );
-            let on_error = seedlink_on_error(inner.clone(), repaint.clone());
-            let on_close = seedlink_on_close(inner, repaint, conn.source);
+            let on_error = seedlink_on_error(inner.clone(), repaint.clone(), stream, session);
+            let on_close = seedlink_on_close(inner, repaint, conn.source, stream, session);
 
             conn.ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
             conn.ws
@@ -1155,7 +1341,6 @@ mod web {
                 }
             }
             set_snuffling_text(&inner, format!("SeedLink connected: {source}"), false);
-            inner.borrow_mut().status = Status::Ready;
             repaint.request_repaint();
         }) as Box<dyn FnMut(_)>)
     }
@@ -1165,7 +1350,9 @@ mod web {
         repaint: Repaint,
         source: String,
         started_at: f64,
-        first_batch: Rc<Cell<bool>>,
+        stream: StreamId,
+        session: SessionEpoch,
+        next_seq: Rc<Cell<u64>>,
         retain_s: f64,
     ) -> Closure<dyn FnMut(web_sys::MessageEvent)> {
         let buffer = Rc::new(RefCell::new(Vec::new()));
@@ -1179,15 +1366,34 @@ mod web {
                 buf.extend_from_slice(&bytes);
                 drain_seedlink_records(&mut buf)
             };
+            let records = match records {
+                Ok(records) => records,
+                Err(error) => {
+                    if !close_live_ingest(&inner, stream, session) {
+                        return;
+                    }
+                    set_bridge_error(&inner, SeedlinkError::from(error).into());
+                    repaint.request_repaint();
+                    spawn_local(async {
+                        LIVE_SEEDLINK.with(|slot| {
+                            slot.borrow_mut().take();
+                        });
+                    });
+                    return;
+                }
+            };
             if !records.is_empty() {
-                let reset = first_batch.replace(false);
+                let seq = next_seq.get();
+                next_seq.set(seq.wrapping_add(1));
                 ingest_live_mseed(
                     inner.clone(),
                     repaint.clone(),
                     source.clone(),
                     records,
                     started_at,
-                    reset,
+                    stream,
+                    session,
+                    seq,
                     retain_s,
                 );
             }
@@ -1197,8 +1403,13 @@ mod web {
     fn seedlink_on_error(
         inner: Rc<RefCell<Inner>>,
         repaint: Repaint,
+        stream: StreamId,
+        session: SessionEpoch,
     ) -> Closure<dyn FnMut(web_sys::ErrorEvent)> {
         Closure::wrap(Box::new(move |event: web_sys::ErrorEvent| {
+            if !close_live_ingest(&inner, stream, session) {
+                return;
+            }
             let msg = event.message();
             set_bridge_error(
                 &inner,
@@ -1212,6 +1423,11 @@ mod web {
                 .into(),
             );
             repaint.request_repaint();
+            spawn_local(async {
+                LIVE_SEEDLINK.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            });
         }) as Box<dyn FnMut(_)>)
     }
 
@@ -1219,16 +1435,20 @@ mod web {
         inner: Rc<RefCell<Inner>>,
         repaint: Repaint,
         source: String,
+        stream: StreamId,
+        session: SessionEpoch,
     ) -> Closure<dyn FnMut(web_sys::Event)> {
         Closure::wrap(Box::new(move |_event: web_sys::Event| {
-            inner.borrow_mut().live_seedlink_started_at = None;
-            set_snuffling_text(&inner, format!("SeedLink disconnected: {source}"), false);
-            repaint.request_repaint();
-            spawn_local(async {
-                LIVE_SEEDLINK.with(|slot| {
-                    slot.borrow_mut().take();
+            if close_live_ingest(&inner, stream, session) {
+                inner.borrow_mut().live_seedlink_started_at = None;
+                set_snuffling_text(&inner, format!("SeedLink disconnected: {source}"), false);
+                spawn_local(async {
+                    LIVE_SEEDLINK.with(|slot| {
+                        slot.borrow_mut().take();
+                    });
                 });
-            });
+            }
+            repaint.request_repaint();
         }) as Box<dyn FnMut(_)>)
     }
 
@@ -1244,7 +1464,62 @@ mod web {
     }
 
     fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: BridgeError) {
-        inner.borrow_mut().status = Status::Error(error);
+        inner.borrow_mut().diagnostic = Some(error);
+    }
+
+    fn live_ingest_matches(
+        state: &LiveIngestState,
+        stream: StreamId,
+        session: SessionEpoch,
+    ) -> bool {
+        match state {
+            LiveIngestState::Opening {
+                stream: current,
+                session: current_session,
+            }
+            | LiveIngestState::ResetInFlight {
+                stream: current,
+                session: current_session,
+            }
+            | LiveIngestState::Streaming {
+                stream: current,
+                session: current_session,
+                ..
+            }
+            | LiveIngestState::Lagged {
+                stream: current,
+                session: current_session,
+                ..
+            } => *current == stream && *current_session == session,
+            LiveIngestState::Closed => false,
+        }
+    }
+
+    fn close_live_ingest(
+        inner: &Rc<RefCell<Inner>>,
+        stream: StreamId,
+        session: SessionEpoch,
+    ) -> bool {
+        let mut state = inner.borrow_mut();
+        if !live_ingest_matches(&state.live_ingest, stream, session) {
+            return false;
+        }
+        state.live_ingest = LiveIngestState::Closed;
+        state.ingest_mailbox = LiveIngestMailbox::default();
+        true
+    }
+
+    fn retire_live_source(inner: &Rc<RefCell<Inner>>) -> SessionEpoch {
+        LIVE_SEEDLINK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        let mut state = inner.borrow_mut();
+        state.session_epoch = state.session_epoch.wrapping_add(1).max(1);
+        state.live_ingest = LiveIngestState::Closed;
+        state.ingest_mailbox = LiveIngestMailbox::default();
+        state.ingest_job = None;
+        state.live_seedlink_started_at = None;
+        SessionEpoch(state.session_epoch)
     }
 
     fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
@@ -1258,6 +1533,9 @@ mod web {
                 scene: None,
                 origin: String::new(),
                 event_state: None,
+                markers_dropped: 0,
+                marker_budget: crate::marker_store::MarkerBudget::standard().get(),
+                nslc_table: Vec::new(),
             },
         );
     }
@@ -1265,7 +1543,7 @@ mod web {
     fn clear_map_state(inner: &mut Inner) {
         inner.map = None;
         inner.map_request = None;
-        inner.map_in_flight = false;
+        inner.map_job = None;
         inner.map_request_gen = inner.map_request_gen.wrapping_add(1);
     }
 
@@ -1313,34 +1591,112 @@ mod web {
         }
     }
 
-    fn install_dataset_result(inner: &mut Inner, result: proto::DatasetResult) {
-        match result {
-            proto::DatasetResult::Waveform(result) => install_waveform_result(inner, result),
-            proto::DatasetResult::Bundle(result) => install_bundle_result(inner, result),
-        }
+    fn update_active_progress(inner: &Rc<RefCell<Inner>>, done: u64, total: u64, phase: String) {
+        ACTIVE_LEDGER_JOBS.with(|active| {
+            let job = active
+                .borrow()
+                .iter()
+                .find(|(_, lane)| *lane == crate::activity::Lane::Job)
+                .map(|(handle, _)| *handle);
+            if let Some(job) = job {
+                inner.borrow_mut().activity.update_progress(
+                    job,
+                    Progress::Count {
+                        done,
+                        total: Some(total),
+                        phase: phase.into(),
+                    },
+                );
+            }
+        });
     }
 
-    fn install_reload_batch(inner: &mut Inner, batch: ReloadBatchResult) -> Option<BridgeError> {
-        if let Some(outcome) = batch.outcome {
-            match outcome {
-                pb::reload_batch_result::Outcome::Waveform(result) => {
-                    install_waveform_result(inner, result);
-                }
-                pb::reload_batch_result::Outcome::Bundle(result) => {
-                    install_bundle_result(inner, result);
-                }
-            }
+    fn acknowledge_source(file: &pb::BrowserFile) {
+        if file.handle_id.is_empty() {
+            return;
         }
+        js_acknowledge_sources(
+            BrowserSourceAckList {
+                sources: vec![BrowserSourceAck {
+                    handle_id: file.handle_id.clone(),
+                    last_modified: file.last_modified,
+                    bundle: file.bundle,
+                }],
+            }
+            .encode_to_vec(),
+        );
+    }
 
-        if batch.failures.is_empty() {
-            return None;
+    async fn apply_file_manifest(
+        inner: Rc<RefCell<Inner>>,
+        manifest: BrowserFileManifest,
+        replace_sources: bool,
+    ) -> Result<(), BridgeError> {
+        if manifest.cancelled {
+            return Ok(());
         }
-        Some(
-            ReloadError {
-                failures: batch.failures.into_iter().map(Into::into).collect(),
+        let total = u64::try_from(manifest.files.len()).unwrap_or(u64::MAX);
+        let mut committed = 0_u64;
+        let mut failures: Vec<String> = manifest
+            .failures
+            .iter()
+            .map(|failure| format!("{}: {}", failure.name, failure.detail))
+            .collect();
+        for (index, file) in manifest.files.into_iter().enumerate() {
+            update_active_progress(
+                &inner,
+                u64::try_from(index).unwrap_or(u64::MAX),
+                total,
+                format!("Loading {}", file.name),
+            );
+            let loaded = if file.bundle {
+                retire_live_source(&inner);
+                client()
+                    .load_bundle(pb::LoadBundleRequest {
+                        url: String::new(),
+                        sha256: String::new(),
+                        content: file.content.clone(),
+                        name: file.name.clone(),
+                    })
+                    .await
+                    .map(|bundle| {
+                        install_bundle_result(&mut inner.borrow_mut(), bundle);
+                        true
+                    })
+            } else {
+                client()
+                    .load_bytes(pb::LoadBytesRequest {
+                        name: file.name.clone(),
+                        fmt: "detect".to_owned(),
+                        append: true,
+                        content: file.content.clone(),
+                        source_id: file.handle_id.clone(),
+                        replace_source: replace_sources && !file.handle_id.is_empty(),
+                    })
+                    .await
+                    .map(|result| {
+                        let loaded = result.loaded;
+                        install_waveform_result(&mut inner.borrow_mut(), result);
+                        loaded
+                    })
+            };
+            match loaded {
+                Ok(true) => {
+                    committed += 1;
+                    acknowledge_source(&file);
+                }
+                Ok(false) => {}
+                Err(error) => failures.push(format!("{}: {error}", file.name)),
             }
-            .into(),
-        )
+        }
+        update_active_progress(&inner, total, total, "Finishing file flow".to_owned());
+        if failures.is_empty() {
+            inner.borrow_mut().diagnostic = None;
+            return Ok(());
+        }
+        let error = BridgeError::browser("loading selected files", failures.join("; "));
+        inner.borrow_mut().diagnostic = Some(error.clone());
+        if committed == 0 { Err(error) } else { Ok(()) }
     }
 
     fn seedlink_proxy_url(host: &str, port: u16) -> String {
@@ -1382,45 +1738,320 @@ mod web {
 
     use crate::seedlink::drain_records as drain_seedlink_records;
 
+    const INGEST_MAILBOX_BYTES: usize = 8 * 1024 * 1024;
+    const INGEST_MAILBOX_RESIDENCE_S: f64 = 10.0;
+
+    fn note_dropped_batch(mailbox: &mut LiveIngestMailbox, batch: LiveIngestBatch) {
+        mailbox.bytes = mailbox.bytes.saturating_sub(batch.content.len());
+        mailbox.dropped_seq_first.get_or_insert(batch.seq);
+        mailbox.dropped_seq_last = Some(batch.seq);
+        mailbox.dropped_bytes = mailbox
+            .dropped_bytes
+            .saturating_add(u64::try_from(batch.content.len()).unwrap_or(u64::MAX));
+    }
+
+    fn enqueue_live_batch(
+        inner: &Rc<RefCell<Inner>>,
+        stream: StreamId,
+        session: SessionEpoch,
+        batch: LiveIngestBatch,
+    ) {
+        let now_s = js_sys::Date::now() / 1000.0;
+        let batch_seq = batch.seq;
+        let dropped = {
+            let mut state = inner.borrow_mut();
+            let expected = state.ingest_mailbox.batches.back().map_or_else(
+                || match state.live_ingest {
+                    LiveIngestState::ResetInFlight { .. } => 1,
+                    LiveIngestState::Streaming { next_seq, .. }
+                    | LiveIngestState::Lagged { next_seq, .. } => next_seq,
+                    LiveIngestState::Opening { .. } | LiveIngestState::Closed => 0,
+                },
+                |queued| queued.seq.wrapping_add(1),
+            );
+            if batch_seq != expected {
+                state.live_ingest = LiveIngestState::Closed;
+                return;
+            }
+            state.ingest_mailbox.bytes = state
+                .ingest_mailbox
+                .bytes
+                .saturating_add(batch.content.len());
+            state.ingest_mailbox.batches.push_back(batch);
+            while state
+                .ingest_mailbox
+                .batches
+                .front()
+                .is_some_and(|oldest| now_s - oldest.received_s > INGEST_MAILBOX_RESIDENCE_S)
+                || state.ingest_mailbox.bytes > INGEST_MAILBOX_BYTES
+            {
+                let Some(dropped) = state.ingest_mailbox.batches.pop_front() else {
+                    break;
+                };
+                note_dropped_batch(&mut state.ingest_mailbox, dropped);
+            }
+            let dropped = state.ingest_mailbox.dropped_bytes;
+            if dropped > 0 {
+                let next_seq = state
+                    .ingest_mailbox
+                    .batches
+                    .back()
+                    .map_or(batch_seq.wrapping_add(1), |queued| {
+                        queued.seq.wrapping_add(1)
+                    });
+                state.live_ingest = LiveIngestState::Lagged {
+                    stream,
+                    session,
+                    next_seq,
+                    dropped_bytes: dropped,
+                };
+            }
+            dropped
+        };
+        if dropped > 0 {
+            set_snuffling_text(
+                inner,
+                format!("SeedLink lagged: dropped {dropped} buffered bytes"),
+                false,
+            );
+        }
+    }
+
+    fn take_live_mailbox(
+        state: &mut Inner,
+        stream: StreamId,
+        session: SessionEpoch,
+        start_time: f64,
+        retain_s: f64,
+    ) -> Option<IngestMiniSeedRequest> {
+        let mut mailbox = std::mem::take(&mut state.ingest_mailbox);
+        let Some(first) = mailbox.batches.front() else {
+            state.ingest_mailbox = mailbox;
+            return None;
+        };
+        let Some(last) = mailbox.batches.back() else {
+            state.ingest_mailbox = mailbox;
+            return None;
+        };
+        let source = first.source.clone();
+        let batch_seq_first = first.seq;
+        let batch_seq_last = last.seq;
+        let mut content = Vec::with_capacity(mailbox.bytes);
+        for batch in mailbox.batches.drain(..) {
+            content.extend_from_slice(&batch.content);
+        }
+        Some(IngestMiniSeedRequest {
+            source,
+            content,
+            start_time,
+            reset: false,
+            retain_seconds: retain_s,
+            stream_id: stream.0,
+            session_epoch: session.0,
+            batch_seq_first,
+            batch_seq_last,
+            dropped_seq_first: mailbox.dropped_seq_first.unwrap_or(0),
+            dropped_seq_last: mailbox.dropped_seq_last.unwrap_or(0),
+            dropped_bytes: mailbox.dropped_bytes,
+        })
+    }
+
     fn ingest_live_mseed(
         inner: Rc<RefCell<Inner>>,
         repaint: Repaint,
         source: String,
         content: Vec<u8>,
         start_time: f64,
-        reset: bool,
+        stream: StreamId,
+        session: SessionEpoch,
+        seq: u64,
         retain_s: f64,
     ) {
-        spawn_local(async move {
-            let parsed = client()
-                .ingest_mini_seed(IngestMiniSeedRequest {
+        if seq == 0 && content.len() > INGEST_MAILBOX_BYTES {
+            set_bridge_error(
+                &inner,
+                SeedlinkError::from(crate::seedlink::FrameError::Oversized {
+                    announced: content.len(),
+                    limit: INGEST_MAILBOX_BYTES,
+                })
+                .into(),
+            );
+            close_live_ingest(&inner, stream, session);
+            spawn_local(async {
+                LIVE_SEEDLINK.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            });
+            repaint.request_repaint();
+            return;
+        }
+        let enqueue = {
+            let mut state = inner.borrow_mut();
+            if !live_ingest_matches(&state.live_ingest, stream, session) {
+                return;
+            }
+            if state.ingest_job.is_some() {
+                true
+            } else {
+                let expected = match state.live_ingest {
+                    LiveIngestState::Opening { .. } => 0,
+                    LiveIngestState::Streaming { next_seq, .. }
+                    | LiveIngestState::Lagged { next_seq, .. } => next_seq,
+                    LiveIngestState::ResetInFlight { .. } | LiveIngestState::Closed => return,
+                };
+                if seq != expected {
+                    state.live_ingest = LiveIngestState::Closed;
+                    return;
+                }
+                if seq == 0 {
+                    state.live_ingest = LiveIngestState::ResetInFlight { stream, session };
+                }
+                false
+            }
+        };
+        if enqueue {
+            enqueue_live_batch(
+                &inner,
+                stream,
+                session,
+                LiveIngestBatch {
                     source,
                     content,
-                    start_time,
-                    reset,
-                    retain_seconds: retain_s,
-                })
-                .await;
-            {
-                let mut i = inner.borrow_mut();
-                match parsed {
-                    Ok(scene) => {
-                        i.scene = Some(scene);
-                        i.scene_gen += 1;
-                        i.status = Status::Ready;
-                        clear_view(&mut i);
+                    seq,
+                    received_s: js_sys::Date::now() / 1000.0,
+                },
+            );
+            return;
+        }
+
+        let request = IngestMiniSeedRequest {
+            source,
+            content,
+            start_time,
+            reset: seq == 0,
+            retain_seconds: retain_s,
+            stream_id: stream.0,
+            session_epoch: session.0,
+            batch_seq_first: seq,
+            batch_seq_last: seq,
+            dropped_seq_first: 0,
+            dropped_seq_last: 0,
+            dropped_bytes: 0,
+        };
+        dispatch_live_ingest(
+            inner, repaint, request, stream, session, start_time, retain_s,
+        );
+    }
+
+    fn dispatch_live_ingest(
+        inner: Rc<RefCell<Inner>>,
+        repaint: Repaint,
+        request: IngestMiniSeedRequest,
+        stream: StreamId,
+        session: SessionEpoch,
+        start_time: f64,
+        retain_s: f64,
+    ) {
+        let expected_first = request.batch_seq_first;
+        let expected_last = request.batch_seq_last;
+
+        let work_inner = inner.clone();
+        let work_repaint = repaint.clone();
+        let job_slot = Rc::new(Cell::new(None));
+        let work_job_slot = job_slot.clone();
+        let submission = submit_job(
+            inner.clone(),
+            repaint,
+            Operation::IngestMiniSeed,
+            Some(request.source.clone()),
+            Vec::new(),
+            async move {
+                let parsed = client().ingest_mini_seed(request).await;
+                let failed = parsed.is_err();
+                let mut acknowledgement_error = None;
+                let pending = {
+                    let mut state = work_inner.borrow_mut();
+                    if state.ingest_job == work_job_slot.get() {
+                        state.ingest_job = None;
                     }
-                    Err(e) => i.status = Status::Error(e.into()),
+                    if !live_ingest_matches(&state.live_ingest, stream, session) {
+                        return Ok(());
+                    }
+                    if let Ok(ack) = &parsed {
+                        if ack.stream_id != stream.0
+                            || ack.session_epoch != session.0
+                            || ack.ack_seq_first != expected_first
+                            || ack.ack_seq_last != expected_last
+                        {
+                            state.live_ingest = LiveIngestState::Closed;
+                            acknowledgement_error = Some(BridgeError::browser(
+                                "acknowledging SeedLink data",
+                                "stale or out-of-order ingest acknowledgement",
+                            ));
+                        } else {
+                            state.scene = ack.scene.clone();
+                            state.scene_gen += 1;
+                            clear_view(&mut state);
+                            if let LiveIngestState::Lagged { dropped_bytes, .. } = state.live_ingest
+                            {
+                                log::warn!(
+                                    "SeedLink resumed after acknowledging a gap of {dropped_bytes} bytes"
+                                );
+                            }
+                            state.live_ingest = LiveIngestState::Streaming {
+                                stream,
+                                session,
+                                next_seq: expected_last.wrapping_add(1),
+                            };
+                        }
+                    } else {
+                        state.live_ingest = LiveIngestState::Closed;
+                    }
+                    if acknowledgement_error.is_none() {
+                        take_live_mailbox(&mut state, stream, session, start_time, retain_s)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(pending) = pending {
+                    dispatch_live_ingest(
+                        work_inner,
+                        work_repaint,
+                        pending,
+                        stream,
+                        session,
+                        start_time,
+                        retain_s,
+                    );
                 }
-            }
-            repaint.request_repaint();
-        });
+                if let Some(error) = acknowledgement_error {
+                    spawn_local(async {
+                        LIVE_SEEDLINK.with(|slot| {
+                            slot.borrow_mut().take();
+                        });
+                    });
+                    return Err(error);
+                }
+                if failed {
+                    spawn_local(async {
+                        LIVE_SEEDLINK.with(|slot| {
+                            slot.borrow_mut().take();
+                        });
+                    });
+                }
+                parsed.map(|_| ()).map_err(BridgeError::from)
+            },
+        );
+        if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
+            job_slot.set(Some(handle));
+            inner.borrow_mut().ingest_job = Some(handle);
+        }
     }
 
     fn invalidate_view_request(i: &mut Inner) {
         i.applied = None;
         i.desired = None;
-        i.view_in_flight = None;
+        i.view_job = None;
         i.view_request_gen = i.view_request_gen.wrapping_add(1);
     }
 
@@ -1585,42 +2216,64 @@ mod web {
     }
 
     impl Bridge {
-        /// Replaces the current pile with the bundled synthetic example.
-        pub fn load_example(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Loading example…".into());
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().make_example().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            clear_event_state(&mut i);
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
+        fn warm_deferred(&self) -> Option<Submission> {
+            {
+                let mut state = self.inner.borrow_mut();
+                if state.warm_requested {
+                    return None;
                 }
-                repaint.request_repaint();
-            });
+                state.warm_requested = true;
+            }
+            let inner = self.inner.clone();
+            Some(submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::WarmDeferred,
+                None,
+                Vec::new(),
+                async move {
+                    client()
+                        .warm_deferred()
+                        .await
+                        .map(|_| ())
+                        .map_err(BridgeError::from)
+                },
+            ))
+        }
+
+        /// Replaces the current pile with the bundled synthetic example.
+        pub fn load_example(&self) -> Submission {
+            retire_live_source(&self.inner);
+            let inner = self.inner.clone();
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::MakeExample,
+                None,
+                Vec::new(),
+                async move {
+                    let parsed = client().make_example().await;
+                    let scene = parsed.map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    clear_event_state(&mut i);
+                    i.scene = Some(scene);
+                    i.scene_gen += 1;
+                    clear_view(&mut i);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Empties the pile and the event context (`File ▸ Close all`), leaving
         /// the blank viewer Qt starts with when given no arguments.
-        pub fn empty_scene(&self) {
+        pub fn empty_scene(&self) -> Submission {
             let repaint = self.repaint.clone();
             js_clear_open_sources();
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
+            retire_live_source(&self.inner);
             {
                 let mut i = self.inner.borrow_mut();
-                i.status = Status::Loading("Closing…".into());
                 i.diagnostic = None;
                 i.snuffling = None;
                 clear_event_state(&mut i);
@@ -1629,88 +2282,90 @@ mod web {
                 i.live_seedlink_started_at = None;
             }
             let inner = self.inner.clone();
-            spawn_local(async move {
-                let parsed = client().empty_scene().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                repaint,
+                Operation::EmptyScene,
+                None,
+                Vec::new(),
+                async move {
+                    let scene = client().empty_scene().await.map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    i.scene = Some(scene);
+                    i.scene_gen += 1;
+                    clear_view(&mut i);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Appends waveform bytes supplied by the frontend to the pile —
         /// snuffler's `open_waveforms` appends too (`pile_viewer.py:1651`); the
         /// boot example is dropped first by the bridge's example-pile rule.
-        pub fn load_file(&self, name: String, data: Vec<u8>, fmt: String) {
+        pub fn load_file(&self, name: String, data: Vec<u8>, fmt: String) -> Submission {
             // A dropped file may be a whole dataset. Deciding on the bytes rather
             // than the extension means a bundle behaves the same however it arrives
             // — dropped, picked, or fetched from the Examples menu.
             if data.starts_with(ZIP_MAGIC) {
-                self.load_bundle_bytes(name, data);
-                return;
+                return self.load_bundle_bytes(name, data);
             }
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Loading {name}…"));
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client()
-                    .load_bytes(pb::LoadBytesRequest {
-                        name,
-                        fmt,
-                        append: true,
-                        content: data,
-                        source_id: String::new(),
-                        replace_source: false,
-                    })
-                    .await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(result) => {
-                            install_waveform_result(&mut i, result);
-                            i.status = Status::Ready;
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let detail = Some(name.clone());
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadBytes,
+                detail,
+                Vec::new(),
+                async move {
+                    let result = client()
+                        .load_bytes(pb::LoadBytesRequest {
+                            name,
+                            fmt,
+                            append: true,
+                            content: data,
+                            source_id: String::new(),
+                            replace_source: false,
+                        })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    install_waveform_result(&mut work_inner.borrow_mut(), result);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Replaces the current pile with a waveform fetched from a URL.
-        pub fn load_url(&self, url: String, fmt: String) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Loading {url}…"));
+        pub fn load_url(&self, url: String, fmt: String) -> Submission {
+            retire_live_source(&self.inner);
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().load_url(pb::LoadUrlRequest { url, fmt }).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            js_clear_open_sources();
-                            clear_event_state(&mut i);
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let detail = Some(url.clone());
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadUrl,
+                detail,
+                Vec::new(),
+                async move {
+                    let scene = client()
+                        .load_url(pb::LoadUrlRequest { url, fmt })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    js_clear_open_sources();
+                    let mut i = work_inner.borrow_mut();
+                    clear_event_state(&mut i);
+                    i.scene = Some(scene);
+                    i.scene_gen += 1;
+                    clear_view(&mut i);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Fetch the example index, once.
@@ -1719,25 +2374,45 @@ mod web {
         /// once: a *failed* fetch is remembered too, or a datacenter that is down
         /// would be retried at the frame rate. `force` is the user asking again,
         /// from the retry the menu offers in its place.
-        pub fn list_examples(&self, force: bool) {
+        pub fn list_examples(&self, force: bool) -> Option<Submission> {
             {
-                let mut i = self.inner.borrow_mut();
-                if i.examples_in_flight || (i.examples.is_some() && !force) {
-                    return;
+                let i = self.inner.borrow();
+                if let Some(job) = i.examples_job {
+                    return Some(Submission::Joined(job));
                 }
-                i.examples_in_flight = true;
+                if i.examples.is_some() && !force {
+                    return None;
+                }
             }
-            let repaint = self.repaint.clone();
             let inner = self.inner.clone();
-            spawn_local(async move {
-                let parsed = client().list_examples().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    i.examples_in_flight = false;
-                    i.examples = Some(parsed.map(|list| list.examples).map_err(BridgeError::from));
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ListExamples,
+                None,
+                Vec::new(),
+                async move {
+                    let parsed = client().list_examples().await;
+                    let mut i = work_inner.borrow_mut();
+                    i.examples_job = None;
+                    match parsed {
+                        Ok(list) => {
+                            i.examples = Some(Ok(list.examples));
+                            Ok(())
+                        }
+                        Err(error) => {
+                            let error = BridgeError::from(error);
+                            i.examples = Some(Err(error.clone()));
+                            Err(error)
+                        }
+                    }
+                },
+            );
+            if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
+                self.inner.borrow_mut().examples_job = Some(handle);
+            }
+            Some(submission)
         }
 
         /// Replaces the current pile with a whole dataset fetched as one archive:
@@ -1746,14 +2421,14 @@ mod web {
         /// The station and event results come back with the scene and are applied
         /// through the same path a separate metadata load would use, so the event
         /// markers appear exactly as if the catalogue had been opened by hand.
-        pub fn load_bundle(&self, url: String, sha256: String, title: String) {
+        pub fn load_bundle(&self, url: String, sha256: String, title: String) -> Submission {
             let request = pb::LoadBundleRequest {
                 url,
                 sha256,
                 content: Vec::new(),
                 name: title.clone(),
             };
-            self.dispatch_bundle(request, title);
+            self.dispatch_bundle(request, title)
         }
 
         /// Load an example by slug, fetching the index first if it has not been
@@ -1763,289 +2438,274 @@ mod web {
         /// An unknown slug is an error the user has to see — they followed a link
         /// that promised data — so it lands in the status line rather than only in
         /// the console.
-        pub fn open_example(&self, slug: String) {
+        pub fn open_example(&self, slug: String) -> Submission {
             let bridge = self.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Looking up {slug}…"));
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                let known = bridge.inner.borrow().examples.clone();
-                let listed = match known {
-                    Some(Ok(examples)) => Ok(examples),
-                    _ => client().list_examples().await.map(|list| list.examples),
-                };
-                match listed {
-                    Ok(examples) => {
-                        let found = examples.iter().find(|e| e.slug == slug).cloned();
-                        bridge.inner.borrow_mut().examples = Some(Ok(examples));
-                        match found {
-                            Some(example) => {
-                                bridge.load_bundle(example.url, example.sha256, example.title);
-                            }
-                            None => {
-                                bridge.inner.borrow_mut().status =
-                                    Status::Error(BridgeError::UnknownExample { slug });
-                            }
-                        }
+            let inner = self.inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ListExamples,
+                Some(slug.clone()),
+                slug.as_bytes().to_vec(),
+                async move {
+                    let known = bridge.inner.borrow().examples.clone();
+                    let listed = match known {
+                        Some(Ok(examples)) => Ok(examples),
+                        _ => client().list_examples().await.map(|list| list.examples),
                     }
-                    Err(error) => bridge.inner.borrow_mut().status = Status::Error(error.into()),
-                }
-                repaint.request_repaint();
-            });
+                    .map_err(BridgeError::from)?;
+                    let found = listed.iter().find(|example| example.slug == slug).cloned();
+                    bridge.inner.borrow_mut().examples = Some(Ok(listed));
+                    let example = found.ok_or_else(|| BridgeError::UnknownExample { slug })?;
+                    let _submission =
+                        bridge.load_bundle(example.url, example.sha256, example.title);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// The same load for an archive that is already in hand — dropped on the
         /// window, or picked from disk — rather than fetched.
-        pub(super) fn load_bundle_bytes(&self, name: String, data: Vec<u8>) {
+        pub(super) fn load_bundle_bytes(&self, name: String, data: Vec<u8>) -> Submission {
             let request = pb::LoadBundleRequest {
                 url: String::new(),
                 sha256: String::new(),
                 content: data,
                 name: name.clone(),
             };
-            self.dispatch_bundle(request, name);
+            self.dispatch_bundle(request, name)
         }
 
-        fn dispatch_bundle(&self, request: pb::LoadBundleRequest, label: String) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Loading {label}…"));
+        fn dispatch_bundle(&self, request: pb::LoadBundleRequest, label: String) -> Submission {
+            retire_live_source(&self.inner);
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().load_bundle(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(bundle) => {
-                            js_clear_open_sources();
-                            install_bundle_result(&mut i, bundle);
-                            i.status = Status::Ready;
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadBundle,
+                Some(label),
+                Vec::new(),
+                async move {
+                    let bundle = client()
+                        .load_bundle(request)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    js_clear_open_sources();
+                    install_bundle_result(&mut work_inner.borrow_mut(), bundle);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Render a real pyrocko/matplotlib figure (amplitude spectrum, cake, …)
         /// in Pyodide and store the resulting PNG for the matching figure window.
         /// Keyed by `req.kind`, so several figure windows can be open at once.
-        pub fn render_figure(&self, req: FigureRequest) {
-            let repaint = self.repaint.clone();
+        pub fn render_figure(&self, req: FigureRequest) -> Submission {
             let kind = req.kind.clone();
             {
                 let mut i = self.inner.borrow_mut();
-                if !matches!(i.status, Status::Ready) {
-                    return;
-                }
                 let slot = i.figures.entry(kind.clone()).or_default();
-                if slot.in_flight {
-                    return;
+                if let Some(job) = slot.job {
+                    return Submission::Joined(job);
                 }
-                slot.in_flight = true;
             }
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().render_figure(req).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    let slot = i.figures.entry(kind).or_default();
-                    slot.in_flight = false;
-                    if let Ok(fr) = parsed {
-                        slot.data = FigureData {
-                            png: fr.png,
-                            error: fr.error,
-                        };
-                        slot.generation = slot.generation.wrapping_add(1);
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let dedup_key = req.encode_to_vec();
+            let work_kind = kind.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::RenderFigure,
+                Some(kind.clone()),
+                dedup_key,
+                async move {
+                    let parsed = client().render_figure(req).await;
+                    let mut i = work_inner.borrow_mut();
+                    let slot = i.figures.entry(work_kind).or_default();
+                    slot.job = None;
+                    let fr = parsed.map_err(BridgeError::from)?;
+                    slot.data = FigureData {
+                        png: fr.png,
+                        error: fr.error,
+                    };
+                    slot.generation = slot.generation.wrapping_add(1);
+                    Ok(())
+                },
+            );
+            if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
+                self.inner.borrow_mut().figures.entry(kind).or_default().job = Some(handle);
+            }
+            submission
         }
 
         /// Run a built-in snuffling (`MinMax`, `STA/LTA`, …) and store its result.
-        pub fn run_snuffling(&self, name: String, params: SnufflingRequestParams) {
-            let repaint = self.repaint.clone();
-            let is_seisbench = name == "seisbench_picker";
-            {
-                let mut i = self.inner.borrow_mut();
-                if !matches!(i.status, Status::Ready) {
-                    return;
-                }
-                if is_seisbench {
-                    js_clear_seisbench_progress();
-                    i.seisbench_in_flight = true;
-                    i.last_seisbench_progress = None;
-                    i.next_seisbench_progress_poll_s = 0.0;
-                    i.status = Status::Loading("SeisBench picker · 0%".to_owned());
-                }
-            }
+        pub fn run_snuffling(&self, name: String, params: SnufflingRequestParams) -> Submission {
             let request = pb::NamedSnufflingRequest {
                 name,
                 params: Some(params),
             };
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().run_snuffling(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if is_seisbench {
-                        i.seisbench_in_flight = false;
-                        i.last_seisbench_progress = None;
+            let work_inner = inner.clone();
+            let dedup_key = request.encode_to_vec();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::RunSnuffling,
+                Some(request.name.clone()),
+                dedup_key,
+                async move {
+                    let parsed = client().run_snuffling(request).await;
+                    let mut i = work_inner.borrow_mut();
+                    let mut result = parsed.map_err(BridgeError::from)?;
+                    if let Some(scene) = result.scene.take() {
+                        i.scene = Some(scene);
+                        i.scene_gen += 1;
+                        clear_view(&mut i);
                     }
-                    match parsed {
-                        Ok(mut r) => {
-                            if let Some(scene) = r.scene.take() {
-                                i.scene = Some(scene);
-                                i.scene_gen += 1;
-                                clear_view(&mut i);
-                            }
-                            i.status = Status::Ready;
-                            install_snuffling_result(&mut i, r);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
+                    install_snuffling_result(&mut i, result);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Downloads waveforms from a CORS-enabled FDSN dataselect service and
         /// append them to the pile (browser fetch; pyrocko parses).
-        pub fn download_waveforms(&self, params: WaveformDownloadRequest) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Downloading waveforms…".into());
+        pub fn download_waveforms(&self, params: WaveformDownloadRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().download_waveforms(params).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::DownloadWaveforms,
+                None,
+                Vec::new(),
+                async move {
+                    let scene = client()
+                        .download_waveforms(params)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    i.scene = Some(scene);
+                    i.scene_gen += 1;
+                    clear_view(&mut i);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Computes blockwise RMS traces, replacing the previous RMS run.
-        pub fn rms_traces(&self, params: SnufflingRequestParams) {
-            let repaint = self.repaint.clone();
+        pub fn rms_traces(&self, params: SnufflingRequestParams) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().rms_traces(params).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(mut result) => {
-                            if let Some(scene) = result.scene.take() {
-                                i.scene = Some(scene);
-                                i.scene_gen += 1;
-                                clear_view(&mut i);
-                            }
-                            i.status = Status::Ready;
-                            install_snuffling_result(&mut i, result);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
+            let work_inner = inner.clone();
+            let dedup_key = params.encode_to_vec();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::RmsTraces,
+                None,
+                dedup_key,
+                async move {
+                    let mut result = client()
+                        .rms_traces(params)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    if let Some(scene) = result.scene.take() {
+                        i.scene = Some(scene);
+                        i.scene_gen += 1;
+                        clear_view(&mut i);
                     }
-                }
-                repaint.request_repaint();
-            });
+                    install_snuffling_result(&mut i, result);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Search a CORS-enabled FDSN event service; results become event markers.
         /// The largest-magnitude hit becomes the active event, so this forces a
         /// re-dispatch for the distance/azimuth sort to recompute against it.
-        pub fn catalog_search(&self, params: CatalogRequest) {
-            let repaint = self.repaint.clone();
+        pub fn catalog_search(&self, params: CatalogRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = match client().catalog_search(params).await {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: e.to_string(),
-                        markers: Vec::new(),
-                        scene: None,
-                        origin: String::new(),
-                        event_state: None,
-                    }),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        install_snuffling_result(&mut i, r);
-                    }
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::CatalogSearch,
+                None,
+                Vec::new(),
+                async move {
+                    let result = client()
+                        .catalog_search(params)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    install_snuffling_result(&mut i, result);
                     invalidate_view_request(&mut i);
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Let the user pick a custom `.nd` model file ("Add Model"); the picked
         /// name is stored for the frontend to add to the Cake Phase dropdown.
-        pub fn add_cake_model(&self) {
-            let repaint = self.repaint.clone();
+        pub fn add_cake_model(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                if let Ok(v) = js_add_cake_model().await
-                    && let Some(name) = v.as_string()
-                    && !name.is_empty()
-                {
-                    inner.borrow_mut().pending_cake_model = Some(name);
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::AddCakeModel,
+                None,
+                Vec::new(),
+                async move {
+                    let job = require_registered_job(Operation::AddCakeModel, "addCakeModel")
+                        .map_err(CallError::from)?;
+                    let value = js_add_cake_model(job.id().get()).await.map_err(|error| {
+                        BridgeError::browser("adding an earth model", jsval_to_string(error))
+                    })?;
+                    if let Some(name) = value.as_string()
+                        && !name.is_empty()
+                    {
+                        work_inner.borrow_mut().pending_cake_model = Some(name);
+                    }
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Mount a Green's-functions store by fetching its files from an HTTP base
         /// URL into the Pyodide filesystem (no directory picker) and register it as
         /// `GF Store: <id>`. Errors surface in the snuffling text window.
-        pub fn load_gf_store_url(&self, url: String) {
-            let repaint = self.repaint.clone();
-            if !matches!(self.inner.borrow().status, Status::Ready) {
-                return;
-            }
+        pub fn load_gf_store_url(&self, url: String) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match client()
-                    .load_gf_store_url(pb::StringRequest { value: url })
-                    .await
-                {
-                    Ok(label) if !label.value.is_empty() => {
-                        inner.borrow_mut().pending_cake_model = Some(label.value);
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadGfStoreUrl,
+                Some(url.clone()),
+                Vec::new(),
+                async move {
+                    let label = client()
+                        .load_gf_store_url(pb::StringRequest { value: url })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    if !label.value.is_empty() {
+                        work_inner.borrow_mut().pending_cake_model = Some(label.value);
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        let mut i = inner.borrow_mut();
-                        install_snuffling_result(
-                            &mut i,
-                            SnufflingResult {
-                                show_window: true,
-                                text: format!("Load GF store from URL failed: {e}"),
-                                markers: Vec::new(),
-                                scene: None,
-                                origin: String::new(),
-                                event_state: None,
-                            },
-                        );
-                    }
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Mount a Green's-functions store directory (`NativeFS`, via the File
@@ -2053,138 +2713,127 @@ mod web {
         /// Phase dropdown as `GF Store: <id>`. Errors (unsupported browser, not a
         /// store) surface in the snuffling text window.
         #[cfg(feature = "gf")]
-        pub fn add_gf_store(&self) {
-            let repaint = self.repaint.clone();
+        pub fn add_gf_store(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match js_add_gf_store().await {
-                    Ok(v) => {
-                        if let Some(name) = v.as_string()
-                            && !name.is_empty()
-                        {
-                            inner.borrow_mut().pending_cake_model = Some(name);
-                        }
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::MountGfStore,
+                None,
+                Vec::new(),
+                async move {
+                    let job = require_registered_job(Operation::MountGfStore, "addGfStore")
+                        .map_err(CallError::from)?;
+                    let value = js_add_gf_store(job.id().get()).await.map_err(|error| {
+                        BridgeError::browser("adding a GF store", jsval_to_string(error))
+                    })?;
+                    if let Some(name) = value.as_string()
+                        && !name.is_empty()
+                    {
+                        work_inner.borrow_mut().pending_cake_model = Some(name);
                     }
-                    Err(e) => {
-                        let mut i = inner.borrow_mut();
-                        install_snuffling_result(
-                            &mut i,
-                            SnufflingResult {
-                                show_window: true,
-                                text: format!("Add GF store failed: {}", jsval_to_string(e)),
-                                markers: Vec::new(),
-                                scene: None,
-                                origin: String::new(),
-                                event_state: None,
-                            },
-                        );
-                    }
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Execute a ':' command line (goto / hide / unhide / reduce / scaling). A
         /// goto stores a pending time the session jumps to; a visibility change swaps
         /// the scene in place (no refit) and forces the view to re-dispatch. Either
         /// way the outcome lands in `command_outcome` for the command line to act on.
-        pub fn run_command(&self, request: CommandRequest) {
-            let repaint = self.repaint.clone();
+        pub fn run_command(&self, request: CommandRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let result = match client().run_command(request).await {
-                    Ok(r) => r,
-                    Err(e) => pb::CommandResult {
-                        action: "error".into(),
-                        message: Some(e.to_string()),
-                        ..Default::default()
-                    },
-                };
-                // Scoped so the borrow ends before `request_repaint()`: `Inner` is
-                // the same `RefCell` the render loop reads through its own `Rc`, and
-                // this is an async block, so a guard still alive at the repaint — or
-                // at any `.await` a later edit puts below — is a `BorrowMutError`
-                // panic on whichever frame or bridge result lands next.
-                {
-                    let mut i = inner.borrow_mut();
-                    match result.action.as_str() {
-                        "goto" => i.pending_goto = result.t.map(|t| (t, result.tlen)),
-                        "scene" => {
-                            if let Some(scene) = result.scene {
-                                i.scene = Some(scene);
-                                invalidate_view_request(&mut i); // re-dispatch without refitting time
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::RunCommand,
+                Some(request.line.clone()),
+                Vec::new(),
+                async move {
+                    let result = client()
+                        .run_command(request)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    // Scoped so the borrow ends before `request_repaint()`: `Inner` is
+                    // the same `RefCell` the render loop reads through its own `Rc`, and
+                    // this is an async block, so a guard still alive at the repaint — or
+                    // at any `.await` a later edit puts below — is a `BorrowMutError`
+                    // panic on whichever frame or bridge result lands next.
+                    {
+                        let mut i = work_inner.borrow_mut();
+                        match result.action.as_str() {
+                            "goto" => i.pending_goto = result.t.map(|t| (t, result.tlen)),
+                            "scene" => {
+                                if let Some(scene) = result.scene {
+                                    i.scene = Some(scene);
+                                    invalidate_view_request(&mut i); // re-dispatch without refitting time
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                        i.command_outcome = Some(match (result.action.as_str(), result.message) {
+                            ("error", Some(message)) => CommandOutcome::Failed(message),
+                            ("error", None) => CommandOutcome::Failed("command failed".to_owned()),
+                            _ => CommandOutcome::Succeeded,
+                        });
                     }
-                    i.command_outcome = Some(match (result.action.as_str(), result.message) {
-                        ("error", Some(message)) => CommandOutcome::Failed(message),
-                        ("error", None) => CommandOutcome::Failed("command failed".to_owned()),
-                        _ => CommandOutcome::Succeeded,
-                    });
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Fetch station coordinates (FDSN station service) to enable distance /
         /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
-        pub fn fetch_stations(&self, params: StationRequest) {
-            let repaint = self.repaint.clone();
+        pub fn fetch_stations(&self, params: StationRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = match client().fetch_stations(params).await {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: e.to_string(),
-                        markers: Vec::new(),
-                        scene: None,
-                        origin: String::new(),
-                        event_state: None,
-                    }),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        install_snuffling_result(&mut i, r);
-                    }
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::FetchStations,
+                None,
+                Vec::new(),
+                async move {
+                    let result = client()
+                        .fetch_stations(params)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    install_snuffling_result(&mut i, result);
                     invalidate_view_request(&mut i); // re-dispatch so distance/azimuth sort recomputes
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Fetch instrument responses (`StationXML`) so Deconvolution can run;
         /// forces a re-dispatch so the deconvolved view recomputes.
-        pub fn fetch_responses(&self, params: StationRequest) {
-            let repaint = self.repaint.clone();
+        pub fn fetch_responses(&self, params: StationRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = match client().fetch_responses(params).await {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: e.to_string(),
-                        markers: Vec::new(),
-                        scene: None,
-                        origin: String::new(),
-                        event_state: None,
-                    }),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        install_snuffling_result(&mut i, r);
-                    }
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::FetchResponses,
+                None,
+                Vec::new(),
+                async move {
+                    let result = client()
+                        .fetch_responses(params)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    install_snuffling_result(&mut i, result);
                     invalidate_view_request(&mut i); // re-dispatch so deconvolution applies
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Reports whether a live `SeedLink` socket is active.
@@ -2197,9 +2846,14 @@ mod web {
         /// Starts a live `SeedLink` source and replaces the current pile.
         pub fn start_seedlink(&self, params: SeedlinkParams) {
             let repaint = self.repaint.clone();
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
+            let session = retire_live_source(&self.inner);
+            let stream = {
+                let mut state = self.inner.borrow_mut();
+                state.next_stream_id = state.next_stream_id.wrapping_add(1).max(1);
+                let stream = StreamId(state.next_stream_id);
+                state.live_ingest = LiveIngestState::Opening { stream, session };
+                stream
+            };
             let started_at = js_sys::Date::now() / 1000.0;
             let follow_s = if params.follow_s > 0.0 {
                 params.follow_s
@@ -2211,6 +2865,8 @@ mod web {
                 repaint.clone(),
                 params,
                 started_at,
+                stream,
+                session,
             ) {
                 Ok(handle) => {
                     js_clear_open_sources();
@@ -2226,7 +2882,6 @@ mod web {
                         tracks: Vec::new(),
                     });
                     i.scene_gen += 1;
-                    i.status = Status::Loading("Connecting SeedLink…".to_owned());
                     i.diagnostic = None;
                     i.snuffling = None;
                     clear_event_state(&mut i);
@@ -2237,7 +2892,8 @@ mod web {
                 Err(err) => {
                     let mut i = self.inner.borrow_mut();
                     i.live_seedlink_started_at = None;
-                    i.status = Status::Error(err.into());
+                    i.live_ingest = LiveIngestState::Closed;
+                    i.diagnostic = Some(err.into());
                 }
             }
             repaint.request_repaint();
@@ -2245,116 +2901,78 @@ mod web {
 
         /// Stops live `SeedLink` acquisition while retaining received samples.
         pub fn stop_seedlink(&self) {
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
-            self.inner.borrow_mut().live_seedlink_started_at = None;
+            retire_live_source(&self.inner);
             set_snuffling_text(&self.inner, "SeedLink stopped".to_owned(), false);
         }
 
         /// Open local waveform files via a browser picker and append them.
-        pub fn open_files(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Opening files…".into());
+        pub fn open_files(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_open_files().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(v) => match js_bytes(v, "open_files") {
-                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => {
-                                match proto::scene_or_bundle_from_bytes(&bytes, "open_files") {
-                                    Ok(result) => {
-                                        // A picked bundle also loaded stations and
-                                        // events; its markers reach the app through
-                                        // the same installer as a direct bundle load.
-                                        install_dataset_result(&mut i, result);
-                                        i.status = Status::Ready;
-                                    }
-                                    Err(e) => i.status = Status::Error(e.into()),
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        },
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "opening files",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadBytes,
+                Some("selected files".to_owned()),
+                Vec::new(),
+                async move {
+                    let manifest =
+                        browser_manifest(js_open_files().await, "open_files", "opening files")?;
+                    apply_file_manifest(work_inner, manifest, false).await
+                },
+            );
+            submission
         }
 
         /// Recursively load every waveform file under a picked directory
         /// (Chromium File System Access); appends them to the pile.
-        pub fn open_directory(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Loading directory…".into());
+        pub fn open_directory(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_open_directory().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(v) => match js_bytes(v, "open_directory") {
-                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => {
-                                match proto::scene_or_bundle_from_bytes(&bytes, "open_directory") {
-                                    Ok(result) => {
-                                        install_dataset_result(&mut i, result);
-                                        i.status = Status::Ready;
-                                    }
-                                    Err(e) => i.status = Status::Error(e.into()),
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        },
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "opening a directory",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadBytes,
+                Some("selected directory".to_owned()),
+                Vec::new(),
+                async move {
+                    let manifest = browser_manifest(
+                        js_open_directory().await,
+                        "open_directory",
+                        "opening a directory",
+                    )?;
+                    apply_file_manifest(work_inner, manifest, false).await
+                },
+            );
+            submission
         }
 
         /// Reload the Python snuffling code (bridge.py) in the worker, preserving
         /// the loaded pile (snuffler's Shift+R). Forces a view re-fetch since the
         /// reload resets Python's view cache; the scene (track list) is unchanged.
-        pub fn reload_snufflings(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Reloading snufflings…".into());
+        pub fn reload_snufflings(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_reload_snufflings().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(_) => {
-                            i.status = Status::Ready;
-                            invalidate_view_request(&mut i);
-                        }
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "reloading snufflings",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ReloadSnufflings,
+                None,
+                Vec::new(),
+                async move {
+                    let job =
+                        require_registered_job(Operation::ReloadSnufflings, "reloadSnufflings")
+                            .map_err(CallError::from)?;
+                    js_reload_snufflings(job.id().get())
+                        .await
+                        .map_err(|error| {
+                            BridgeError::browser("reloading snufflings", jsval_to_string(error))
+                        })?;
+                    invalidate_view_request(&mut work_inner.borrow_mut());
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Re-read any opened files whose on-disk mtime changed and replace their
@@ -2362,456 +2980,507 @@ mod web {
         ///
         /// Successful sources are installed even when another source in the same
         /// batch fails.
-        /// Those failures remain visible through [`Bridge::diagnostic`] while the
-        /// operational [`Status`] returns to [`Status::Ready`].
-        pub fn reload_files(&self) {
-            let repaint = self.repaint.clone();
-            {
-                let mut inner = self.inner.borrow_mut();
-                inner.status = Status::Loading("Reloading modified files…".into());
-                inner.diagnostic = None;
-            }
+        /// Those failures remain visible through the recoverable diagnostic slot.
+        pub fn reload_files(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_reload_files().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(v) => match js_bytes(v, "reload_files") {
-                            Ok(bytes) => {
-                                match proto::decode_message::<ReloadBatchResult>(
-                                    &bytes,
-                                    "reload_files",
-                                ) {
-                                    Ok(batch) => {
-                                        let diagnostic = install_reload_batch(&mut i, batch);
-                                        finish_reload_batch(&mut i, diagnostic);
-                                    }
-                                    Err(error) => i.status = Status::Error(error.into()),
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        },
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "reloading files",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            inner.borrow_mut().diagnostic = None;
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadBytes,
+                Some("modified files".to_owned()),
+                Vec::new(),
+                async move {
+                    let manifest = browser_manifest(
+                        js_reload_files().await,
+                        "reload_files",
+                        "reloading files",
+                    )?;
+                    apply_file_manifest(work_inner, manifest, true).await
+                },
+            );
+            submission
         }
 
         /// Qt's download Save trigger: the loaded waveforms as one `MiniSEED`
         /// download plus the station table as a pyrocko station file.
         /// A refusal remains a typed recoverable diagnostic, so either successful
         /// half still downloads and the viewer stays operational.
-        pub fn save_waveforms_and_stations(&self) {
+        pub fn save_waveforms_and_stations(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                // Both halves run even when the first fails: one refused file
-                // must not cost the user the other download.
-                // The first failure takes the diagnostic slot.
-                let failed = [
-                    download_blob(client().export_waveforms().await, "downloading waveforms").await,
-                    download_blob(client().export_stations().await, "downloading stations").await,
-                ]
-                .into_iter()
-                .find_map(Result::err);
-                {
-                    let mut i = inner.borrow_mut();
-                    i.diagnostic = failed;
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ExportWaveforms,
+                Some("waveforms and stations".to_owned()),
+                Vec::new(),
+                async move {
+                    // Both halves run even when the first fails: one refused file
+                    // must not cost the user the other download.
+                    // The first failure takes the diagnostic slot.
+                    let failed = [
+                        download_blob(client().export_waveforms().await, "downloading waveforms")
+                            .await,
+                        download_blob(client().export_stations().await, "downloading stations")
+                            .await,
+                    ]
+                    .into_iter()
+                    .find_map(Result::err);
+                    work_inner.borrow_mut().diagnostic = failed.clone();
+                    if let Some(error) = failed {
+                        return Err(error);
+                    }
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// The waveform half alone — the live window's "save the buffer as
         /// `MiniSEED`" (a stream rarely has a station table to save with it).
         /// A refusal surfaces as a recoverable diagnostic.
-        pub fn save_waveforms(&self) {
+        pub fn save_waveforms(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                let result =
-                    download_blob(client().export_waveforms().await, "downloading waveforms").await;
-                {
-                    let mut i = inner.borrow_mut();
-                    i.diagnostic = result.err();
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ExportWaveforms,
+                Some("waveforms".to_owned()),
+                Vec::new(),
+                async move {
+                    let result =
+                        download_blob(client().export_waveforms().await, "downloading waveforms")
+                            .await;
+                    match result {
+                        Ok(()) => {
+                            work_inner.borrow_mut().diagnostic = None;
+                            Ok(())
+                        }
+                        Err(error) => {
+                            work_inner.borrow_mut().diagnostic = Some(error.clone());
+                            Err(error)
+                        }
+                    }
+                },
+            );
+            submission
         }
 
         /// Serializes markers through pyrocko and downloads the resulting text.
         /// A failure surfaces as a typed recoverable diagnostic.
-        pub fn save_markers(&self, markers: MarkerFile) {
+        pub fn save_markers(&self, markers: MarkerFile) -> Submission {
             let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                let result = match client().markers_to_text(markers).await {
-                    Ok(text) => {
-                        download_bytes(
-                            text.value.into_bytes(),
-                            "markers.txt".to_owned(),
-                            "text/plain".to_owned(),
-                            "downloading markers",
-                        )
-                        .await
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::MarkersToText,
+                Some("markers.txt".to_owned()),
+                Vec::new(),
+                async move {
+                    let result = match client().markers_to_text(markers).await {
+                        Ok(text) => {
+                            download_bytes(
+                                text.value.into_bytes(),
+                                "markers.txt".to_owned(),
+                                "text/plain".to_owned(),
+                                "downloading markers",
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error.into()),
+                    };
+                    match result {
+                        Ok(()) => {
+                            work_inner.borrow_mut().diagnostic = None;
+                            Ok(())
+                        }
+                        Err(error) => {
+                            work_inner.borrow_mut().diagnostic = Some(error.clone());
+                            Err(error)
+                        }
                     }
-                    Err(error) => Err(error.into()),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    i.diagnostic = result.err();
-                }
-                repaint.request_repaint();
-            });
+                },
+            );
+            submission
         }
 
         /// Trigger a browser download of encoded image bytes (PNG export).
-        #[allow(
-            clippy::unused_self,
-            reason = "method form mirrors the other bridge calls; the download needs no state"
-        )]
-        pub fn save_image_png(&self, bytes: Vec<u8>, filename: String) {
-            js_save_png(&bytes, &filename);
+        pub fn save_image_png(&self, bytes: Vec<u8>, filename: String) -> Submission {
+            let detail = Some(filename.clone());
+            let inner = self.inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ExportPng,
+                detail,
+                Vec::new(),
+                async move {
+                    js_save_png(bytes, filename).await.map_err(|error| {
+                        BridgeError::browser("saving a PNG", jsval_to_string(error))
+                    })?;
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Trigger a browser download of an SVG document (vector image export).
-        #[allow(
-            clippy::unused_self,
-            reason = "method form mirrors the other bridge calls; the download needs no state"
-        )]
-        pub fn save_image_svg(&self, svg: String, filename: String) {
-            js_save_svg(&svg, &filename);
+        pub fn save_image_svg(&self, svg: String, filename: String) -> Submission {
+            let detail = Some(filename.clone());
+            let inner = self.inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::ExportSvg,
+                detail,
+                Vec::new(),
+                async move {
+                    js_save_svg(svg, filename).await.map_err(|error| {
+                        BridgeError::browser("saving an SVG", jsval_to_string(error))
+                    })?;
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Load a marker file via a browser picker; results land as markers.
-        pub fn load_markers(&self) {
-            let repaint = self.repaint.clone();
+        pub fn load_markers(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_markers().await,
-                    "markers",
-                    "loading markers",
-                    proto::markers_from_bytes,
-                ) {
-                    Ok(Some(loaded)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        let n = loaded.markers.len();
-                        install_snuffling_result(
-                            &mut i,
-                            SnufflingResult {
-                                show_window: true,
-                                text: format!("loaded {n} marker(s)"),
-                                markers: loaded.markers,
-                                scene: None,
-                                origin: String::new(),
-                                event_state: loaded.event_state,
-                            },
-                        );
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadMarkers,
+                None,
+                Vec::new(),
+                async move {
+                    let texts = manifest_texts(browser_manifest(
+                        js_load_markers().await,
+                        "markers",
+                        "loading markers",
+                    )?)?;
+                    let Some(text) = texts.into_iter().next() else {
+                        return Ok(());
+                    };
+                    let loaded = client()
+                        .load_markers(pb::LoadMarkersRequest {
+                            text,
+                            marker_budget: Some(marker_budget()),
+                        })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    i.diagnostic = None;
+                    let n = loaded.markers.len();
+                    install_snuffling_result(
+                        &mut i,
+                        SnufflingResult {
+                            show_window: true,
+                            text: format!("loaded {n} marker(s)"),
+                            markers: loaded.markers,
+                            scene: None,
+                            origin: String::new(),
+                            event_state: loaded.event_state,
+                            markers_dropped: loaded.markers_dropped,
+                            marker_budget: loaded.marker_budget,
+                            nslc_table: loaded.nslc_table,
+                        },
+                    );
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Pick and merge local `StationXML` files (instrument responses for
         /// deconvolution + station coordinates for sorting) using the same parsing
         /// as fetched `FDSN` responses.
-        pub fn load_station_xml(&self) {
-            let repaint = self.repaint.clone();
+        pub fn load_station_xml(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_station_xml().await,
-                    "stationxml",
-                    "loading StationXML",
-                    proto::snuffling_from_bytes,
-                ) {
-                    Ok(Some(result)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        install_snuffling_result(&mut i, result);
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadStationXml,
+                None,
+                Vec::new(),
+                async move {
+                    let texts = manifest_texts(browser_manifest(
+                        js_load_station_xml().await,
+                        "stationxml",
+                        "loading StationXML",
+                    )?)?;
+                    if texts.is_empty() {
+                        return Ok(());
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
+                    let result = client()
+                        .load_station_xml(pb::LoadStationXmlRequest { texts })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    i.diagnostic = None;
+                    install_snuffling_result(&mut i, result);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Pick a local pyrocko station file and load its station coordinates
         /// (distance/azimuth sorting, cake, map) via `model.load_stations`.
-        pub fn load_stations(&self) {
-            let repaint = self.repaint.clone();
+        pub fn load_stations(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_stations().await,
-                    "stations",
-                    "loading stations",
-                    proto::snuffling_from_bytes,
-                ) {
-                    Ok(Some(result)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        install_snuffling_result(&mut i, result);
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadStations,
+                None,
+                Vec::new(),
+                async move {
+                    let texts = manifest_texts(browser_manifest(
+                        js_load_stations().await,
+                        "stations",
+                        "loading stations",
+                    )?)?;
+                    if texts.is_empty() {
+                        return Ok(());
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
+                    let result = client()
+                        .load_stations(pb::LoadStationsRequest {
+                            text: texts.join("\n"),
+                        })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    i.diagnostic = None;
+                    install_snuffling_result(&mut i, result);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Pick a local pyrocko event file and load it: event markers + the active
         /// event (largest magnitude) for distance/azimuth sorting, which forces a
         /// re-dispatch so that sort recomputes against the new active event.
-        pub fn load_events(&self) {
-            let repaint = self.repaint.clone();
+        pub fn load_events(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_events().await,
-                    "events",
-                    "loading events",
-                    proto::snuffling_from_bytes,
-                ) {
-                    Ok(Some(result)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        install_snuffling_result(&mut i, result);
-                        invalidate_view_request(&mut i);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::LoadEvents,
+                None,
+                Vec::new(),
+                async move {
+                    let texts = manifest_texts(browser_manifest(
+                        js_load_events().await,
+                        "events",
+                        "loading events",
+                    )?)?;
+                    let Some(text) = texts.into_iter().next() else {
+                        return Ok(());
+                    };
+                    let result = client()
+                        .load_events(pb::LoadEventsRequest {
+                            text,
+                            marker_budget: Some(marker_budget()),
+                        })
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut i = work_inner.borrow_mut();
+                    i.diagnostic = None;
+                    install_snuffling_result(&mut i, result);
+                    invalidate_view_request(&mut i);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Fetch station + event coordinates for the Map overlay.
-        pub fn fetch_map_data(&self, request: MapRequest) {
-            let repaint = self.repaint.clone();
+        pub fn fetch_map_data(&self, request: MapRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
             let request_gen = {
                 let mut i = inner.borrow_mut();
-                if i.map_in_flight && i.map_request.as_ref() == Some(&request) {
-                    return;
+                if let Some(job) = i.map_job
+                    && i.map_request.as_ref() == Some(&request)
+                {
+                    return Submission::Joined(job);
                 }
                 let changed = i.map_request.as_ref() != Some(&request);
                 i.map_request = Some(request.clone());
                 i.map_request_gen = i.map_request_gen.wrapping_add(1);
-                i.map_in_flight = true;
                 if changed {
                     i.map = None;
                 }
                 i.map_request_gen
             };
-            spawn_local(async move {
-                let result = client().map_data(request).await;
-                {
-                    let mut i = inner.borrow_mut();
+            let work_inner = inner.clone();
+            let dedup_key = request.encode_to_vec();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::MapData,
+                None,
+                dedup_key,
+                async move {
+                    let result = client().map_data(request).await;
+                    let mut i = work_inner.borrow_mut();
                     if i.map_request_gen == request_gen {
-                        i.map = result.ok();
-                        i.map_in_flight = false;
+                        i.map_job = None;
+                        i.map = Some(result.map_err(BridgeError::from)?);
                     }
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
+                self.inner.borrow_mut().map_job = Some(handle);
+            }
+            submission
         }
 
         /// Ensure the per-station distances are current for the given snuffling
         /// generation (the active event changes with each catalog/event load). A
         /// no-op if already fetched for this generation or a fetch is in flight.
-        pub fn ensure_station_distances(&self, snuffling_gen: u64) {
-            let repaint = self.repaint.clone();
+        pub fn ensure_station_distances(&self, snuffling_gen: u64) -> Option<Submission> {
             let token;
             {
-                let mut i = self.inner.borrow_mut();
+                let i = self.inner.borrow();
                 token = (snuffling_gen, i.active_event_gen);
-                if i.station_dists_in_flight
-                    || i.station_dists_gen == Some(token)
-                    || !matches!(i.status, Status::Ready)
-                {
-                    return;
+                if let Some(job) = i.station_dists_job {
+                    return Some(Submission::Joined(job));
                 }
-                i.station_dists_in_flight = true;
+                if i.station_dists_gen == Some(token) {
+                    return None;
+                }
             }
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().station_distances().await.ok();
-                {
-                    let mut i = inner.borrow_mut();
-                    i.station_dists_in_flight = false;
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::StationDistances,
+                None,
+                format!("{}:{}", token.0, token.1).into_bytes(),
+                async move {
+                    let parsed = client().station_distances().await;
+                    let mut i = work_inner.borrow_mut();
+                    i.station_dists_job = None;
+                    let list = parsed.map_err(BridgeError::from)?;
                     i.station_dists_gen = Some(token);
-                    if let Some(list) = parsed {
-                        i.station_dists.clear();
-                        for s in list.stations {
-                            i.station_dists.insert((s.net, s.sta), s.distance_deg);
-                        }
+                    i.station_dists.clear();
+                    for station in list.stations {
+                        i.station_dists
+                            .insert((station.net, station.sta), station.distance_deg);
                     }
-                }
-                repaint.request_repaint();
-            });
+                    Ok(())
+                },
+            );
+            if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
+                self.inner.borrow_mut().station_dists_job = Some(handle);
+            }
+            Some(submission)
         }
 
         /// Polls watched files without showing a loading status.
         ///
         /// Successful changes install immediately; source failures still surface
         /// because otherwise their earlier batch peers would change invisibly.
-        pub fn watch_poll(&self) {
-            let repaint = self.repaint.clone();
-            if !matches!(self.inner.borrow().status, Status::Ready) {
-                return;
-            }
+        pub fn watch_poll(&self) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let result = js_reload_files().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match result {
-                        Ok(value) => match js_bytes(value, "watch_poll") {
-                            Ok(bytes) => match proto::decode_message::<ReloadBatchResult>(
-                                &bytes,
-                                "watch_poll",
-                            ) {
-                                Ok(batch) => {
-                                    let diagnostic = install_reload_batch(&mut i, batch);
-                                    i.diagnostic = diagnostic;
-                                }
-                                Err(error) => {
-                                    i.diagnostic = None;
-                                    i.status = Status::Error(error.into());
-                                }
-                            },
-                            Err(error) => {
-                                i.diagnostic = None;
-                                i.status = Status::Error(error.into());
-                            }
-                        },
-                        Err(error) => {
-                            i.diagnostic = None;
-                            i.status = Status::Error(BridgeError::browser(
-                                "watching files",
-                                jsval_to_string(error),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::WatchPoll,
+                None,
+                Vec::new(),
+                async move {
+                    let manifest =
+                        browser_manifest(js_reload_files().await, "watch_poll", "watching files")?;
+                    apply_file_manifest(work_inner, manifest, true).await
+                },
+            );
+            submission
         }
 
         /// Sets or clears the active event and installs Python's canonical registry.
-        pub fn set_active_event(&self, req: SetActiveEventRequest) {
-            let repaint = self.repaint.clone();
+        pub fn set_active_event(&self, req: SetActiveEventRequest) -> Submission {
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                i.event_request_gen = i.event_request_gen.wrapping_add(1);
-                i.event_request_gen
-            };
-            spawn_local(async move {
-                let result = client().set_active_event(req).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.event_request_gen == request_gen {
-                        match result {
-                            Ok(state) => {
-                                i.diagnostic = None;
-                                install_event_state(&mut i, state);
-                            }
-                            Err(error) => record_diagnostic(&mut i, error.into()),
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::SetActiveEvent,
+                None,
+                Vec::new(),
+                async move {
+                    let state = client()
+                        .set_active_event(req)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut current = work_inner.borrow_mut();
+                    current.diagnostic = None;
+                    install_event_state(&mut current, state);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Replaces one canonical event after an inline marker-table edit.
-        pub fn update_event(&self, event: EventSnapshot) {
-            let repaint = self.repaint.clone();
+        pub fn update_event(&self, event: EventSnapshot) -> Submission {
             let inner = self.inner.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                i.event_request_gen = i.event_request_gen.wrapping_add(1);
-                i.event_request_gen
-            };
-            spawn_local(async move {
-                let result = client().update_event(event).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.event_request_gen == request_gen {
-                        match result {
-                            Ok(state) => {
-                                i.diagnostic = None;
-                                install_event_state(&mut i, state);
-                            }
-                            Err(error) => record_diagnostic(&mut i, error.into()),
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::UpdateEvent,
+                None,
+                Vec::new(),
+                async move {
+                    let state = client()
+                        .update_event(event)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut current = work_inner.borrow_mut();
+                    current.diagnostic = None;
+                    install_event_state(&mut current, state);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Removes canonical events whose final frontend marker was deleted.
-        pub fn remove_events(&self, request: RemoveEventsRequest) {
-            let repaint = self.repaint.clone();
+        pub fn remove_events(&self, request: RemoveEventsRequest) -> Submission {
             let inner = self.inner.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                i.event_request_gen = i.event_request_gen.wrapping_add(1);
-                i.event_request_gen
-            };
-            spawn_local(async move {
-                let result = client().remove_events(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.event_request_gen == request_gen {
-                        match result {
-                            Ok(state) => {
-                                i.diagnostic = None;
-                                install_event_state(&mut i, state);
-                            }
-                            Err(error) => record_diagnostic(&mut i, error.into()),
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
+            let work_inner = inner.clone();
+            let submission = submit_job(
+                inner,
+                self.repaint.clone(),
+                Operation::RemoveEvents,
+                None,
+                Vec::new(),
+                async move {
+                    let state = client()
+                        .remove_events(request)
+                        .await
+                        .map_err(BridgeError::from)?;
+                    let mut current = work_inner.borrow_mut();
+                    current.diagnostic = None;
+                    install_event_state(&mut current, state);
+                    Ok(())
+                },
+            );
+            submission
         }
 
         /// Submit every tile the map wants on screen right now.
@@ -2939,96 +3608,154 @@ mod web {
 
         /// Request a view for the given params, coalescing rapid changes so that
         /// at most one Python call is in flight at a time.
-        pub fn ensure_view(&self, params: ViewParams) {
+        pub fn ensure_view(&self, params: ViewParams) -> Option<Submission> {
             let repaint = self.repaint.clone();
             {
                 let mut i = self.inner.borrow_mut();
-                if !matches!(i.status, Status::Ready) {
-                    return;
-                }
                 if i.applied.as_ref() == Some(&params) {
-                    if i.view_in_flight.is_none() {
+                    if i.view_job.is_none() {
                         i.desired = None;
                     } else {
                         i.desired = Some(params);
                         repaint.request_repaint_after(std::time::Duration::from_millis(17));
                     }
-                    return;
+                    return i.view_job.as_ref().map(|(job, _)| Submission::Joined(*job));
                 }
-                if i.view_in_flight.as_ref() == Some(&params) {
+                let joined = i
+                    .view_job
+                    .as_ref()
+                    .filter(|(_, active)| active == &params)
+                    .map(|(job, _)| *job);
+                if let Some(job) = joined {
                     i.desired = None;
                     repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                    return;
+                    return Some(Submission::Joined(job));
                 }
                 i.desired = Some(params);
-                if i.view_in_flight.is_some() {
+                if let Some((job, _)) = i.view_job {
                     repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                    return;
+                    return Some(Submission::Joined(job));
+                }
+                let now_s = js_sys::Date::now() / 1000.0;
+                if now_s < i.view_retry_after_s {
+                    repaint.request_repaint_after(std::time::Duration::from_millis(500));
+                    return None;
                 }
             }
-            self.dispatch_view();
+            self.dispatch_view()
         }
 
-        fn dispatch_view(&self) {
+        fn dispatch_view(&self) -> Option<Submission> {
             let repaint = self.repaint.clone();
-            let (params, request_gen) = {
+            let (params, canonical_params, request_gen) = {
                 let mut i = self.inner.borrow_mut();
-                if i.view_in_flight.is_some() {
-                    return;
+                if let Some((job, _)) = i.view_job {
+                    return Some(Submission::Joined(job));
                 }
-                let Some(params) = i.desired.take() else {
-                    return;
+                let Some(mut params) = i.desired.take() else {
+                    return None;
                 };
                 if i.applied.as_ref() == Some(&params) {
-                    return;
+                    return None;
                 }
-                i.view_in_flight = Some(params.clone());
-                (params, i.view_request_gen)
+                let canonical_params = params.clone();
+                i.next_view_sequence = i.next_view_sequence.wrapping_add(1).max(1);
+                params.view_sequence = i.next_view_sequence;
+                (params, canonical_params, i.view_request_gen)
             };
             repaint.request_repaint_after(std::time::Duration::from_millis(17));
             let inner = self.inner.clone();
-            let repaint = repaint.clone();
+            let work_inner = inner.clone();
             let me = self.clone();
-            spawn_local(async move {
-                let t0 = js_sys::Date::now();
-                let parsed = client()
-                    .get_view(params.clone())
-                    .await
-                    .map(|(meta, ys)| ViewData { meta, ys });
-                let request_ms = js_sys::Date::now() - t0;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.view_request_gen == request_gen {
-                        match parsed {
-                            Ok(vd) => {
-                                log_view_debug(&params, &vd, request_ms);
-                                if i.desired.as_ref().is_none_or(|desired| desired == &params) {
-                                    i.view = Some(vd);
-                                    i.view_epoch += 1;
-                                    i.applied = Some(params.clone());
-                                    if i.desired.as_ref() == Some(&params) {
-                                        i.desired = None;
+            let work_params = params.clone();
+            let work_canonical_params = canonical_params.clone();
+            let submission = submit_job(
+                inner,
+                repaint,
+                Operation::GetView,
+                None,
+                params.encode_to_vec(),
+                async move {
+                    let t0 = js_sys::Date::now();
+                    let parsed = client()
+                        .get_view(work_params.clone())
+                        .await
+                        .map(|(meta, ys)| ViewData { meta, ys });
+                    let request_ms = js_sys::Date::now() - t0;
+                    let outcome = {
+                        let mut i = work_inner.borrow_mut();
+                        if i.view_request_gen == request_gen {
+                            match parsed {
+                                Ok(vd) => {
+                                    if vd.meta.view_sequence != work_params.view_sequence
+                                        || vd.meta.session_generation < i.python_session_generation
+                                    {
+                                        i.desired = Some(work_canonical_params.clone());
+                                        Err(BridgeError::browser(
+                                            "applying a waveform view",
+                                            "stale view reply",
+                                        ))
+                                    } else {
+                                        log_view_debug(&work_params, &vd, request_ms);
+                                        i.python_session_generation = vd.meta.session_generation;
+                                        i.view_last_error = None;
+                                        i.view_retry_after_s = 0.0;
+                                        if i.desired
+                                            .as_ref()
+                                            .is_none_or(|desired| desired == &work_canonical_params)
+                                        {
+                                            i.view = Some(vd);
+                                            i.view_epoch += 1;
+                                            i.applied = Some(work_canonical_params.clone());
+                                            if i.desired.as_ref() == Some(&work_canonical_params) {
+                                                i.desired = None;
+                                            }
+                                        }
+                                        Ok(())
                                     }
                                 }
+                                Err(error) => {
+                                    let error = BridgeError::from(error);
+                                    i.view_last_error = Some(error.clone());
+                                    i.view_retry_after_s = js_sys::Date::now() / 1000.0 + 0.5;
+                                    i.desired = Some(work_canonical_params.clone());
+                                    Err(error)
+                                }
                             }
-                            Err(e) => i.status = Status::Error(e.into()),
+                        } else {
+                            Ok(())
                         }
-                        if i.view_in_flight.as_ref() == Some(&params) {
-                            i.view_in_flight = None;
-                        }
-                    } else if i.view_in_flight.as_ref() == Some(&params) {
-                        i.view_in_flight = None;
+                    };
+                    if work_inner
+                        .borrow()
+                        .view_job
+                        .as_ref()
+                        .is_some_and(|(_, active)| active == &work_canonical_params)
+                    {
+                        work_inner.borrow_mut().view_job = None;
                     }
-                }
-                repaint.request_repaint();
-                me.maybe_redispatch();
-            });
+                    let should_warm = outcome.is_ok();
+                    me.maybe_redispatch();
+                    if should_warm {
+                        let _submission = me.warm_deferred();
+                    }
+                    outcome
+                },
+            );
+            if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
+                self.inner.borrow_mut().view_job = Some((handle, canonical_params));
+            }
+            Some(submission)
         }
 
         fn maybe_redispatch(&self) {
             let need = {
                 let mut i = self.inner.borrow_mut();
-                if i.view_in_flight.is_some() {
+                if i.view_job.is_some() {
+                    false
+                } else if js_sys::Date::now() / 1000.0 < i.view_retry_after_s {
+                    self.repaint
+                        .request_repaint_after(std::time::Duration::from_millis(500));
                     false
                 } else if i.desired.is_some() && i.applied.as_ref() != i.desired.as_ref() {
                     true
@@ -3038,7 +3765,7 @@ mod web {
                 }
             };
             if need {
-                self.dispatch_view();
+                let _submission = self.dispatch_view();
             }
         }
     }
@@ -3046,40 +3773,7 @@ mod web {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BridgeError, BundleAbout, BundleView, Inner, Status, finish_reload_batch,
-        install_bundle_presentation, record_diagnostic,
-    };
-
-    #[test]
-    fn recoverable_reload_diagnostics_leave_the_bridge_ready() {
-        let mut inner = Inner {
-            status: Status::Loading("Reloading modified files…".to_owned()),
-            ..Default::default()
-        };
-        let diagnostic = BridgeError::browser("reading a file for reload", "permission revoked");
-
-        finish_reload_batch(&mut inner, Some(diagnostic));
-
-        assert!(matches!(inner.status, Status::Ready));
-        assert!(inner.diagnostic.is_some());
-    }
-
-    #[test]
-    fn recoverable_operation_diagnostics_do_not_disable_the_bridge() {
-        let mut inner = Inner {
-            status: Status::Ready,
-            ..Default::default()
-        };
-
-        record_diagnostic(
-            &mut inner,
-            BridgeError::browser("loading markers", "malformed marker file"),
-        );
-
-        assert!(matches!(inner.status, Status::Ready));
-        assert!(inner.diagnostic.is_some());
-    }
+    use super::{BundleAbout, BundleView, Inner, install_bundle_presentation};
 
     #[test]
     fn bundle_presentation_uses_the_installed_scene_generation() {

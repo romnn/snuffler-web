@@ -3,6 +3,21 @@
 const V3_PACKET_BYTES: usize = 520;
 const V3_RECORD_OFFSET: usize = 8;
 const V4_FIXED_HEADER_BYTES: usize = 17;
+/// Maximum incomplete packet retained between WebSocket messages.
+pub const MAX_FRAME_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+/// Why an advertised `SeedLink` packet cannot be buffered safely.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FrameError {
+    /// A v4 header advertised a packet larger than the framing bound.
+    #[error("SeedLink packet advertises {announced} bytes; framing limit is {limit} bytes")]
+    Oversized {
+        /// Header plus station identifier and payload.
+        announced: usize,
+        /// Maximum incomplete packet size.
+        limit: usize,
+    },
+}
 
 /// Converts classic channel selectors into `SeedLink` 4 selector syntax.
 pub fn v4_selectors(selectors: &str) -> String {
@@ -58,7 +73,11 @@ fn find_header(bytes: &[u8]) -> Option<usize> {
 /// Removes complete `SeedLink` packets from `buffer` and returns their miniSEED payloads.
 ///
 /// An incomplete trailing packet stays buffered so the next WebSocket message can finish it.
-pub fn drain_records(buffer: &mut Vec<u8>) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Returns [`FrameError`] when a v4 header advertises a packet beyond the framing bound.
+pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
     let mut records = Vec::new();
     loop {
         let Some(position) = find_header(buffer) else {
@@ -101,6 +120,12 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Vec<u8> {
             let packet_len = V4_FIXED_HEADER_BYTES
                 .saturating_add(station_len)
                 .saturating_add(payload_len);
+            if packet_len > MAX_FRAME_BUFFER_BYTES {
+                return Err(FrameError::Oversized {
+                    announced: packet_len,
+                    limit: MAX_FRAME_BUFFER_BYTES,
+                });
+            }
             if buffer.len() < packet_len {
                 break;
             }
@@ -115,12 +140,12 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Vec<u8> {
             buffer.drain(..1);
         }
     }
-    records
+    Ok(records)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_records, v4_selectors};
+    use super::{FrameError, MAX_FRAME_BUFFER_BYTES, drain_records, v4_selectors};
 
     #[test]
     fn normalizes_classic_selectors() {
@@ -135,11 +160,11 @@ mod tests {
         let tail = packet.split_off(100);
         let mut buffer = packet;
 
-        assert!(drain_records(&mut buffer).is_empty());
+        assert!(drain_records(&mut buffer).is_ok_and(|records| records.is_empty()));
         assert_eq!(buffer.len(), 100);
 
         buffer.extend_from_slice(&tail);
-        assert_eq!(drain_records(&mut buffer), vec![7; 512]);
+        assert_eq!(drain_records(&mut buffer), Ok(vec![7; 512]));
         assert!(buffer.is_empty());
     }
 
@@ -157,9 +182,23 @@ mod tests {
         let tail = packet.split_off(split);
         let mut buffer = packet;
 
-        assert!(drain_records(&mut buffer).is_empty());
+        assert!(drain_records(&mut buffer).is_ok_and(|records| records.is_empty()));
         buffer.extend_from_slice(&tail);
-        assert_eq!(drain_records(&mut buffer), payload);
+        assert_eq!(drain_records(&mut buffer), Ok(payload.to_vec()));
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn rejects_an_incomplete_v4_packet_beyond_the_framing_bound() {
+        let payload_len = u32::try_from(MAX_FRAME_BUFFER_BYTES).unwrap_or(u32::MAX);
+        let mut packet = b"SE2D".to_vec();
+        packet.extend_from_slice(&payload_len.to_le_bytes());
+        packet.extend_from_slice(&[0; 8]);
+        packet.push(0);
+
+        assert!(matches!(
+            drain_records(&mut packet),
+            Err(FrameError::Oversized { .. })
+        ));
     }
 }

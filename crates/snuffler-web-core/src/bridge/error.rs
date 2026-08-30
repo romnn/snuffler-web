@@ -5,8 +5,8 @@
 //! They read alike once formatted, but callers must act on them differently.
 //!
 //! Deliberately free of `JsValue`: the error crosses into the egui frontend and
-//! is stored in [`crate::bridge::Status`] or [`crate::bridge::Bridge::diagnostic`].
-//! Both consumers build on the host.
+//! is stored in a job outcome or [`crate::bridge::Bridge::diagnostic`]. Both
+//! consumers build on the host.
 
 use std::fmt;
 
@@ -193,6 +193,10 @@ pub enum MarshalError {
 /// Live `SeedLink` acquisition could not be set up or driven.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SeedlinkError {
+    /// Packet framing exceeded the bounded incomplete-record buffer.
+    #[error(transparent)]
+    Frame(#[from] crate::seedlink::FrameError),
+
     /// The port box holds something that is not a TCP port.
     #[error("SeedLink port {port:?} is not a number between 1 and 65535")]
     Port {

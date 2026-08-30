@@ -14,6 +14,9 @@ use crate::bridge::{
 use crate::bridge::{
     CommandOutcome, CommandRequest, RemoveEventsRequest, SeedlinkParams, SetActiveEventRequest,
 };
+use crate::marker_store::MarkerBudget as StoreMarkerBudget;
+#[cfg(target_arch = "wasm32")]
+use crate::marker_store::{CommitOutcome, MarkerBudget, StagedMarkers};
 use crate::markers::Marker;
 #[cfg(target_arch = "wasm32")]
 use crate::markers::{MarkersCommand, parse_markers_command};
@@ -84,11 +87,13 @@ impl Session {
                 self.state.command.resolve(None);
             }
             Some(MarkersCommand::NoChange) => self.state.command.resolve(None),
-            None => self.bridge.run_command(CommandRequest {
-                line,
-                visible_tmin: self.state.tmin,
-                visible_tmax: self.state.tmax,
-            }),
+            None => {
+                let _submission = self.bridge.run_command(CommandRequest {
+                    line,
+                    visible_tmin: self.state.tmin,
+                    visible_tmax: self.state.tmax,
+                });
+            }
         }
     }
 
@@ -163,7 +168,7 @@ impl Session {
     #[cfg(target_arch = "wasm32")]
     pub fn close_all(&mut self) {
         self.clear_annotations();
-        self.bridge.empty_scene();
+        let _submission = self.bridge.empty_scene();
     }
 
     fn clear_annotations(&mut self) {
@@ -192,7 +197,6 @@ impl Session {
     #[cfg(target_arch = "wasm32")]
     pub fn sync(&mut self, now_s: f64) {
         self.fit_new_scene(now_s);
-        self.bridge.refresh_seisbench_progress(now_s);
         self.apply_snuffling_result();
 
         if let Some((time, length)) = self.bridge.take_goto() {
@@ -206,23 +210,23 @@ impl Session {
         }
 
         if std::mem::take(&mut self.state.reload_requested) {
-            self.bridge.reload_files();
+            let _submission = self.bridge.reload_files();
         }
         if std::mem::take(&mut self.state.reload_snufflings_requested) {
-            self.bridge.reload_snufflings();
+            let _submission = self.bridge.reload_snufflings();
         }
         if self.state.watch_files {
             // 1000 ms, matching snuffler's watch timer (pile_viewer.py:1225).
             if now_s - self.last_watch_poll > 1.0 {
                 self.last_watch_poll = now_s;
-                self.bridge.watch_poll();
+                let _submission = self.bridge.watch_poll();
             }
             self.bridge
                 .request_repaint_after(std::time::Duration::from_secs(1));
         }
 
         if let Some(request) = self.state.set_active_event_request.take() {
-            self.bridge.set_active_event(SetActiveEventRequest {
+            let _submission = self.bridge.set_active_event(SetActiveEventRequest {
                 deactivate: request.deactivate,
                 event_hash: request.event_hash,
                 t: request.t,
@@ -232,7 +236,7 @@ impl Session {
             });
         }
         if !self.state.remove_event_hashes.is_empty() {
-            self.bridge.remove_events(RemoveEventsRequest {
+            let _submission = self.bridge.remove_events(RemoveEventsRequest {
                 event_hashes: std::mem::take(&mut self.state.remove_event_hashes),
             });
         }
@@ -241,7 +245,7 @@ impl Session {
         if active_event_gen != self.last_active_event_gen {
             self.last_active_event_gen = active_event_gen;
             if let Some(event_state) = self.bridge.event_state() {
-                Self::apply_event_state(&mut self.state.markers, &event_state);
+                Self::apply_event_state(self.state.markers.as_mut_slice(), &event_state);
             }
         }
     }
@@ -309,7 +313,7 @@ impl Session {
     /// may never come in a reactive frontend that only repaints on input.
     #[cfg(target_arch = "wasm32")]
     pub fn request_view(&self, visible_bins: u32) {
-        self.bridge.ensure_view(self.view_params(visible_bins));
+        let _submission = self.bridge.ensure_view(self.view_params(visible_bins));
     }
 
     /// Builds the bridge view request for the current state and render budget.
@@ -362,6 +366,7 @@ impl Session {
             visible_length: state.visible_length.samples(),
             adaptive_visible_length: state.visible_length.is_adaptive(),
             liberal_fetch: state.liberal_fetch,
+            view_sequence: 0,
         }
     }
 
@@ -394,6 +399,9 @@ impl Session {
                         .collect(),
                 })
                 .collect(),
+            marker_budget: Some(snuffler_web_proto::bridge::v1::MarkerBudget {
+                max_markers: StoreMarkerBudget::standard().get(),
+            }),
         }
     }
 
@@ -408,15 +416,10 @@ impl Session {
             return;
         };
 
-        // Qt's `cleanup()` contract: a re-run replaces what the previous run
-        // of the same snuffling added, instead of stacking duplicates.
-        if !result.origin.is_empty() {
-            self.state
-                .markers
-                .retain(|m| m.origin.as_deref() != Some(result.origin.as_str()));
-        }
         let (mut event_min, mut event_max, mut has_event) =
             (f64::INFINITY, f64::NEG_INFINITY, false);
+        let mut staged_markers = Vec::with_capacity(result.markers.len());
+        let mut activates_event = false;
         for marker in &result.markers {
             let mut mapped = Marker::new(
                 marker.t,
@@ -426,15 +429,16 @@ impl Session {
             mapped.phase.clone_from(&marker.phase);
             mapped.is_event = marker.is_event;
             mapped.nslc_ids = marker
-                .nslc_ids
+                .nslc_indexes
                 .iter()
-                .map(|nslc| {
-                    (
+                .filter_map(|index| {
+                    let nslc = result.nslc_table.get(usize::try_from(*index).ok()?)?;
+                    Some((
                         nslc.net.clone(),
                         nslc.sta.clone(),
                         nslc.loc.clone(),
                         nslc.cha.clone(),
-                    )
+                    ))
                 })
                 .collect();
             mapped.polarity = marker.polarity.and_then(|value| i8::try_from(value).ok());
@@ -462,9 +466,7 @@ impl Session {
             // the marker so the canvas and table *show* the active event rather
             // than silently measuring distances from an invisible one.
             if marker.active {
-                for existing in &mut self.state.markers {
-                    existing.active = false;
-                }
+                activates_event = true;
                 mapped.active = true;
             }
             if !result.origin.is_empty() {
@@ -475,10 +477,41 @@ impl Session {
                 event_min = event_min.min(marker.t);
                 event_max = event_max.max(marker.t);
             }
-            self.state.markers.push(mapped);
+            staged_markers.push(mapped);
         }
+        if activates_event {
+            for existing in &mut self.state.markers {
+                existing.active = false;
+            }
+        }
+        let budget = MarkerBudget::try_new(result.marker_budget)
+            .unwrap_or_else(|_| MarkerBudget::standard());
+        let outcome = self.state.markers.commit(StagedMarkers {
+            markers: staged_markers,
+            origin: (!result.origin.is_empty()).then(|| result.origin.clone()),
+            dropped: result.markers_dropped,
+            budget,
+        });
+        let truncation = match outcome {
+            CommitOutcome::Committed { .. } => None,
+            CommitOutcome::Truncated {
+                added,
+                dropped,
+                budget,
+            } => Some(format!(
+                "Showing first {added} markers; {dropped} detections were omitted at the {} marker budget.",
+                budget.get()
+            )),
+        };
         self.state.snuffling_text = result.text;
-        self.state.show_snuffling = result.show_window && !self.state.snuffling_text.is_empty();
+        if let Some(truncation) = truncation {
+            if !self.state.snuffling_text.is_empty() {
+                self.state.snuffling_text.push_str("\n\n");
+            }
+            self.state.snuffling_text.push_str(&truncation);
+        }
+        self.state.show_snuffling = (result.show_window || result.markers_dropped > 0)
+            && !self.state.snuffling_text.is_empty();
 
         if has_event
             && event_max >= event_min
