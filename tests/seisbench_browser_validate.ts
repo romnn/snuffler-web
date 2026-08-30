@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import {
   BridgeResultSchema,
   EmptySchema,
+  WorkerEventSchema,
   type BridgeResult,
 } from "../web/proto/snuffler/bridge/v1/bridge_pb.js";
 import {
@@ -33,11 +34,15 @@ interface ModelSpec {
 // What the bundled bridge module (web/bridge.ts -> web/gen/bridge.js) exposes of
 // itself to this harness.
 interface BridgeModule {
-  call(method: string, request: Uint8Array, ys: Uint8Array): Promise<{ result: Uint8Array }>;
-  clearSeisbenchProgress(): void;
+  call(
+    method: string,
+    request: Uint8Array,
+    ys: Uint8Array,
+    jobId: bigint
+  ): Promise<{ result: Uint8Array }>;
   seisbenchDevice(): string;
-  seisbenchProgressFraction(): number;
-  seisbenchProgressLabel(): string;
+  operationEventHistory(): Uint8Array[];
+  takeOperationEvents(): Uint8Array[];
 }
 
 interface CallReply {
@@ -45,6 +50,7 @@ interface CallReply {
   device: string;
   progress: number;
   progressLabel: string;
+  eventDebug: string[];
 }
 
 interface ModelResult {
@@ -85,6 +91,7 @@ const PICK_THRESHOLD = Number(process.env.SNUFFLER_BROWSER_PICK_THRESHOLD || 0.0
 const METHODS = {
   makeExample: "/snuffler.bridge.v1.BridgeService/MakeExample",
   runSnuffling: "/snuffler.bridge.v1.BridgeService/RunSnuffling",
+  getView: "/snuffler.bridge.v1.BridgeService/GetView",
 };
 
 function bridgePayload(bytes: Uint8Array): number[] {
@@ -179,31 +186,48 @@ async function callBridge(
   page: Page,
   moduleUrl: string,
   method: string,
-  requestBytes: Uint8Array,
-  clearProgress = false
+  requestBytes: Uint8Array
 ): Promise<CallReply> {
   const payload = {
     moduleUrl,
     method,
     request: bridgePayload(requestBytes),
-    clearProgress,
   };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return await page.evaluate(
-        async ({ moduleUrl: href, method: rpcMethod, request, clearProgress: shouldClear }) => {
+      const evaluated = await page.evaluate(
+        async ({ moduleUrl: href, method: rpcMethod, request }) => {
           const bridge = (await import(href)) as BridgeModule;
-          if (shouldClear) bridge.clearSeisbenchProgress();
-          const out = await bridge.call(rpcMethod, new Uint8Array(request), new Uint8Array());
+          bridge.takeOperationEvents();
+          const out = await bridge.call(rpcMethod, new Uint8Array(request), new Uint8Array(), 999n);
           return {
             result: Array.from(out.result),
             device: bridge.seisbenchDevice(),
-            progress: bridge.seisbenchProgressFraction(),
-            progressLabel: bridge.seisbenchProgressLabel(),
+            events: bridge.operationEventHistory().map((bytes) => Array.from(bytes)),
           };
         },
         payload
       );
+      const workerEvents = evaluated.events.map((bytes) =>
+        fromBinary(WorkerEventSchema, new Uint8Array(bytes))
+      );
+      const progressEvents = workerEvents
+        .flatMap((worker) =>
+          worker.event.case === "operation" && worker.event.value.jobId === 999n
+            ? [worker.event.value]
+            : []
+        )
+        .flatMap((operation) =>
+          operation.event.case === "progress" ? [operation.event.value] : []
+        );
+      const progress = progressEvents.at(-1);
+      return {
+        result: evaluated.result,
+        device: evaluated.device,
+        progress: progress?.fraction ?? -1,
+        progressLabel: progress?.phase ?? "",
+        eventDebug: workerEvents.map((worker) => worker.event.case ?? "empty"),
+      };
     } catch (error) {
       if (!String(error).includes("Execution context was destroyed") || attempt === 2) throw error;
       await page.waitForLoadState("domcontentloaded");
@@ -225,6 +249,37 @@ async function webgpuAvailable(page: Page): Promise<boolean> {
   });
 }
 
+async function concurrentViewProbe(
+  page: Page,
+  moduleUrl: string,
+  runRequest: Uint8Array,
+  viewRequest: Uint8Array
+): Promise<boolean> {
+  return await page.evaluate(
+    async ({ href, runMethod, viewMethod, runBytes, viewBytes }) => {
+      const bridge = (await import(href)) as BridgeModule;
+      let runFinished = false;
+      const run = bridge
+        .call(runMethod, new Uint8Array(runBytes), new Uint8Array(), 2001n)
+        .finally(() => {
+          runFinished = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await bridge.call(viewMethod, new Uint8Array(viewBytes), new Uint8Array(), 2002n);
+      const viewFinishedFirst = !runFinished;
+      await run;
+      return viewFinishedFirst;
+    },
+    {
+      href: moduleUrl,
+      runMethod: METHODS.runSnuffling,
+      viewMethod: METHODS.getView,
+      runBytes: bridgePayload(runRequest),
+      viewBytes: bridgePayload(viewRequest),
+    }
+  );
+}
+
 async function runBrowserPass({
   disableWebgpu,
   models,
@@ -244,6 +299,14 @@ async function runBrowserPass({
   try {
     for (const spec of models) {
       const page = await browser.newPage();
+      // This harness drives the transport directly, so the egui app must not
+      // submit its own ledger-owned views into the same worker.
+      await page.route(/\/snuffler-web-egui-[^/]+\.js$/, async (route) => {
+        await route.fulfill({
+          contentType: "text/javascript",
+          body: "export default async function init() { return {}; }\n",
+        });
+      });
       page.setDefaultTimeout(TIMEOUT_MS);
       page.setDefaultNavigationTimeout(60_000);
       page.on("console", (msg) => {
@@ -276,12 +339,24 @@ async function runBrowserPass({
         }
 
         const request = requestFor(scene, spec);
+        if (spec === models[0]) {
+          const view = request.params?.view;
+          if (!view) throw new Error("SeisBench request has no view params");
+          const viewFinishedFirst = await concurrentViewProbe(
+            page,
+            moduleUrl,
+            toBinary(NamedSnufflingRequestSchema, request),
+            toBinary(ViewParamsSchema, view)
+          );
+          if (!viewFinishedFirst) {
+            throw new Error("GetView did not complete while the SeisBench job was suspended");
+          }
+        }
         const reply = await callBridge(
           page,
           moduleUrl,
           METHODS.runSnuffling,
-          toBinary(NamedSnufflingRequestSchema, request),
-          true
+          toBinary(NamedSnufflingRequestSchema, request)
         );
         const result = bridgeResult(
           reply.result,
@@ -290,7 +365,7 @@ async function runBrowserPass({
         );
         if (reply.progress < 0.99) {
           throw new Error(
-            `${spec.model}/${spec.weights}: final progress ${reply.progress}, label "${reply.progressLabel}"`
+            `${spec.model}/${spec.weights}: final progress ${reply.progress}, label "${reply.progressLabel}", events ${reply.eventDebug.join(",")}`
           );
         }
         if (!reply.progressLabel.includes("complete")) {
