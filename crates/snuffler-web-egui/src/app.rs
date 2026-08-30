@@ -420,6 +420,10 @@ impl App {
         if crate::pool::ready() {
             let (tx, rx) = std::sync::mpsc::channel();
             let (w, h) = (size.x, size.y);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the ExportPng ledger job accepted above keeps this rasterization visible"
+            )]
             rayon::spawn(move || {
                 let _ = tx.send(crate::view::raster::rasterize_svg(
                     &svg,
@@ -486,7 +490,9 @@ impl App {
                 }
             }
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {
-                ctx.request_repaint();
+                // Poll the rasterizer at a bounded rate instead of spinning the
+                // frame loop at full speed for the duration of the export.
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
                 if let Some(export) = self.export_rx.take() {
@@ -1136,12 +1142,13 @@ impl App {
         // finished, failed, or is still running, and none of it is tied to a
         // widget you would be focused on — so it is announced as it changes.
         let (runtime, jobs) = self.session.bridge.activity_snapshot();
+        let jobs: &[(JobHandle, JobRecord)] = &jobs;
         let now_s = js_sys::Date::now() / 1000.0;
-        if let Some(delay) = next_activity_reveal_delay(&jobs, now_s) {
+        if let Some(delay) = next_activity_reveal_delay(jobs, now_s) {
             ctx.request_repaint_after(delay);
         }
-        let active = active_job(&jobs, now_s);
-        let (status, urgency) = show_primary_activity(ui, &runtime, &jobs, active, total_tracks);
+        let active = active_job(jobs, now_s);
+        let (status, urgency) = show_primary_activity(ui, &runtime, jobs, active, total_tracks);
         if matches!(runtime, RuntimeState::Ready)
             && let Some((handle, record)) = active
         {
@@ -1671,9 +1678,6 @@ fn example_hover(example: &ExampleDataset) -> String {
     text
 }
 
-/// A timestamped export name (`snuffler-20260816-142530.png`): a fixed name
-/// collides into `snuffler (1).png` on the second export, and the stamp says
-/// which session a file in the downloads folder came from.
 fn active_job(jobs: &[(JobHandle, JobRecord)], now_s: f64) -> Option<(JobHandle, &JobRecord)> {
     jobs.iter()
         .filter(|(_, record)| {
@@ -1703,19 +1707,28 @@ fn next_activity_reveal_delay(
 }
 
 fn unresolved_failure(jobs: &[(JobHandle, JobRecord)]) -> Option<&JobError> {
-    jobs.iter()
-        .filter(|(handle, record)| {
-            matches!(record.state(), JobState::Done(Outcome::Failed(_)))
-                && !jobs.iter().any(|(newer, candidate)| {
-                    newer.id().get() > handle.id().get()
-                        && candidate.operation() == record.operation()
-                })
-        })
-        .max_by_key(|(handle, _)| handle.id().get())
-        .and_then(|(_, record)| match record.state() {
-            JobState::Done(Outcome::Failed(error)) => Some(error),
+    // One pass: a failure is resolved by any later submission of the same
+    // operation, so the newest record per operation decides, and the newest
+    // unresolved failure wins.
+    let mut newest_per_operation: std::collections::HashMap<Operation, (u64, &JobRecord)> =
+        std::collections::HashMap::new();
+    for (handle, record) in jobs {
+        let id = handle.id().get();
+        let entry = newest_per_operation
+            .entry(record.operation())
+            .or_insert((id, record));
+        if id > entry.0 {
+            *entry = (id, record);
+        }
+    }
+    newest_per_operation
+        .into_values()
+        .filter_map(|(id, record)| match record.state() {
+            JobState::Done(Outcome::Failed(error)) => Some((id, error)),
             _ => None,
         })
+        .max_by_key(|(id, _)| *id)
+        .map(|(_, error)| error)
 }
 
 fn active_job_text(record: &JobRecord, queued: usize) -> String {
@@ -1774,7 +1787,7 @@ fn show_primary_activity(
     total_tracks: usize,
 ) -> (egui::Response, crate::a11y::Urgency) {
     match runtime {
-        RuntimeState::Booting(_) => {
+        RuntimeState::Booting => {
             ui.spinner();
             (
                 ui.label("Starting Python (Pyodide)…"),
@@ -1825,6 +1838,9 @@ fn show_primary_activity(
     }
 }
 
+/// A timestamped export name (`snuffler-20260816-142530.png`): a fixed name
+/// collides into `snuffler (1).png` on the second export, and the stamp says
+/// which session a file in the downloads folder came from.
 fn export_filename(ext: &str) -> String {
     let now_s = js_sys::Date::now() / 1000.0;
     let stamp: String = snuffler_web_core::timeaxis::format_full(now_s)

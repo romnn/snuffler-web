@@ -11,10 +11,15 @@ use snuffler_web_core::bridge::{Bridge, FigureData, FigureRequest, MomentTensor}
 use snuffler_web_core::session::Session;
 
 /// Owns decoded textures and request keys for every matplotlib figure window.
+///
+/// Requests are keyed with the marker generation they were built from, so the
+/// per-frame freshness check compares cheap fields and only rebuilds the
+/// selected-span list (which clones the NSLC strings of every selected marker)
+/// when a marker actually changed.
 #[derive(Default)]
 pub struct FigureWindows {
     cache: FigureCache,
-    requests: HashMap<String, FigureRequest>,
+    requests: HashMap<String, (u64, FigureRequest)>,
     beachball: Option<[f64; 6]>,
 }
 
@@ -80,18 +85,32 @@ impl FigureWindows {
         title: &str,
         size: [f32; 2],
     ) -> bool {
-        let request = FigureRequest {
-            kind: kind.to_owned(),
-            params: Some(session.snuffling_params(800)),
-            width_px: 1100,
-            height_px: 760,
-            dpi: 110.0,
-            dark: ctx.theme() == egui::Theme::Dark,
-            mt: None,
-        };
-        if self.requests.get(kind) != Some(&request) {
-            let _submission = session.bridge.render_figure(request.clone());
-            self.requests.insert(kind.to_owned(), request);
+        let generation = session.state.markers.generation();
+        let dark = ctx.theme() == egui::Theme::Dark;
+        let fresh = self.requests.get(kind).is_some_and(|(cached_generation, cached)| {
+            *cached_generation == generation
+                && cached.dark == dark
+                && cached.params.as_ref().is_some_and(|params| {
+                    params.view == Some(session.view_params(800))
+                        && params.snufflings == Some(session.snufflings.params())
+                })
+        });
+        if !fresh {
+            let request = FigureRequest {
+                kind: kind.to_owned(),
+                params: Some(session.snuffling_params(800)),
+                width_px: 1100,
+                height_px: 760,
+                dpi: 110.0,
+                dark,
+                mt: None,
+            };
+            // A marker edit that left the request identical (a kind cycled, a
+            // note renamed) refreshes the generation key without re-rendering.
+            if self.requests.get(kind).is_none_or(|(_, cached)| cached != &request) {
+                let _submission = session.bridge.render_figure(request.clone());
+            }
+            self.requests.insert(kind.to_owned(), (generation, request));
         }
 
         let mut open = true;
@@ -125,9 +144,13 @@ impl FigureWindows {
                 med: moment_tensor[5],
             }),
         };
-        if self.requests.get("beachball") != Some(&request) {
+        if self
+            .requests
+            .get("beachball")
+            .is_none_or(|(_, cached)| cached != &request)
+        {
             let _submission = bridge.render_figure(request.clone());
-            self.requests.insert("beachball".to_owned(), request);
+            self.requests.insert("beachball".to_owned(), (0, request));
         }
 
         let mut open = true;
