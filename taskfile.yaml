@@ -195,6 +195,9 @@ tasks:
       # Separate project: the tests need node globals the browser-side bridge
       # code must not see (and they run at full strictness).
       - bunx tsc --noEmit -p tests/tsconfig.json
+      # Pure and synchronous, so the cancellation state machine's transition
+      # table is pinned on every check rather than only in browser suites.
+      - bun tests/execution_control_validate.ts
 
   check:fc:
     desc: "check cargo workspace for all combinations of features"

@@ -59,10 +59,26 @@ export function requestCancellation(control: Int32Array, interrupt: Uint8Array):
   }
 }
 
+// Commit races only *cancellation*, never ownership: a job whose safe-point
+// resume outruns the view's release legally executes while ComputingSuspended,
+// so both computing states are valid commit sources. On loss the cancel has
+// already won; clearing the interrupt byte here keeps a not-yet-consumed
+// interrupt from firing later inside rollback or reply marshalling.
 export function beginCommit(control: Int32Array, interrupt: Uint8Array): boolean {
-  const won = transition(control, ControlState.ComputingOwned, ControlState.Committing);
-  if (won) Atomics.store(interrupt, 0, 0);
-  return won;
+  for (;;) {
+    const state = Atomics.load(control, STATE) as ControlState;
+    if (state === ControlState.ComputingSuspended || state === ControlState.ComputingOwned) {
+      if (transition(control, state, ControlState.Committing)) {
+        Atomics.store(interrupt, 0, 0);
+        return true;
+      }
+    } else if (state === ControlState.InterruptingOwned) {
+      Atomics.wait(control, STATE, ControlState.InterruptingOwned);
+    } else {
+      Atomics.store(interrupt, 0, 0);
+      return false;
+    }
+  }
 }
 
 export function cancellationRequested(control: Int32Array): boolean {
