@@ -412,7 +412,7 @@ impl Session {
             return;
         }
         self.last_snuffling_gen = generation;
-        let Some(result) = self.bridge.snuffling() else {
+        let Some(result) = self.bridge.take_snuffling() else {
             return;
         };
 
@@ -484,8 +484,7 @@ impl Session {
                 existing.active = false;
             }
         }
-        let budget = MarkerBudget::try_new(result.marker_budget)
-            .unwrap_or_else(|_| MarkerBudget::standard());
+        let budget = MarkerBudget::from_wire(result.marker_budget);
         let outcome = self.state.markers.commit(StagedMarkers {
             markers: staged_markers,
             origin: (!result.origin.is_empty()).then(|| result.origin.clone()),
@@ -499,7 +498,7 @@ impl Session {
                 dropped,
                 budget,
             } => Some(format!(
-                "Showing first {added} markers; {dropped} detections were omitted at the {} marker budget.",
+                "Showing the {added} strongest markers; {dropped} detections were omitted at the {} marker budget.",
                 budget.get()
             )),
         };

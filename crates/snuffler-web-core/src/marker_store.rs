@@ -22,20 +22,15 @@ impl MarkerBudget {
         Self(NonZeroU32::new(DEFAULT_MARKER_BUDGET).unwrap_or(NonZeroU32::MIN))
     }
 
-    /// Validates a user-selected budget against the calibrated hard cap.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MarkerBudgetError`] when the value is zero or above the hard cap.
-    pub fn try_new(value: u32) -> Result<Self, MarkerBudgetError> {
-        let value = NonZeroU32::new(value).ok_or(MarkerBudgetError::Zero)?;
-        if value.get() > MAX_MARKER_BUDGET {
-            return Err(MarkerBudgetError::AboveHardCap {
-                requested: value.get(),
-                maximum: MAX_MARKER_BUDGET,
-            });
-        }
-        Ok(Self(value))
+    /// Interprets a producer-echoed budget, falling back to the standard bound
+    /// when the echo is zero or exceeds the calibrated hard cap. Nothing lets a
+    /// user pick a budget, so an invalid echo is a producer bug to absorb, not
+    /// an error for a caller to route.
+    #[must_use]
+    pub fn from_wire(value: u32) -> Self {
+        NonZeroU32::new(value)
+            .filter(|value| value.get() <= MAX_MARKER_BUDGET)
+            .map_or_else(Self::standard, Self)
     }
 
     /// Returns the protobuf value sent to Python.
@@ -43,22 +38,6 @@ impl MarkerBudget {
     pub const fn get(self) -> u32 {
         self.0.get()
     }
-}
-
-/// Why a marker budget is unsafe to admit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum MarkerBudgetError {
-    /// A zero-sized budget could never make progress.
-    #[error("marker budget must be non-zero")]
-    Zero,
-    /// The requested response would exceed the calibrated memory ceiling.
-    #[error("marker budget {requested} exceeds the hard cap {maximum}")]
-    AboveHardCap {
-        /// Requested marker count.
-        requested: u32,
-        /// Largest admitted count.
-        maximum: u32,
-    },
 }
 
 /// Fully decoded markers ready for one atomic origin replacement.
@@ -231,18 +210,11 @@ impl MarkerStore {
     }
 
     /// Resolves a stable identity to its current insertion-order index.
-    #[must_use]
-    pub fn index_of(&self, id: MarkerId) -> Option<usize> {
+    fn index_of(&self, id: MarkerId) -> Option<usize> {
         let slot = self.slots.get(usize::try_from(id.slot).ok()?)?;
         (slot.generation == id.slot_generation)
             .then_some(slot.index)
             .flatten()
-    }
-
-    /// Returns the stable identity at an insertion-order index.
-    #[must_use]
-    pub fn id_at(&self, index: usize) -> Option<MarkerId> {
-        self.ids.get(index).copied()
     }
 
     /// Mutates one marker and advances the generation only when its value changed.
@@ -256,31 +228,53 @@ impl MarkerStore {
         Some(result)
     }
 
+    /// Mutates one marker with the closure itself reporting whether anything
+    /// changed, skipping [`Self::edit`]'s clone-and-compare — the per-frame
+    /// path for widget rows, where every mutation site is explicit. Returns
+    /// whether the marker existed and reported a change.
+    pub fn edit_reported(
+        &mut self,
+        id: MarkerId,
+        edit: impl FnOnce(&mut Marker) -> bool,
+    ) -> bool {
+        let Some(index) = self.index_of(id) else {
+            return false;
+        };
+        let Some(marker) = self.markers.get_mut(index) else {
+            return false;
+        };
+        if edit(marker) {
+            self.changed();
+            return true;
+        }
+        false
+    }
+
     /// Inserts a marker and returns its stable identity.
     pub fn insert(&mut self, marker: Marker) -> MarkerId {
         let index = self.markers.len();
-        let slot_index = self.free_slots.pop().unwrap_or_else(|| {
-            let slot = u32::try_from(self.slots.len()).unwrap_or(u32::MAX);
-            self.slots.push(Slot {
-                generation: 0,
-                index: None,
+        let id = self
+            .free_slots
+            .pop()
+            .and_then(|slot_index| {
+                let slot = self.slots.get_mut(usize::try_from(slot_index).ok()?)?;
+                slot.index = Some(index);
+                Some(MarkerId {
+                    slot: slot_index,
+                    slot_generation: slot.generation,
+                })
+            })
+            .unwrap_or_else(|| {
+                let slot_index = u32::try_from(self.slots.len()).unwrap_or(u32::MAX);
+                self.slots.push(Slot {
+                    generation: 0,
+                    index: Some(index),
+                });
+                MarkerId {
+                    slot: slot_index,
+                    slot_generation: 0,
+                }
             });
-            slot
-        });
-        let Some(slot) = usize::try_from(slot_index)
-            .ok()
-            .and_then(|slot| self.slots.get_mut(slot))
-        else {
-            return MarkerId {
-                slot: u32::MAX,
-                slot_generation: u32::MAX,
-            };
-        };
-        slot.index = Some(index);
-        let id = MarkerId {
-            slot: slot_index,
-            slot_generation: slot.generation,
-        };
         self.markers.push(marker);
         self.ids.push(id);
         self.changed();
@@ -504,7 +498,7 @@ mod tests {
         store.insert(Marker::new(2.0, 2.0, 0));
         let mut replacement = Marker::new(3.0, 3.0, 0);
         replacement.origin = Some("picker".to_owned());
-        let budget = MarkerBudget::try_new(1).unwrap_or_else(|_| MarkerBudget::standard());
+        let budget = MarkerBudget::from_wire(1);
 
         let outcome = store.commit(StagedMarkers {
             markers: vec![replacement],

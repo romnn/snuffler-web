@@ -6,9 +6,7 @@ use std::task::Waker;
 
 use crate::bridge::BridgeError;
 
-pub use snuffler_web_proto::bridge::v1::{
-    ActivityMeta, CancelCap, Effect, Lane, Operation, Policy,
-};
+pub use snuffler_web_proto::bridge::v1::{ActivityMeta, CancelCap, Lane, Operation, Policy};
 
 const VIEW_FEEDBACK_DELAY_S: f64 = 0.5;
 
@@ -94,7 +92,7 @@ pub enum RuntimeFault {
 #[derive(Clone, Debug)]
 pub enum RuntimeState {
     /// Pyodide is starting and has not accepted work yet.
-    Booting(Progress),
+    Booting,
     /// The worker can accept work.
     Ready,
     /// The previous worker died and a replacement is starting.
@@ -106,7 +104,7 @@ pub enum RuntimeState {
 impl RuntimeState {
     fn submission_fault(&self) -> Option<RuntimeFault> {
         match self {
-            Self::Booting(_) | Self::Ready => None,
+            Self::Booting | Self::Ready => None,
             Self::Restarting => Some(RuntimeFault::Restarting),
             Self::Failed(error) => Some(RuntimeFault::Failed(error.clone())),
         }
@@ -158,13 +156,6 @@ pub enum Outcome {
     Cancelled,
     /// Cancellation lost to a commit already in progress.
     TooLate,
-    /// A multi-item flow stopped after partial completion.
-    Stopped {
-        /// Items committed before the stop.
-        committed: u32,
-        /// Items skipped by the stop.
-        skipped: u32,
-    },
     /// The worker died after this job was dispatched.
     Lost(RuntimeEpoch),
     /// The defensive session-generation check rejected the result.
@@ -286,6 +277,9 @@ pub struct ActivityLedger {
     active_job: Option<JobId>,
     active_view: Option<JobId>,
     waiters: HashMap<JobId, Waker>,
+    /// Bumped on every observable mutation, so a per-frame consumer can reuse
+    /// its previous snapshot instead of cloning every record every frame.
+    revision: u64,
 }
 
 impl Default for ActivityLedger {
@@ -299,7 +293,7 @@ impl ActivityLedger {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
-            runtime: RuntimeState::Booting(Progress::Indeterminate),
+            runtime: RuntimeState::Booting,
             capacity,
             next_id: 1,
             records: HashMap::new(),
@@ -308,6 +302,7 @@ impl ActivityLedger {
             active_job: None,
             active_view: None,
             waiters: HashMap::new(),
+            revision: 0,
         }
     }
 
@@ -317,9 +312,20 @@ impl ActivityLedger {
         &self.runtime
     }
 
+    /// The value that changes whenever runtime health or any record changed.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// Replaces runtime health without conflating it with job errors.
     pub fn set_runtime(&mut self, runtime: RuntimeState) {
         self.runtime = runtime;
+        self.changed();
         self.wake_front();
     }
 
@@ -336,9 +342,16 @@ impl ActivityLedger {
         {
             return Submission::Joined(JobHandle { id: *id });
         }
-        if operation.activity().policy == Policy::LatestWins {
-            let superseded: Vec<JobHandle> = self
-                .queue
+
+        if let Some(fault) = self.runtime.submission_fault() {
+            return self.reject(operation, detail, now_s, RejectReason::RuntimeDown(fault));
+        }
+        // Supersession must not run ahead of admission: a rejected submission
+        // that had already cancelled its predecessor would leave the user with
+        // neither the old work nor the new. The superseded entries do count as
+        // freed capacity, since admitting the replacement cancels them.
+        let superseded: Vec<JobHandle> = if operation.activity().policy == Policy::LatestWins {
+            self.queue
                 .iter()
                 .filter(|id| {
                     self.records
@@ -346,16 +359,11 @@ impl ActivityLedger {
                         .is_some_and(|record| record.operation == operation)
                 })
                 .map(|id| JobHandle { id: *id })
-                .collect();
-            for handle in superseded {
-                self.complete(handle, Outcome::Cancelled);
-            }
-        }
-
-        if let Some(fault) = self.runtime.submission_fault() {
-            return self.reject(operation, detail, now_s, RejectReason::RuntimeDown(fault));
-        }
-        let active = self.active_count();
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let active = self.active_count().saturating_sub(superseded.len());
         if active >= self.capacity {
             return self.reject(
                 operation,
@@ -363,6 +371,9 @@ impl ActivityLedger {
                 now_s,
                 RejectReason::QueueFull { depth: active },
             );
+        }
+        for handle in superseded {
+            self.complete(handle, Outcome::Cancelled);
         }
 
         let handle = self.mint(
@@ -423,11 +434,14 @@ impl ActivityLedger {
     }
 
     /// Reports whether the sole terminal outcome has already been recorded.
+    /// An absent record was pruned, and pruning only removes terminal records,
+    /// so absence answers true — otherwise a dispatch future polled after
+    /// pruning would park forever with no waker registered.
     #[must_use]
     pub fn is_terminal(&self, handle: JobHandle) -> bool {
         self.records
             .get(&handle.id)
-            .is_some_and(|record| matches!(record.state, JobState::Done(_)))
+            .is_none_or(|record| matches!(record.state, JobState::Done(_)))
     }
 
     /// Visits ledger entries without exposing mutation of their lifecycle state.
@@ -488,6 +502,7 @@ impl ActivityLedger {
         if let Some(record) = self.records.get_mut(&handle.id) {
             record.state = JobState::Dispatching;
         }
+        self.changed();
         true
     }
 
@@ -502,10 +517,18 @@ impl ActivityLedger {
             if active != Some(handle.id) {
                 return;
             }
+            // Only a dispatched request may start running: a started event
+            // arriving after a cancel must not revert Cancelling (that would
+            // disarm mark_cancel_too_late and lose the TooLate outcome), and a
+            // duplicate event must not reset recorded progress.
+            if !matches!(record.state, JobState::Dispatching) {
+                return;
+            }
             record.state = JobState::Running {
                 since_s: now_s,
                 progress: Progress::Indeterminate,
             };
+            self.changed();
         }
     }
 
@@ -522,6 +545,7 @@ impl ActivityLedger {
             } = &mut record.state
         {
             *current = progress;
+            self.changed();
         }
     }
 
@@ -544,8 +568,9 @@ impl ActivityLedger {
             outcome
         };
         record.state = JobState::Done(outcome);
-        self.dedup
-            .remove(&(record.operation, record.dedup_key.clone()));
+        let dedup_key = std::mem::take(&mut record.dedup_key);
+        self.dedup.remove(&(record.operation, dedup_key));
+        self.changed();
         self.queue.retain(|id| *id != handle.id);
         self.waiters.remove(&handle.id);
         if self.active_job == Some(handle.id) {
@@ -576,6 +601,7 @@ impl ActivityLedger {
                 if let Some(record) = self.records.get_mut(&handle.id) {
                     record.state = JobState::Cancelling { since_s: now_s };
                 }
+                self.changed();
                 CancelRequest::Interrupt
             }
             JobState::Cancelling { .. } => CancelRequest::AlreadyCancelling,
@@ -589,6 +615,7 @@ impl ActivityLedger {
             && matches!(record.state, JobState::Cancelling { .. })
         {
             record.cancel_lost = true;
+            self.changed();
         }
     }
 
@@ -615,6 +642,7 @@ impl ActivityLedger {
             waker.wake();
         }
         self.runtime = RuntimeState::Restarting;
+        self.changed();
     }
 
     fn reject(
@@ -643,6 +671,7 @@ impl ActivityLedger {
         state: JobState,
     ) -> JobHandle {
         self.prune_history();
+        self.changed();
         let id = JobId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1).max(1);
         self.records.insert(
@@ -883,5 +912,70 @@ mod tests {
             ledger.get(job).map(super::JobRecord::state),
             Some(JobState::Done(Outcome::TooLate))
         ));
+    }
+
+    /// A started event arriving after a cancel must not revert Cancelling:
+    /// that would disarm `mark_cancel_too_late`, and a commit-race loser would
+    /// record `Succeeded` instead of `TooLate`.
+    #[test]
+    fn a_started_event_does_not_resurrect_a_cancelling_job() {
+        let mut ledger = ActivityLedger::new(4);
+        ledger.set_runtime(RuntimeState::Ready);
+        let job = ledger
+            .submit(Operation::RunSnuffling, None, b"job".to_vec(), 1.0)
+            .handle();
+        assert!(ledger.try_dispatch(job, Waker::noop()));
+        assert_eq!(ledger.request_cancel(job, 2.0), CancelRequest::Interrupt);
+
+        ledger.mark_wire_running(job.id().get(), 3.0);
+        assert!(matches!(
+            ledger.get(job).map(super::JobRecord::state),
+            Some(JobState::Cancelling { .. })
+        ));
+
+        ledger.mark_cancel_too_late(job);
+        ledger.complete(job, Outcome::Succeeded);
+        assert!(matches!(
+            ledger.get(job).map(super::JobRecord::state),
+            Some(JobState::Done(Outcome::TooLate))
+        ));
+    }
+
+    /// A rejected replacement must not cancel the queued work it failed to
+    /// replace — supersession is a property of admitted submissions only.
+    #[test]
+    fn a_rejected_replacement_leaves_the_superseded_queue_entry_alone() {
+        let mut ledger = ActivityLedger::new(4);
+        ledger.set_runtime(RuntimeState::Ready);
+        let queued = ledger
+            .submit(Operation::GetView, None, b"first".to_vec(), 1.0)
+            .handle();
+        ledger.set_runtime(RuntimeState::Restarting);
+
+        let replacement = ledger.submit(Operation::GetView, None, b"second".to_vec(), 2.0);
+        assert!(matches!(replacement, Submission::Rejected(_, _)));
+        assert!(!ledger.is_terminal(queued));
+        assert_eq!(ledger.queued_count(), 1);
+    }
+
+    /// Pruning only removes terminal records, so an absent record answers
+    /// terminal — a dispatch future polled after pruning must not park forever.
+    #[test]
+    fn a_pruned_record_still_reports_terminal() {
+        let mut ledger = ActivityLedger::new(4);
+        ledger.set_runtime(RuntimeState::Ready);
+        let job = ledger
+            .submit(Operation::RunCommand, None, b"first".to_vec(), 1.0)
+            .handle();
+        ledger.complete(job, Outcome::Succeeded);
+        for round in 0_u64..32 {
+            let filler = ledger
+                .submit(Operation::RunCommand, None, round.to_le_bytes().to_vec(), 2.0)
+                .handle();
+            ledger.complete(filler, Outcome::Succeeded);
+        }
+
+        assert!(ledger.get(job).is_none(), "the oldest record should prune");
+        assert!(ledger.is_terminal(job));
     }
 }

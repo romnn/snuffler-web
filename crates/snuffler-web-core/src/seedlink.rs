@@ -78,68 +78,73 @@ fn find_header(bytes: &[u8]) -> Option<usize> {
 ///
 /// Returns [`FrameError`] when a v4 header advertises a packet beyond the framing bound.
 pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
+    // A consumed-bytes cursor with one drain at the end: a WebSocket message
+    // carries back-to-back packets, and per-packet drains plus full-buffer
+    // header scans would make each message quadratic in its packet count.
+    // find_header runs only to resync after garbage.
     let mut records = Vec::new();
+    let mut cursor = 0_usize;
     loop {
-        let Some(position) = find_header(buffer) else {
-            let keep_from = buffer.len().saturating_sub(V4_FIXED_HEADER_BYTES - 1);
-            buffer.drain(..keep_from);
+        let bytes = buffer.get(cursor..).unwrap_or_default();
+        let bytes = if is_v3_header(bytes) || is_v4_header(bytes) {
+            bytes
+        } else if let Some(position) = find_header(bytes) {
+            cursor = cursor.saturating_add(position);
+            buffer.get(cursor..).unwrap_or_default()
+        } else {
+            // No header anywhere: everything but a possible partial-header tail
+            // is garbage the next message cannot complete.
+            cursor = cursor.saturating_add(
+                bytes.len().saturating_sub(V4_FIXED_HEADER_BYTES - 1),
+            );
             break;
         };
-        if position > 0 {
-            buffer.drain(..position);
-        }
-        if buffer.len() < 8 {
-            break;
-        }
-        if is_v3_header(buffer) {
-            if buffer.len() < V3_PACKET_BYTES {
+        if is_v3_header(bytes) {
+            if bytes.len() < V3_PACKET_BYTES {
                 break;
             }
-            if let Some(record) = buffer.get(V3_RECORD_OFFSET..V3_PACKET_BYTES) {
+            if let Some(record) = bytes.get(V3_RECORD_OFFSET..V3_PACKET_BYTES) {
                 records.extend_from_slice(record);
             }
-            buffer.drain(..V3_PACKET_BYTES);
-        } else if is_v4_header(buffer) {
-            if buffer.len() < V4_FIXED_HEADER_BYTES {
-                break;
-            }
-            let Some(length_bytes) = buffer
+            cursor = cursor.saturating_add(V3_PACKET_BYTES);
+        } else {
+            let Some(length_bytes) = bytes
                 .get(4..8)
                 .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
             else {
-                buffer.drain(..1);
+                cursor = cursor.saturating_add(1);
                 continue;
             };
             let Ok(payload_len) = usize::try_from(u32::from_le_bytes(length_bytes)) else {
-                buffer.drain(..1);
+                cursor = cursor.saturating_add(1);
                 continue;
             };
-            let Some(station_len) = buffer.get(16).copied().map(usize::from) else {
+            let Some(station_len) = bytes.get(16).copied().map(usize::from) else {
                 break;
             };
             let packet_len = V4_FIXED_HEADER_BYTES
                 .saturating_add(station_len)
                 .saturating_add(payload_len);
             if packet_len > MAX_FRAME_BUFFER_BYTES {
+                buffer.drain(..cursor.min(buffer.len()));
                 return Err(FrameError::Oversized {
                     announced: packet_len,
                     limit: MAX_FRAME_BUFFER_BYTES,
                 });
             }
-            if buffer.len() < packet_len {
+            if bytes.len() < packet_len {
                 break;
             }
-            if matches!(buffer.get(2), Some(b'2' | b'3')) && buffer.get(3) == Some(&b'D') {
+            if matches!(bytes.get(2), Some(b'2' | b'3')) && bytes.get(3) == Some(&b'D') {
                 let payload_start = V4_FIXED_HEADER_BYTES + station_len;
-                if let Some(payload) = buffer.get(payload_start..packet_len) {
+                if let Some(payload) = bytes.get(payload_start..packet_len) {
                     records.extend_from_slice(payload);
                 }
             }
-            buffer.drain(..packet_len);
-        } else {
-            buffer.drain(..1);
+            cursor = cursor.saturating_add(packet_len);
         }
     }
+    buffer.drain(..cursor.min(buffer.len()));
     Ok(records)
 }
 
