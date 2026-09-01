@@ -259,6 +259,32 @@ function fresh(state?: ExecutionControlState): { control: Int32Array; interrupt:
   );
 }
 
+{
+  // Until Python's first protected bytecodes grant ownership through
+  // enterProtectedFrame, a request stays ...WithoutInterpreter — where a
+  // cancel records the request but can never arm SIGINT. Pyodide's
+  // coroutine-scheduling plumbing therefore always runs with the byte clear.
+  const { control, interrupt } = fresh();
+  const seen = requestCancellation(control, interrupt);
+  check("pre-frame cancel reports Computing", seen, ExecutionState.Computing);
+  check(
+    "pre-frame cancel -> CancellingWithoutInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithoutInterpreter
+  );
+  check("pre-frame cancel leaves the byte clear", Atomics.load(interrupt, 0), 0);
+  // The protected-frame entry then grants ownership; arming a pending
+  // cancellation here is correct because the target frame is now executing,
+  // and the very next bytecode raises the typed cancellation inside the try.
+  setInterpreterOwnership(control, true, interrupt);
+  check(
+    "protected-frame entry of a cancelled request -> CancellingWithInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithInterpreter
+  );
+  check("protected-frame entry of a cancelled request arms the byte", Atomics.load(interrupt, 0), 2);
+}
+
 if (failures > 0) {
   console.error(`${failures} execution-control checks failed`);
   process.exit(1);

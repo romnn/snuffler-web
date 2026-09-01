@@ -131,6 +131,15 @@ export function setInterpreterOwnership(
   }
 }
 
+// There is deliberately NO ownership-granting entry point for the dispatch
+// path: a request's control word stays ...WithoutInterpreter — where
+// requestCancellation cannot arm SIGINT — until Python itself calls
+// setInterpreterOwnership through the worker's enterProtectedFrame callback,
+// from bridge.call's first protected bytecodes. An interrupt armed any earlier
+// would be consumed by Pyodide's coroutine-scheduling plumbing instead of the
+// target frame — a transport failure or a stranded Future rather than the
+// typed cancelled result.
+
 // External promises re-enter Python through Pyodide's Future resolver.
 // Keep SIGINT disarmed until the protected job coroutine is executing again,
 // or KeyboardInterrupt can land in the resolver and strand its Future.

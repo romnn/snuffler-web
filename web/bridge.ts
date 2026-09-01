@@ -11,6 +11,7 @@ import {
   MlDevice as ProtoMlDevice,
   MlDeviceStatusSchema,
   MountGfStoreRequestSchema,
+  RuntimeFailureSchema,
   RuntimeInfoSchema,
   WorkerEventSchema,
   type RuntimeInfo,
@@ -57,8 +58,14 @@ declare global {
   interface Window {
     __snufflerProgress?: (frac: number, label: string) => void;
     // The Pyodide worker index.html starts at page load, with the messages its
-    // placeholder listener parked until ensureWorker() takes over.
-    __snufflerWorker?: { worker: Worker; queue: MessageEvent<WorkerMessage>[]; epoch: number };
+    // placeholder listener parked until ensureWorker() takes over. `failure`
+    // carries a worker-script load error that fired before adoption.
+    __snufflerWorker?: {
+      worker: Worker;
+      queue: MessageEvent<WorkerMessage>[];
+      epoch: number;
+      failure?: string | null;
+    };
     showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
     showOpenFilePicker?: (opts?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>;
   }
@@ -119,6 +126,12 @@ let worker: Worker | null = null;
 let nextRequestId = 1;
 let runtimeEpoch = typeof window === "undefined" ? 0 : (window.__snufflerWorker?.epoch ?? 0);
 let bootTimer: number | null = null;
+// Consecutive worker deaths that never reported runtimeInfo. A persistent boot
+// failure (missing/broken worker script) would otherwise recreate workers
+// forever without ever reaching the ledger's Failed state.
+let consecutiveBootFailures = 0;
+let runtimeHaltedReason: string | null = null;
+const MAX_CONSECUTIVE_BOOT_FAILURES = 3;
 let interruptBuffer = new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT);
 const pendingRequests = new Map<string, PendingRequest>();
 let mlDevice = ProtoMlDevice.WASM;
@@ -175,6 +188,7 @@ function handleWorkerEvent(msg: WorkerEventMessage, epoch: number): void {
     case "runtimeInfo":
       clearBootTimer();
       latestRuntimeInfo = event.value;
+      consecutiveBootFailures = 0;
       break;
   }
 }
@@ -227,8 +241,12 @@ function armBootDeadline(instance: Worker, epoch: number): void {
   }, WORKER_BOOT_TIMEOUT_MS);
 }
 
-function ensureWorker(): Worker {
+function ensureWorker(): Worker | null {
   if (worker) return worker;
+  // Persistent boot failure: recreating yet another worker would only repeat
+  // it. The synthetic runtimeFailure event already put the ledger in Failed;
+  // an explicit restartRuntime() lifts the halt for a user-initiated retry.
+  if (runtimeHaltedReason != null) return null;
   // Adopt the worker index.html started at page load, which has had the whole
   // wasm download to get Python going; only fall back to creating one here if
   // that early start was skipped (no cross-origin isolation yet).
@@ -258,14 +276,23 @@ function ensureWorker(): Worker {
     // Its epoch was minted before the app module existed, so those messages use
     // the same fence as messages received after adoption.
     const queued = early.queue;
+    const failure = early.failure;
     window.__snufflerWorker = undefined;
     for (const event of queued) handleWorkerMessage(instance, epoch, event);
+    if (failure != null) {
+      // The eager worker's module script already failed before adoption; the
+      // error event fired with only the placeholder listening. Recreate now,
+      // through the bounded path, instead of waiting out the boot deadline.
+      recreateWorker(new Error(failure));
+      return worker;
+    }
   }
   return instance;
 }
 
-function recreateWorker(reason: Error): void {
+function recreateWorker(reason: Error, intentionalTeardown = false): void {
   const previous = worker;
+  const bootNeverCompleted = latestRuntimeInfo == null && !intentionalTeardown;
   clearBootTimer();
   worker = null;
   latestRuntimeInfo = null;
@@ -280,6 +307,33 @@ function recreateWorker(reason: Error): void {
   runtimeEpoch = (runtimeEpoch + 1) >>> 0;
   nextRequestId = 1;
   interruptBuffer = new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT);
+  if (bootNeverCompleted) {
+    consecutiveBootFailures += 1;
+    if (consecutiveBootFailures >= MAX_CONSECUTIVE_BOOT_FAILURES) {
+      // Deterministic boot failure: stop recreating and tell the ledger. The
+      // synthetic event takes the same path a live worker's boot failure does,
+      // so Rust reaches RuntimeState::Failed instead of looping forever.
+      runtimeHaltedReason = `Python runtime failed ${consecutiveBootFailures} times in a row: ${reason.message}`;
+      operationEvents.push(
+        toBinary(
+          WorkerEventSchema,
+          create(WorkerEventSchema, {
+            runtimeEpoch,
+            event: {
+              case: "runtimeFailure",
+              value: create(RuntimeFailureSchema, {
+                kind: "BootFailure",
+                message: runtimeHaltedReason,
+              }),
+            },
+          })
+        )
+      );
+      return;
+    }
+  } else {
+    consecutiveBootFailures = 0;
+  }
   ensureWorker();
 }
 
@@ -291,7 +345,12 @@ export function currentRuntimeEpoch(): number {
 
 /** Recreates the Python runtime and returns its new epoch. */
 export function restartRuntime(reason = "Python runtime restart requested"): number {
-  recreateWorker(new Error(reason));
+  // A user-initiated restart starts a fresh retry budget and lifts a
+  // persistent-boot-failure halt. The teardown itself is intentional, not a
+  // boot failure — counting it would leave only two real attempts.
+  consecutiveBootFailures = 0;
+  runtimeHaltedReason = null;
+  recreateWorker(new Error(reason), true);
   return runtimeEpoch;
 }
 
@@ -350,6 +409,9 @@ function send(
     );
   }
   const target = ensureWorker();
+  if (!target) {
+    return Promise.reject(new Error(runtimeHaltedReason ?? "the Python runtime is unavailable"));
+  }
   const epoch = runtimeEpoch;
   const id = nextRequestId++;
   const key = pendingRequestKey(epoch, id);
@@ -879,19 +941,55 @@ async function pickedFilePage(files: File[]) {
   if (files.length === 0) {
     return cancelledFileLoadPage();
   }
+  // These auxiliary imports (markers, events, stations, StationXML) arrive as
+  // one aggregate rpc, so they carry the paged waveform loader's byte bounds —
+  // per file AND in total — or an oversized selection would still aggregate
+  // unbounded buffers on the main thread. Over-budget files become typed
+  // failures, and the Rust consumer is all-or-error, so one rejection fails
+  // the whole import with the reason spelled out.
+  const loaded: BrowserFile[] = [];
+  const failures: BrowserReadFailure[] = [];
+  let totalBytes = 0;
+  for (const file of files) {
+    if (file.size > FILE_PAGE_BYTES) {
+      failures.push(
+        create(BrowserReadFailureSchema, {
+          name: file.name,
+          detail: `file is ${file.size} bytes; the per-file limit is ${FILE_PAGE_BYTES}`,
+        })
+      );
+      continue;
+    }
+    if (totalBytes + file.size > FILE_PAGE_BYTES) {
+      failures.push(
+        create(BrowserReadFailureSchema, {
+          name: file.name,
+          detail: `the selection exceeds the ${FILE_PAGE_BYTES}-byte total limit for one import`,
+        })
+      );
+      continue;
+    }
+    totalBytes += file.size;
+    try {
+      loaded.push(
+        create(BrowserFileSchema, {
+          name: file.name,
+          content: new Uint8Array(await file.arrayBuffer()),
+          lastModified: BigInt(file.lastModified),
+        })
+      );
+    } catch (error) {
+      failures.push(
+        create(BrowserReadFailureSchema, {
+          name: file.name,
+          detail: error instanceof Error ? error.message : String(error),
+        })
+      );
+    }
+  }
   return toBinary(
     BrowserFileLoadPageSchema,
-    create(BrowserFileLoadPageSchema, {
-      files: await Promise.all(
-        files.map(async (file) =>
-          create(BrowserFileSchema, {
-            name: file.name,
-            content: new Uint8Array(await file.arrayBuffer()),
-            lastModified: BigInt(file.lastModified),
-          })
-        )
-      ),
-    })
+    create(BrowserFileLoadPageSchema, { files: loaded, failures })
   );
 }
 

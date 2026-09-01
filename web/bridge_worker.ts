@@ -9,6 +9,7 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import {
   BootProgressSchema,
   BridgeResultSchema,
+  CancelledSchema,
   MlDevice,
   MlDeviceStatusSchema,
   OperationCountProgressSchema,
@@ -308,7 +309,6 @@ function acquireInterpreter(
       // The job keeps its cancellation state while the view owns the interpreter.
       // Its interrupt is re-armed when the view releases the interpreter.
     }
-    setInterpreterOwnership(control, true, interrupt);
   } else {
     if (activeJobControl) {
       throw new Error("protocol fault: a second job request reached the Python worker");
@@ -319,8 +319,12 @@ function acquireInterpreter(
     }
     activeJobControl = control;
     activeJobBlocksView = blocksView;
-    setInterpreterOwnership(control, activeViewControl == null, interrupt);
   }
+  // Interpreter ownership is NOT granted here. The request's control word stays
+  // ...WithoutInterpreter — where cancellation cannot arm SIGINT — until Python
+  // itself calls enterProtectedFrame from bridge.call's first protected
+  // bytecodes, so no interrupt can be consumed in the coroutine-scheduling
+  // plumbing between this point and the target frame.
   return lane;
 }
 
@@ -339,7 +343,12 @@ function releaseInterpreter(lane: PythonLane, control: Int32Array, interrupt: Ui
   }
 }
 
-function operationCallbacks(msg: WorkerRequest, control: Int32Array, interrupt: Uint8Array) {
+function operationCallbacks(
+  msg: WorkerRequest,
+  lane: PythonLane,
+  control: Int32Array,
+  interrupt: Uint8Array
+) {
   const reporter = (done: number, total: number, phase: string): boolean => {
     if (cancellationRequested(control)) return false;
     postCountProgress(BigInt(msg.jobId || 0), done, total < 0 ? null : total, phase);
@@ -351,10 +360,47 @@ function operationCallbacks(msg: WorkerRequest, control: Int32Array, interrupt: 
   const beginExternalWait = (): void => {
     setExternalWait(control, true, false, interrupt);
   };
+  // "Does this request own the interpreter" is lane-dependent: a view is the
+  // owner exactly while it is the active view, a job exactly while no view
+  // displaces it. The job-only predicate would read inverted for a view.
+  const ownsInterpreter = (): boolean =>
+    lane === "VIEW" ? activeViewControl === control : activeViewControl == null;
   const endExternalWait = (): void => {
-    setExternalWait(control, false, activeViewControl == null, interrupt);
+    setExternalWait(control, false, ownsInterpreter(), interrupt);
   };
-  return { reporter, beginRequestCommit, beginExternalWait, endExternalWait };
+  // Called by bridge.call from its first protected bytecodes; grants ownership
+  // (arming the byte if cancellation is already pending) only once the target
+  // frame is provably the one executing. See acquireInterpreter.
+  const enterProtectedFrame = (): void => {
+    setInterpreterOwnership(control, ownsInterpreter(), interrupt);
+  };
+  return { reporter, beginRequestCommit, beginExternalWait, endExternalWait, enterProtectedFrame };
+}
+
+// The typed cancelled envelope, produced worker-side for a request whose
+// cancellation is already decided before (or instead of) Python answering: a
+// cancel that won while the request was queued, or a KeyboardInterrupt that was
+// consumed outside bridge.call's protected frames.
+function bridgeCancelledResult(): WorkerReplyPayload {
+  const result = toBinary(
+    BridgeResultSchema,
+    create(BridgeResultSchema, {
+      result: { case: "cancelled", value: create(CancelledSchema) },
+    })
+  );
+  const resultBuffer = result.buffer as ArrayBuffer;
+  return { result: resultBuffer, transfer: [resultBuffer] };
+}
+
+// True when an error thrown by a bridge.call invocation is this request's own
+// cancellation surfacing outside the protected frames (Pyodide raises it as a
+// PythonError whose `type` names the Python exception class). Gated on the
+// control word so an unrelated Python failure that merely mentions
+// KeyboardInterrupt can never be misread as a cancellation.
+function isEscapedCancellation(control: Int32Array, error: unknown): boolean {
+  if (!cancellationRequested(control)) return false;
+  const type = (error as { type?: unknown } | null)?.type;
+  return type === "KeyboardInterrupt";
 }
 
 function responseContentLength(response: Response): number {
@@ -1152,12 +1198,15 @@ async function handleRequest(
   const jobId = BigInt(msg.jobId || 0);
   if (msg.method === BridgeMethod.runSnuffling) activeSeisbenchJobId = jobId;
   postOperationStarted(jobId);
-  const { reporter, beginRequestCommit, beginExternalWait, endExternalWait } = operationCallbacks(
-    msg,
-    control,
-    interrupt
-  );
+  const { reporter, beginRequestCommit, beginExternalWait, endExternalWait, enterProtectedFrame } =
+    operationCallbacks(msg, lane, control, interrupt);
   try {
+    // A request cancelled while it was queued never reaches Python: dispatching
+    // it would need SIGINT armed before its first protected frame, where the
+    // interrupt could land in coroutine-scheduling plumbing instead.
+    if (cancellationRequested(control)) {
+      return bridgeCancelledResult();
+    }
     const requestTimings: BridgeTimings | null =
       BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
         ? {
@@ -1211,28 +1260,41 @@ finally:
       }
       py.FS.mkdir(mount);
       await py.mountNativeFS(mount, msg.handle);
-      return bridgeResult(
-        await bridge.call(
+      let mountRes;
+      try {
+        mountRes = await bridge.call(
           msg.method,
           msg.request,
           mount,
           reporter,
           beginRequestCommit,
           beginExternalWait,
-          endExternalWait
-        )
-      );
+          endExternalWait,
+          enterProtectedFrame
+        );
+      } catch (error) {
+        if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
+        throw error;
+      }
+      return bridgeResult(mountRes);
     }
     const pyCallT0 = performance.now();
-    const res = await bridge.call(
-      msg.method,
-      msg.request,
-      msg.data ?? null,
-      reporter,
-      beginRequestCommit,
-      beginExternalWait,
-      endExternalWait
-    );
+    let res;
+    try {
+      res = await bridge.call(
+        msg.method,
+        msg.request,
+        msg.data ?? null,
+        reporter,
+        beginRequestCommit,
+        beginExternalWait,
+        endExternalWait,
+        enterProtectedFrame
+      );
+    } catch (error) {
+      if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
+      throw error;
+    }
     if (requestTimings) requestTimings.py_call_ms = performance.now() - pyCallT0;
     return bridgeResult(res, requestTimings);
   } finally {
