@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use ecolor::Color32;
 use emath::{Align2, Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
+use snuffler_web_core::marker_store::{MarkerCandidates, MarkerId};
 use snuffler_web_core::markers::{MARKER_COLORS, Marker};
 use snuffler_web_core::state::{AppState, Subsort, WiggleTheme};
 use snuffler_web_core::timeaxis;
@@ -692,6 +693,14 @@ pub fn paint(
     // skipped along with the marker layers instead of paying markers × spans
     // on every repaint first.
     let markers_over = markers_overloaded(state);
+    let marker_ids = if markers_over {
+        Vec::new()
+    } else {
+        match state.markers.overlapping(state.tmin, state.tmax, 2000) {
+            MarkerCandidates::Exact(ids) => ids,
+            MarkerCandidates::Overloaded { .. } => Vec::new(),
+        }
+    };
 
     // tracks (clipped to the track area so a partially-scrolled first/last row
     // never bleeds over the time axis or the top edge)
@@ -826,10 +835,13 @@ pub fn paint(
                             draw_marker_snippets(
                                 target,
                                 state,
-                                t,
-                                span,
-                                samples,
-                                base_abs,
+                                MarkerSnippet {
+                                    marker_ids: &marker_ids,
+                                    track: t,
+                                    span,
+                                    samples,
+                                    base_abs,
+                                },
                                 &|t_abs, v| {
                                     let x = x_of(t_abs);
                                     in_x(x).then(|| pos2(x, y_of(span, v)))
@@ -983,6 +995,7 @@ pub fn paint(
         &x_of,
         pal.axis_text,
         markers_over,
+        &marker_ids,
     );
     target.pop_clip();
 
@@ -1132,15 +1145,28 @@ pub fn marker_row_spans(
 /// an instantaneous pick gets one square at its interpolated amplitude. Runs
 /// inside the trace loop because that is where the samples and their y
 /// projection live — exactly where Qt calls it.
+#[derive(Clone, Copy)]
+struct MarkerSnippet<'a> {
+    marker_ids: &'a [MarkerId],
+    track: &'a ViewTrack,
+    span: &'a ViewSpan,
+    samples: &'a [f32],
+    base_abs: f64,
+}
+
 fn draw_marker_snippets(
     target: &mut dyn DrawTarget,
     state: &AppState,
-    t: &ViewTrack,
-    span: &ViewSpan,
-    samples: &[f32],
-    base_abs: f64,
+    snippet: MarkerSnippet<'_>,
     px: &impl Fn(f64, f64) -> Option<emath::Pos2>,
 ) {
+    let MarkerSnippet {
+        marker_ids,
+        track,
+        span,
+        samples,
+        base_abs,
+    } = snippet;
     // Qt chops with `snap=(ceil, floor)` and `include_last`: the first sample
     // at or after tmin through the last at or before tmax, clipped to the
     // trace — its `drawpoint(..., clip=True)` squares land on the trace's own
@@ -1165,7 +1191,10 @@ fn draw_marker_snippets(
         target.line(r.right_bottom(), r.left_bottom(), 2.0, col);
         target.line(r.left_bottom(), r.left_top(), 2.0, col);
     };
-    for (id, m) in state.markers.iter_with_ids() {
+    for (id, m) in marker_ids
+        .iter()
+        .filter_map(|id| state.markers.by_id(*id).map(|marker| (*id, marker)))
+    {
         // The same visibility filter the marker layers apply — Qt's strict
         // window overlap, written without the negation — plus Qt's per-trace
         // pattern match against this concrete trace.
@@ -1173,7 +1202,7 @@ fn draw_marker_snippets(
             || m.tmin >= state.tmax
             || state.tmin >= m.tmax
             || !state.marker_kind_visible(m.kind)
-            || !marker_matches_trace(m, t, &span.loc)
+            || !marker_matches_trace(m, track, &span.loc)
         {
             continue;
         }
@@ -1347,6 +1376,7 @@ fn draw_markers(
     x_of: &impl Fn(f64) -> f32,
     fg: Color32,
     overloaded: bool,
+    marker_ids: &[MarkerId],
 ) {
     let v0 = area.top();
     let v1 = area.bottom();
@@ -1355,8 +1385,9 @@ fn draw_markers(
     // a count take over (Qt's TooMany fallback, pile_viewer.py:3030) — a
     // catalog load or a picker run over a long window reaches that easily.
     if overloaded {
+        let summary = state.markers.summary();
         let n_all = state.markers.len();
-        let n_sel = state.markers.iter().filter(|m| m.selected).count();
+        let n_sel = summary.selected;
         let suffix = if n_sel == n_all {
             " (all selected)".to_owned()
         } else if n_sel > 0 {
@@ -1367,23 +1398,21 @@ fn draw_markers(
         // Qt takes the first marker's tmin and the last's tmax; its list is
         // sorted by tmin, so that is the earliest start and the end of the
         // latest-starting marker.
-        let t_first = state
-            .markers
-            .iter()
-            .map(|m| m.tmin)
-            .fold(f64::INFINITY, f64::min);
-        let t_last = state
-            .markers
-            .iter()
-            .max_by(|a, b| a.tmin.total_cmp(&b.tmin))
-            .map_or(f64::NEG_INFINITY, |m| m.tmax);
-        let umin = x_of(t_first).max(area.left());
-        let umax = x_of(t_last).min(area.right());
+        let first_x = x_of(summary.earliest_marker_start).max(area.left());
+        let last_x = x_of(summary.latest_starting_marker_end).min(area.right());
         // DotLine on a width-2 pen: 2 px dots, 4 px gaps.
-        dashed_line(target, pos2(umin, v0), pos2(umax, v0), 2.0, fg, 2.0, 4.0);
+        dashed_line(
+            target,
+            pos2(first_x, v0),
+            pos2(last_x, v0),
+            2.0,
+            fg,
+            2.0,
+            4.0,
+        );
         draw_marker_label(
             target,
-            pos2(umin + 10.0, v0 - 10.0),
+            pos2(first_x + 10.0, v0 - 10.0),
             Align2::LEFT_BOTTOM,
             &format!("{n_all} Markers{suffix}"),
             fg,
@@ -1397,16 +1426,15 @@ fn draw_markers(
     let shown = |m: &Marker| {
         m.tmin < state.tmax && state.tmin < m.tmax && state.marker_kind_visible(m.kind)
     };
-    let active_hash = state
-        .markers
-        .iter()
-        .find(|m| m.active)
-        .and_then(|m| m.event_hash.clone());
+    let active_hash = state.markers.summary().active_hash;
 
     // Per-track layer (`Marker.draw_trace`): events draw nothing here
     // (`EventMarker.draw_trace` is a pass). An unscoped marker matches every
     // trace, so it paints these on every row, exactly as Qt does.
-    for (id, m) in state.markers.iter_with_ids() {
+    for (id, m) in marker_ids
+        .iter()
+        .filter_map(|id| state.markers.by_id(*id).map(|marker| (*id, marker)))
+    {
         if m.is_event || !shown(m) {
             continue;
         }
@@ -1469,7 +1497,10 @@ fn draw_markers(
     }
 
     // Overview layer (`Marker.draw` via `draw_visible_markers`), painted on top.
-    for (id, m) in state.markers.iter_with_ids() {
+    for (id, m) in marker_ids
+        .iter()
+        .filter_map(|id| state.markers.by_id(*id).map(|marker| (*id, marker)))
+    {
         if !shown(m) {
             continue;
         }
@@ -1553,8 +1584,8 @@ mod tests {
     use crate::palette::{Theme, palette};
 
     use super::{
-        color_key, draw_marker_snippets, marker_matches_track, paint, stroke_color_map,
-        web_band_share, web_stroke_palette, web_toward_canvas,
+        MarkerSnippet, color_key, draw_marker_snippets, marker_matches_track, paint,
+        stroke_color_map, web_band_share, web_stroke_palette, web_toward_canvas,
     };
     use ecolor::Color32;
     use snuffler_web_core::state::Subsort;
@@ -2050,10 +2081,22 @@ mod tests {
                 ..AppState::default()
             };
             state.markers.insert(marker);
+            let marker_ids: Vec<_> = state.markers.iter_with_ids().map(|(id, _)| id).collect();
             let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
                 Vec2::new(text.len() as f32 * size * 0.5, size)
             });
-            draw_marker_snippets(&mut target, &state, &row, &span, &seg_samples, 0.0, &px);
+            draw_marker_snippets(
+                &mut target,
+                &state,
+                MarkerSnippet {
+                    marker_ids: &marker_ids,
+                    track: &row,
+                    span: &span,
+                    samples: &seg_samples,
+                    base_abs: 0.0,
+                },
+                &px,
+            );
             target.finish()
         };
         // Wholly past the segment: silence, as after Qt's NoData.

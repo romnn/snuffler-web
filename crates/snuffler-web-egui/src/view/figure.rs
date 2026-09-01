@@ -87,14 +87,20 @@ impl FigureWindows {
     ) -> bool {
         let generation = session.state.markers.generation();
         let dark = ctx.theme() == egui::Theme::Dark;
-        let fresh = self.requests.get(kind).is_some_and(|(cached_generation, cached)| {
-            *cached_generation == generation
-                && cached.dark == dark
-                && cached.params.as_ref().is_some_and(|params| {
-                    params.view == Some(session.view_params(800))
-                        && params.snufflings == Some(session.snufflings.params())
-                })
-        });
+        let bridge_has_request =
+            session.bridge.figure(kind).is_some() || session.bridge.figure_job(kind).is_some();
+        let fresh = bridge_has_request
+            && self
+                .requests
+                .get(kind)
+                .is_some_and(|(cached_generation, cached)| {
+                    *cached_generation == generation
+                        && cached.dark == dark
+                        && cached.params.as_ref().is_some_and(|params| {
+                            params.view == Some(session.view_params(800))
+                                && params.snufflings == Some(session.snufflings.params())
+                        })
+                });
         if !fresh {
             let request = FigureRequest {
                 kind: kind.to_owned(),
@@ -107,7 +113,11 @@ impl FigureWindows {
             };
             // A marker edit that left the request identical (a kind cycled, a
             // note renamed) refreshes the generation key without re-rendering.
-            if self.requests.get(kind).is_none_or(|(_, cached)| cached != &request) {
+            if self
+                .requests
+                .get(kind)
+                .is_none_or(|(_, cached)| cached != &request)
+            {
                 let _submission = session.bridge.render_figure(request.clone());
             }
             self.requests.insert(kind.to_owned(), (generation, request));

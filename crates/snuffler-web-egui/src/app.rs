@@ -9,11 +9,9 @@ use crate::view::marker_table::markers_to_file;
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
 use snuffler_web_core::activity::{
-    CancelCap, JobError, JobHandle, JobRecord, JobState, Outcome, Progress, RuntimeState,
+    CancellationCapability, JobError, JobHandle, JobRecord, JobState, Operation, Outcome, Progress,
+    RuntimeState, Submission,
 };
-#[cfg(feature = "svg-raster")]
-use snuffler_web_core::activity::{Operation, Submission};
-#[cfg(feature = "svg-raster")]
 use snuffler_web_core::bridge::BridgeError;
 use snuffler_web_core::bridge::{ExampleDataset, Repaint};
 use snuffler_web_core::markers::Marker;
@@ -37,6 +35,19 @@ struct PngExport {
     filename: String,
     job: JobHandle,
 }
+
+#[cfg(feature = "threads")]
+struct MarkerExport {
+    receiver: std::sync::mpsc::Receiver<snuffler_web_core::bridge::MarkerFile>,
+    job: JobHandle,
+}
+
+#[derive(Clone, Copy)]
+enum MarkerExportScope {
+    All,
+    Selected,
+}
+
 /// The widest the readout can get (the rate is capped at 60), used to reserve a
 /// width that does not change as the number does.
 const FRAME_STATS_WIDEST: &str = "60 fps";
@@ -115,11 +126,17 @@ pub struct App {
     screenshot_crop: egui::Rect,
     /// A "Save image (SVG)" menu click, handled after layout once the view is known.
     svg_request: bool,
+    svg_prepare_job: Option<JobHandle>,
+    marker_prepare: Option<(JobHandle, MarkerExportScope)>,
+    #[cfg(feature = "threads")]
+    marker_export_rx: Option<MarkerExport>,
     /// In-flight off-thread PNG export: receives the encoded bytes from the rayon
     /// pool, paired with the download filename. Only the threaded build runs the
     /// export off-thread; otherwise it rasterizes synchronously (no receiver).
     #[cfg(all(feature = "svg-raster", feature = "threads"))]
     export_rx: Option<PngExport>,
+    #[cfg(feature = "svg-raster")]
+    png_prepare_job: Option<JobHandle>,
     /// Smoothed egui CPU time per frame, in milliseconds.
     frame_stats_ms: Option<f64>,
     /// The frame rate the top bar is currently showing, and when it last changed.
@@ -294,8 +311,14 @@ impl App {
             screenshot_awaiting: false,
             screenshot_crop: egui::Rect::ZERO,
             svg_request: false,
+            svg_prepare_job: None,
+            marker_prepare: None,
+            #[cfg(feature = "threads")]
+            marker_export_rx: None,
             #[cfg(all(feature = "svg-raster", feature = "threads"))]
             export_rx: None,
+            #[cfg(feature = "svg-raster")]
+            png_prepare_job: None,
             frame_stats_ms: None,
             frame_stats_shown_fps: None,
             frame_stats_shown_at_s: 0.0,
@@ -388,59 +411,13 @@ impl App {
         bins.ceil() as u32
     }
 
-    /// Start a high-DPI PNG export of the current waveform view. The vector SVG is
-    /// built here (it needs the egui `Context`), then rasterized: on the rayon
-    /// worker pool when available — so a big export never freezes the UI — and
-    /// otherwise synchronously on the main thread when the worker pool is not
-    /// available. See `AGENTS.md`: never block the egui render loop.
     #[cfg(feature = "svg-raster")]
-    fn start_png_export(&mut self, ctx: &egui::Context) {
-        let theme = ctx.theme();
-        let size = self.last_waveform_rect.size();
-        // Scoped so the `Ref` into the bridge ends the moment the SVG exists: what
-        // follows either rasterizes inline for as long as that takes, or hands the
-        // work to the rayon pool and returns while it runs. Either way pyrocko
-        // results keep landing and taking `borrow_mut()` on the same `RefCell`, so
-        // holding a read guard across that point is a panic waiting for the timing.
-        let svg = {
-            let Some(view) = self.session.bridge.view() else {
-                return;
-            };
-            waveform::render_svg(ctx, &self.session.state, &view, size, theme, 0.0)
-        };
-        let submission = self
-            .session
-            .bridge
-            .begin_local(Operation::ExportPng, Some("waveform view".to_owned()));
-        let Submission::Accepted(job) = submission else {
-            return;
-        };
-
-        #[cfg(feature = "threads")]
-        if crate::pool::ready() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (w, h) = (size.x, size.y);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the ExportPng ledger job accepted above keeps this rasterization visible"
-            )]
-            rayon::spawn(move || {
-                let _ = tx.send(crate::view::raster::rasterize_svg(
-                    &svg,
-                    w,
-                    h,
-                    PNG_EXPORT_SCALE,
-                ));
-            });
-            self.export_rx = Some(PngExport {
-                receiver: rx,
-                filename: export_filename("png"),
-                job,
-            });
-            return;
-        }
-
-        let png = crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE);
+    fn complete_png_rasterization(
+        &mut self,
+        job: JobHandle,
+        png: Option<Vec<u8>>,
+        filename: String,
+    ) {
         self.session.bridge.finish_local(
             job,
             png.as_ref().map_or_else(
@@ -454,11 +431,56 @@ impl App {
             ),
         );
         if let Some(png) = png {
-            let _submission = self
-                .session
-                .bridge
-                .save_image_png(png, export_filename("png"));
+            let _submission = self.session.bridge.save_image_png(png, filename);
         }
+    }
+
+    /// Starts a high-DPI PNG export of the current waveform view.
+    ///
+    /// SVG generation stays on the main wasm thread because a cloned egui context
+    /// shares locks with the live renderer.
+    /// Rasterization receives only the owned SVG and runs on rayon when available.
+    #[cfg(feature = "svg-raster")]
+    fn start_png_export(&mut self, ctx: &egui::Context, job: JobHandle) {
+        let theme = ctx.theme();
+        let size = self.last_waveform_rect.size();
+        let svg = {
+            let Some(view) = self.session.bridge.view() else {
+                self.session.bridge.finish_local(
+                    job,
+                    Err(BridgeError::browser(
+                        "rendering a PNG",
+                        "no waveform view is available",
+                    )),
+                );
+                return;
+            };
+            waveform::render_svg(ctx, &self.session.state, &view, size, theme, 0.0)
+        };
+
+        #[cfg(feature = "threads")]
+        if crate::pool::ready() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (w, h) = (size.x, size.y);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the ExportPng ledger job accepted above keeps this rasterization visible"
+            )]
+            rayon::spawn(move || {
+                let png = crate::view::raster::rasterize_svg(&svg, w, h, PNG_EXPORT_SCALE);
+                crate::pool::record_worker_png_export();
+                let _ = tx.send(png);
+            });
+            self.export_rx = Some(PngExport {
+                receiver: rx,
+                filename: export_filename("png"),
+                job,
+            });
+            return;
+        }
+
+        let png = crate::view::raster::rasterize_svg(&svg, size.x, size.y, PNG_EXPORT_SCALE);
+        self.complete_png_rasterization(job, png, export_filename("png"));
     }
 
     /// Delivers a finished off-thread PNG export while the navbar activity keeps
@@ -472,21 +494,7 @@ impl App {
         match status {
             Some(Ok(png)) => {
                 if let Some(export) = self.export_rx.take() {
-                    self.session.bridge.finish_local(
-                        export.job,
-                        png.as_ref().map_or_else(
-                            || {
-                                Err(BridgeError::browser(
-                                    "rendering a PNG",
-                                    "rasterization failed",
-                                ))
-                            },
-                            |_| Ok(()),
-                        ),
-                    );
-                    if let Some(png) = png {
-                        let _submission = self.session.bridge.save_image_png(png, export.filename);
-                    }
+                    self.complete_png_rasterization(export.job, png, export.filename);
                 }
             }
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {
@@ -540,7 +548,6 @@ impl App {
                 .on_hover_text("Discard the loaded data and markers, leaving an empty viewer.")
                 .clicked()
             {
-                self.clear_annotation_caches();
                 self.session.close_all();
                 ui.close();
             }
@@ -678,10 +685,7 @@ impl App {
 
     fn file_marker_items(&mut self, ui: &mut egui::Ui) {
         if ui.button("Save markers…").clicked() {
-            let _submission = self
-                .session
-                .bridge
-                .save_markers(markers_to_file(self.session.state.markers.as_slice()));
+            self.session.state.save_markers_requested = Some(false);
             ui.close();
         }
         if ui
@@ -695,15 +699,7 @@ impl App {
             )
             .clicked()
         {
-            let selected: Vec<Marker> = self
-                .session
-                .state
-                .markers
-                .iter()
-                .filter(|marker| marker.selected)
-                .cloned()
-                .collect();
-            let _submission = self.session.bridge.save_markers(markers_to_file(&selected));
+            self.session.state.save_markers_requested = Some(true);
             ui.close();
         }
         if ui.button("Load markers…").clicked() {
@@ -768,20 +764,12 @@ impl App {
             let _submission = self.session.bridge.open_files();
         }
         if let Some(selected) = self.session.state.save_markers_requested.take() {
-            let markers: Vec<Marker> = if selected {
-                self.session
-                    .state
-                    .markers
-                    .iter()
-                    .filter(|marker| marker.selected)
-                    .cloned()
-                    .collect()
+            let scope = if selected {
+                MarkerExportScope::Selected
             } else {
-                self.session.state.markers.iter().cloned().collect()
+                MarkerExportScope::All
             };
-            if !(selected && markers.is_empty()) {
-                let _submission = self.session.bridge.save_markers(markers_to_file(&markers));
-            }
+            self.request_marker_export(scope);
         }
         if std::mem::take(&mut self.session.state.export_image_requested) {
             self.screenshot_request = true;
@@ -789,6 +777,105 @@ impl App {
         if std::mem::take(&mut self.session.state.fullscreen_toggle_requested) {
             toggle_fullscreen();
         }
+    }
+
+    fn request_marker_export(&mut self, scope: MarkerExportScope) {
+        if self.marker_prepare.is_some()
+            || matches!(scope, MarkerExportScope::Selected)
+                && !self
+                    .session
+                    .state
+                    .markers
+                    .iter()
+                    .any(|marker| marker.selected)
+        {
+            return;
+        }
+        #[cfg(feature = "threads")]
+        if self.marker_export_rx.is_some() {
+            return;
+        }
+        let submission = self.session.bridge.begin_local(
+            Operation::SerializeMarkers,
+            Some(match scope {
+                MarkerExportScope::All => "all markers".to_owned(),
+                MarkerExportScope::Selected => "selected markers".to_owned(),
+            }),
+        );
+        if let Submission::Accepted(job) = submission {
+            self.marker_prepare = Some((job, scope));
+        }
+    }
+
+    fn complete_marker_serialization(
+        &mut self,
+        job: JobHandle,
+        file: snuffler_web_core::bridge::MarkerFile,
+    ) {
+        self.session.bridge.finish_local(job, Ok(()));
+        let _submission = self.session.bridge.save_markers(file);
+    }
+
+    fn process_marker_export(&mut self, ctx: &egui::Context) {
+        let _ = ctx;
+        #[cfg(feature = "threads")]
+        if let Some(export) = self.marker_export_rx.as_ref() {
+            match export.receiver.try_recv() {
+                Ok(file) => {
+                    let job = export.job;
+                    self.marker_export_rx = None;
+                    self.complete_marker_serialization(job, file);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let job = export.job;
+                    self.marker_export_rx = None;
+                    self.session.bridge.finish_local(
+                        job,
+                        Err(BridgeError::browser(
+                            "serializing markers",
+                            "worker disconnected",
+                        )),
+                    );
+                }
+            }
+            return;
+        }
+
+        let Some((job, scope)) = self.marker_prepare.take() else {
+            return;
+        };
+        let markers: Vec<Marker> = match scope {
+            MarkerExportScope::Selected => self
+                .session
+                .state
+                .markers
+                .iter()
+                .filter(|marker| marker.selected)
+                .cloned()
+                .collect(),
+            MarkerExportScope::All => self.session.state.markers.iter().cloned().collect(),
+        };
+
+        #[cfg(feature = "threads")]
+        if crate::pool::ready() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the SerializeMarkers ledger job accepted above owns this serialization"
+            )]
+            rayon::spawn(move || {
+                let _ = tx.send(markers_to_file(&markers));
+            });
+            self.marker_export_rx = Some(MarkerExport { receiver: rx, job });
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            return;
+        }
+
+        let file = markers_to_file(&markers);
+        self.complete_marker_serialization(job, file);
     }
 
     fn view_menu(&mut self, ui: &mut egui::Ui) {
@@ -1154,12 +1241,13 @@ impl App {
         {
             let queued = matches!(record.state(), JobState::Queued);
             let cancellable = queued
-                || (record.operation().activity().cancel != CancelCap::NotCancellable
+                || (record.operation().activity().cancellation
+                    != CancellationCapability::NotSupported
                     && !matches!(record.state(), JobState::Cancelling { .. }));
             if cancellable && ui.small_button("Cancel").clicked() {
                 let _disposition = self.session.bridge.cancel(handle);
             }
-            if let JobState::Cancelling { since_s } = record.state()
+            if let JobState::Cancelling { since_s, .. } = record.state()
                 && js_sys::Date::now() / 1000.0 - since_s > 5.0
                 && ui.small_button("Restart Python").clicked()
             {
@@ -1405,7 +1493,7 @@ impl App {
         )
     )]
     fn handle_export_requests(&mut self, ctx: &egui::Context) {
-        if std::mem::take(&mut self.svg_request) {
+        if let Some(job) = self.svg_prepare_job.take() {
             let theme = ctx.theme();
             // Qt's SVG export is a deliberate print canvas, not a window grab:
             // 842x595 (A4 landscape in points) with a 2.5 % margin framed into
@@ -1416,16 +1504,48 @@ impl App {
                 waveform::render_svg(ctx, &self.session.state, &view, size, theme, margin)
             });
             if let Some(svg) = svg {
+                self.session.bridge.finish_local(job, Ok(()));
                 let _submission = self
                     .session
                     .bridge
                     .save_image_svg(svg, export_filename("svg"));
+            } else {
+                self.session.bridge.finish_local(
+                    job,
+                    Err(BridgeError::browser(
+                        "rendering an SVG",
+                        "no waveform view is available",
+                    )),
+                );
+            }
+        }
+        if std::mem::take(&mut self.svg_request) && self.svg_prepare_job.is_none() {
+            let submission = self
+                .session
+                .bridge
+                .begin_local(Operation::ExportSvg, Some("waveform view".to_owned()));
+            if let Submission::Accepted(job) = submission {
+                self.svg_prepare_job = Some(job);
+                ctx.request_repaint();
             }
         }
 
+        #[cfg(feature = "svg-raster")]
+        if let Some(job) = self.png_prepare_job.take() {
+            self.start_png_export(ctx, job);
+        }
         if std::mem::take(&mut self.screenshot_request) {
             #[cfg(feature = "svg-raster")]
-            self.start_png_export(ctx);
+            {
+                let submission = self
+                    .session
+                    .bridge
+                    .begin_local(Operation::ExportPng, Some("waveform view".to_owned()));
+                if let Submission::Accepted(job) = submission {
+                    self.png_prepare_job = Some(job);
+                    ctx.request_repaint();
+                }
+            }
             #[cfg(not(feature = "svg-raster"))]
             {
                 self.screenshot_crop = self.last_waveform_rect;
@@ -1547,10 +1667,9 @@ impl App {
                             end: iso(self.session.state.tmax),
                             minmag,
                             with_mt: self.session.state.cat_with_mt,
-                            marker_budget: Some(snuffler_web_core::bridge::ProtoMarkerBudget {
-                                max_markers:
-                                    snuffler_web_core::marker_store::MarkerBudget::standard().get(),
-                            }),
+                            marker_budget: Some(
+                                snuffler_web_core::marker_store::MarkerBudget::standard().into(),
+                            ),
                         });
             }
             SnufflingAction::Rms => {
@@ -1619,7 +1738,6 @@ impl App {
         );
         match seedlink {
             Some(crate::view::forms::SeedlinkIntent::Start(params)) => {
-                self.clear_annotation_caches();
                 self.session.start_seedlink(params);
             }
             Some(crate::view::forms::SeedlinkIntent::Stop) => {
@@ -1681,11 +1799,11 @@ fn example_hover(example: &ExampleDataset) -> String {
 fn active_job(jobs: &[(JobHandle, JobRecord)], now_s: f64) -> Option<(JobHandle, &JobRecord)> {
     jobs.iter()
         .filter(|(_, record)| {
-            !matches!(record.state(), JobState::Done(_)) && record.feedback_delay(now_s).is_none()
+            !record.state().is_terminal() && record.feedback_delay(now_s).is_none()
         })
         .max_by_key(|(handle, record)| {
             (
-                !record.operation().activity().background,
+                !record.operation().activity().secondary_feedback,
                 matches!(
                     record.state(),
                     JobState::Running { .. } | JobState::Dispatching | JobState::Cancelling { .. }
@@ -1701,7 +1819,7 @@ fn next_activity_reveal_delay(
     now_s: f64,
 ) -> Option<std::time::Duration> {
     jobs.iter()
-        .filter(|(_, record)| !matches!(record.state(), JobState::Done(_)))
+        .filter(|(_, record)| !record.state().is_terminal())
         .filter_map(|(_, record)| record.feedback_delay(now_s))
         .min()
 }
@@ -1879,6 +1997,10 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         let visible_bins = self.view_sample_bins(ui);
         self.session.sync(ctx.input(|input| input.time));
+        if self.session.take_annotation_cache_reset() {
+            self.clear_annotation_caches();
+        }
+        self.process_marker_export(&ctx);
         self.consume_keyboard_requests();
         self.load_dropped_files(&ctx);
         self.apply_pending_view();

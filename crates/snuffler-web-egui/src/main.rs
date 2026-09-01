@@ -13,6 +13,10 @@ fn main() {
 
     let web_options = eframe::WebOptions::default();
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "this is the browser application bootstrap, before an activity ledger exists"
+    )]
     wasm_bindgen_futures::spawn_local(async {
         // Bring up the rayon worker pool for the wasm frontend — a general-purpose
         // parallelism primitive (the PNG export is the first user; compute-heavy
@@ -34,6 +38,10 @@ fn main() {
             // workloads we run today, where 4 is ample. Raise the cap if a future
             // workload actually needs wider parallelism.
             let threads = cores.clamp(1, 4);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "thread-pool initialization is startup infrastructure, not user work"
+            )]
             wasm_bindgen_futures::spawn_local(async move {
                 let ready = wasm_bindgen_futures::JsFuture::from(
                     snuffler_web_egui::init_thread_pool(threads),

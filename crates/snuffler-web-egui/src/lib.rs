@@ -38,9 +38,10 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 /// and the inline (main-thread) path.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod pool {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     static READY: AtomicBool = AtomicBool::new(false);
+    static WORKER_PNG_EXPORT_COUNT: AtomicU32 = AtomicU32::new(0);
 
     /// Record whether the rayon pool initialized successfully.
     pub fn set_ready(ready: bool) {
@@ -51,7 +52,33 @@ mod pool {
     pub(crate) fn ready() -> bool {
         READY.load(Ordering::Relaxed)
     }
+
+    /// Records that PNG rasterization completed in the rayon pool.
+    pub(crate) fn record_worker_png_export() {
+        WORKER_PNG_EXPORT_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Number of PNG rasterizations completed in the rayon pool.
+    pub(crate) fn worker_png_export_count() -> u32 {
+        WORKER_PNG_EXPORT_COUNT.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 pub use pool::set_ready as set_pool_ready;
+
+/// Reports whether the wasm rayon pool is ready for browser regressions.
+#[cfg(all(target_arch = "wasm32", feature = "threads"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+#[must_use]
+pub fn snuffler_rayon_ready() -> bool {
+    pool::ready()
+}
+
+/// Reports completed worker-side PNG rasterizations for browser regressions.
+#[cfg(all(target_arch = "wasm32", feature = "threads"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+#[must_use]
+pub fn snuffler_worker_png_export_count() -> u32 {
+    pool::worker_png_export_count()
+}

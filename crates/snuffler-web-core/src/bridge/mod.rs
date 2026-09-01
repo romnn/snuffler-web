@@ -14,8 +14,9 @@
     )
 )]
 
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::activity::{
     ActivityLedger, CancelRequest, JobError, JobHandle, JobRecord, Operation, Outcome,
@@ -37,7 +38,7 @@ use jobs::{FigureSlot, TileState};
 #[cfg(target_arch = "wasm32")]
 use jobs::{TILE_BATCH, TILE_BATCHES_IN_FLIGHT};
 pub use runtime::{
-    LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, RuntimeInfo, SeedlinkParams,
+    LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, SeedlinkParams,
     SeisbenchProgress,
 };
 #[cfg(target_arch = "wasm32")]
@@ -49,12 +50,12 @@ pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    ActiveEventResult, BrowserFileManifest, BrowserSourceAck, BrowserSourceAckList, BundleAbout,
+    ActiveEventResult, BrowserFileLoadPage, BrowserSourceAck, BrowserSourceAckList, BundleAbout,
     BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, EventKagan, EventSnapshot,
-    ExampleDataset, FigureRequest, IngestMiniSeedRequest, MapData, MapRequest,
-    MarkerBudget as ProtoMarkerBudget, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
-    PolarizationSnufflingParams, RemoveEventsRequest, RmsSnufflingParams, SceneMeta,
-    SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest, SnufflingParams,
+    ExampleDataset, FigureRequest, IngestMiniSeedRequest, MapData, MapRequest, MarkerFile,
+    MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams, RemoveEventsRequest,
+    RmsSnufflingParams, RuntimeInfo, SceneMeta, SeisbenchSnufflingParams,
+    SeismosizerSnufflingParams, SetActiveEventRequest, SnufMarker, SnufflingParams,
     SnufflingRequestParams, SnufflingResult, SnufflingSpan, SpectrogramSnufflingParams,
     SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, TraceBox, ViewMeta, ViewParams,
     ViewSpan, ViewTrack, WaveformDownloadRequest,
@@ -84,7 +85,7 @@ struct Inner {
     /// Incremented every time a new scene is loaded, so the frontend can reset its
     /// view window when (and only when) the data actually changes.
     scene_gen: u64,
-    view: Option<ViewData>,
+    view: Option<Arc<ViewData>>,
     /// Incremented whenever new view data lands (for texture caching).
     view_epoch: u64,
     /// Latest render of each open figure window (amplitude spectrum, cake, …),
@@ -146,7 +147,7 @@ struct Inner {
     /// without a new wasm build. `None` until it has been asked for.
     examples: Option<Result<Vec<ExampleDataset>, BridgeError>>,
     examples_job: Option<JobHandle>,
-    warm_requested: bool,
+    scientific_tools_requested: bool,
     /// The view a just-loaded bundle asked for, for the frontend to apply — the
     /// bridge does not own the sort state, so it parks it here the way a fetched
     /// cake model waits in `pending_cake_model`.
@@ -257,10 +258,9 @@ impl Bridge {
     /// commits — the window in which a destructive marker edit would appear to
     /// be undone by the commit landing after it.
     #[must_use]
-    pub fn marker_output_active(&self) -> bool {
+    pub fn marker_update_active(&self) -> bool {
         self.inner.borrow().activity.records().any(|(_, record)| {
-            record.operation().activity().marker_output
-                && !matches!(record.state(), crate::activity::JobState::Done(_))
+            record.operation().activity().may_update_markers && !record.state().is_terminal()
         })
     }
 
@@ -372,6 +372,7 @@ impl Bridge {
 
     /// Returns the current inference device and optional `SeisBench` progress.
     #[cfg(target_arch = "wasm32")]
+    #[must_use]
     pub fn seisbench_runtime(&self) -> (String, Option<SeisbenchProgress>) {
         let progress = self
             .inner
@@ -619,11 +620,13 @@ impl Bridge {
         i.tile_epoch = i.tile_epoch.wrapping_add(1);
     }
 
-    /// Borrow the current view (decimated waveforms) for drawing.
+    /// Returns an owned snapshot of the current view (decimated waveforms).
+    ///
+    /// The snapshot must not expose the bridge's `RefCell` guard: frontend code
+    /// may call back into the bridge while it renders or exports this data.
     #[must_use]
-    pub fn view(&self) -> Option<Ref<'_, ViewData>> {
-        let b = self.inner.borrow();
-        Ref::filter_map(b, |i| i.view.as_ref()).ok()
+    pub fn view(&self) -> Option<Arc<ViewData>> {
+        self.inner.borrow().view.clone()
     }
 
     /// Whether the current view is drawable and has no replacement queued or in flight.
@@ -640,7 +643,12 @@ mod web;
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleAbout, BundleView, Inner, install_bundle_presentation};
+    use std::sync::Arc;
+
+    use super::{
+        Bridge, BundleAbout, BundleView, Inner, Operation, Repaint, ViewData,
+        install_bundle_presentation,
+    };
 
     #[test]
     fn bundle_presentation_uses_the_installed_scene_generation() {
@@ -673,5 +681,21 @@ mod tests {
                 .map(|(generation, about)| (*generation, about.title.as_str())),
             Some((7, "Changed bundle"))
         );
+    }
+
+    #[test]
+    fn view_snapshot_outlives_public_bridge_mutation() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+
+        assert_send_sync_static::<Arc<ViewData>>();
+        let bridge = Bridge::new(Repaint::new(|| {}, |_| {}));
+        bridge.inner.borrow_mut().view = Some(Arc::new(ViewData::default()));
+
+        let snapshot: Option<Arc<ViewData>> = bridge.view();
+        let submission = bridge.begin_local(Operation::ExportSvg, None);
+        bridge.finish_local(submission.handle(), Ok(()));
+
+        assert!(snapshot.is_some());
+        assert!(bridge.view().is_some());
     }
 }

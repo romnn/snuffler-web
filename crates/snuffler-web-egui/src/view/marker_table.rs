@@ -58,12 +58,12 @@ impl MarkerTable {
         }
         let mut open = true;
         let mut output = TableOutput::default();
-        let marker_job_active = bridge.marker_output_active();
+        let marker_update_active = bridge.marker_update_active();
         egui::Window::new("Markers")
             .open(&mut open)
             .default_size([560.0, 320.0])
             .show(ctx, |ui| {
-                marker_toolbar(ui, state, marker_job_active);
+                marker_toolbar(ui, state, marker_update_active);
                 ui.separator();
                 self.table(ui, state, &mut output);
             });
@@ -116,7 +116,7 @@ impl MarkerTable {
                             let Some(&id) = self.order.get(visible_row - 1) else {
                                 continue;
                             };
-                            state.markers.edit_reported(id, |marker| {
+                            state.markers.edit_with_change_flag(id, |marker| {
                                 marker_row(ui, id, marker, &mut edit, output)
                             });
                         }
@@ -143,6 +143,24 @@ impl MarkerTable {
         let ms = &state.markers;
         let mut order: Vec<MarkerId> = ms.iter_with_ids().map(|(id, _)| id).collect();
         let (col, asc) = (self.sort, self.sort_ascending);
+        let text_keys: std::collections::HashMap<MarkerId, String> = match col {
+            MarkerColumn::Phase => ms
+                .iter_with_ids()
+                .map(|(id, marker)| {
+                    let key = if marker.is_event {
+                        marker.event_label()
+                    } else {
+                        marker.phase.clone().unwrap_or_default()
+                    };
+                    (id, key)
+                })
+                .collect(),
+            MarkerColumn::Channel => ms
+                .iter_with_ids()
+                .map(|(id, marker)| (id, nslc_key(marker)))
+                .collect(),
+            _ => std::collections::HashMap::new(),
+        };
         // Qt's Dist [km]: this *event* to the active event (marker_editor.py:502),
         // precomputed in Python; rows without one sort last.
         let dist_of = |m: &Marker| -> f64 { m.dist_active_km.unwrap_or(f64::INFINITY) };
@@ -154,22 +172,14 @@ impl MarkerTable {
                 MarkerColumn::Type => ma.is_event.cmp(&mb.is_event),
                 MarkerColumn::Time => ma.tmin.total_cmp(&mb.tmin),
                 MarkerColumn::Span => (ma.tmax - ma.tmin).total_cmp(&(mb.tmax - mb.tmin)),
-                MarkerColumn::Phase => {
-                    let label = |marker: &Marker| {
-                        if marker.is_event {
-                            marker.event_label()
-                        } else {
-                            marker.phase.clone().unwrap_or_default()
-                        }
-                    };
-                    label(ma).cmp(&label(mb))
+                MarkerColumn::Phase | MarkerColumn::Channel => {
+                    text_keys.get(&a).cmp(&text_keys.get(&b))
                 }
                 MarkerColumn::Pol => ma
                     .polarity
                     .unwrap_or(i8::MIN)
                     .cmp(&mb.polarity.unwrap_or(i8::MIN)),
                 MarkerColumn::Kind => (ma.kind & 7).cmp(&(mb.kind & 7)),
-                MarkerColumn::Channel => nslc_key(ma).cmp(&nslc_key(mb)),
                 MarkerColumn::Dist => dist_of(ma).total_cmp(&dist_of(mb)),
                 MarkerColumn::Uncert => ma
                     .uncertainty
@@ -219,17 +229,13 @@ struct TableOutput {
     event_updates: Vec<EventSnapshot>,
 }
 
-fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState, marker_job_active: bool) {
+fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState, marker_update_active: bool) {
     // While an analysis that emits markers is queued or running, destructive
     // edits are disabled: its commit replaces the origin's markers, so a
     // deletion issued now would appear to be silently undone moments later.
-    const MARKER_JOB_HOVER: &str =
+    const MARKER_UPDATE_HOVER: &str =
         "disabled while an analysis is producing markers — its result would replace this edit";
-    let selected = state
-        .markers
-        .iter()
-        .filter(|marker| marker.selected)
-        .count();
+    let selected = state.markers.summary().selected;
     ui.horizontal(|ui| {
         ui.label(format!(
             "{} markers · {selected} selected",
@@ -246,8 +252,8 @@ fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState, marker_job_active: bo
             }
         }
         if ui
-            .add_enabled(!marker_job_active, egui::Button::new("Delete selected"))
-            .on_disabled_hover_text(MARKER_JOB_HOVER)
+            .add_enabled(!marker_update_active, egui::Button::new("Delete selected"))
+            .on_disabled_hover_text(MARKER_UPDATE_HOVER)
             .clicked()
         {
             state.remove_selected_markers();
@@ -262,8 +268,8 @@ fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState, marker_job_active: bo
             "Clear all"
         };
         let resp = ui
-            .add_enabled(!marker_job_active, egui::Button::new(label))
-            .on_disabled_hover_text(MARKER_JOB_HOVER);
+            .add_enabled(!marker_update_active, egui::Button::new(label))
+            .on_disabled_hover_text(MARKER_UPDATE_HOVER);
         if resp.clicked() {
             if armed {
                 state.clear_markers();
