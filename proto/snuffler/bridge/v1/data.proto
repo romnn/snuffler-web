@@ -194,10 +194,17 @@ message BrowserReadFailure {
   string detail = 3;
 }
 
-message BrowserFileManifest {
+// One bounded page of a browser-selected file load.
+message BrowserFileLoadPage {
   repeated BrowserFile files = 1;
   repeated BrowserReadFailure failures = 2;
   bool cancelled = 3;
+  string load_id = 4;
+  bool has_more = 5;
+}
+
+message BrowserFileLoadPageRequest {
+  string load_id = 1;
 }
 
 message BrowserSourceAck {
@@ -334,6 +341,7 @@ message LoadBundleRequest {
   // Exactly one of `url` and `content` is set.
   bytes content = 3;
   string name = 4; // filename, for the summary the load reports
+  MarkerBudget marker_budget = 5;
 }
 
 // The view a bundle asks to be opened in, in the same vocabulary the frontend

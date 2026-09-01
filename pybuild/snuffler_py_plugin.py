@@ -104,7 +104,7 @@ def main() -> None:
         activity = options.Extensions[activity_extension]
         empty_fields = [
             field
-            for field in ("label", "lane", "policy", "effect", "cancel")
+            for field in ("label", "lane", "policy", "session_access", "cancellation")
             if not getattr(activity, field)
         ]
         if empty_fields:
@@ -132,12 +132,14 @@ def main() -> None:
                 "variant": variant,
                 "buffer": resp_cls in BUFFER_RESPONSES,
                 # Only the fields this language consumes are emitted (Python:
-                # the dispatcher's lane branch and MUTATE-transaction decision;
+                # the dispatcher's lane branch and mutating-session decision;
                 # TS: the worker's lane assertions). Every field was validated
                 # non-UNSPECIFIED above regardless.
                 "activity": {
                     "lane": enum_name(activity, "lane").removeprefix("ACTIVITY_LANE_"),
-                    "effect": enum_name(activity, "effect").removeprefix("ACTIVITY_EFFECT_"),
+                    "session_access": enum_name(activity, "session_access").removeprefix(
+                        "SESSION_ACCESS_"
+                    ),
                 },
             }
         )
@@ -151,21 +153,30 @@ def main() -> None:
     out.append("")
     out.append("import inspect")
     out.append("import traceback")
-    out.append("from typing import Any, Awaitable, Dict, NamedTuple, Protocol, Tuple, Union")
+    out.append(
+        "from typing import Any, Awaitable, Dict, Literal, NamedTuple, Protocol, Tuple, Union"
+    )
     out.append("")
     out.append(f"from {pkg} import {', '.join(sorted(used_modules))}")
     out.append("")
     out.append("")
+    lane_values = sorted({mm["activity"]["lane"] for mm in methods})
+    access_values = sorted({mm["activity"]["session_access"] for mm in methods})
+    out.append(f"ActivityLaneName = Literal[{', '.join(map(repr, lane_values))}]")
+    out.append(f"SessionAccessName = Literal[{', '.join(map(repr, access_values))}]")
+    out.append("")
+    out.append("")
     out.append("class ActivityMeta(NamedTuple):")
-    out.append("    lane: str")
-    out.append("    effect: str")
+    out.append("    lane: ActivityLaneName")
+    out.append("    session_access: SessionAccessName")
     out.append("")
     out.append("")
     out.append("ACTIVITY_BY_METHOD: Dict[str, ActivityMeta] = {")
     for mm in methods:
         activity = mm["activity"]
         out.append(
-            f'    "{mm["wire"]}": ActivityMeta({activity["lane"]!r}, {activity["effect"]!r}),'
+            f'    "{mm["wire"]}": ActivityMeta({activity["lane"]!r}, '
+            f'{activity["session_access"]!r}),'
         )
     out.append("}")
     out.append("")
@@ -182,6 +193,20 @@ def main() -> None:
         base = f"Tuple[{mm['resp']}, Any]" if mm["buffer"] else mm["resp"]
         ret = f"Union[{base}, Awaitable[{base}]]"
         out.append(f"    def {mm['snake']}(self, request: {mm['req']}, data: Any) -> {ret}: ...")
+    out.append("")
+    out.append("")
+    out.append("def cancelled_result() -> Dict[str, Any]:")
+    out.append("    result = bridge_pb2.BridgeResult()")
+    out.append("    result.cancelled.SetInParent()")
+    out.append('    return {"result": result.SerializeToString()}')
+    out.append("")
+    out.append("")
+    out.append("def failure_result(exc: BaseException) -> Dict[str, Any]:")
+    out.append("    result = bridge_pb2.BridgeResult()")
+    out.append("    result.error.kind = type(exc).__name__")
+    out.append("    result.error.message = str(exc)")
+    out.append("    result.error.traceback = traceback.format_exc()")
+    out.append('    return {"result": result.SerializeToString()}')
     out.append("")
     out.append("")
     out.append("async def dispatch(")
@@ -218,15 +243,9 @@ def main() -> None:
             out.append('            return {"result": result.SerializeToString()}')
     out.append('        raise KeyError("unknown bridge method: " + method)')
     out.append("    except KeyboardInterrupt:")
-    out.append("        cancelled = bridge_pb2.BridgeResult()")
-    out.append("        cancelled.cancelled.SetInParent()")
-    out.append('        return {"result": cancelled.SerializeToString()}')
+    out.append("        return cancelled_result()")
     out.append("    except Exception as exc:  # noqa: BLE001 — the whole point is to catch all")
-    out.append("        err = bridge_pb2.BridgeResult()")
-    out.append("        err.error.kind = type(exc).__name__")
-    out.append("        err.error.message = str(exc)")
-    out.append("        err.error.traceback = traceback.format_exc()")
-    out.append('        return {"result": err.SerializeToString()}')
+    out.append("        return failure_result(exc)")
     out.append("")
 
     f = resp.file.add()
@@ -264,13 +283,11 @@ def main() -> None:
         activity = mm["activity"]
         ts.append(f"  [BridgeMethod.{mm['local']}]: {{ lane: {activity['lane']!r} }},")
     ts += [
-        "} as const satisfies Record<BridgeMethodId, ActivityMeta>;",
+        "} as const;",
         "",
         "// Only the field the worker consumes (its per-lane busy assertions); the",
         "// full activity declaration lives in the .proto and the Rust ledger.",
-        "export type ActivityMeta = {",
-        '  lane: "JOB" | "VIEW";',
-        "};",
+        "export type ActivityMeta = (typeof BridgeActivity)[BridgeMethodId];",
         "",
     ]
     tf = resp.file.add()

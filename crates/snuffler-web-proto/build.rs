@@ -6,63 +6,21 @@
 //! the (method, request type, response type) binding is checked by the compiler
 //! and can never drift from the .proto.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use prost::Message as _;
+use prost_reflect::{DescriptorPool, DynamicMessage, Kind, ReflectMessage as _};
 
-#[derive(Clone, PartialEq, prost::Message)]
-struct DescriptorSet {
-    #[prost(message, repeated, tag = "1")]
-    file: Vec<FileDescriptor>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct FileDescriptor {
-    #[prost(message, repeated, tag = "6")]
-    service: Vec<ServiceDescriptor>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct ServiceDescriptor {
-    #[prost(string, optional, tag = "1")]
-    name: Option<String>,
-    #[prost(message, repeated, tag = "2")]
-    method: Vec<MethodDescriptor>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct MethodDescriptor {
-    #[prost(string, optional, tag = "1")]
-    name: Option<String>,
-    #[prost(message, optional, tag = "4")]
-    options: Option<MethodOptions>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct MethodOptions {
-    #[prost(message, optional, tag = "51000")]
-    activity: Option<ActivityOption>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct ActivityOption {
-    #[prost(string, tag = "1")]
+struct RpcActivity {
+    name: String,
     label: String,
-    #[prost(int32, tag = "2")]
-    lane: i32,
-    #[prost(int32, tag = "3")]
-    policy: i32,
-    #[prost(int32, tag = "4")]
-    effect: i32,
-    #[prost(bool, tag = "5")]
-    background: bool,
-    #[prost(int32, tag = "6")]
-    cancel: i32,
-    #[prost(bool, tag = "7")]
+    lane: String,
+    policy: String,
+    secondary_feedback: bool,
+    cancellation: String,
     supersedes: bool,
-    #[prost(bool, tag = "8")]
-    marker_output: bool,
+    may_update_markers: bool,
 }
 
 fn rust_string(value: &str) -> String {
@@ -73,72 +31,237 @@ fn invalid_data(message: impl Into<String>) -> Box<dyn std::error::Error> {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
 }
 
-fn enum_value(
-    value: i32,
-    values: &[&str],
+fn upper_camel_to_upper_snake(name: &str) -> String {
+    let mut output = String::with_capacity(name.len());
+    for (index, character) in name.chars().enumerate() {
+        if index > 0 && character.is_ascii_uppercase() {
+            output.push('_');
+        }
+        output.push(character.to_ascii_uppercase());
+    }
+    output
+}
+
+fn rust_variant_name(name: &str) -> String {
+    let mut output = String::with_capacity(name.len());
+    for word in name.split('_').filter(|word| !word.is_empty()) {
+        let mut characters = word.chars();
+        if let Some(first) = characters.next() {
+            output.push(first.to_ascii_uppercase());
+            output.extend(characters.map(|character| character.to_ascii_lowercase()));
+        }
+    }
+    output
+}
+
+fn activity_enum_variant(
+    activity: &DynamicMessage,
     field: &str,
     method: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let value = usize::try_from(value)
-        .ok()
-        .and_then(|index| values.get(index))
-        .filter(|value| **value != "Unspecified")
+    let descriptor = activity
+        .descriptor()
+        .get_field_by_name(field)
+        .ok_or_else(|| invalid_data(format!("Activity.{field} descriptor is missing")))?;
+    let Kind::Enum(enum_descriptor) = descriptor.kind() else {
+        return Err(invalid_data(format!("Activity.{field} is not an enum")));
+    };
+    let value = activity
+        .get_field(&descriptor)
+        .as_enum_number()
+        .ok_or_else(|| invalid_data(format!("Activity.{field} is not an enum value")))?;
+    let name = enum_descriptor
+        .get_value(value)
         .ok_or_else(|| {
             invalid_data(format!(
-                "BridgeService.{method}: activity {field} is UNSPECIFIED"
+                "BridgeService.{method}: activity {field} has unknown {} value {value}",
+                enum_descriptor.name()
             ))
-        })?;
-    Ok((*value).to_string())
+        })?
+        .name()
+        .to_owned();
+    let prefix = format!("{}_", upper_camel_to_upper_snake(enum_descriptor.name()));
+    let name = name.strip_prefix(&prefix).ok_or_else(|| {
+        invalid_data(format!(
+            "protobuf enum value {name} does not start with {prefix}"
+        ))
+    })?;
+    if name == "UNSPECIFIED" {
+        return Err(invalid_data(format!(
+            "BridgeService.{method}: activity {field} is UNSPECIFIED"
+        )));
+    }
+    Ok(rust_variant_name(name))
+}
+
+fn activity_string(
+    activity: &DynamicMessage,
+    field: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    activity
+        .get_field_by_name(field)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| invalid_data(format!("Activity.{field} is not a string")))
+}
+
+fn activity_bool(
+    activity: &DynamicMessage,
+    field: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    activity
+        .get_field_by_name(field)
+        .and_then(|value| value.as_bool())
+        .ok_or_else(|| invalid_data(format!("Activity.{field} is not a bool")))
 }
 
 fn activity_methods(
-    descriptors: &DescriptorSet,
-) -> Result<Vec<(&str, &ActivityOption)>, Box<dyn std::error::Error>> {
+    descriptors: &DescriptorPool,
+) -> Result<Vec<RpcActivity>, Box<dyn std::error::Error>> {
     let service = descriptors
-        .file
-        .iter()
-        .flat_map(|file| &file.service)
-        .find(|service| service.name.as_deref() == Some("BridgeService"))
+        .get_service_by_name("snuffler.bridge.v1.BridgeService")
         .ok_or_else(|| invalid_data("BridgeService descriptor is missing"))?;
+    let activity_extension = descriptors
+        .get_extension_by_name("snuffler.bridge.v1.activity")
+        .ok_or_else(|| invalid_data("activity method-option descriptor is missing"))?;
     let mut methods = Vec::new();
-    for method in &service.method {
-        let name = method
-            .name
-            .as_deref()
-            .ok_or_else(|| invalid_data("BridgeService method name is missing"))?;
-        let activity = method
-            .options
-            .as_ref()
-            .and_then(|options| options.activity.as_ref())
-            .ok_or_else(|| {
-                invalid_data(format!(
-                    "BridgeService.{name}: missing required activity option"
-                ))
-            })?;
-        if activity.label.is_empty() {
+    for method in service.methods() {
+        let name = method.name();
+        let options = method.options();
+        if !options.has_extension(&activity_extension) {
+            return Err(invalid_data(format!(
+                "BridgeService.{name}: missing required activity option"
+            )));
+        }
+        let activity_value = options.get_extension(&activity_extension);
+        let activity = activity_value.as_message().ok_or_else(|| {
+            invalid_data(format!(
+                "BridgeService.{name}: activity option is not a message"
+            ))
+        })?;
+        let label = activity_string(activity, "label")?;
+        if label.is_empty() {
             return Err(invalid_data(format!(
                 "BridgeService.{name}: activity label is empty"
             )));
         }
-        methods.push((name, activity));
+        let lane = activity_enum_variant(activity, "lane", name)?;
+        let policy = activity_enum_variant(activity, "policy", name)?;
+        // Session access is consumed only by the Python dispatcher. Validate it
+        // here too so no generated endpoint accepts an unspecified contract.
+        let _session_access = activity_enum_variant(activity, "session_access", name)?;
+        let cancellation = activity_enum_variant(activity, "cancellation", name)?;
+        methods.push(RpcActivity {
+            name: name.to_owned(),
+            label,
+            lane,
+            policy,
+            secondary_feedback: activity_bool(activity, "secondary_feedback")?,
+            cancellation,
+            supersedes: activity_bool(activity, "supersedes")?,
+            may_update_markers: activity_bool(activity, "may_update_markers")?,
+        });
     }
     Ok(methods)
+}
+
+struct LocalOperationMetadata {
+    name: &'static str,
+    label: &'static str,
+    lane: &'static str,
+    policy: &'static str,
+    secondary_feedback: bool,
+    cancellation: &'static str,
+    may_update_markers: bool,
+    exclusive_across_lanes: bool,
 }
 
 /// Executor-owned operations with no rpc: they never cross the worker, so their
 /// metadata is declared here rather than in the .proto. Shared by the enum
 /// listing and the match arms so the two cannot drift.
-const LOCAL_OPERATIONS: [(&str, &str, &str, bool); 7] = [
-    ("ReloadSnufflings", "Reloading snufflings", "Job", true),
-    ("ExportSvg", "Exporting SVG", "Local", false),
-    ("ExportPng", "Exporting PNG", "Local", false),
-    ("MarkersToFile", "Serializing markers", "Local", false),
-    ("SaveMarkers", "Saving markers", "Local", false),
-    ("SaveWaveforms", "Saving waveforms", "Local", false),
-    ("WatchPoll", "Checking watched files", "Local", false),
+const LOCAL_OPERATIONS: [LocalOperationMetadata; 8] = [
+    LocalOperationMetadata {
+        name: "ReloadSnufflings",
+        label: "Reloading snufflings",
+        lane: "Job",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "NotSupported",
+        may_update_markers: false,
+        exclusive_across_lanes: true,
+    },
+    LocalOperationMetadata {
+        name: "OpenSelectedFiles",
+        label: "Opening files",
+        lane: "Job",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "Supported",
+        may_update_markers: true,
+        exclusive_across_lanes: false,
+    },
+    LocalOperationMetadata {
+        name: "OpenDirectory",
+        label: "Opening directory",
+        lane: "Job",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "Supported",
+        may_update_markers: true,
+        exclusive_across_lanes: false,
+    },
+    LocalOperationMetadata {
+        name: "ReloadOpenFiles",
+        label: "Reloading files",
+        lane: "Job",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "Supported",
+        may_update_markers: true,
+        exclusive_across_lanes: false,
+    },
+    LocalOperationMetadata {
+        name: "PollWatchedFiles",
+        label: "Checking watched files",
+        lane: "Job",
+        policy: "Dedup",
+        secondary_feedback: true,
+        cancellation: "Supported",
+        may_update_markers: true,
+        exclusive_across_lanes: false,
+    },
+    LocalOperationMetadata {
+        name: "ExportSvg",
+        label: "Exporting SVG",
+        lane: "Local",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "NotSupported",
+        may_update_markers: false,
+        exclusive_across_lanes: false,
+    },
+    LocalOperationMetadata {
+        name: "ExportPng",
+        label: "Exporting PNG",
+        lane: "Local",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "NotSupported",
+        may_update_markers: false,
+        exclusive_across_lanes: false,
+    },
+    LocalOperationMetadata {
+        name: "SerializeMarkers",
+        label: "Serializing markers",
+        lane: "Local",
+        policy: "Queue",
+        secondary_feedback: false,
+        cancellation: "NotSupported",
+        may_update_markers: false,
+        exclusive_across_lanes: false,
+    },
 ];
 
-fn activity_prelude(methods: &[(&str, &ActivityOption)]) -> String {
+fn activity_source(methods: &[RpcActivity]) -> String {
     let mut out = String::new();
     out.push_str(
         r"#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -146,77 +269,55 @@ pub enum Lane { Job, View, Local }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Policy { Queue, Dedup, LatestWins }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum CancelCap { NotCancellable, Cancellable }
+pub enum CancellationCapability { NotSupported, Supported }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActivityMeta {
     pub label: &'static str,
     pub lane: Lane,
     pub policy: Policy,
-    pub background: bool,
-    pub cancel: CancelCap,
+    pub secondary_feedback: bool,
+    pub cancellation: CancellationCapability,
     pub supersedes: bool,
-    pub marker_output: bool,
-    pub exclusive_both_lanes: bool,
+    pub may_update_markers: bool,
+    pub exclusive_across_lanes: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Operation {
 ",
     );
-    for (name, _) in methods {
-        let _ = writeln!(out, "    {name},");
+    for activity in methods {
+        let _ = writeln!(out, "    {},", activity.name);
     }
-    for (name, _, _, _) in LOCAL_OPERATIONS {
-        let _ = writeln!(out, "    {name},");
+    for operation in &LOCAL_OPERATIONS {
+        let _ = writeln!(out, "    {},", operation.name);
     }
     out.push_str("}\nimpl Operation {\n    pub const fn activity(self) -> ActivityMeta {\n        match self {\n");
-    out
-}
-
-fn write_rpc_activity(
-    out: &mut String,
-    methods: &[(&str, &ActivityOption)],
-) -> Result<(), Box<dyn std::error::Error>> {
-    for (name, activity) in methods {
-        let lane = enum_value(activity.lane, &["Unspecified", "Job", "View"], "lane", name)?;
-        let policy = enum_value(
-            activity.policy,
-            &["Unspecified", "Queue", "Dedup", "LatestWins"],
-            "policy",
-            name,
-        )?;
-        // Effect is consumed only by the Python dispatcher; it is still
-        // validated here so an rpc cannot ship with it unspecified.
-        enum_value(
-            activity.effect,
-            &["Unspecified", "Read", "Mutate"],
-            "effect",
-            name,
-        )?;
-        let cancel = enum_value(
-            activity.cancel,
-            &["Unspecified", "NotCancellable", "Cancellable"],
-            "cancel",
-            name,
-        )?;
+    for activity in methods {
         let _ = writeln!(
             out,
-            "            Self::{name} => ActivityMeta {{ label: {}, lane: Lane::{lane}, policy: Policy::{policy}, background: {}, cancel: CancelCap::{cancel}, supersedes: {}, marker_output: {}, exclusive_both_lanes: false }},",
+            "            Self::{} => ActivityMeta {{ label: {}, lane: Lane::{}, policy: Policy::{}, secondary_feedback: {}, cancellation: CancellationCapability::{}, supersedes: {}, may_update_markers: {}, exclusive_across_lanes: false }},",
+            activity.name,
             rust_string(&activity.label),
-            activity.background,
+            activity.lane,
+            activity.policy,
+            activity.secondary_feedback,
+            activity.cancellation,
             activity.supersedes,
-            activity.marker_output,
+            activity.may_update_markers,
         );
     }
-    Ok(())
-}
-
-fn finish_activity(mut out: String) -> String {
-    for (name, label, lane, exclusive_both_lanes) in LOCAL_OPERATIONS {
-        let background = name == "WatchPoll";
+    for operation in LOCAL_OPERATIONS {
         let _ = writeln!(
             out,
-            "            Self::{name} => ActivityMeta {{ label: {}, lane: Lane::{lane}, policy: Policy::Queue, background: {background}, cancel: CancelCap::NotCancellable, supersedes: false, marker_output: false, exclusive_both_lanes: {exclusive_both_lanes} }},",
-            rust_string(label),
+            "            Self::{} => ActivityMeta {{ label: {}, lane: Lane::{}, policy: Policy::{}, secondary_feedback: {}, cancellation: CancellationCapability::{}, supersedes: false, may_update_markers: {}, exclusive_across_lanes: {} }},",
+            operation.name,
+            rust_string(operation.label),
+            operation.lane,
+            operation.policy,
+            operation.secondary_feedback,
+            operation.cancellation,
+            operation.may_update_markers,
+            operation.exclusive_across_lanes,
         );
     }
     out.push_str("        }\n    }\n}\n");
@@ -224,39 +325,12 @@ fn finish_activity(mut out: String) -> String {
 }
 
 fn generate_activity(
-    descriptor_path: &Path,
+    descriptors: &DescriptorPool,
     output_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(descriptor_path)?;
-    let descriptors = DescriptorSet::decode(bytes.as_slice())?;
-    let methods = activity_methods(&descriptors)?;
-    let mut output = activity_prelude(&methods);
-    write_rpc_activity(&mut output, &methods)?;
-    std::fs::write(output_path, finish_activity(output))?;
+    let methods = activity_methods(descriptors)?;
+    std::fs::write(output_path, activity_source(&methods))?;
     Ok(())
-}
-
-/// The success message type each `BridgeResult` oneof variant carries. The rpc's
-/// response type is matched against this to pick the variant to unwrap.
-fn variant_for(output: &str) -> Option<&'static str> {
-    match output {
-        "SceneMeta" => Some("Scene"),
-        "ViewMeta" => Some("View"),
-        "FigureResult" => Some("Figure"),
-        "SnufflingResult" => Some("Snuffling"),
-        "MapData" => Some("MapData"),
-        "StationDistanceList" => Some("StationDistances"),
-        "ActiveEventResult" => Some("ActiveEvent"),
-        "CommandResult" => Some("Command"),
-        "SnufMarkerList" => Some("Markers"),
-        "StringValue" => Some("Text"),
-        "ExampleList" => Some("Examples"),
-        "BundleResult" => Some("Bundle"),
-        "FileBlob" => Some("Blob"),
-        "LoadBytesResult" => Some("LoadBytes"),
-        "IngestMiniSeedResult" => Some("Ingest"),
-        _ => None,
-    }
 }
 
 /// Last path segment of a prost type path (`a.b.C` / `a::b::C` -> `C`).
@@ -264,13 +338,44 @@ fn last_segment(ty: &str) -> &str {
     ty.rsplit([':', '.']).next().unwrap_or(ty)
 }
 
-#[derive(Default)]
-struct BridgeClientGen;
+fn bridge_result_variants(
+    descriptors: &DescriptorPool,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let result = descriptors
+        .get_message_by_name("snuffler.bridge.v1.BridgeResult")
+        .ok_or_else(|| invalid_data("BridgeResult descriptor is missing"))?;
+    let mut variants = HashMap::new();
+    for field in result.fields() {
+        let field_name = field.name();
+        let Kind::Message(response_message) = field.kind() else {
+            return Err(invalid_data(format!(
+                "BridgeResult.{field_name} does not carry a message"
+            )));
+        };
+        let response = response_message.name().to_owned();
+        let variant = rust_variant_name(field_name);
+        if variants.insert(response.clone(), variant).is_some() {
+            return Err(invalid_data(format!(
+                "BridgeResult carries {response} more than once"
+            )));
+        }
+    }
+    Ok(variants)
+}
 
-fn generate_client_method(method: &prost_build::Method, service: &str, buf: &mut String) {
+struct BridgeClientGen {
+    response_variants: HashMap<String, String>,
+}
+
+fn generate_client_method(
+    method: &prost_build::Method,
+    service: &str,
+    response_variants: &HashMap<String, String>,
+    buf: &mut String,
+) {
     let req = last_segment(&method.input_type).to_string();
     let out = last_segment(&method.output_type).to_string();
-    let Some(variant) = variant_for(&out) else {
+    let Some(variant) = response_variants.get(&out) else {
         let _ = writeln!(
             buf,
             "compile_error!(\"BridgeService response {out} has no BridgeResult variant\");"
@@ -374,8 +479,8 @@ fn bridge_ok(
         Some(bridge_result::Result::Cancelled(_)) => Err(crate::CallError::Cancelled { method }),
         Some(bridge_result::Result::Stale(stale)) => Err(crate::CallError::Stale {
             method,
-            expected: stale.expected,
-            actual: stale.actual,
+            expected_generation: stale.expected_generation,
+            actual_generation: stale.actual_generation,
         }),
         Some(other) => Ok(other),
         None => Err(crate::CallError::Empty { method }),
@@ -397,7 +502,7 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
         );
 
         for method in &service.methods {
-            generate_client_method(method, &svc, buf);
+            generate_client_method(method, &svc, &self.response_variants, buf);
         }
 
         buf.push_str("}\n");
@@ -405,38 +510,32 @@ impl<T: BridgeTransport> BridgeServiceClient<T> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    for file in [
-        "common.proto",
-        "scene.proto",
-        "view.proto",
-        "snuffling.proto",
-        "figure.proto",
-        "data.proto",
-        "activity.proto",
-        "bridge.proto",
-    ] {
-        println!("cargo:rerun-if-changed=../../proto/snuffler/bridge/v1/{file}");
+    const PROTO_ROOT: &str = "../../proto";
+    const PROTO_FILES: [&str; 8] = [
+        "../../proto/snuffler/bridge/v1/common.proto",
+        "../../proto/snuffler/bridge/v1/scene.proto",
+        "../../proto/snuffler/bridge/v1/view.proto",
+        "../../proto/snuffler/bridge/v1/snuffling.proto",
+        "../../proto/snuffler/bridge/v1/figure.proto",
+        "../../proto/snuffler/bridge/v1/data.proto",
+        "../../proto/snuffler/bridge/v1/activity.proto",
+        "../../proto/snuffler/bridge/v1/bridge.proto",
+    ];
+    for file in PROTO_FILES {
+        println!("cargo:rerun-if-changed={file}");
     }
     let output_dir = std::env::var_os("OUT_DIR")
         .ok_or_else(|| invalid_data("Cargo did not set OUT_DIR for the build script"))?;
     let descriptor_path = Path::new(&output_dir).join("bridge-descriptors.bin");
     let activity_path = Path::new(&output_dir).join("bridge-activity.rs");
-    prost_build::Config::new()
-        .file_descriptor_set_path(&descriptor_path)
-        .service_generator(Box::new(BridgeClientGen))
-        .compile_protos(
-            &[
-                "../../proto/snuffler/bridge/v1/common.proto",
-                "../../proto/snuffler/bridge/v1/scene.proto",
-                "../../proto/snuffler/bridge/v1/view.proto",
-                "../../proto/snuffler/bridge/v1/snuffling.proto",
-                "../../proto/snuffler/bridge/v1/figure.proto",
-                "../../proto/snuffler/bridge/v1/data.proto",
-                "../../proto/snuffler/bridge/v1/activity.proto",
-                "../../proto/snuffler/bridge/v1/bridge.proto",
-            ],
-            &["../../proto"],
-        )?;
-    generate_activity(&descriptor_path, &activity_path)?;
+    let mut config = prost_build::Config::new();
+    config.file_descriptor_set_path(&descriptor_path);
+    let descriptor_set = config.load_fds(&PROTO_FILES, &[PROTO_ROOT])?;
+    let descriptor_bytes = std::fs::read(&descriptor_path)?;
+    let descriptors = DescriptorPool::decode(descriptor_bytes.as_slice())?;
+    let response_variants = bridge_result_variants(&descriptors)?;
+    config.service_generator(Box::new(BridgeClientGen { response_variants }));
+    config.compile_fds(descriptor_set)?;
+    generate_activity(&descriptors, &activity_path)?;
     Ok(())
 }

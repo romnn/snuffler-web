@@ -91,14 +91,16 @@ pub enum CallError {
     },
 
     /// The defensive session generation check refused a commit.
-    #[error("{method}: stale session generation (expected {expected}, actual {actual})")]
+    #[error(
+        "{method}: stale session generation (expected {expected_generation}, actual {actual_generation})"
+    )]
     Stale {
         /// The rpc whose result could not commit.
         method: &'static str,
         /// Generation captured at dispatch.
-        expected: u64,
+        expected_generation: u64,
         /// Generation current at commit.
-        actual: u64,
+        actual_generation: u64,
     },
 
     /// The bytes that came back are not a `BridgeResult` at all.

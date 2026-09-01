@@ -63,11 +63,17 @@ message BootProgress {
 
 message OperationStarted {}
 
-message OperationProgress {
+message OperationCountProgress {
   uint64 done = 1;
   optional uint64 total = 2;
-  optional double fraction = 3;
-  string phase = 4;
+}
+
+message OperationProgress {
+  string phase = 1;
+  oneof progress {
+    OperationCountProgress count = 2;
+    double fraction = 3;
+  }
 }
 
 message OperationHeartbeat {}
@@ -91,11 +97,26 @@ message MlDeviceStatus {
   MlDevice device = 1;
 }
 
+message RuntimeFailure {
+  string kind = 1;
+  string message = 2;
+}
+
+message RuntimeInfo {
+  bool threaded = 1;
+  string python = 2;
+  string numpy = 3;
+  string pyrocko = 4;
+  uint32 cores = 5;
+}
+
 message WorkerEvent {
   oneof event {
     BootProgress boot = 1;
     MlDeviceStatus ml_device = 2;
     OperationEvent operation = 3;
+    RuntimeFailure runtime_failure = 5;
+    RuntimeInfo runtime_info = 6;
   }
   uint32 runtime_epoch = 4;
 }
@@ -107,8 +128,8 @@ message Empty {}
 message Cancelled {}
 
 message Stale {
-  uint64 expected = 1;
-  uint64 actual = 2;
+  uint64 expected_generation = 1;
+  uint64 actual_generation = 2;
 }
 
 message CancelJobRequest {
@@ -177,8 +198,8 @@ service BridgeService {
       label: "Loading example"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
       supersedes: true
     };
   }
@@ -187,8 +208,8 @@ service BridgeService {
       label: "Clearing scene"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
       supersedes: true
     };
   }
@@ -197,8 +218,8 @@ service BridgeService {
       label: "Loading waveforms"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc LoadUrl(LoadUrlRequest) returns (SceneMeta) {
@@ -206,8 +227,8 @@ service BridgeService {
       label: "Loading URL"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
       supersedes: true
     };
   }
@@ -216,9 +237,9 @@ service BridgeService {
       label: "Loading examples"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
-      background: true
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      secondary_feedback: true
     };
   }
   rpc LoadBundle(LoadBundleRequest) returns (BundleResult) {
@@ -226,8 +247,8 @@ service BridgeService {
       label: "Loading dataset"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
       supersedes: true
     };
   }
@@ -236,8 +257,8 @@ service BridgeService {
       label: "Ingesting live data"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc GetView(ViewParams) returns (ViewMeta) {
@@ -245,9 +266,9 @@ service BridgeService {
       label: "Updating view"
       lane: ACTIVITY_LANE_VIEW
       policy: ACTIVITY_POLICY_LATEST_WINS
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
-      background: true
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      secondary_feedback: true
     };
   }
   rpc RenderFigure(FigureRequest) returns (FigureResult) {
@@ -255,8 +276,8 @@ service BridgeService {
       label: "Rendering figure"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult) {
@@ -264,9 +285,9 @@ service BridgeService {
       label: "Running analysis"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
-      marker_output: true
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+      may_update_markers: true
     };
   }
   rpc RmsTraces(SnufflingRequestParams) returns (SnufflingResult) {
@@ -274,8 +295,8 @@ service BridgeService {
       label: "Computing RMS"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   rpc RunCommand(CommandRequest) returns (CommandResult) {
@@ -283,8 +304,8 @@ service BridgeService {
       label: "Running command"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc MapData(MapRequest) returns (snuffler.bridge.v1.MapData) {
@@ -292,8 +313,8 @@ service BridgeService {
       label: "Loading map data"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_LATEST_WINS
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   rpc StationDistances(Empty) returns (StationDistanceList) {
@@ -301,8 +322,8 @@ service BridgeService {
       label: "Computing station distances"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult) {
@@ -310,8 +331,8 @@ service BridgeService {
       label: "Selecting event"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc UpdateEvent(EventSnapshot) returns (ActiveEventResult) {
@@ -319,8 +340,8 @@ service BridgeService {
       label: "Updating event"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc RemoveEvents(RemoveEventsRequest) returns (ActiveEventResult) {
@@ -328,8 +349,8 @@ service BridgeService {
       label: "Removing events"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc LoadGfStoreUrl(StringRequest) returns (StringValue) {
@@ -337,8 +358,8 @@ service BridgeService {
       label: "Loading GF store"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   rpc MarkersToText(MarkerFile) returns (StringValue) {
@@ -346,8 +367,8 @@ service BridgeService {
       label: "Serializing markers"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc LoadMarkers(LoadMarkersRequest) returns (SnufMarkerList) {
@@ -355,9 +376,9 @@ service BridgeService {
       label: "Loading markers"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
-      marker_output: true
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      may_update_markers: true
     };
   }
   rpc LoadStationXml(LoadStationXmlRequest) returns (SnufflingResult) {
@@ -365,8 +386,8 @@ service BridgeService {
       label: "Loading responses"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc LoadStations(LoadStationsRequest) returns (SnufflingResult) {
@@ -374,8 +395,8 @@ service BridgeService {
       label: "Loading stations"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc LoadEvents(LoadEventsRequest) returns (SnufflingResult) {
@@ -383,9 +404,9 @@ service BridgeService {
       label: "Loading events"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
-      marker_output: true
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      may_update_markers: true
     };
   }
   rpc AddCakeModel(AddCakeModelRequest) returns (StringValue) {
@@ -393,8 +414,8 @@ service BridgeService {
       label: "Adding earth model"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc DownloadWaveforms(WaveformDownloadRequest) returns (SceneMeta) {
@@ -402,8 +423,8 @@ service BridgeService {
       label: "Downloading waveforms"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   rpc CatalogSearch(CatalogRequest) returns (SnufflingResult) {
@@ -411,9 +432,9 @@ service BridgeService {
       label: "Searching catalog"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
-      marker_output: true
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+      may_update_markers: true
     };
   }
   rpc FetchStations(StationRequest) returns (SnufflingResult) {
@@ -421,8 +442,8 @@ service BridgeService {
       label: "Fetching stations"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   // Qt's download Save trigger (download.py:147): the loaded waveforms as
@@ -432,8 +453,8 @@ service BridgeService {
       label: "Exporting waveforms"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
   rpc ExportStations(Empty) returns (FileBlob) {
@@ -441,8 +462,8 @@ service BridgeService {
       label: "Exporting stations"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc FetchResponses(StationRequest) returns (SnufflingResult) {
@@ -450,18 +471,18 @@ service BridgeService {
       label: "Fetching responses"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
     };
   }
-  rpc WarmDeferred(Empty) returns (StringValue) {
+  rpc PrepareScientificTools(Empty) returns (StringValue) {
     option (activity) = {
       label: "Preparing scientific tools"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_DEDUP
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
-      background: true
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      secondary_feedback: true
     };
   }
   rpc MountGfStore(MountGfStoreRequest) returns (StringValue) {
@@ -469,8 +490,8 @@ service BridgeService {
       label: "Mounting GF store"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_MUTATE
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc GfStoreLabel(Empty) returns (StringValue) {
@@ -478,8 +499,8 @@ service BridgeService {
       label: "Reading GF store"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
-      effect: ACTIVITY_EFFECT_READ
-      cancel: ACTIVITY_CANCEL_NOT_CANCELLABLE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
 }

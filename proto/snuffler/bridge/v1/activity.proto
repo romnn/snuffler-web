@@ -20,31 +20,36 @@ enum ActivityPolicy {
   ACTIVITY_POLICY_LATEST_WINS = 3;
 }
 
-enum ActivityEffect {
-  ACTIVITY_EFFECT_UNSPECIFIED = 0;
-  ACTIVITY_EFFECT_READ = 1;
-  ACTIVITY_EFFECT_MUTATE = 2;
+enum SessionAccess {
+  SESSION_ACCESS_UNSPECIFIED = 0;
+  // The method reads session state without creating a transactional workspace.
+  SESSION_ACCESS_READ_ONLY = 1;
+  // The method runs in a transactional workspace and commits atomically.
+  SESSION_ACCESS_MUTATING = 2;
 }
 
-enum ActivityCancel {
-  // Cancellable is one capability, not a cooperative/interrupt pair: every
-  // cancellable rpc gets the same ladder (queued removal, safe-point checks,
-  // interpreter interrupt, restart escalation), and the dispatcher's rollback
-  // makes the interrupt safe for all of them.
-  ACTIVITY_CANCEL_UNSPECIFIED = 0;
-  ACTIVITY_CANCEL_NOT_CANCELLABLE = 1;
-  ACTIVITY_CANCEL_CANCELLABLE = 2;
+enum CancellationSupport {
+  // Cancellation support is one capability, not a cooperative/interrupt pair.
+  // Every supported RPC gets the same ladder: queued removal, safe-point checks,
+  // interpreter interrupt, and restart escalation.
+  // The dispatcher's rollback makes the interrupt safe for all of them.
+  CANCELLATION_SUPPORT_UNSPECIFIED = 0;
+  CANCELLATION_SUPPORT_NOT_SUPPORTED = 1;
+  CANCELLATION_SUPPORT_SUPPORTED = 2;
 }
 
 message Activity {
   string label = 1;
   ActivityLane lane = 2;
   ActivityPolicy policy = 3;
-  ActivityEffect effect = 4;
-  bool background = 5;
-  ActivityCancel cancel = 6;
+  SessionAccess session_access = 4;
+  // Lower-priority feedback that yields the navbar readout to foreground work.
+  bool secondary_feedback = 5;
+  CancellationSupport cancellation = 6;
+  // An accepted submission cancels active work before it starts.
   bool supersedes = 7;
-  bool marker_output = 8;
+  // The operation may replace markers when it commits.
+  bool may_update_markers = 8;
 }
 
 extend google.protobuf.MethodOptions {

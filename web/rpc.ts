@@ -6,11 +6,18 @@
 import {
   BridgeActivity,
   BridgeMethod,
+  type ActivityMeta,
   type BridgeMethodId,
   type BridgeMethodName,
 } from "./proto/snuffler/bridge/v1/bridge_methods.js";
 
-export { BridgeActivity, BridgeMethod, type BridgeMethodId, type BridgeMethodName };
+export {
+  BridgeActivity,
+  BridgeMethod,
+  type ActivityMeta,
+  type BridgeMethodId,
+  type BridgeMethodName,
+};
 
 export function rpc(name: BridgeMethodName): BridgeMethodId {
   return BridgeMethod[name];
