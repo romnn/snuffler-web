@@ -17,29 +17,74 @@ struct DispatchPermit {
 }
 
 thread_local! {
-    static ACTIVE_LEDGER_JOBS: StdRefCell<Vec<(JobHandle, crate::activity::Lane)>> =
-        const { StdRefCell::new(Vec::new()) };
+    static REGISTERED_LANE_JOBS: StdRefCell<RegisteredLaneJobs> =
+        const { StdRefCell::new(RegisteredLaneJobs::new()) };
+}
+
+struct RegisteredLaneJobs {
+    job: Option<JobHandle>,
+    view: Option<JobHandle>,
+}
+
+impl RegisteredLaneJobs {
+    const fn new() -> Self {
+        Self {
+            job: None,
+            view: None,
+        }
+    }
+
+    const fn get(&self, lane: crate::activity::Lane) -> Option<JobHandle> {
+        match lane {
+            crate::activity::Lane::Job => self.job,
+            crate::activity::Lane::View => self.view,
+            crate::activity::Lane::Local => None,
+        }
+    }
+
+    fn slot_mut(&mut self, lane: crate::activity::Lane) -> Option<&mut Option<JobHandle>> {
+        match lane {
+            crate::activity::Lane::Job => Some(&mut self.job),
+            crate::activity::Lane::View => Some(&mut self.view),
+            crate::activity::Lane::Local => None,
+        }
+    }
+
+    fn register(&mut self, handle: JobHandle, lane: crate::activity::Lane) -> bool {
+        let Some(slot) = self.slot_mut(lane) else {
+            return true;
+        };
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(handle);
+        true
+    }
+
+    fn unregister(&mut self, handle: JobHandle, lane: crate::activity::Lane) {
+        let Some(slot) = self.slot_mut(lane) else {
+            return;
+        };
+        if *slot == Some(handle) {
+            *slot = None;
+        }
+    }
 }
 
 pub(super) fn require_registered_job(
     operation: pb::Operation,
     method: &'static str,
 ) -> Result<JobHandle, TransportError> {
-    ACTIVE_LEDGER_JOBS.with(|active| {
-        active
-            .borrow()
-            .iter()
-            .find(|(_, lane)| *lane == operation.activity().lane)
-            .map(|(handle, _)| *handle)
-            .map_or_else(
-                || {
-                    Err(TransportError::new(
-                        method,
-                        "Python call has no registered activity job",
-                    ))
-                },
-                Ok,
-            )
+    REGISTERED_LANE_JOBS.with(|active| {
+        active.borrow().get(operation.activity().lane).map_or_else(
+            || {
+                Err(TransportError::new(
+                    method,
+                    "Python call has no registered activity job",
+                ))
+            },
+            Ok,
+        )
     })
 }
 
@@ -74,6 +119,123 @@ pub(super) fn submit_job<F>(
 ) -> Submission
 where
     F: Future<Output = Result<(), BridgeError>> + 'static,
+{
+    submit_job_with_outcome(inner, repaint, operation, detail, dedup_key, async move {
+        work.await.map(|()| Outcome::Succeeded)
+    })
+}
+
+pub(super) fn submit_local_future<F>(
+    inner: Rc<RefCell<Inner>>,
+    repaint: Repaint,
+    operation: Operation,
+    detail: Option<String>,
+    work: F,
+) -> Submission
+where
+    F: Future<Output = Result<(), BridgeError>> + 'static,
+{
+    let submission =
+        inner
+            .borrow_mut()
+            .activity
+            .submit_local(operation, detail, js_sys::Date::now() / 1000.0);
+    if let Submission::Accepted(handle) = submission {
+        let scheduled_inner = inner;
+        let scheduled_repaint = repaint;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the accepted local activity handle below owns this browser task"
+        )]
+        spawn_local(async move {
+            let result = work.await;
+            let outcome = match result {
+                Ok(()) => Outcome::Succeeded,
+                Err(error) => {
+                    scheduled_inner.borrow_mut().diagnostic = Some(error.clone());
+                    Outcome::Failed(JobError::Bridge(error))
+                }
+            };
+            scheduled_inner
+                .borrow_mut()
+                .activity
+                .complete(handle, outcome);
+            scheduled_repaint.request_repaint();
+        });
+    }
+    submission
+}
+
+async fn run_admitted_job<F>(
+    inner: Rc<RefCell<Inner>>,
+    repaint: Repaint,
+    operation: Operation,
+    handle: JobHandle,
+    work: F,
+) where
+    F: Future<Output = Result<Outcome, BridgeError>>,
+{
+    let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
+    let dispatch = DispatchPermit {
+        inner: inner.clone(),
+        handle,
+    }
+    .await;
+    if !dispatch {
+        repaint.request_repaint();
+        return;
+    }
+    repaint.request_repaint();
+    let lane = operation.activity().lane;
+    let registered = REGISTERED_LANE_JOBS.with(|active| active.borrow_mut().register(handle, lane));
+    let result = if registered {
+        work.await
+    } else {
+        Err(BridgeError::browser(
+            "dispatching Python work",
+            "the activity ledger granted an occupied lane",
+        ))
+    };
+    REGISTERED_LANE_JOBS.with(|active| {
+        active.borrow_mut().unregister(handle, lane);
+    });
+    let runtime_missing = runtime_info().is_none();
+    if result.is_err() && runtime_missing {
+        let mut state = inner.borrow_mut();
+        // Report the loss only if nothing else already did (an explicit restart
+        // or the sync poll can beat this future); a second report would retire
+        // the replacement runtime's state.
+        // The earlier report already terminated this job as Lost.
+        if state
+            .runtime_epoch
+            .is_none_or(|current| current == epoch.get())
+            && !matches!(state.activity.runtime(), RuntimeState::Failed(_))
+        {
+            note_runtime_lost(&mut state, epoch);
+            state.runtime_epoch = Some(js_current_runtime_epoch());
+        }
+    } else {
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(BridgeError::Call(CallError::Cancelled { .. })) => Outcome::Cancelled,
+            Err(BridgeError::Call(CallError::Stale { .. })) => Outcome::Stale,
+            Err(error) => Outcome::Failed(JobError::Bridge(error)),
+        };
+        inner.borrow_mut().activity.complete(handle, outcome);
+    }
+    repaint.request_repaint();
+}
+
+pub(super) fn submit_job_with_outcome<F>(
+    inner: Rc<RefCell<Inner>>,
+    repaint: Repaint,
+    operation: Operation,
+    detail: Option<String>,
+    dedup_key: Vec<u8>,
+    work: F,
+) -> Submission
+where
+    F: Future<Output = Result<Outcome, BridgeError>> + 'static,
 {
     sync_runtime(&inner);
     let submission = inner.borrow_mut().activity.submit(
@@ -119,58 +281,17 @@ where
         }
     }
     if let Submission::Accepted(handle) = submission {
-        let scheduled_inner = inner.clone();
-        let scheduled_repaint = repaint.clone();
-        spawn_local(async move {
-            let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
-            let dispatch = DispatchPermit {
-                inner: scheduled_inner.clone(),
-                handle,
-            }
-            .await;
-            if !dispatch {
-                scheduled_repaint.request_repaint();
-                return;
-            }
-            scheduled_repaint.request_repaint();
-            ACTIVE_LEDGER_JOBS.with(|active| {
-                active
-                    .borrow_mut()
-                    .push((handle, operation.activity().lane));
-            });
-            let result = work.await;
-            ACTIVE_LEDGER_JOBS.with(|active| {
-                active.borrow_mut().retain(|(active, _)| *active != handle);
-            });
-            let runtime_info = js_runtime_info();
-            let runtime_missing = runtime_info.is_null() || runtime_info.is_undefined();
-            if result.is_err() && runtime_missing {
-                let mut state = scheduled_inner.borrow_mut();
-                // Report the loss only if nothing else already did (an explicit
-                // restart or the sync poll can beat this future); a second
-                // report would re-retire the replacement runtime's state. The
-                // earlier report already terminated this job as Lost.
-                if state
-                    .runtime_epoch
-                    .is_none_or(|current| current == epoch.get())
-                {
-                    note_runtime_lost(&mut state, epoch);
-                    state.runtime_epoch = Some(js_current_runtime_epoch());
-                }
-            } else {
-                let outcome = match result {
-                    Ok(()) => Outcome::Succeeded,
-                    Err(BridgeError::Call(CallError::Cancelled { .. })) => Outcome::Cancelled,
-                    Err(BridgeError::Call(CallError::Stale { .. })) => Outcome::Stale,
-                    Err(error) => Outcome::Failed(JobError::Bridge(error)),
-                };
-                scheduled_inner
-                    .borrow_mut()
-                    .activity
-                    .complete(handle, outcome);
-            }
-            scheduled_repaint.request_repaint();
-        });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the accepted ledger handle below owns this executor task"
+        )]
+        spawn_local(run_admitted_job(
+            inner.clone(),
+            repaint.clone(),
+            operation,
+            handle,
+            work,
+        ));
     }
     submission
 }
@@ -273,13 +394,14 @@ pub(super) fn client() -> pb::BridgeServiceClient<WorkerTransport> {
     pb::BridgeServiceClient::new(WorkerTransport)
 }
 
-pub(super) fn update_active_progress(inner: &Rc<RefCell<Inner>>, done: u64, total: u64, phase: String) {
-    ACTIVE_LEDGER_JOBS.with(|active| {
-        let job = active
-            .borrow()
-            .iter()
-            .find(|(_, lane)| *lane == crate::activity::Lane::Job)
-            .map(|(handle, _)| *handle);
+pub(super) fn update_current_job_progress(
+    inner: &Rc<RefCell<Inner>>,
+    done: u64,
+    total: u64,
+    phase: String,
+) {
+    REGISTERED_LANE_JOBS.with(|active| {
+        let job = active.borrow().get(crate::activity::Lane::Job);
         if let Some(job) = job {
             inner.borrow_mut().activity.update_progress(
                 job,
@@ -297,13 +419,9 @@ pub(super) fn update_active_progress(inner: &Rc<RefCell<Inner>>, done: u64, tota
 /// currently executing. A multi-child flow has windows with no transport
 /// call in flight, so a cancel there finds nothing to interrupt; the
 /// Cancelling state is the request, honored at the next child boundary.
-pub(super) fn active_job_cancelled(inner: &Rc<RefCell<Inner>>) -> bool {
-    ACTIVE_LEDGER_JOBS.with(|active| {
-        let job = active
-            .borrow()
-            .iter()
-            .find(|(_, lane)| *lane == crate::activity::Lane::Job)
-            .map(|(handle, _)| *handle);
+pub(super) fn current_job_cancellation_requested(inner: &Rc<RefCell<Inner>>) -> bool {
+    REGISTERED_LANE_JOBS.with(|active| {
+        let job = active.borrow().get(crate::activity::Lane::Job);
         job.is_some_and(|job| {
             inner
                 .borrow()

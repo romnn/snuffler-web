@@ -33,21 +33,6 @@ pub struct SeedlinkParams {
     pub retain_s: f64,
 }
 
-/// The Python runtime reported by the live worker.
-#[derive(Clone, Debug)]
-pub struct RuntimeInfo {
-    /// Python version.
-    pub python: String,
-    /// `NumPy` version.
-    pub numpy: String,
-    /// Pyrocko version.
-    pub pyrocko: String,
-    /// Whether the interpreter confirmed pthread support.
-    pub threaded: bool,
-    /// Browser hardware concurrency, or zero when unavailable.
-    pub cores: u32,
-}
-
 /// Progress reported by the in-browser `SeisBench` runtime.
 #[derive(Clone, Debug)]
 pub struct SeisbenchProgress {

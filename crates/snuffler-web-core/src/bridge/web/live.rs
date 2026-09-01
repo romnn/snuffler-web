@@ -22,6 +22,15 @@ struct LiveSeedlinkHandle {
     on_close: Closure<dyn FnMut(web_sys::Event)>,
 }
 
+#[derive(Clone)]
+struct LiveStream {
+    source: String,
+    started_at: f64,
+    stream: StreamId,
+    session: SessionEpoch,
+    retain_s: f64,
+}
+
 impl Drop for LiveSeedlinkHandle {
     fn drop(&mut self) {
         self.ws.set_onopen(None);
@@ -61,16 +70,14 @@ impl LiveSeedlinkHandle {
             conn.source.clone(),
             conn.commands,
         );
-        let on_message = seedlink_on_message(
-            inner.clone(),
-            repaint.clone(),
-            conn.source.clone(),
+        let live = LiveStream {
+            source: conn.source.clone(),
             started_at,
             stream,
             session,
-            next_seq,
             retain_s,
-        );
+        };
+        let on_message = seedlink_on_message(inner.clone(), repaint.clone(), live, next_seq);
         let on_error = seedlink_on_error(inner.clone(), repaint.clone(), stream, session);
         let on_close = seedlink_on_close(inner, repaint, conn.source, stream, session);
 
@@ -148,7 +155,7 @@ fn seedlink_on_open(
                 return;
             }
         }
-        set_snuffling_text(&inner, format!("SeedLink connected: {source}"), false);
+        log::info!("SeedLink connected: {source}");
         repaint.request_repaint();
     }) as Box<dyn FnMut(_)>)
 }
@@ -156,17 +163,38 @@ fn seedlink_on_open(
 fn seedlink_on_message(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,
-    source: String,
-    started_at: f64,
-    stream: StreamId,
-    session: SessionEpoch,
+    live: LiveStream,
     next_seq: Rc<Cell<u64>>,
-    retain_s: f64,
 ) -> Closure<dyn FnMut(web_sys::MessageEvent)> {
     let buffer = Rc::new(RefCell::new(Vec::new()));
     Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
-        let bytes = seedlink_event_bytes(&event);
-        if bytes.is_empty() {
+        let bytes = match seedlink_event_bytes(&event) {
+            Ok(bytes) if bytes.is_empty() => return,
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if close_live_ingest(&inner, live.stream, live.session) {
+                    set_bridge_error(&inner, SeedlinkError::from(error).into());
+                    repaint.request_repaint();
+                }
+                return;
+            }
+        };
+        let combined = {
+            let buf = buffer.borrow();
+            buf.len().saturating_add(bytes.len())
+        };
+        if combined > crate::seedlink::MAX_FRAME_BUFFER_BYTES {
+            if close_live_ingest(&inner, live.stream, live.session) {
+                set_bridge_error(
+                    &inner,
+                    SeedlinkError::from(crate::seedlink::FrameError::Oversized {
+                        announced: combined,
+                        limit: crate::seedlink::MAX_FRAME_BUFFER_BYTES,
+                    })
+                    .into(),
+                );
+                repaint.request_repaint();
+            }
             return;
         }
         let records = {
@@ -177,33 +205,18 @@ fn seedlink_on_message(
         let records = match records {
             Ok(records) => records,
             Err(error) => {
-                if !close_live_ingest(&inner, stream, session) {
+                if !close_live_ingest(&inner, live.stream, live.session) {
                     return;
                 }
                 set_bridge_error(&inner, SeedlinkError::from(error).into());
                 repaint.request_repaint();
-                spawn_local(async {
-                    LIVE_SEEDLINK.with(|slot| {
-                        slot.borrow_mut().take();
-                    });
-                });
                 return;
             }
         };
         if !records.is_empty() {
             let seq = next_seq.get();
             next_seq.set(seq.wrapping_add(1));
-            ingest_live_mseed(
-                inner.clone(),
-                repaint.clone(),
-                source.clone(),
-                records,
-                started_at,
-                stream,
-                session,
-                seq,
-                retain_s,
-            );
+            ingest_live_mseed(inner.clone(), repaint.clone(), live.clone(), records, seq);
         }
     }) as Box<dyn FnMut(_)>)
 }
@@ -231,11 +244,6 @@ fn seedlink_on_error(
             .into(),
         );
         repaint.request_repaint();
-        spawn_local(async {
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
-        });
     }) as Box<dyn FnMut(_)>)
 }
 
@@ -249,29 +257,41 @@ fn seedlink_on_close(
     Closure::wrap(Box::new(move |_event: web_sys::Event| {
         if close_live_ingest(&inner, stream, session) {
             inner.borrow_mut().live_seedlink_started_at = None;
-            set_snuffling_text(&inner, format!("SeedLink disconnected: {source}"), false);
-            spawn_local(async {
-                LIVE_SEEDLINK.with(|slot| {
-                    slot.borrow_mut().take();
-                });
-            });
+            log::info!("SeedLink disconnected: {source}");
         }
         repaint.request_repaint();
     }) as Box<dyn FnMut(_)>)
 }
 
-fn seedlink_event_bytes(event: &web_sys::MessageEvent) -> Vec<u8> {
+fn seedlink_event_bytes(
+    event: &web_sys::MessageEvent,
+) -> Result<Vec<u8>, crate::seedlink::FrameError> {
     let data = event.data();
     if data.is_instance_of::<js_sys::ArrayBuffer>() {
-        js_sys::Uint8Array::new(&data).to_vec()
+        let bytes = js_sys::Uint8Array::new(&data);
+        let length = usize::try_from(bytes.byte_length()).unwrap_or(usize::MAX);
+        if length > crate::seedlink::MAX_FRAME_BUFFER_BYTES {
+            return Err(crate::seedlink::FrameError::Oversized {
+                announced: length,
+                limit: crate::seedlink::MAX_FRAME_BUFFER_BYTES,
+            });
+        }
+        Ok(bytes.to_vec())
     } else if let Some(text) = data.as_string() {
-        text.into_bytes()
+        let length = text.len();
+        if length > crate::seedlink::MAX_FRAME_BUFFER_BYTES {
+            return Err(crate::seedlink::FrameError::Oversized {
+                announced: length,
+                limit: crate::seedlink::MAX_FRAME_BUFFER_BYTES,
+            });
+        }
+        Ok(text.into_bytes())
     } else {
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
-fn live_ingest_matches(
+fn is_current_live_ingest(
     state: &LiveIngestState,
     stream: StreamId,
     session: SessionEpoch,
@@ -299,21 +319,17 @@ fn live_ingest_matches(
     }
 }
 
-fn close_live_ingest(
-    inner: &Rc<RefCell<Inner>>,
-    stream: StreamId,
-    session: SessionEpoch,
-) -> bool {
+fn close_live_ingest(inner: &Rc<RefCell<Inner>>, stream: StreamId, session: SessionEpoch) -> bool {
     {
         let mut state = inner.borrow_mut();
-        if !live_ingest_matches(&state.live_ingest, stream, session) {
+        if !is_current_live_ingest(&state.live_ingest, stream, session) {
             return false;
         }
         retire_live_session_state(&mut state);
     }
     // A terminally closed stream retires its socket too — otherwise the UI
     // keeps offering a live session whose every packet is rejected.
-    retire_live_socket_deferred();
+    defer_live_socket_retirement();
     true
 }
 
@@ -330,7 +346,11 @@ pub(super) fn retire_live_session_state(state: &mut Inner) {
 /// Drops the socket handle on the next event-loop turn: retirement can run
 /// inside the socket's own callbacks, where dropping the currently executing
 /// closure is forbidden.
-pub(super) fn retire_live_socket_deferred() {
+pub(super) fn defer_live_socket_retirement() {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "socket callbacks defer dropping their own currently executing closure"
+    )]
     spawn_local(async {
         LIVE_SEEDLINK.with(|slot| {
             slot.borrow_mut().take();
@@ -338,7 +358,7 @@ pub(super) fn retire_live_socket_deferred() {
     });
 }
 
-pub(super) fn retire_live_source(inner: &Rc<RefCell<Inner>>) -> SessionEpoch {
+pub(super) fn retire_live_session(inner: &Rc<RefCell<Inner>>) -> SessionEpoch {
     LIVE_SEEDLINK.with(|slot| {
         slot.borrow_mut().take();
     });
@@ -427,7 +447,7 @@ fn enqueue_live_batch(
         fault
     };
     if sequence_fault {
-        retire_live_socket_deferred();
+        defer_live_socket_retirement();
         return;
     }
 
@@ -484,7 +504,7 @@ fn enqueue_live_batch(
     }
 }
 
-fn take_live_mailbox(
+fn take_buffered_ingest_request(
     state: &mut Inner,
     stream: StreamId,
     session: SessionEpoch,
@@ -526,15 +546,11 @@ fn take_live_mailbox(
 fn ingest_live_mseed(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,
-    source: String,
+    live: LiveStream,
     content: Vec<u8>,
-    start_time: f64,
-    stream: StreamId,
-    session: SessionEpoch,
     seq: u64,
-    retain_s: f64,
 ) {
-    if seq == 0 && content.len() > INGEST_MAILBOX_BYTES {
+    if content.len() > INGEST_MAILBOX_BYTES {
         set_bridge_error(
             &inner,
             SeedlinkError::from(crate::seedlink::FrameError::Oversized {
@@ -543,18 +559,14 @@ fn ingest_live_mseed(
             })
             .into(),
         );
-        close_live_ingest(&inner, stream, session);
-        spawn_local(async {
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
-        });
+        close_live_ingest(&inner, live.stream, live.session);
         repaint.request_repaint();
         return;
     }
+    let mut sequence_fault = None;
     let enqueue = {
-        let mut state = inner.borrow_mut();
-        if !live_ingest_matches(&state.live_ingest, stream, session) {
+        let state = inner.borrow();
+        if !is_current_live_ingest(&state.live_ingest, live.stream, live.session) {
             return;
         }
         if state.ingest_job.is_some() {
@@ -567,22 +579,30 @@ fn ingest_live_mseed(
                 LiveIngestState::ResetInFlight { .. } | LiveIngestState::Closed => return,
             };
             if seq != expected {
-                state.live_ingest = LiveIngestState::Closed;
-                return;
-            }
-            if seq == 0 {
-                state.live_ingest = LiveIngestState::ResetInFlight { stream, session };
+                sequence_fault = Some(expected);
             }
             false
         }
     };
+    if let Some(expected) = sequence_fault {
+        close_live_ingest(&inner, live.stream, live.session);
+        set_bridge_error(
+            &inner,
+            BridgeError::browser(
+                "ingesting SeedLink data",
+                format!("received batch {seq}, expected {expected}"),
+            ),
+        );
+        repaint.request_repaint();
+        return;
+    }
     if enqueue {
         enqueue_live_batch(
             &inner,
-            stream,
-            session,
+            live.stream,
+            live.session,
             LiveIngestBatch {
-                source,
+                source: live.source,
                 content,
                 seq,
                 received_s: js_sys::Date::now() / 1000.0,
@@ -592,40 +612,127 @@ fn ingest_live_mseed(
     }
 
     let request = IngestMiniSeedRequest {
-        source,
+        source: live.source.clone(),
         content,
-        start_time,
+        start_time: live.started_at,
         reset: seq == 0,
-        retain_seconds: retain_s,
-        stream_id: stream.0,
-        session_epoch: session.0,
+        retain_seconds: live.retain_s,
+        stream_id: live.stream.0,
+        session_epoch: live.session.0,
         batch_seq_first: seq,
         batch_seq_last: seq,
         dropped_seq_first: 0,
         dropped_seq_last: 0,
         dropped_bytes: 0,
     };
-    dispatch_live_ingest(
-        inner, repaint, request, stream, session, start_time, retain_s,
+    dispatch_live_ingest(inner, repaint, request, live);
+}
+
+enum LiveIngestCompletion {
+    Superseded,
+    Accepted {
+        next_request: Option<IngestMiniSeedRequest>,
+        effect: LiveIngestEffect,
+    },
+    Failed(BridgeError),
+}
+
+#[derive(Clone, Copy)]
+enum LiveIngestEffect {
+    ExtendSession,
+    ResetSession,
+}
+
+fn complete_live_ingest(
+    state: &mut Inner,
+    parsed: Result<pb::IngestMiniSeedResult, CallError>,
+    job: Option<JobHandle>,
+    expected_first: u64,
+    expected_last: u64,
+    live: &LiveStream,
+) -> LiveIngestCompletion {
+    if state.ingest_job == job {
+        state.ingest_job = None;
+    }
+    if !is_current_live_ingest(&state.live_ingest, live.stream, live.session) {
+        return LiveIngestCompletion::Superseded;
+    }
+    let ack = match parsed {
+        Ok(ack) => ack,
+        Err(error) => {
+            // Batch N failed terminally; dispatching the buffered successors would
+            // mutate the session after the stream's terminal failure.
+            state.live_ingest = LiveIngestState::Closed;
+            state.ingest_mailbox = LiveIngestMailbox::default();
+            return LiveIngestCompletion::Failed(error.into());
+        }
+    };
+    if ack.stream_id != live.stream.0
+        || ack.session_epoch != live.session.0
+        || ack.ack_seq_first != expected_first
+        || ack.ack_seq_last != expected_last
+    {
+        state.live_ingest = LiveIngestState::Closed;
+        state.ingest_mailbox = LiveIngestMailbox::default();
+        return LiveIngestCompletion::Failed(BridgeError::browser(
+            "acknowledging SeedLink data",
+            "stale or out-of-order ingest acknowledgement",
+        ));
+    }
+    let received_next_seq = match state.live_ingest {
+        LiveIngestState::Lagged { next_seq, .. } => next_seq,
+        _ => expected_last.wrapping_add(1),
+    };
+    let effect = if expected_first == 0 {
+        state.diagnostic = None;
+        state.snuffling = None;
+        clear_event_state(state);
+        state.station_dists.clear();
+        state.station_dists_gen = None;
+        state.live_seedlink_started_at = Some(live.started_at);
+        LiveIngestEffect::ResetSession
+    } else {
+        LiveIngestEffect::ExtendSession
+    };
+    state.scene.clone_from(&ack.scene);
+    state.scene_gen += 1;
+    clear_view(state);
+    if let LiveIngestState::Lagged { dropped_bytes, .. } = state.live_ingest {
+        log::warn!("SeedLink resumed after acknowledging a gap of {dropped_bytes} bytes");
+    }
+    state.live_ingest = LiveIngestState::Streaming {
+        stream: live.stream,
+        session: live.session,
+        next_seq: received_next_seq.max(expected_last.wrapping_add(1)),
+    };
+    let next_request = take_buffered_ingest_request(
+        state,
+        live.stream,
+        live.session,
+        live.started_at,
+        live.retain_s,
     );
+    LiveIngestCompletion::Accepted {
+        next_request,
+        effect,
+    }
 }
 
 fn dispatch_live_ingest(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,
     request: IngestMiniSeedRequest,
-    stream: StreamId,
-    session: SessionEpoch,
-    start_time: f64,
-    retain_s: f64,
+    live: LiveStream,
 ) {
     let expected_first = request.batch_seq_first;
     let expected_last = request.batch_seq_last;
 
     let work_inner = inner.clone();
     let work_repaint = repaint.clone();
+    let reject_repaint = repaint.clone();
     let job_slot = Rc::new(Cell::new(None));
     let work_job_slot = job_slot.clone();
+    let work_live = live.clone();
     let submission = submit_job(
         inner.clone(),
         repaint,
@@ -634,89 +741,66 @@ fn dispatch_live_ingest(
         Vec::new(),
         async move {
             let parsed = client().ingest_mini_seed(request).await;
-            let failed = parsed.is_err();
-            let mut acknowledgement_error = None;
-            let pending = {
+            let completion = {
                 let mut state = work_inner.borrow_mut();
-                if state.ingest_job == work_job_slot.get() {
-                    state.ingest_job = None;
-                }
-                if !live_ingest_matches(&state.live_ingest, stream, session) {
-                    return Ok(());
-                }
-                if let Ok(ack) = &parsed {
-                    if ack.stream_id != stream.0
-                        || ack.session_epoch != session.0
-                        || ack.ack_seq_first != expected_first
-                        || ack.ack_seq_last != expected_last
-                    {
-                        state.live_ingest = LiveIngestState::Closed;
-                        state.ingest_mailbox = LiveIngestMailbox::default();
-                        acknowledgement_error = Some(BridgeError::browser(
-                            "acknowledging SeedLink data",
-                            "stale or out-of-order ingest acknowledgement",
-                        ));
-                    } else {
-                        state.scene = ack.scene.clone();
-                        state.scene_gen += 1;
-                        clear_view(&mut state);
-                        if let LiveIngestState::Lagged { dropped_bytes, .. } = state.live_ingest
-                        {
-                            log::warn!(
-                                "SeedLink resumed after acknowledging a gap of {dropped_bytes} bytes"
-                            );
-                        }
-                        state.live_ingest = LiveIngestState::Streaming {
-                            stream,
-                            session,
-                            next_seq: expected_last.wrapping_add(1),
-                        };
-                    }
-                } else {
-                    // Batch N failed terminally; dispatching the buffered
-                    // successors would mutate the session after the stream's
-                    // terminal failure.
-                    state.live_ingest = LiveIngestState::Closed;
-                    state.ingest_mailbox = LiveIngestMailbox::default();
-                }
-                if matches!(state.live_ingest, LiveIngestState::Streaming { .. }) {
-                    take_live_mailbox(&mut state, stream, session, start_time, retain_s)
-                } else {
-                    None
-                }
+                complete_live_ingest(
+                    &mut state,
+                    parsed,
+                    work_job_slot.get(),
+                    expected_first,
+                    expected_last,
+                    &work_live,
+                )
             };
-            if let Some(pending) = pending {
-                dispatch_live_ingest(
-                    work_inner,
-                    work_repaint,
-                    pending,
-                    stream,
-                    session,
-                    start_time,
-                    retain_s,
-                );
+            match completion {
+                LiveIngestCompletion::Superseded => Ok(()),
+                LiveIngestCompletion::Accepted {
+                    next_request,
+                    effect,
+                } => {
+                    if let Some(next_request) = next_request {
+                        dispatch_live_ingest(
+                            work_inner,
+                            work_repaint,
+                            next_request,
+                            work_live.clone(),
+                        );
+                    }
+                    if matches!(effect, LiveIngestEffect::ResetSession) {
+                        js_clear_open_sources();
+                    }
+                    Ok(())
+                }
+                LiveIngestCompletion::Failed(error) => {
+                    defer_live_socket_retirement();
+                    Err(error)
+                }
             }
-            if let Some(error) = acknowledgement_error {
-                spawn_local(async {
-                    LIVE_SEEDLINK.with(|slot| {
-                        slot.borrow_mut().take();
-                    });
-                });
-                return Err(error);
-            }
-            if failed {
-                spawn_local(async {
-                    LIVE_SEEDLINK.with(|slot| {
-                        slot.borrow_mut().take();
-                    });
-                });
-            }
-            parsed.map(|_| ()).map_err(BridgeError::from)
         },
     );
-    if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
-        job_slot.set(Some(handle));
-        inner.borrow_mut().ingest_job = Some(handle);
+    match submission {
+        Submission::Accepted(handle) | Submission::Joined(handle) => {
+            job_slot.set(Some(handle));
+            let mut state = inner.borrow_mut();
+            if expected_first == 0 {
+                state.live_ingest = LiveIngestState::ResetInFlight {
+                    stream: live.stream,
+                    session: live.session,
+                };
+            }
+            state.ingest_job = Some(handle);
+        }
+        Submission::Rejected(_, reason) => {
+            close_live_ingest(&inner, live.stream, live.session);
+            set_bridge_error(
+                &inner,
+                BridgeError::browser(
+                    "starting SeedLink ingestion",
+                    format!("ingest admission was rejected: {reason}"),
+                ),
+            );
+            reject_repaint.request_repaint();
+        }
     }
 }
 
@@ -731,13 +815,12 @@ impl Bridge {
     /// Starts a live `SeedLink` source and replaces the current pile.
     pub fn start_seedlink(&self, params: SeedlinkParams) {
         let repaint = self.repaint.clone();
-        let session = retire_live_source(&self.inner);
-        let stream = {
-            let mut state = self.inner.borrow_mut();
-            state.next_stream_id = state.next_stream_id.wrapping_add(1).max(1);
-            let stream = StreamId(state.next_stream_id);
-            state.live_ingest = LiveIngestState::Opening { stream, session };
-            stream
+        let (stream, session) = {
+            let state = self.inner.borrow();
+            (
+                StreamId(state.next_stream_id.wrapping_add(1).max(1)),
+                SessionEpoch(state.session_epoch.wrapping_add(1).max(1)),
+            )
         };
         let started_at = js_sys::Date::now() / 1000.0;
         let follow_s = if params.follow_s > 0.0 {
@@ -754,31 +837,19 @@ impl Bridge {
             session,
         ) {
             Ok(handle) => {
-                js_clear_open_sources();
                 LIVE_SEEDLINK.with(|slot| {
                     *slot.borrow_mut() = Some(handle);
                 });
                 let mut i = self.inner.borrow_mut();
-                i.live_seedlink_started_at = Some(started_at);
+                retire_live_session_state(&mut i);
+                i.session_epoch = session.0;
+                i.next_stream_id = stream.0;
+                i.live_ingest = LiveIngestState::Opening { stream, session };
                 i.live_seedlink_follow_s = follow_s;
-                i.scene = Some(SceneMeta {
-                    tmin: started_at,
-                    tmax: started_at + follow_s,
-                    tracks: Vec::new(),
-                });
-                i.scene_gen += 1;
                 i.diagnostic = None;
-                i.snuffling = None;
-                clear_event_state(&mut i);
-                i.station_dists.clear();
-                i.station_dists_gen = None;
-                clear_view(&mut i);
             }
             Err(err) => {
-                let mut i = self.inner.borrow_mut();
-                i.live_seedlink_started_at = None;
-                i.live_ingest = LiveIngestState::Closed;
-                i.diagnostic = Some(err.into());
+                self.inner.borrow_mut().diagnostic = Some(err.into());
             }
         }
         repaint.request_repaint();
@@ -786,7 +857,7 @@ impl Bridge {
 
     /// Stops live `SeedLink` acquisition while retaining received samples.
     pub fn stop_seedlink(&self) {
-        retire_live_source(&self.inner);
+        retire_live_session(&self.inner);
         set_snuffling_text(&self.inner, "SeedLink stopped".to_owned(), false);
     }
 }

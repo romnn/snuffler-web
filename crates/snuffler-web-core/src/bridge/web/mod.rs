@@ -50,7 +50,7 @@ extern "C" {
     fn js_take_operation_events() -> js_sys::Array;
 
     #[wasm_bindgen(js_name = seisbenchDevice)]
-    fn js_seisbench_device() -> String;
+    fn js_seisbench_device() -> JsValue;
 
     #[wasm_bindgen(js_name = runtimeInfo)]
     fn js_runtime_info() -> JsValue;
@@ -85,6 +85,10 @@ extern "C" {
 
     #[wasm_bindgen(js_name = reloadFiles, catch)]
     async fn js_reload_files() -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = readFileLoadPage, catch)]
+    async fn js_read_file_load_page(request: Vec<u8>) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = cancelFileLoad)]
+    fn js_cancel_file_load(request: Vec<u8>);
     #[wasm_bindgen(js_name = acknowledgeSources)]
     fn js_acknowledge_sources(bytes: Vec<u8>);
     #[wasm_bindgen(js_name = clearOpenSources)]
@@ -126,20 +130,26 @@ extern "C" {
 /// latches that are per-interpreter: the replacement session numbers its
 /// generations from zero, must be re-warmed, and has no live stream state.
 fn note_runtime_lost(state: &mut Inner, epoch: RuntimeEpoch) {
+    if let Some((_, params)) = state.view_job.take() {
+        state.desired = Some(params);
+    }
+    state.examples_job = None;
+    state.station_dists_job = None;
+    state.map_job = None;
+    state.figures.clear();
     state.activity.runtime_lost(epoch);
     state.python_session_generation = 0;
-    state.warm_requested = false;
+    state.scientific_tools_requested = false;
     // The replacement interpreter has no session for the stream to land in, so
     // the socket retires with the runtime — otherwise the UI keeps a visibly
     // live acquisition whose every packet is rejected against a Closed stream.
     retire_live_session_state(state);
-    retire_live_socket_deferred();
+    defer_live_socket_retirement();
 }
 
 pub(super) fn sync_runtime(inner: &Rc<RefCell<Inner>>) {
     let epoch = js_current_runtime_epoch();
-    let info = js_runtime_info();
-    let ready = !info.is_null() && !info.is_undefined();
+    let ready = runtime_info().is_some();
     {
         let mut state = inner.borrow_mut();
         if let Some(previous) = state.runtime_epoch
@@ -162,9 +172,8 @@ pub(super) fn cancel_job(handle: JobHandle) -> Result<pb::CancelDisposition, Bri
         job_id: handle.id().get(),
     }
     .encode_to_vec();
-    let bytes = js_cancel_job(request).map_err(|error| {
-        BridgeError::browser("cancelling Python work", jsval_to_string(error))
-    })?;
+    let bytes = js_cancel_job(request)
+        .map_err(|error| BridgeError::browser("cancelling Python work", jsval_to_string(error)))?;
     let reply: pb::CancelJobReply = proto::decode_message(&bytes, "cancelJob")?;
     pb::CancelDisposition::try_from(reply.disposition).map_err(|_| {
         BridgeError::browser("cancelling Python work", "unknown cancellation disposition")
@@ -205,8 +214,30 @@ fn drain_operation_events(inner: &Rc<RefCell<Inner>>) {
         if event.runtime_epoch != js_current_runtime_epoch() {
             continue;
         }
-        let Some(pb::worker_event::Event::Operation(operation)) = event.event else {
+        let Some(event) = event.event else {
             continue;
+        };
+        let operation = match event {
+            pb::worker_event::Event::RuntimeFailure(failure) => {
+                let detail = if failure.kind.is_empty() {
+                    failure.message
+                } else {
+                    format!("{}: {}", failure.kind, failure.message)
+                };
+                let error = BridgeError::browser("starting Python", detail);
+                let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
+                let mut state = inner.borrow_mut();
+                note_runtime_lost(&mut state, epoch);
+                state
+                    .activity
+                    .set_runtime(RuntimeState::Failed(error.clone()));
+                state.diagnostic = Some(error);
+                continue;
+            }
+            pb::worker_event::Event::Operation(operation) => operation,
+            pb::worker_event::Event::Boot(_)
+            | pb::worker_event::Event::MlDevice(_)
+            | pb::worker_event::Event::RuntimeInfo(_) => continue,
         };
         match operation.event {
             Some(pb::operation_event::Event::Started(_)) => {
@@ -217,19 +248,29 @@ fn drain_operation_events(inner: &Rc<RefCell<Inner>>) {
             }
             Some(pb::operation_event::Event::Progress(progress)) => {
                 let phase = progress.phase.into();
-                let value = match progress.fraction {
-                    None => Progress::Count {
-                        done: progress.done,
-                        total: progress.total,
+                let value = match progress.progress {
+                    Some(pb::operation_progress::Progress::Count(count)) => Progress::Count {
+                        done: count.done,
+                        total: count.total,
                         phase,
                     },
-                    Some(fraction) => {
+                    Some(pb::operation_progress::Progress::Fraction(fraction)) => {
                         #[expect(
                             clippy::cast_possible_truncation,
                             reason = "wire progress is normalized before conversion to the UI's f32"
                         )]
                         let fraction = fraction.clamp(0.0, 1.0) as f32;
                         Progress::Fraction { fraction, phase }
+                    }
+                    None => {
+                        set_bridge_error(
+                            inner,
+                            BridgeError::browser(
+                                "reading Python progress",
+                                "progress event had no count or fraction",
+                            ),
+                        );
+                        continue;
                     }
                 };
                 inner
@@ -242,51 +283,30 @@ fn drain_operation_events(inner: &Rc<RefCell<Inner>>) {
     }
 }
 
-
 fn jsval_to_string(v: JsValue) -> String {
     v.as_string().unwrap_or_else(|| format!("{v:?}"))
 }
 
 pub(super) fn seisbench_device() -> String {
-    js_seisbench_device()
+    let status = js_bytes(js_seisbench_device(), "seisbench_device")
+        .ok()
+        .and_then(|bytes| {
+            proto::decode_message::<pb::MlDeviceStatus>(&bytes, "seisbenchDevice").ok()
+        })
+        .and_then(|status| pb::MlDevice::try_from(status.device).ok());
+    match status {
+        Some(pb::MlDevice::Webgpu) => "WebGPU".to_owned(),
+        Some(pb::MlDevice::Wasm | pb::MlDevice::Unspecified) | None => "CPU (wasm)".to_owned(),
+    }
 }
 
-pub(super) fn runtime_info() -> Option<RuntimeInfo> {
+pub(super) fn runtime_info() -> Option<pb::RuntimeInfo> {
     let info = js_runtime_info();
-    if !info.is_object() {
+    if info.is_null() || info.is_undefined() {
         return None;
     }
-    let string = |key: &str| {
-        js_sys::Reflect::get(&info, &JsValue::from_str(key))
-            .ok()
-            .and_then(|v| v.as_string())
-            .unwrap_or_else(|| "unknown".to_owned())
-    };
-    let flag = |key: &str| {
-        js_sys::Reflect::get(&info, &JsValue::from_str(key))
-            .ok()
-            .and_then(|v| v.as_bool())
-            == Some(true)
-    };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "hardwareConcurrency is a small non-negative core count"
-    )]
-    let cores = js_sys::Reflect::get(&info, &JsValue::from_str("cores"))
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0)
-        .max(0.0) as u32;
-    Some(RuntimeInfo {
-        python: string("python"),
-        numpy: string("numpy"),
-        pyrocko: string("pyrocko"),
-        // Both have to be true: the build says it is threaded, the live
-        // interpreter says pthreads really came up.
-        threaded: flag("threaded") && flag("pthreads"),
-        cores,
-    })
+    let bytes = js_bytes(info, "runtime_info").ok()?;
+    proto::decode_message(&bytes, "runtimeInfo").ok()
 }
 
 fn js_bytes(v: JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
@@ -297,33 +317,31 @@ fn js_bytes(v: JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
         .map(|arr| arr.to_vec())
 }
 
-fn browser_manifest(
+fn decode_browser_file_page(
     result: Result<JsValue, JsValue>,
     field: &'static str,
     action: &'static str,
-) -> Result<BrowserFileManifest, BridgeError> {
+) -> Result<BrowserFileLoadPage, BridgeError> {
     let value = result.map_err(|error| BridgeError::browser(action, jsval_to_string(error)))?;
     let bytes = js_bytes(value, field)?;
     proto::decode_message(&bytes, field).map_err(Into::into)
 }
 
-fn manifest_texts(manifest: BrowserFileManifest) -> Result<Vec<String>, BridgeError> {
-    if manifest.cancelled {
+fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError> {
+    if page.cancelled {
         return Ok(Vec::new());
     }
-    if manifest.files.is_empty() && !manifest.failures.is_empty() {
+    if page.files.is_empty() && !page.failures.is_empty() {
         return Err(BridgeError::browser(
             "reading selected files",
-            manifest
-                .failures
+            page.failures
                 .iter()
                 .map(|failure| format!("{}: {}", failure.name, failure.detail))
                 .collect::<Vec<_>>()
                 .join("; "),
         ));
     }
-    manifest
-        .files
+    page.files
         .into_iter()
         .map(|file| {
             String::from_utf8(file.content).map_err(|error| {
@@ -331,6 +349,14 @@ fn manifest_texts(manifest: BrowserFileManifest) -> Result<Vec<String>, BridgeEr
             })
         })
         .collect()
+}
+
+fn picked_file_texts(
+    result: Result<JsValue, JsValue>,
+    field: &'static str,
+    action: &'static str,
+) -> Result<Vec<String>, BridgeError> {
+    file_page_texts(decode_browser_file_page(result, field, action)?)
 }
 
 async fn download_bytes(
@@ -382,18 +408,13 @@ fn object_f32(obj: &JsValue, field: &'static str) -> Result<Vec<f32>, MarshalErr
     .to_vec())
 }
 
-
 fn marker_budget() -> pb::MarkerBudget {
-    pb::MarkerBudget {
-        max_markers: crate::marker_store::MarkerBudget::standard().get(),
-    }
+    crate::marker_store::MarkerBudget::standard().into()
 }
-
 
 fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: BridgeError) {
     inner.borrow_mut().diagnostic = Some(error);
 }
-
 
 fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
     let mut i = inner.borrow_mut();
@@ -464,7 +485,6 @@ fn install_bundle_result(inner: &mut Inner, mut result: pb::BundleResult) {
     }
 }
 
-
 fn acknowledge_source(file: &pb::BrowserFile) {
     if file.handle_id.is_empty() {
         return;
@@ -481,84 +501,208 @@ fn acknowledge_source(file: &pb::BrowserFile) {
     );
 }
 
-async fn apply_file_manifest(
-    inner: Rc<RefCell<Inner>>,
-    manifest: BrowserFileManifest,
-    replace_sources: bool,
-) -> Result<(), BridgeError> {
-    if manifest.cancelled {
-        return Ok(());
+async fn load_browser_file(
+    inner: &Rc<RefCell<Inner>>,
+    file: &mut pb::BrowserFile,
+    mode: SourceLoadMode,
+) -> Result<BrowserFileOutcome, CallError> {
+    let content = std::mem::take(&mut file.content);
+    if file.bundle {
+        retire_live_session(inner);
+        return client()
+            .load_bundle(pb::LoadBundleRequest {
+                url: String::new(),
+                sha256: String::new(),
+                content,
+                name: file.name.clone(),
+                marker_budget: Some(marker_budget()),
+            })
+            .await
+            .map(|bundle| {
+                install_bundle_result(&mut inner.borrow_mut(), bundle);
+                BrowserFileOutcome::Installed
+            });
     }
-    let total = u64::try_from(manifest.files.len()).unwrap_or(u64::MAX);
-    let mut committed = 0_u64;
-    let mut failures: Vec<String> = manifest
-        .failures
-        .iter()
-        .map(|failure| format!("{}: {}", failure.name, failure.detail))
-        .collect();
-    for (index, mut file) in manifest.files.into_iter().enumerate() {
-        if active_job_cancelled(&inner) {
-            return Err(BridgeError::Call(CallError::Cancelled {
-                method: "file load flow",
-            }));
-        }
-        update_active_progress(
-            &inner,
-            u64::try_from(index).unwrap_or(u64::MAX),
-            total,
-            format!("Loading {}", file.name),
-        );
-        let content = std::mem::take(&mut file.content);
-        let loaded = if file.bundle {
-            retire_live_source(&inner);
-            client()
-                .load_bundle(pb::LoadBundleRequest {
-                    url: String::new(),
-                    sha256: String::new(),
-                    content,
-                    name: file.name.clone(),
-                })
-                .await
-                .map(|bundle| {
-                    install_bundle_result(&mut inner.borrow_mut(), bundle);
-                    true
-                })
-        } else {
-            client()
-                .load_bytes(pb::LoadBytesRequest {
-                    name: file.name.clone(),
-                    fmt: "detect".to_owned(),
-                    append: true,
-                    content,
-                    source_id: file.handle_id.clone(),
-                    replace_source: replace_sources && !file.handle_id.is_empty(),
-                })
-                .await
-                .map(|result| {
-                    let loaded = result.loaded;
-                    install_waveform_result(&mut inner.borrow_mut(), result);
-                    loaded
-                })
-        };
-        match loaded {
-            Ok(true) => {
-                committed += 1;
-                acknowledge_source(&file);
-            }
-            Ok(false) => {}
-            Err(error) => failures.push(format!("{}: {error}", file.name)),
-        }
-    }
-    update_active_progress(&inner, total, total, "Finishing file flow".to_owned());
-    if failures.is_empty() {
-        inner.borrow_mut().diagnostic = None;
-        return Ok(());
-    }
-    let error = BridgeError::browser("loading selected files", failures.join("; "));
-    inner.borrow_mut().diagnostic = Some(error.clone());
-    if committed == 0 { Err(error) } else { Ok(()) }
+    client()
+        .load_bytes(pb::LoadBytesRequest {
+            name: file.name.clone(),
+            fmt: "detect".to_owned(),
+            append: true,
+            content,
+            source_id: file.handle_id.clone(),
+            replace_source: mode == SourceLoadMode::Replace && !file.handle_id.is_empty(),
+        })
+        .await
+        .map(|result| {
+            let outcome = if result.loaded {
+                BrowserFileOutcome::Installed
+            } else {
+                BrowserFileOutcome::Duplicate
+            };
+            install_waveform_result(&mut inner.borrow_mut(), result);
+            outcome
+        })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceLoadMode {
+    Append,
+    Replace,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BrowserFileOutcome {
+    Installed,
+    Duplicate,
+}
+
+enum FilePageOutcome {
+    More,
+    Complete,
+    Cancelled { remaining: u32 },
+}
+
+#[derive(Default)]
+struct FileLoadProgress {
+    committed: u32,
+    processed: u32,
+    failures: Vec<String>,
+}
+
+async fn load_file_page(
+    inner: &Rc<RefCell<Inner>>,
+    page: BrowserFileLoadPage,
+    mode: SourceLoadMode,
+    progress: &mut FileLoadProgress,
+) -> FilePageOutcome {
+    progress.failures.extend(
+        page.failures
+            .iter()
+            .map(|failure| format!("{}: {}", failure.name, failure.detail)),
+    );
+    let page_count = u32::try_from(page.files.len()).unwrap_or(u32::MAX);
+    let known_total = progress
+        .processed
+        .saturating_add(page_count)
+        .saturating_add(u32::from(page.has_more));
+    for (index, mut file) in page.files.into_iter().enumerate() {
+        let remaining = page_count
+            .saturating_sub(u32::try_from(index).unwrap_or(u32::MAX))
+            .saturating_add(u32::from(page.has_more));
+        if current_job_cancellation_requested(inner) {
+            return FilePageOutcome::Cancelled { remaining };
+        }
+        update_current_job_progress(
+            inner,
+            u64::from(progress.processed),
+            u64::from(known_total),
+            format!("Loading {}", file.name),
+        );
+        match load_browser_file(inner, &mut file, mode).await {
+            Ok(BrowserFileOutcome::Installed) => {
+                progress.committed = progress.committed.saturating_add(1);
+                acknowledge_source(&file);
+            }
+            Ok(BrowserFileOutcome::Duplicate) => {}
+            Err(CallError::Cancelled { .. }) => {
+                return FilePageOutcome::Cancelled { remaining };
+            }
+            Err(error) => progress.failures.push(format!("{}: {error}", file.name)),
+        }
+        progress.processed = progress.processed.saturating_add(1);
+    }
+    if page.has_more {
+        FilePageOutcome::More
+    } else {
+        FilePageOutcome::Complete
+    }
+}
+
+async fn run_file_load(
+    inner: Rc<RefCell<Inner>>,
+    mut page: BrowserFileLoadPage,
+    mode: SourceLoadMode,
+) -> Result<Outcome, BridgeError> {
+    let load_id = page.load_id.clone();
+    let cancel_load = || {
+        if !load_id.is_empty() {
+            js_cancel_file_load(
+                pb::BrowserFileLoadPageRequest {
+                    load_id: load_id.clone(),
+                }
+                .encode_to_vec(),
+            );
+        }
+    };
+    let stopped = |committed: u32, skipped: u32| {
+        cancel_load();
+        if committed == 0 {
+            Err(BridgeError::Call(CallError::Cancelled {
+                method: "browser file load",
+            }))
+        } else {
+            Ok(Outcome::Stopped { committed, skipped })
+        }
+    };
+    if current_job_cancellation_requested(&inner) {
+        return stopped(
+            0,
+            u32::from(page.has_more)
+                .saturating_add(u32::try_from(page.files.len()).unwrap_or(u32::MAX)),
+        );
+    }
+    if page.cancelled {
+        return Ok(Outcome::Succeeded);
+    }
+    let mut progress = FileLoadProgress::default();
+    loop {
+        match load_file_page(&inner, page, mode, &mut progress).await {
+            FilePageOutcome::More => {}
+            FilePageOutcome::Complete => break,
+            FilePageOutcome::Cancelled { remaining } => {
+                return stopped(progress.committed, remaining);
+            }
+        }
+        if current_job_cancellation_requested(&inner) {
+            return stopped(progress.committed, 1);
+        }
+        let page_request = pb::BrowserFileLoadPageRequest {
+            load_id: load_id.clone(),
+        }
+        .encode_to_vec();
+        page = match decode_browser_file_page(
+            js_read_file_load_page(page_request).await,
+            "read_file_load_page",
+            "reading the next file page",
+        ) {
+            Ok(next) => next,
+            Err(error) => {
+                cancel_load();
+                return Err(error);
+            }
+        };
+    }
+    update_current_job_progress(
+        &inner,
+        u64::from(progress.processed),
+        u64::from(progress.processed),
+        "Finishing file load".to_owned(),
+    );
+    if current_job_cancellation_requested(&inner) {
+        return Ok(Outcome::TooLate);
+    }
+    if progress.failures.is_empty() {
+        inner.borrow_mut().diagnostic = None;
+        return Ok(Outcome::Succeeded);
+    }
+    let error = BridgeError::browser("loading selected files", progress.failures.join("; "));
+    inner.borrow_mut().diagnostic = Some(error.clone());
+    if progress.committed == 0 {
+        Err(error)
+    } else {
+        Ok(Outcome::Succeeded)
+    }
+}
 
 fn invalidate_view_request(i: &mut Inner) {
     i.applied = None;
@@ -728,24 +872,24 @@ fn log_view_debug(params: &ViewParams, view: &ViewData, request_ms: f64) {
 }
 
 impl Bridge {
-    fn warm_deferred(&self) -> Option<Submission> {
+    fn prepare_scientific_tools(&self) -> Option<Submission> {
         {
             let mut state = self.inner.borrow_mut();
-            if state.warm_requested {
+            if state.scientific_tools_requested {
                 return None;
             }
-            state.warm_requested = true;
+            state.scientific_tools_requested = true;
         }
         let inner = self.inner.clone();
         Some(submit_job(
             inner,
             self.repaint.clone(),
-            Operation::WarmDeferred,
+            Operation::PrepareScientificTools,
             None,
             Vec::new(),
             async move {
                 client()
-                    .warm_deferred()
+                    .prepare_scientific_tools()
                     .await
                     .map(|_| ())
                     .map_err(BridgeError::from)
@@ -755,10 +899,10 @@ impl Bridge {
 
     /// Replaces the current pile with the bundled synthetic example.
     pub fn load_example(&self) -> Submission {
-        retire_live_source(&self.inner);
+        retire_live_session(&self.inner);
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::MakeExample,
@@ -774,28 +918,16 @@ impl Bridge {
                 clear_view(&mut i);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Empties the pile and the event context (`File ▸ Close all`), leaving
     /// the blank viewer Qt starts with when given no arguments.
     pub fn empty_scene(&self) -> Submission {
         let repaint = self.repaint.clone();
-        js_clear_open_sources();
-        retire_live_source(&self.inner);
-        {
-            let mut i = self.inner.borrow_mut();
-            i.diagnostic = None;
-            i.snuffling = None;
-            clear_event_state(&mut i);
-            i.station_dists.clear();
-            i.station_dists_gen = None;
-            i.live_seedlink_started_at = None;
-        }
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             repaint,
             Operation::EmptyScene,
@@ -803,14 +935,21 @@ impl Bridge {
             Vec::new(),
             async move {
                 let scene = client().empty_scene().await.map_err(BridgeError::from)?;
+                retire_live_session(&work_inner);
+                js_clear_open_sources();
                 let mut i = work_inner.borrow_mut();
+                i.diagnostic = None;
+                i.snuffling = None;
+                clear_event_state(&mut i);
+                i.station_dists.clear();
+                i.station_dists_gen = None;
+                i.live_seedlink_started_at = None;
                 i.scene = Some(scene);
                 i.scene_gen += 1;
                 clear_view(&mut i);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Appends waveform bytes supplied by the frontend to the pile —
@@ -826,7 +965,7 @@ impl Bridge {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
         let detail = Some(name.clone());
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadBytes,
@@ -847,17 +986,16 @@ impl Bridge {
                 install_waveform_result(&mut work_inner.borrow_mut(), result);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Replaces the current pile with a waveform fetched from a URL.
     pub fn load_url(&self, url: String, fmt: String) -> Submission {
-        retire_live_source(&self.inner);
+        retire_live_session(&self.inner);
         let inner = self.inner.clone();
         let work_inner = inner.clone();
         let detail = Some(url.clone());
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadUrl,
@@ -876,8 +1014,7 @@ impl Bridge {
                 clear_view(&mut i);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Fetch the example index, once.
@@ -886,6 +1023,7 @@ impl Bridge {
     /// once: a *failed* fetch is remembered too, or a datacenter that is down
     /// would be retried at the frame rate. `force` is the user asking again,
     /// from the retry the menu offers in its place.
+    #[must_use]
     pub fn list_examples(&self, force: bool) -> Option<Submission> {
         {
             let i = self.inner.borrow();
@@ -939,6 +1077,7 @@ impl Bridge {
             sha256,
             content: Vec::new(),
             name: title.clone(),
+            marker_budget: Some(marker_budget()),
         };
         self.dispatch_bundle(request, title)
     }
@@ -953,7 +1092,7 @@ impl Bridge {
     pub fn open_example(&self, slug: String) -> Submission {
         let bridge = self.clone();
         let inner = self.inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::ListExamples,
@@ -968,13 +1107,11 @@ impl Bridge {
                 .map_err(BridgeError::from)?;
                 let found = listed.iter().find(|example| example.slug == slug).cloned();
                 bridge.inner.borrow_mut().examples = Some(Ok(listed));
-                let example = found.ok_or_else(|| BridgeError::UnknownExample { slug })?;
-                let _submission =
-                    bridge.load_bundle(example.url, example.sha256, example.title);
+                let example = found.ok_or(BridgeError::UnknownExample { slug })?;
+                let _submission = bridge.load_bundle(example.url, example.sha256, example.title);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// The same load for an archive that is already in hand — dropped on the
@@ -985,15 +1122,16 @@ impl Bridge {
             sha256: String::new(),
             content: data,
             name: name.clone(),
+            marker_budget: Some(marker_budget()),
         };
         self.dispatch_bundle(request, name)
     }
 
     fn dispatch_bundle(&self, request: pb::LoadBundleRequest, label: String) -> Submission {
-        retire_live_source(&self.inner);
+        retire_live_session(&self.inner);
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadBundle,
@@ -1008,8 +1146,7 @@ impl Bridge {
                 install_bundle_result(&mut work_inner.borrow_mut(), bundle);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Render a real pyrocko/matplotlib figure (amplitude spectrum, cake, …)
@@ -1066,7 +1203,7 @@ impl Bridge {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
         let dedup_key = request.encode_to_vec();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::RunSnuffling,
@@ -1084,8 +1221,7 @@ impl Bridge {
                 install_snuffling_result(&mut i, result);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Downloads waveforms from a CORS-enabled FDSN dataselect service and
@@ -1093,7 +1229,7 @@ impl Bridge {
     pub fn download_waveforms(&self, params: WaveformDownloadRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::DownloadWaveforms,
@@ -1110,8 +1246,7 @@ impl Bridge {
                 clear_view(&mut i);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Computes blockwise RMS traces, replacing the previous RMS run.
@@ -1119,7 +1254,7 @@ impl Bridge {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
         let dedup_key = params.encode_to_vec();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::RmsTraces,
@@ -1139,8 +1274,7 @@ impl Bridge {
                 install_snuffling_result(&mut i, result);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Search a CORS-enabled FDSN event service; results become event markers.
@@ -1149,7 +1283,7 @@ impl Bridge {
     pub fn catalog_search(&self, params: CatalogRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::CatalogSearch,
@@ -1165,8 +1299,7 @@ impl Bridge {
                 invalidate_view_request(&mut i);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Let the user pick a custom `.nd` model file ("Add Model"); the picked
@@ -1174,7 +1307,7 @@ impl Bridge {
     pub fn add_cake_model(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::AddCakeModel,
@@ -1193,8 +1326,7 @@ impl Bridge {
                 }
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Mount a Green's-functions store by fetching its files from an HTTP base
@@ -1203,7 +1335,7 @@ impl Bridge {
     pub fn load_gf_store_url(&self, url: String) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadGfStoreUrl,
@@ -1219,8 +1351,7 @@ impl Bridge {
                 }
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Mount a Green's-functions store directory (`NativeFS`, via the File
@@ -1231,7 +1362,7 @@ impl Bridge {
     pub fn add_gf_store(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::MountGfStore,
@@ -1250,8 +1381,7 @@ impl Bridge {
                 }
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Execute a ':' command line (goto / hide / unhide / reduce / scaling). A
@@ -1261,7 +1391,7 @@ impl Bridge {
     pub fn run_command(&self, request: CommandRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::RunCommand,
@@ -1297,8 +1427,7 @@ impl Bridge {
                 }
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Fetch station coordinates (FDSN station service) to enable distance /
@@ -1306,7 +1435,7 @@ impl Bridge {
     pub fn fetch_stations(&self, params: StationRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::FetchStations,
@@ -1322,8 +1451,7 @@ impl Bridge {
                 invalidate_view_request(&mut i); // re-dispatch so distance/azimuth sort recomputes
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Fetch instrument responses (`StationXML`) so Deconvolution can run;
@@ -1331,7 +1459,7 @@ impl Bridge {
     pub fn fetch_responses(&self, params: StationRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::FetchResponses,
@@ -1347,28 +1475,25 @@ impl Bridge {
                 invalidate_view_request(&mut i); // re-dispatch so deconvolution applies
                 Ok(())
             },
-        );
-        submission
+        )
     }
-
 
     /// Open local waveform files via a browser picker and append them.
     pub fn open_files(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job_with_outcome(
             inner,
             self.repaint.clone(),
-            Operation::LoadBytes,
+            Operation::OpenSelectedFiles,
             Some("selected files".to_owned()),
             Vec::new(),
             async move {
-                let manifest =
-                    browser_manifest(js_open_files().await, "open_files", "opening files")?;
-                apply_file_manifest(work_inner, manifest, false).await
+                let page =
+                    decode_browser_file_page(js_open_files().await, "open_files", "opening files")?;
+                run_file_load(work_inner, page, SourceLoadMode::Append).await
             },
-        );
-        submission
+        )
     }
 
     /// Recursively load every waveform file under a picked directory
@@ -1376,22 +1501,21 @@ impl Bridge {
     pub fn open_directory(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job_with_outcome(
             inner,
             self.repaint.clone(),
-            Operation::LoadBytes,
+            Operation::OpenDirectory,
             Some("selected directory".to_owned()),
             Vec::new(),
             async move {
-                let manifest = browser_manifest(
+                let page = decode_browser_file_page(
                     js_open_directory().await,
                     "open_directory",
                     "opening a directory",
                 )?;
-                apply_file_manifest(work_inner, manifest, false).await
+                run_file_load(work_inner, page, SourceLoadMode::Append).await
             },
-        );
-        submission
+        )
     }
 
     /// Reload the Python snuffling code (bridge.py) in the worker, preserving
@@ -1400,16 +1524,15 @@ impl Bridge {
     pub fn reload_snufflings(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::ReloadSnufflings,
             None,
             Vec::new(),
             async move {
-                let job =
-                    require_registered_job(Operation::ReloadSnufflings, "reloadSnufflings")
-                        .map_err(CallError::from)?;
+                let job = require_registered_job(Operation::ReloadSnufflings, "reloadSnufflings")
+                    .map_err(CallError::from)?;
                 js_reload_snufflings(job.id().get())
                     .await
                     .map_err(|error| {
@@ -1418,8 +1541,7 @@ impl Bridge {
                 invalidate_view_request(&mut work_inner.borrow_mut());
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Re-read any opened files whose on-disk mtime changed and replace their
@@ -1432,22 +1554,21 @@ impl Bridge {
         let inner = self.inner.clone();
         inner.borrow_mut().diagnostic = None;
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job_with_outcome(
             inner,
             self.repaint.clone(),
-            Operation::LoadBytes,
+            Operation::ReloadOpenFiles,
             Some("modified files".to_owned()),
             Vec::new(),
             async move {
-                let manifest = browser_manifest(
+                let page = decode_browser_file_page(
                     js_reload_files().await,
                     "reload_files",
                     "reloading files",
                 )?;
-                apply_file_manifest(work_inner, manifest, true).await
+                run_file_load(work_inner, page, SourceLoadMode::Replace).await
             },
-        );
-        submission
+        )
     }
 
     /// Qt's download Save trigger: the loaded waveforms as one `MiniSEED`
@@ -1457,7 +1578,7 @@ impl Bridge {
     pub fn save_waveforms_and_stations(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::ExportWaveforms,
@@ -1468,28 +1589,25 @@ impl Bridge {
                 // must not cost the user the other download.
                 // The first failure takes the diagnostic slot.
                 let waveforms =
-                    download_blob(client().export_waveforms().await, "downloading waveforms")
-                        .await;
-                if active_job_cancelled(&work_inner) {
+                    download_blob(client().export_waveforms().await, "downloading waveforms").await;
+                if current_job_cancellation_requested(&work_inner) {
                     return Err(BridgeError::Call(CallError::Cancelled {
                         method: "waveform and station export",
                     }));
                 }
                 let failed = [
                     waveforms,
-                    download_blob(client().export_stations().await, "downloading stations")
-                        .await,
+                    download_blob(client().export_stations().await, "downloading stations").await,
                 ]
                 .into_iter()
                 .find_map(Result::err);
-                work_inner.borrow_mut().diagnostic = failed.clone();
+                work_inner.borrow_mut().diagnostic.clone_from(&failed);
                 if let Some(error) = failed {
                     return Err(error);
                 }
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// The waveform half alone — the live window's "save the buffer as
@@ -1498,7 +1616,7 @@ impl Bridge {
     pub fn save_waveforms(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::ExportWaveforms,
@@ -1506,8 +1624,7 @@ impl Bridge {
             Vec::new(),
             async move {
                 let result =
-                    download_blob(client().export_waveforms().await, "downloading waveforms")
-                        .await;
+                    download_blob(client().export_waveforms().await, "downloading waveforms").await;
                 match result {
                     Ok(()) => {
                         work_inner.borrow_mut().diagnostic = None;
@@ -1519,8 +1636,7 @@ impl Bridge {
                     }
                 }
             },
-        );
-        submission
+        )
     }
 
     /// Serializes markers through pyrocko and downloads the resulting text.
@@ -1528,7 +1644,7 @@ impl Bridge {
     pub fn save_markers(&self, markers: MarkerFile) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::MarkersToText,
@@ -1558,66 +1674,58 @@ impl Bridge {
                     }
                 }
             },
-        );
-        submission
+        )
     }
 
     /// Trigger a browser download of encoded image bytes (PNG export).
     pub fn save_image_png(&self, bytes: Vec<u8>, filename: String) -> Submission {
         let detail = Some(filename.clone());
         let inner = self.inner.clone();
-        let submission = submit_job(
+        submit_local_future(
             inner,
             self.repaint.clone(),
             Operation::ExportPng,
             detail,
-            Vec::new(),
             async move {
                 js_save_png(bytes, filename).await.map_err(|error| {
                     BridgeError::browser("saving a PNG", jsval_to_string(error))
                 })?;
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Trigger a browser download of an SVG document (vector image export).
     pub fn save_image_svg(&self, svg: String, filename: String) -> Submission {
         let detail = Some(filename.clone());
         let inner = self.inner.clone();
-        let submission = submit_job(
+        submit_local_future(
             inner,
             self.repaint.clone(),
             Operation::ExportSvg,
             detail,
-            Vec::new(),
             async move {
                 js_save_svg(svg, filename).await.map_err(|error| {
                     BridgeError::browser("saving an SVG", jsval_to_string(error))
                 })?;
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Load a marker file via a browser picker; results land as markers.
     pub fn load_markers(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadMarkers,
             None,
             Vec::new(),
             async move {
-                let texts = manifest_texts(browser_manifest(
-                    js_load_markers().await,
-                    "markers",
-                    "loading markers",
-                )?)?;
+                let texts =
+                    picked_file_texts(js_load_markers().await, "markers", "loading markers")?;
                 let Some(text) = texts.into_iter().next() else {
                     return Ok(());
                 };
@@ -1647,8 +1755,7 @@ impl Bridge {
                 );
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Pick and merge local `StationXML` files (instrument responses for
@@ -1657,18 +1764,18 @@ impl Bridge {
     pub fn load_station_xml(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadStationXml,
             None,
             Vec::new(),
             async move {
-                let texts = manifest_texts(browser_manifest(
+                let texts = picked_file_texts(
                     js_load_station_xml().await,
                     "stationxml",
                     "loading StationXML",
-                )?)?;
+                )?;
                 if texts.is_empty() {
                     return Ok(());
                 }
@@ -1681,8 +1788,7 @@ impl Bridge {
                 install_snuffling_result(&mut i, result);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Pick a local pyrocko station file and load its station coordinates
@@ -1690,18 +1796,15 @@ impl Bridge {
     pub fn load_stations(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadStations,
             None,
             Vec::new(),
             async move {
-                let texts = manifest_texts(browser_manifest(
-                    js_load_stations().await,
-                    "stations",
-                    "loading stations",
-                )?)?;
+                let texts =
+                    picked_file_texts(js_load_stations().await, "stations", "loading stations")?;
                 if texts.is_empty() {
                     return Ok(());
                 }
@@ -1716,8 +1819,7 @@ impl Bridge {
                 install_snuffling_result(&mut i, result);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Pick a local pyrocko event file and load it: event markers + the active
@@ -1726,18 +1828,14 @@ impl Bridge {
     pub fn load_events(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::LoadEvents,
             None,
             Vec::new(),
             async move {
-                let texts = manifest_texts(browser_manifest(
-                    js_load_events().await,
-                    "events",
-                    "loading events",
-                )?)?;
+                let texts = picked_file_texts(js_load_events().await, "events", "loading events")?;
                 let Some(text) = texts.into_iter().next() else {
                     return Ok(());
                 };
@@ -1754,8 +1852,7 @@ impl Bridge {
                 invalidate_view_request(&mut i);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Fetch station + event coordinates for the Map overlay.
@@ -1803,6 +1900,7 @@ impl Bridge {
     /// Ensure the per-station distances are current for the given snuffling
     /// generation (the active event changes with each catalog/event load). A
     /// no-op if already fetched for this generation or a fetch is in flight.
+    #[must_use]
     pub fn ensure_station_distances(&self, snuffling_gen: u64) -> Option<Submission> {
         let token;
         {
@@ -1847,29 +1945,31 @@ impl Bridge {
     ///
     /// Successful changes install immediately; source failures still surface
     /// because otherwise their earlier batch peers would change invisibly.
-    pub fn watch_poll(&self) -> Submission {
+    pub fn poll_watched_files(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job_with_outcome(
             inner,
             self.repaint.clone(),
-            Operation::WatchPoll,
+            Operation::PollWatchedFiles,
             None,
             Vec::new(),
             async move {
-                let manifest =
-                    browser_manifest(js_reload_files().await, "watch_poll", "watching files")?;
-                apply_file_manifest(work_inner, manifest, true).await
+                let page = decode_browser_file_page(
+                    js_reload_files().await,
+                    "poll_watched_files",
+                    "watching files",
+                )?;
+                run_file_load(work_inner, page, SourceLoadMode::Replace).await
             },
-        );
-        submission
+        )
     }
 
     /// Sets or clears the active event and installs Python's canonical registry.
     pub fn set_active_event(&self, req: SetActiveEventRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::SetActiveEvent,
@@ -1885,15 +1985,14 @@ impl Bridge {
                 install_event_state(&mut current, state);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Replaces one canonical event after an inline marker-table edit.
     pub fn update_event(&self, event: EventSnapshot) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::UpdateEvent,
@@ -1909,15 +2008,14 @@ impl Bridge {
                 install_event_state(&mut current, state);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Removes canonical events whose final frontend marker was deleted.
     pub fn remove_events(&self, request: RemoveEventsRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        let submission = submit_job(
+        submit_job(
             inner,
             self.repaint.clone(),
             Operation::RemoveEvents,
@@ -1933,8 +2031,7 @@ impl Bridge {
                 install_event_state(&mut current, state);
                 Ok(())
             },
-        );
-        submission
+        )
     }
 
     /// Submit every tile the map wants on screen right now.
@@ -1991,6 +2088,10 @@ impl Bridge {
             urls.push(&JsValue::from_str(&tile.url));
         }
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the bounded tile-batch counter owns this deferred browser fetch"
+        )]
         spawn_local(async move {
             let on_tile = {
                 let inner = inner.clone();
@@ -2062,6 +2163,7 @@ impl Bridge {
 
     /// Request a view for the given params, coalescing rapid changes so that
     /// at most one Python call is in flight at a time.
+    #[must_use]
     pub fn ensure_view(&self, params: ViewParams) -> Option<Submission> {
         let repaint = self.repaint.clone();
         {
@@ -2117,9 +2219,7 @@ impl Bridge {
             if let Some((job, _)) = i.view_job {
                 return Some(Submission::Joined(job));
             }
-            let Some(mut params) = i.desired.take() else {
-                return None;
-            };
+            let mut params = i.desired.take()?;
             if i.applied.as_ref() == Some(&params) {
                 return None;
             }
@@ -2169,7 +2269,7 @@ impl Bridge {
                                         .as_ref()
                                         .is_none_or(|desired| desired == &work_canonical_params)
                                     {
-                                        i.view = Some(vd);
+                                        i.view = Some(std::sync::Arc::new(vd));
                                         i.view_epoch += 1;
                                         i.applied = Some(work_canonical_params.clone());
                                         if i.desired.as_ref() == Some(&work_canonical_params) {
@@ -2202,7 +2302,7 @@ impl Bridge {
                 let should_warm = outcome.is_ok();
                 me.maybe_redispatch();
                 if should_warm {
-                    let _submission = me.warm_deferred();
+                    let _submission = me.prepare_scientific_tools();
                 }
                 outcome
             },

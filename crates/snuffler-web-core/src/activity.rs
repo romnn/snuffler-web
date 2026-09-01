@@ -6,7 +6,9 @@ use std::task::Waker;
 
 use crate::bridge::BridgeError;
 
-pub use snuffler_web_proto::bridge::v1::{ActivityMeta, CancelCap, Lane, Operation, Policy};
+pub use snuffler_web_proto::bridge::v1::{
+    ActivityMeta, CancellationCapability, Lane, Operation, Policy,
+};
 
 const VIEW_FEEDBACK_DELAY_S: f64 = 0.5;
 
@@ -116,7 +118,7 @@ impl RuntimeState {
 pub enum RejectReason {
     /// Python is unavailable for the reason carried here.
     #[error("runtime unavailable: {0}")]
-    RuntimeDown(RuntimeFault),
+    RuntimeUnavailable(RuntimeFault),
     /// The bounded activity queue has no remaining capacity.
     #[error("activity queue is full at depth {depth}")]
     QueueFull {
@@ -156,6 +158,13 @@ pub enum Outcome {
     Cancelled,
     /// Cancellation lost to a commit already in progress.
     TooLate,
+    /// A composite flow stopped after committing an observable prefix.
+    Stopped {
+        /// Children committed before cancellation took effect.
+        committed: u32,
+        /// Children not attempted after cancellation took effect.
+        skipped: u32,
+    },
     /// The worker died after this job was dispatched.
     Lost(RuntimeEpoch),
     /// The defensive session-generation check rejected the result.
@@ -179,6 +188,15 @@ pub enum CancelRequest {
     NotCancellable,
 }
 
+/// Status of a cancellation request while the job remains nonterminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancellationStatus {
+    /// The worker has not yet resolved the cancellation request.
+    Pending,
+    /// The request arrived after the worker entered its commit phase.
+    TooLate,
+}
+
 /// Current lifecycle state of one ledger entry.
 #[derive(Clone, Debug)]
 pub enum JobState {
@@ -197,9 +215,19 @@ pub enum JobState {
     Cancelling {
         /// Cancellation-request time supplied by the caller, in seconds.
         since_s: f64,
+        /// Status of the cancellation-versus-commit race.
+        status: CancellationStatus,
     },
     /// One authoritative terminal result has arrived.
     Done(Outcome),
+}
+
+impl JobState {
+    /// Reports whether this state carries the job's authoritative outcome.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Done(_))
+    }
 }
 
 /// Result of synchronous admission into the activity ledger.
@@ -232,7 +260,6 @@ pub struct JobRecord {
     dedup_key: Vec<u8>,
     submitted_at_s: f64,
     state: JobState,
-    cancel_lost: bool,
 }
 
 impl JobRecord {
@@ -326,7 +353,7 @@ impl ActivityLedger {
     pub fn set_runtime(&mut self, runtime: RuntimeState) {
         self.runtime = runtime;
         self.changed();
-        self.wake_front();
+        self.wake_lane_heads();
     }
 
     /// Admits one operation synchronously so a second click sees it immediately.
@@ -344,7 +371,12 @@ impl ActivityLedger {
         }
 
         if let Some(fault) = self.runtime.submission_fault() {
-            return self.reject(operation, detail, now_s, RejectReason::RuntimeDown(fault));
+            return self.reject(
+                operation,
+                detail,
+                now_s,
+                RejectReason::RuntimeUnavailable(fault),
+            );
         }
         // Supersession must not run ahead of admission: a rejected submission
         // that had already cancelled its predecessor would leave the user with
@@ -376,7 +408,7 @@ impl ActivityLedger {
             self.complete(handle, Outcome::Cancelled);
         }
 
-        let handle = self.mint(
+        let handle = self.insert_record(
             operation,
             detail,
             dedup_key.clone(),
@@ -414,7 +446,7 @@ impl ActivityLedger {
                 RejectReason::QueueFull { depth: active },
             );
         }
-        let handle = self.mint(
+        let handle = self.insert_record(
             operation,
             detail,
             Vec::new(),
@@ -441,7 +473,7 @@ impl ActivityLedger {
     pub fn is_terminal(&self, handle: JobHandle) -> bool {
         self.records
             .get(&handle.id)
-            .is_none_or(|record| matches!(record.state, JobState::Done(_)))
+            .is_none_or(|record| record.state.is_terminal())
     }
 
     /// Visits ledger entries without exposing mutation of their lifecycle state.
@@ -473,10 +505,10 @@ impl ActivityLedger {
             Lane::Job => self.active_view,
             Lane::Local => None,
         };
-        let cross_lane_exclusive = record.operation.activity().exclusive_both_lanes
+        let cross_lane_exclusive = record.operation.activity().exclusive_across_lanes
             || other_active
                 .and_then(|id| self.records.get(&id))
-                .is_some_and(|active| active.operation.activity().exclusive_both_lanes);
+                .is_some_and(|active| active.operation.activity().exclusive_across_lanes);
         let position = self.queue.iter().position(|id| {
             self.records
                 .get(id)
@@ -559,10 +591,17 @@ impl ActivityLedger {
         let Some(record) = self.records.get_mut(&handle.id) else {
             return;
         };
-        if matches!(record.state, JobState::Done(_)) {
+        if record.state.is_terminal() {
             return;
         }
-        let outcome = if record.cancel_lost && matches!(outcome, Outcome::Succeeded) {
+        let cancellation_lost = matches!(
+            record.state,
+            JobState::Cancelling {
+                status: CancellationStatus::TooLate,
+                ..
+            }
+        );
+        let outcome = if cancellation_lost && matches!(outcome, Outcome::Succeeded) {
             Outcome::TooLate
         } else {
             outcome
@@ -579,7 +618,7 @@ impl ActivityLedger {
         if self.active_view == Some(handle.id) {
             self.active_view = None;
         }
-        self.wake_front();
+        self.wake_lane_heads();
     }
 
     /// Cancels queued work immediately or marks an active cancellable job.
@@ -594,12 +633,16 @@ impl ActivityLedger {
             }
             JobState::Dispatching | JobState::Running { .. } => {
                 if record.operation.activity().lane == Lane::Local
-                    || record.operation.activity().cancel == CancelCap::NotCancellable
+                    || record.operation.activity().cancellation
+                        == CancellationCapability::NotSupported
                 {
                     return CancelRequest::NotCancellable;
                 }
                 if let Some(record) = self.records.get_mut(&handle.id) {
-                    record.state = JobState::Cancelling { since_s: now_s };
+                    record.state = JobState::Cancelling {
+                        since_s: now_s,
+                        status: CancellationStatus::Pending,
+                    };
                 }
                 self.changed();
                 CancelRequest::Interrupt
@@ -612,9 +655,9 @@ impl ActivityLedger {
     /// Records that cancellation lost the transport's commit CAS.
     pub fn mark_cancel_too_late(&mut self, handle: JobHandle) {
         if let Some(record) = self.records.get_mut(&handle.id)
-            && matches!(record.state, JobState::Cancelling { .. })
+            && let JobState::Cancelling { status, .. } = &mut record.state
         {
-            record.cancel_lost = true;
+            *status = CancellationStatus::TooLate;
             self.changed();
         }
     }
@@ -626,7 +669,7 @@ impl ActivityLedger {
             .flatten()
         {
             if let Some(record) = self.records.get_mut(&active)
-                && !matches!(record.state, JobState::Done(_))
+                && !record.state.is_terminal()
             {
                 record.state = JobState::Done(Outcome::Lost(epoch));
             }
@@ -652,7 +695,7 @@ impl ActivityLedger {
         now_s: f64,
         reason: RejectReason,
     ) -> Submission {
-        let handle = self.mint(
+        let handle = self.insert_record(
             operation,
             detail,
             Vec::new(),
@@ -662,7 +705,7 @@ impl ActivityLedger {
         Submission::Rejected(handle, reason)
     }
 
-    fn mint(
+    fn insert_record(
         &mut self,
         operation: Operation,
         detail: Option<String>,
@@ -682,7 +725,6 @@ impl ActivityLedger {
                 dedup_key,
                 submitted_at_s,
                 state,
-                cancel_lost: false,
             },
         );
         JobHandle { id }
@@ -694,7 +736,7 @@ impl ActivityLedger {
             let oldest_terminal = self
                 .records
                 .iter()
-                .filter(|(_, record)| matches!(record.state, JobState::Done(_)))
+                .filter(|(_, record)| record.state.is_terminal())
                 .min_by_key(|(id, _)| id.0)
                 .map(|(id, _)| *id);
             let Some(id) = oldest_terminal else {
@@ -707,11 +749,11 @@ impl ActivityLedger {
     fn active_count(&self) -> usize {
         self.records
             .values()
-            .filter(|record| !matches!(record.state, JobState::Done(_)))
+            .filter(|record| !record.state.is_terminal())
             .count()
     }
 
-    fn wake_front(&self) {
+    fn wake_lane_heads(&self) {
         for lane in [Lane::Job, Lane::View] {
             if let Some(waker) = self
                 .queue
@@ -905,6 +947,13 @@ mod tests {
         ledger.mark_running(job, 2.0);
         assert_eq!(ledger.request_cancel(job, 3.0), CancelRequest::Interrupt);
         ledger.mark_cancel_too_late(job);
+        assert!(matches!(
+            ledger.get(job).map(super::JobRecord::state),
+            Some(JobState::Cancelling {
+                status: super::CancellationStatus::TooLate,
+                ..
+            })
+        ));
         ledger.complete(job, Outcome::Succeeded);
         ledger.complete(job, Outcome::Cancelled);
 
@@ -970,7 +1019,12 @@ mod tests {
         ledger.complete(job, Outcome::Succeeded);
         for round in 0_u64..32 {
             let filler = ledger
-                .submit(Operation::RunCommand, None, round.to_le_bytes().to_vec(), 2.0)
+                .submit(
+                    Operation::RunCommand,
+                    None,
+                    round.to_le_bytes().to_vec(),
+                    2.0,
+                )
                 .handle();
             ledger.complete(filler, Outcome::Succeeded);
         }
