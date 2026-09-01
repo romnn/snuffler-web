@@ -141,9 +141,6 @@ message IngestMiniSeedRequest {
   uint64 session_epoch = 7;
   uint64 batch_seq_first = 8;
   uint64 batch_seq_last = 9;
-  uint64 dropped_seq_first = 10;
-  uint64 dropped_seq_last = 11;
-  uint64 dropped_bytes = 12;
 }
 
 message IngestMiniSeedResult {

@@ -120,9 +120,14 @@ pub(super) fn submit_job<F>(
 where
     F: Future<Output = Result<(), BridgeError>> + 'static,
 {
-    submit_job_with_outcome(inner, repaint, operation, detail, dedup_key, async move {
-        work.await.map(|()| Outcome::Succeeded)
-    })
+    submit_flow_with_outcome(
+        inner,
+        repaint,
+        operation,
+        detail,
+        dedup_key,
+        move |_flow| async move { work.await.map(|()| Outcome::Succeeded) },
+    )
 }
 
 /// [`submit_job`] for work that must know its own ledger identity: a flow that
@@ -233,13 +238,11 @@ async fn run_admitted_job<W, F>(
         // or the sync poll can beat this future); a second report would retire
         // the replacement runtime's state.
         // The earlier report already terminated this job as Lost.
-        if state
-            .runtime_epoch
-            .is_none_or(|current| current == epoch.get())
+        if state.runtime_epoch.is_none_or(|current| current == epoch)
             && !matches!(state.activity.runtime(), RuntimeState::Failed(_))
         {
             note_runtime_lost(&mut state, epoch);
-            state.runtime_epoch = Some(js_current_runtime_epoch());
+            state.runtime_epoch = Some(RuntimeEpoch::new(js_current_runtime_epoch()));
         }
     } else {
         let outcome = match result {
@@ -253,24 +256,9 @@ async fn run_admitted_job<W, F>(
     repaint.request_repaint();
 }
 
-pub(super) fn submit_job_with_outcome<F>(
-    inner: Rc<RefCell<Inner>>,
-    repaint: Repaint,
-    operation: Operation,
-    detail: Option<String>,
-    dedup_key: Vec<u8>,
-    work: F,
-) -> Submission
-where
-    F: Future<Output = Result<Outcome, BridgeError>> + 'static,
-{
-    submit_flow_with_outcome(inner, repaint, operation, detail, dedup_key, move |_flow| {
-        work
-    })
-}
-
-/// [`submit_job_with_outcome`] for work that must know its own ledger identity
-/// (see [`submit_flow`]).
+/// [`submit_flow`] for work that reports its own terminal [`Outcome`] (a
+/// partial stop, a too-late cancellation) instead of the plain success/failure
+/// mapping.
 pub(super) fn submit_flow_with_outcome<W, F>(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,

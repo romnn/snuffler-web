@@ -17,7 +17,7 @@ from google.protobuf.compiler import plugin_pb2
 
 # Responses paired with the out-of-band zero-copy float32 buffer (same convention
 # the Rust ServiceGenerator uses): the handler returns (message, ys).
-BUFFER_RESPONSES = {"ViewMeta", "SpecMeta"}
+BUFFER_RESPONSES = {"ViewMeta"}
 
 
 def camel_to_snake(name: str) -> str:

@@ -20,33 +20,8 @@ message BridgeError {
   string traceback = 3; // traceback.format_exc(), for debugging
 }
 
-// One changed file that could not be read or loaded during a reload batch.
-message ReloadFailure {
-  string source_id = 1;
-  string name = 2;
-  oneof reason {
-    BridgeError remote = 3;
-    string browser_read = 4;
-    string transport = 5;
-    string protocol = 6;
-  }
-}
-
-// The latest successful reload projection plus every independently failed source.
-message ReloadBatchResult {
-  oneof outcome {
-    LoadBytesResult waveform = 1;
-    BundleResult bundle = 2;
-  }
-  repeated ReloadFailure failures = 3;
-}
-
 message StringValue {
   string value = 1;
-}
-
-message MountGfStoreRequest {
-  string handle_id = 1;
 }
 
 // A saved-file payload: bytes plus the name and type the browser download takes.
@@ -76,14 +51,11 @@ message OperationProgress {
   }
 }
 
-message OperationHeartbeat {}
-
 message OperationEvent {
   uint64 job_id = 1;
   oneof event {
     OperationStarted started = 2;
     OperationProgress progress = 3;
-    OperationHeartbeat heartbeat = 4;
   }
 }
 
@@ -162,7 +134,7 @@ message BridgeResult {
     MapData map_data = 7; // mapData
     CommandResult command = 8; // runCommand
     SnufMarkerList markers = 9; // loadMarkers
-    StringValue text = 10; // gfStoreLabel, markersToText, addCakeModel
+    StringValue text = 10; // markersToText, addCakeModel
     FigureResult figure = 11; // renderFigure (a real pyrocko/matplotlib figure as PNG)
     StationDistanceList station_distances = 12; // stationDistances
     ActiveEventResult active_event = 13; // setActiveEvent
@@ -185,9 +157,9 @@ message BridgeResult {
 //
 // The Pyodide worker relays every ordinary method to bridge.py. Network rpcs do
 // their own HTTP in Python via pyodide-http's pyfetch. MountGfStore is the one
-// typed rpc with worker-side setup: its registered browser directory handle rides
-// beside the protobuf request, the worker mounts it, and Python validates the
-// matching opaque id before labeling the store.
+// typed rpc with worker-side setup: the picked browser directory handle rides
+// beside the protobuf request (it cannot be serialized into it), the worker
+// mounts it, and Python labels the mounted store.
 //
 // Two transport details ride ALONGSIDE these messages, never inside the oneof:
 // the zero-copy float32 `ys` buffer returned with GetView, and (for
@@ -485,21 +457,12 @@ service BridgeService {
       secondary_feedback: true
     };
   }
-  rpc MountGfStore(MountGfStoreRequest) returns (StringValue) {
+  rpc MountGfStore(Empty) returns (StringValue) {
     option (activity) = {
       label: "Mounting GF store"
       lane: ACTIVITY_LANE_JOB
       policy: ACTIVITY_POLICY_QUEUE
       session_access: SESSION_ACCESS_MUTATING
-      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
-    };
-  }
-  rpc GfStoreLabel(Empty) returns (StringValue) {
-    option (activity) = {
-      label: "Reading GF store"
-      lane: ACTIVITY_LANE_JOB
-      policy: ACTIVITY_POLICY_QUEUE
-      session_access: SESSION_ACCESS_READ_ONLY
       cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }

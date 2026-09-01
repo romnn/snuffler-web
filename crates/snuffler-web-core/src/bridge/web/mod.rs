@@ -67,8 +67,8 @@ extern "C" {
     // DOM-only calls keep bespoke externs: they drive browser APIs (file
     // pickers, downloads, the File System Access API, tile fetch+decode) that
     // can't be expressed as a uniform request->response RPC.
-    #[wasm_bindgen(js_name = addCakeModel, catch)]
-    async fn js_add_cake_model(job_id: u64) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = pickCakeModel, catch)]
+    async fn js_pick_cake_model() -> Result<JsValue, JsValue>;
 
     #[cfg(feature = "gf")]
     #[wasm_bindgen(js_name = addGfStore, catch)]
@@ -152,7 +152,7 @@ fn note_runtime_lost(state: &mut Inner, epoch: RuntimeEpoch) {
 }
 
 pub(super) fn sync_runtime(inner: &Rc<RefCell<Inner>>) {
-    let epoch = js_current_runtime_epoch();
+    let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
     let ready = runtime_info().is_some();
     {
         let mut state = inner.borrow_mut();
@@ -161,7 +161,7 @@ pub(super) fn sync_runtime(inner: &Rc<RefCell<Inner>>) {
         {
             // An epoch bump with no rejected reply to report it: the worker
             // died or was restarted while idle.
-            note_runtime_lost(&mut state, RuntimeEpoch::new(previous));
+            note_runtime_lost(&mut state, previous);
         }
         state.runtime_epoch = Some(epoch);
         if ready && !matches!(state.activity.runtime(), RuntimeState::Ready) {
@@ -193,7 +193,7 @@ pub(super) fn restart_runtime(inner: &Rc<RefCell<Inner>>) {
     js_restart_runtime("Python did not stop after cancellation");
     // Record the successor epoch so the next sync poll does not report the
     // restart a second time.
-    inner.borrow_mut().runtime_epoch = Some(js_current_runtime_epoch());
+    inner.borrow_mut().runtime_epoch = Some(RuntimeEpoch::new(js_current_runtime_epoch()));
 }
 
 fn drain_operation_events(inner: &Rc<RefCell<Inner>>) {
@@ -282,7 +282,7 @@ fn drain_operation_events(inner: &Rc<RefCell<Inner>>) {
                     .activity
                     .update_wire_progress(operation.job_id, value);
             }
-            Some(pb::operation_event::Event::Heartbeat(_)) | None => {}
+            None => {}
         }
     }
 }
@@ -331,7 +331,7 @@ fn decode_browser_file_page(
     proto::decode_message(&bytes, field).map_err(Into::into)
 }
 
-fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError> {
+fn file_page_files(page: BrowserFileLoadPage) -> Result<Vec<pb::BrowserFile>, BridgeError> {
     if page.cancelled {
         return Ok(Vec::new());
     }
@@ -348,7 +348,11 @@ fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError
                 .join("; "),
         ));
     }
-    page.files
+    Ok(page.files)
+}
+
+fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError> {
+    file_page_files(page)?
         .into_iter()
         .map(|file| {
             String::from_utf8(file.content).map_err(|error| {
@@ -356,6 +360,21 @@ fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError
             })
         })
         .collect()
+}
+
+/// Stops a composite flow at a child boundary. Every flow re-checks after an
+/// unbounded browser-local await (a picker, a directory walk): the flow may
+/// have been cancelled, or retired outright by a runtime loss, while the
+/// dialog was open, and its next child must not run.
+fn ensure_flow_live(
+    inner: &Rc<RefCell<Inner>>,
+    flow: JobHandle,
+    method: &'static str,
+) -> Result<(), BridgeError> {
+    if job_flow_interrupted(inner, flow) {
+        return Err(BridgeError::Call(CallError::Cancelled { method }));
+    }
+    Ok(())
 }
 
 fn picked_file_texts(
@@ -423,6 +442,25 @@ fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: BridgeError) {
     inner.borrow_mut().diagnostic = Some(error);
 }
 
+/// Settles the recoverable diagnostic slot from one export's result: success
+/// clears it, failure takes it — and still fails the job, so the ledger and
+/// the status line agree.
+fn settle_diagnostic(
+    inner: &Rc<RefCell<Inner>>,
+    result: Result<(), BridgeError>,
+) -> Result<(), BridgeError> {
+    match result {
+        Ok(()) => {
+            inner.borrow_mut().diagnostic = None;
+            Ok(())
+        }
+        Err(error) => {
+            inner.borrow_mut().diagnostic = Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
 fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
     let mut i = inner.borrow_mut();
     install_snuffling_result(
@@ -470,11 +508,15 @@ fn install_snuffling_result(inner: &mut Inner, mut result: SnufflingResult) {
     inner.snuffling_gen = inner.snuffling_gen.wrapping_add(1);
 }
 
-fn install_scene(inner: &mut Inner, scene: Option<SceneMeta>) {
-    inner.scene = Some(scene.unwrap_or_default());
+fn replace_scene(inner: &mut Inner, scene: SceneMeta) {
+    inner.scene = Some(scene);
     inner.scene_gen = inner.scene_gen.wrapping_add(1);
-    inner.diagnostic = None;
     clear_view(inner);
+}
+
+fn install_scene(inner: &mut Inner, scene: Option<SceneMeta>) {
+    inner.diagnostic = None;
+    replace_scene(inner, scene.unwrap_or_default());
 }
 
 fn install_waveform_result(inner: &mut Inner, mut result: pb::LoadBytesResult) {
@@ -712,11 +754,9 @@ async fn run_file_load(
     mode: SourceLoadMode,
 ) -> Result<Outcome, BridgeError> {
     let load_id = page.load_id.clone();
-    if job_flow_interrupted(&inner, flow) {
+    if let Err(error) = ensure_flow_live(&inner, flow, "browser file load") {
         cancel_browser_file_load(&load_id);
-        return Err(BridgeError::Call(CallError::Cancelled {
-            method: "browser file load",
-        }));
+        return Err(error);
     }
     if page.cancelled {
         return Ok(Outcome::Succeeded);
@@ -995,9 +1035,7 @@ impl Bridge {
                 let scene = parsed.map_err(BridgeError::from)?;
                 let mut i = work_inner.borrow_mut();
                 clear_event_state(&mut i);
-                i.scene = Some(scene);
-                i.scene_gen += 1;
-                clear_view(&mut i);
+                replace_scene(&mut i, scene);
                 Ok(())
             },
         )
@@ -1026,9 +1064,7 @@ impl Bridge {
                 i.station_dists.clear();
                 i.station_dists_gen = None;
                 i.live_seedlink_started_at = None;
-                i.scene = Some(scene);
-                i.scene_gen += 1;
-                clear_view(&mut i);
+                replace_scene(&mut i, scene);
                 Ok(())
             },
         )
@@ -1091,9 +1127,7 @@ impl Bridge {
                 js_clear_open_sources();
                 let mut i = work_inner.borrow_mut();
                 clear_event_state(&mut i);
-                i.scene = Some(scene);
-                i.scene_gen += 1;
-                clear_view(&mut i);
+                replace_scene(&mut i, scene);
                 Ok(())
             },
         )
@@ -1296,9 +1330,7 @@ impl Bridge {
                 let mut i = work_inner.borrow_mut();
                 let mut result = parsed.map_err(BridgeError::from)?;
                 if let Some(scene) = result.scene.take() {
-                    i.scene = Some(scene);
-                    i.scene_gen += 1;
-                    clear_view(&mut i);
+                    replace_scene(&mut i, scene);
                 }
                 install_snuffling_result(&mut i, result);
                 Ok(())
@@ -1322,10 +1354,7 @@ impl Bridge {
                     .download_waveforms(params)
                     .await
                     .map_err(BridgeError::from)?;
-                let mut i = work_inner.borrow_mut();
-                i.scene = Some(scene);
-                i.scene_gen += 1;
-                clear_view(&mut i);
+                replace_scene(&mut work_inner.borrow_mut(), scene);
                 Ok(())
             },
         )
@@ -1349,9 +1378,7 @@ impl Bridge {
                     .map_err(BridgeError::from)?;
                 let mut i = work_inner.borrow_mut();
                 if let Some(scene) = result.scene.take() {
-                    i.scene = Some(scene);
-                    i.scene_gen += 1;
-                    clear_view(&mut i);
+                    replace_scene(&mut i, scene);
                 }
                 install_snuffling_result(&mut i, result);
                 Ok(())
@@ -1384,27 +1411,36 @@ impl Bridge {
         )
     }
 
-    /// Let the user pick a custom `.nd` model file ("Add Model"); the picked
-    /// name is stored for the frontend to add to the Cake Phase dropdown.
+    /// Let the user pick a custom `.nd` model file ("Add Model"); pyrocko
+    /// stores it and the returned name is added to the Cake Phase dropdown.
     pub fn add_cake_model(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job(
+        submit_flow(
             inner,
             self.repaint.clone(),
             Operation::AddCakeModel,
             None,
             Vec::new(),
-            async move {
-                let job = require_registered_job(Operation::AddCakeModel, "addCakeModel")
-                    .map_err(CallError::from)?;
-                let value = js_add_cake_model(job.id().get()).await.map_err(|error| {
-                    BridgeError::browser("adding an earth model", jsval_to_string(error))
-                })?;
-                if let Some(name) = value.as_string()
-                    && !name.is_empty()
-                {
-                    work_inner.borrow_mut().pending_cake_model = Some(name);
+            move |flow| async move {
+                let page = decode_browser_file_page(
+                    js_pick_cake_model().await,
+                    "cake_model",
+                    "adding an earth model",
+                )?;
+                ensure_flow_live(&work_inner, flow, "adding an earth model")?;
+                let Some(file) = file_page_files(page)?.into_iter().next() else {
+                    return Ok(());
+                };
+                let label = client()
+                    .add_cake_model(pb::AddCakeModelRequest {
+                        name: file.name,
+                        content: file.content,
+                    })
+                    .await
+                    .map_err(BridgeError::from)?;
+                if !label.value.is_empty() {
+                    work_inner.borrow_mut().pending_cake_model = Some(label.value);
                 }
                 Ok(())
             },
@@ -1672,11 +1708,7 @@ impl Bridge {
                 // The first failure takes the diagnostic slot.
                 let waveforms =
                     download_blob(client().export_waveforms().await, "downloading waveforms").await;
-                if job_flow_interrupted(&work_inner, flow) {
-                    return Err(BridgeError::Call(CallError::Cancelled {
-                        method: "waveform and station export",
-                    }));
-                }
+                ensure_flow_live(&work_inner, flow, "waveform and station export")?;
                 let failed = [
                     waveforms,
                     download_blob(client().export_stations().await, "downloading stations").await,
@@ -1707,16 +1739,7 @@ impl Bridge {
             async move {
                 let result =
                     download_blob(client().export_waveforms().await, "downloading waveforms").await;
-                match result {
-                    Ok(()) => {
-                        work_inner.borrow_mut().diagnostic = None;
-                        Ok(())
-                    }
-                    Err(error) => {
-                        work_inner.borrow_mut().diagnostic = Some(error.clone());
-                        Err(error)
-                    }
-                }
+                settle_diagnostic(&work_inner, result)
             },
         )
     }
@@ -1745,16 +1768,7 @@ impl Bridge {
                     }
                     Err(error) => Err(error.into()),
                 };
-                match result {
-                    Ok(()) => {
-                        work_inner.borrow_mut().diagnostic = None;
-                        Ok(())
-                    }
-                    Err(error) => {
-                        work_inner.borrow_mut().diagnostic = Some(error.clone());
-                        Err(error)
-                    }
-                }
+                settle_diagnostic(&work_inner, result)
             },
         )
     }
@@ -1808,13 +1822,7 @@ impl Bridge {
             move |flow| async move {
                 let texts =
                     picked_file_texts(js_load_markers().await, "markers", "loading markers")?;
-                // The picker is an unbounded browser-local wait; the flow may
-                // have been retired (runtime loss) while it was open.
-                if job_flow_interrupted(&work_inner, flow) {
-                    return Err(BridgeError::Call(CallError::Cancelled {
-                        method: "loading markers",
-                    }));
-                }
+                ensure_flow_live(&work_inner, flow, "loading markers")?;
                 let Some(text) = texts.into_iter().next() else {
                     return Ok(());
                 };
@@ -1865,11 +1873,7 @@ impl Bridge {
                     "stationxml",
                     "loading StationXML",
                 )?;
-                if job_flow_interrupted(&work_inner, flow) {
-                    return Err(BridgeError::Call(CallError::Cancelled {
-                        method: "loading StationXML",
-                    }));
-                }
+                ensure_flow_live(&work_inner, flow, "loading StationXML")?;
                 if texts.is_empty() {
                     return Ok(());
                 }
@@ -1899,11 +1903,7 @@ impl Bridge {
             move |flow| async move {
                 let texts =
                     picked_file_texts(js_load_stations().await, "stations", "loading stations")?;
-                if job_flow_interrupted(&work_inner, flow) {
-                    return Err(BridgeError::Call(CallError::Cancelled {
-                        method: "loading stations",
-                    }));
-                }
+                ensure_flow_live(&work_inner, flow, "loading stations")?;
                 if texts.is_empty() {
                     return Ok(());
                 }
@@ -1935,11 +1935,7 @@ impl Bridge {
             Vec::new(),
             move |flow| async move {
                 let texts = picked_file_texts(js_load_events().await, "events", "loading events")?;
-                if job_flow_interrupted(&work_inner, flow) {
-                    return Err(BridgeError::Call(CallError::Cancelled {
-                        method: "loading events",
-                    }));
-                }
+                ensure_flow_live(&work_inner, flow, "loading events")?;
                 let Some(text) = texts.into_iter().next() else {
                     return Ok(());
                 };
@@ -2069,73 +2065,50 @@ impl Bridge {
         )
     }
 
-    /// Sets or clears the active event and installs Python's canonical registry.
-    pub fn set_active_event(&self, req: SetActiveEventRequest) -> Submission {
+    /// One canonical-event mutation: run the rpc, then install Python's
+    /// registry as the new event state. The three event editors below differ
+    /// only in the rpc they run.
+    fn submit_event_state_call<F>(&self, operation: Operation, call: F) -> Submission
+    where
+        F: Future<Output = Result<ActiveEventResult, CallError>> + 'static,
+    {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
         submit_job(
             inner,
             self.repaint.clone(),
-            Operation::SetActiveEvent,
+            operation,
             None,
             Vec::new(),
             async move {
-                let state = client()
-                    .set_active_event(req)
-                    .await
-                    .map_err(BridgeError::from)?;
+                let state = call.await.map_err(BridgeError::from)?;
                 let mut current = work_inner.borrow_mut();
                 current.diagnostic = None;
                 install_event_state(&mut current, state);
                 Ok(())
             },
         )
+    }
+
+    /// Sets or clears the active event and installs Python's canonical registry.
+    pub fn set_active_event(&self, req: SetActiveEventRequest) -> Submission {
+        self.submit_event_state_call(Operation::SetActiveEvent, async move {
+            client().set_active_event(req).await
+        })
     }
 
     /// Replaces one canonical event after an inline marker-table edit.
     pub fn update_event(&self, event: EventSnapshot) -> Submission {
-        let inner = self.inner.clone();
-        let work_inner = inner.clone();
-        submit_job(
-            inner,
-            self.repaint.clone(),
-            Operation::UpdateEvent,
-            None,
-            Vec::new(),
-            async move {
-                let state = client()
-                    .update_event(event)
-                    .await
-                    .map_err(BridgeError::from)?;
-                let mut current = work_inner.borrow_mut();
-                current.diagnostic = None;
-                install_event_state(&mut current, state);
-                Ok(())
-            },
-        )
+        self.submit_event_state_call(Operation::UpdateEvent, async move {
+            client().update_event(event).await
+        })
     }
 
     /// Removes canonical events whose final frontend marker was deleted.
     pub fn remove_events(&self, request: RemoveEventsRequest) -> Submission {
-        let inner = self.inner.clone();
-        let work_inner = inner.clone();
-        submit_job(
-            inner,
-            self.repaint.clone(),
-            Operation::RemoveEvents,
-            None,
-            Vec::new(),
-            async move {
-                let state = client()
-                    .remove_events(request)
-                    .await
-                    .map_err(BridgeError::from)?;
-                let mut current = work_inner.borrow_mut();
-                current.diagnostic = None;
-                install_event_state(&mut current, state);
-                Ok(())
-            },
-        )
+        self.submit_event_state_call(Operation::RemoveEvents, async move {
+            client().remove_events(request).await
+        })
     }
 
     /// Submit every tile the map wants on screen right now.

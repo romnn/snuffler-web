@@ -175,13 +175,7 @@ impl Session {
     /// [`good_looking_time_range`] turns into a 1 s minimum window).
     #[must_use]
     pub fn scene_deltatmin(&self) -> f64 {
-        self.bridge.scene().map_or(0.0, |scene| {
-            scene
-                .tracks
-                .iter()
-                .map(|track| track.deltat)
-                .fold(f64::INFINITY, f64::min)
-        })
+        self.bridge.scene().map_or(0.0, |scene| scene.deltat_min)
     }
 
     /// The loaded pile's sampling-interval band with snuffler's fallbacks
@@ -190,15 +184,10 @@ impl Session {
     /// controls' corner range exactly as Qt's `adjust_controls` does.
     #[must_use]
     pub fn scene_deltat_range(&self) -> (f64, f64) {
-        let (mut dtmin, mut dtmax) = self.bridge.scene().map_or((0.0, 0.0), |scene| {
-            scene
-                .tracks
-                .iter()
-                .map(|track| track.deltat)
-                .fold((f64::INFINITY, 0.0_f64), |(lo, hi), dt| {
-                    (lo.min(dt), hi.max(dt))
-                })
-        });
+        let (mut dtmin, mut dtmax) = self
+            .bridge
+            .scene()
+            .map_or((0.0, 0.0), |scene| (scene.deltat_min, scene.deltat_max));
         if !dtmin.is_finite() || dtmin == 0.0 {
             dtmin = 0.001;
         }
@@ -547,7 +536,7 @@ impl Session {
             return;
         };
         let live_session = self.bridge.live_seedlink_session();
-        if scene.tracks.is_empty() && live_session.is_none() {
+        if scene.track_count == 0 && live_session.is_none() {
             self.consume_empty_scene(scene_gen);
             return;
         }
@@ -578,11 +567,9 @@ impl Session {
                 .follow_interrupted_at
                 .is_some_and(|at| now_s - at < FOLLOW_SUSPEND_S);
             if !suspended {
-                let latest = scene
-                    .tracks
-                    .iter()
-                    .map(|track| track.tmax)
-                    .fold(scene.tmax, f64::max);
+                // The bridge computes scene.tmax as the maximum trace tmax, so
+                // it IS the newest sample's time.
+                let latest = scene.tmax;
                 let window = live.follow_seconds.max(1.0);
                 if latest.is_finite() && latest > live.started_at {
                     self.state.tmax = latest;

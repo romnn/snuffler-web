@@ -338,8 +338,8 @@ async function runBrowserPass({
           toBinary(EmptySchema, create(EmptySchema))
         );
         const scene = bridgeResult(sceneReply.result, "MakeExample", "scene");
-        if (scene.tracks.length < 18) {
-          throw new Error(`MakeExample: expected at least 18 traces, got ${scene.tracks.length}`);
+        if (scene.trackCount < 18n) {
+          throw new Error(`MakeExample: expected at least 18 traces, got ${scene.trackCount}`);
         }
 
         const request = requestFor(scene, spec);

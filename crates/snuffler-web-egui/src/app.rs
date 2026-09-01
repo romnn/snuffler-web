@@ -2097,7 +2097,9 @@ impl eframe::App for App {
         }
 
         let scene = self.session.bridge.scene();
-        let total_tracks = scene.as_ref().map_or(0, |scene| scene.tracks.len());
+        let total_tracks = scene
+            .as_ref()
+            .map_or(0, |scene| usize::try_from(scene.track_count).unwrap_or(0));
         let scene_range = scene.as_ref().map(|scene| (scene.tmin, scene.tmax));
         self.show_status_panel(ui, &ctx, total_tracks);
         self.show_command_panel(ui);

@@ -34,7 +34,5 @@ message FigureRequest {
 // text rather than crashing the viewer.
 message FigureResult {
   bytes png = 1;
-  uint32 width = 2;
-  uint32 height = 3;
   string error = 4;
 }

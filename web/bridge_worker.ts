@@ -87,9 +87,11 @@ let py: any = null;
 let bridge: any = null;
 let gfStoreCounter = 0;
 let activeSeisbenchJobId = 0n;
-let activeJobControl: Int32Array | null = null;
+// One value, not parallel variables: "a job is active" and "that job excludes
+// views" are facts about the same request, and coupling them makes the state
+// "blocks views, but no active job" unrepresentable.
+let activeJob: { control: Int32Array; blocksView: boolean } | null = null;
 let activeViewControl: Int32Array | null = null;
-let activeJobBlocksView = false;
 let pyodideInterrupt: Uint8Array | null = null;
 const GET_VIEW_METHOD = rpc("getView");
 const BRIDGE_PERF_LOG = false;
@@ -300,25 +302,24 @@ function acquireInterpreter(
     if (activeViewControl) {
       throw new Error("protocol fault: a second view request reached the Python worker");
     }
-    if (activeJobBlocksView) {
+    if (activeJob?.blocksView) {
       throw new Error("protocol fault: a view request overlapped an exclusive Python job");
     }
     activeViewControl = control;
-    if (activeJobControl) {
-      setInterpreterOwnership(activeJobControl, false, interrupt);
+    if (activeJob) {
+      setInterpreterOwnership(activeJob.control, false, interrupt);
       // The job keeps its cancellation state while the view owns the interpreter.
       // Its interrupt is re-armed when the view releases the interpreter.
     }
   } else {
-    if (activeJobControl) {
+    if (activeJob) {
       throw new Error("protocol fault: a second job request reached the Python worker");
     }
     const blocksView = msg.method === WORKER_RELOAD_SNUFFLINGS;
     if (blocksView && activeViewControl) {
       throw new Error("protocol fault: an exclusive Python job overlapped a view request");
     }
-    activeJobControl = control;
-    activeJobBlocksView = blocksView;
+    activeJob = { control, blocksView };
   }
   // Interpreter ownership is NOT granted here. The request's control word stays
   // ...WithoutInterpreter — where cancellation cannot arm SIGINT — until Python
@@ -332,10 +333,9 @@ function releaseInterpreter(lane: PythonLane, control: Int32Array, interrupt: Ui
   let jobWaitingForInterpreter: Int32Array | null = null;
   if (lane === "VIEW" && activeViewControl === control) {
     activeViewControl = null;
-    jobWaitingForInterpreter = activeJobControl;
-  } else if (lane === "JOB" && activeJobControl === control) {
-    activeJobControl = null;
-    activeJobBlocksView = false;
+    jobWaitingForInterpreter = activeJob?.control ?? null;
+  } else if (lane === "JOB" && activeJob?.control === control) {
+    activeJob = null;
   }
   markExecutionDone(control, interrupt);
   if (jobWaitingForInterpreter) {
@@ -1200,6 +1200,33 @@ async function handleRequest(
   postOperationStarted(jobId);
   const { reporter, beginRequestCommit, beginExternalWait, endExternalWait, enterProtectedFrame } =
     operationCallbacks(msg, lane, control, interrupt);
+  // The single seam into bridge.py for this request. Both dispatch paths (the
+  // GF-store mount and the plain rpc) must pass the same callback set and share
+  // the escaped-cancellation backstop, so the call is spelled exactly once.
+  const callPython = async (
+    data: Uint8Array | string | null,
+    timings: BridgeTimings | null = null
+  ): Promise<WorkerReplyPayload> => {
+    let res;
+    const pyCallT0 = performance.now();
+    try {
+      res = await bridge.call(
+        msg.method,
+        msg.request,
+        data,
+        reporter,
+        beginRequestCommit,
+        beginExternalWait,
+        endExternalWait,
+        enterProtectedFrame
+      );
+    } catch (error) {
+      if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
+      throw error;
+    }
+    if (timings) timings.py_call_ms = performance.now() - pyCallT0;
+    return bridgeResult(res, timings);
+  };
   try {
     // A request cancelled while it was queued never reaches Python: dispatching
     // it would need SIGINT armed before its first protected frame, where the
@@ -1260,43 +1287,9 @@ finally:
       }
       py.FS.mkdir(mount);
       await py.mountNativeFS(mount, msg.handle);
-      let mountRes;
-      try {
-        mountRes = await bridge.call(
-          msg.method,
-          msg.request,
-          mount,
-          reporter,
-          beginRequestCommit,
-          beginExternalWait,
-          endExternalWait,
-          enterProtectedFrame
-        );
-      } catch (error) {
-        if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
-        throw error;
-      }
-      return bridgeResult(mountRes);
+      return await callPython(mount);
     }
-    const pyCallT0 = performance.now();
-    let res;
-    try {
-      res = await bridge.call(
-        msg.method,
-        msg.request,
-        msg.data ?? null,
-        reporter,
-        beginRequestCommit,
-        beginExternalWait,
-        endExternalWait,
-        enterProtectedFrame
-      );
-    } catch (error) {
-      if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
-      throw error;
-    }
-    if (requestTimings) requestTimings.py_call_ms = performance.now() - pyCallT0;
-    return bridgeResult(res, requestTimings);
+    return await callPython(msg.data ?? null, requestTimings);
   } finally {
     releaseInterpreter(lane, control, interrupt);
   }

@@ -50,15 +50,20 @@ pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 // hand-written structs, no conversion layer. prost generates these from
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
-    ActiveEventResult, BrowserFileLoadPage, BrowserSourceAck, BrowserSourceAckList, BundleAbout,
-    BundleView, CakeSnufflingParams, CatalogRequest, CommandRequest, EventKagan, EventSnapshot,
-    ExampleDataset, FigureRequest, IngestMiniSeedRequest, MapData, MapRequest, MarkerFile,
-    MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams, RemoveEventsRequest,
-    RmsSnufflingParams, RuntimeInfo, SceneMeta, SeisbenchSnufflingParams,
+    ActiveEventResult, BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest,
+    CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest, MapData, MapRequest,
+    MarkerFile, MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams,
+    RemoveEventsRequest, RmsSnufflingParams, RuntimeInfo, SceneMeta, SeisbenchSnufflingParams,
     SeismosizerSnufflingParams, SetActiveEventRequest, SnufMarker, SnufflingParams,
     SnufflingRequestParams, SnufflingResult, SnufflingSpan, SpectrogramSnufflingParams,
     SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, TraceBox, ViewMeta, ViewParams,
     ViewSpan, ViewTrack, WaveformDownloadRequest,
+};
+// Wire shapes only the wasm bridge implementation touches; not part of the
+// crate's app-facing surface.
+#[cfg(target_arch = "wasm32")]
+pub(crate) use proto::pb::{
+    BrowserFileLoadPage, BrowserSourceAck, BrowserSourceAckList, IngestMiniSeedRequest,
 };
 
 /// Local-file header of a zip archive, which is how a dataset bundle is
@@ -74,7 +79,7 @@ struct Inner {
     /// The last runtime epoch observed by [`web::sync_runtime`]. A change with no
     /// RPC in flight is the only evidence of an idle worker death, so the sync
     /// poll compares against this to report the loss exactly once.
-    runtime_epoch: Option<u32>,
+    runtime_epoch: Option<crate::activity::RuntimeEpoch>,
     /// The record snapshot handed to the per-frame activity UI, keyed by the
     /// ledger revision it was built from, so idle frames share one allocation.
     activity_cache: Option<(u64, ActivityJobs)>,
@@ -403,7 +408,7 @@ impl Bridge {
     /// Returns the latest scene metadata snapshot.
     #[must_use]
     pub fn scene(&self) -> Option<SceneMeta> {
-        self.inner.borrow().scene.clone()
+        self.inner.borrow().scene
     }
 
     /// Generation counter that increments on each new scene load.

@@ -2,20 +2,19 @@ syntax = "proto3";
 
 package snuffler.bridge.v1;
 
-message TraceMeta {
-  string net = 1;
-  string sta = 2;
-  string loc = 3;
-  string cha = 4;
-  string label = 5;
-  double tmin = 6;
-  double tmax = 7;
-  double deltat = 8;
-  uint64 nsamples = 9;
-}
-
+// The loaded pile as the frontend needs it between views: its time bounds and
+// the aggregate track facts every consumer reads. Per-trace metadata (nslc,
+// label, spans) rides ViewMeta, which the view request pages; repeating it here
+// would serialize O(traces) of data on every load and live ingest for fields
+// nothing consumes.
 message SceneMeta {
   double tmin = 1;
+  // Also the latest trace's end time: the bound is computed as the maximum
+  // trace tmax, which live acquisition relies on to follow the newest data.
   double tmax = 2;
-  repeated TraceMeta tracks = 3;
+  uint64 track_count = 3;
+  // Sampling-interval band of the pile (snuffler's content_deltat_range
+  // inputs); both 0 when the pile is empty.
+  double deltat_min = 4;
+  double deltat_max = 5;
 }

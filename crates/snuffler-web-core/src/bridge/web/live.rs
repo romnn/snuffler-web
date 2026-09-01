@@ -411,8 +411,6 @@ const INGEST_MAILBOX_RESIDENCE_S: f64 = 10.0;
 
 fn note_dropped_batch(mailbox: &mut LiveIngestMailbox, batch: LiveIngestBatch) {
     mailbox.bytes = mailbox.bytes.saturating_sub(batch.content.len());
-    mailbox.dropped_seq_first.get_or_insert(batch.seq);
-    mailbox.dropped_seq_last = Some(batch.seq);
     mailbox.dropped_bytes = mailbox
         .dropped_bytes
         .saturating_add(u64::try_from(batch.content.len()).unwrap_or(u64::MAX));
@@ -537,9 +535,6 @@ fn take_buffered_ingest_request(
         session_epoch: session.0,
         batch_seq_first,
         batch_seq_last,
-        dropped_seq_first: mailbox.dropped_seq_first.unwrap_or(0),
-        dropped_seq_last: mailbox.dropped_seq_last.unwrap_or(0),
-        dropped_bytes: mailbox.dropped_bytes,
     })
 }
 
@@ -621,9 +616,6 @@ fn ingest_live_mseed(
         session_epoch: live.session.0,
         batch_seq_first: seq,
         batch_seq_last: seq,
-        dropped_seq_first: 0,
-        dropped_seq_last: 0,
-        dropped_bytes: 0,
     };
     dispatch_live_ingest(inner, repaint, request, live);
 }

@@ -672,23 +672,15 @@ async def _fetch_fdsn_text_or_empty(url: str) -> str:
     raise RuntimeError("HTTP %s from %s" % (resp.status, url))
 
 
-def _trace_meta(msg: scene_pb2.TraceMeta, tr: ptrace.Trace) -> None:
-    net, sta, loc, cha = tr.nslc_id
-    msg.net, msg.sta, msg.loc, msg.cha = net, sta, loc, cha
-    msg.label = ".".join(tr.nslc_id)
-    msg.tmin = float(tr.tmin)
-    msg.tmax = float(tr.tmax)
-    msg.deltat = float(tr.deltat)
-    msg.nsamples = int(tr.data_len())
-
-
 def _scene_meta() -> scene_pb2.SceneMeta:
-    msg = scene_pb2.SceneMeta()
-    for tr in _visible_traces():
-        _trace_meta(msg.tracks.add(), tr)
-    msg.tmin = min((t.tmin for t in msg.tracks), default=0.0)
-    msg.tmax = max((t.tmax for t in msg.tracks), default=1.0)
-    return msg
+    traces = list(_visible_traces())
+    return scene_pb2.SceneMeta(
+        tmin=min((float(tr.tmin) for tr in traces), default=0.0),
+        tmax=max((float(tr.tmax) for tr in traces), default=1.0),
+        track_count=len(traces),
+        deltat_min=min((float(tr.deltat) for tr in traces), default=0.0),
+        deltat_max=max((float(tr.deltat) for tr in traces), default=0.0),
+    )
 
 
 def _make_example_scene() -> scene_pb2.SceneMeta:
@@ -2403,8 +2395,7 @@ def _render_figure_png(
         except _FigureEmpty as exc:
             return figure_pb2.FigureResult(error=str(exc))
         fig.savefig(buf, format="png", dpi=dpi, facecolor=fig.get_facecolor())
-    width, height = fig.canvas.get_width_height()
-    return figure_pb2.FigureResult(png=buf.getvalue(), width=int(width), height=int(height))
+    return figure_pb2.FigureResult(png=buf.getvalue())
 
 
 def _inview_work_traces(view: view_pb2.ViewParams) -> List[ptrace.Trace]:
@@ -3204,7 +3195,7 @@ async def _load_gf_store_url(base_url: str) -> bridge_pb2.StringValue:
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return bridge_pb2.StringValue(value=_gf_store_info_result(root).label)
+    return bridge_pb2.StringValue(value=gf_store_label(root))
 
 
 def _ensure_real_gf() -> Any:
@@ -5003,10 +4994,11 @@ class SessionUpdate(NamedTuple):
     state: _DatasetState
 
 
-class SessionCommitResult(NamedTuple):
+class StaleSessionCommit(NamedTuple):
+    """A rejected commit: the store moved past the transaction's generation."""
+
     expected_generation: int
     actual_generation: int
-    committed: bool
 
 
 def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
@@ -5188,7 +5180,7 @@ class SessionStore:
         self._job_caches = None
         self._suspended_job_update = None
 
-    def commit(self, expected: int, update: SessionUpdate) -> SessionCommitResult:
+    def commit(self, expected: int, update: SessionUpdate) -> Optional[StaleSessionCommit]:
         actual = self._generation
         if expected != actual:
             # Defensive: the job lane is serialized, so a mismatch means a
@@ -5196,12 +5188,12 @@ class SessionStore:
             # commit is a one-way door.
             self._transaction_snapshot = None
             self._drop_view_projection()
-            return SessionCommitResult(expected, actual, False)
+            return StaleSessionCommit(expected, actual)
         _install_dataset_state(update.state)
         self._generation += 1
         self._transaction_snapshot = None
         self._drop_view_projection()
-        return SessionCommitResult(expected, self._generation, True)
+        return None
 
     def _drop_view_projection(self) -> None:
         self._suspended_job_update = None
@@ -5418,7 +5410,7 @@ def _load_bundle_result(
     _install_dataset_state(_empty_dataset_state(traces))
     try:
         scene = _scene_meta()
-        loaded = ["%d trace(s) from %d file(s)" % (len(scene.tracks), len(waveforms))]
+        loaded = ["%d trace(s) from %d file(s)" % (scene.track_count, len(waveforms))]
         info = snuffling_pb2.SnufflingResult(show_window=True, origin="bundle")
         bundle_markers = _MarkerAccumulator(budget)
         responses = [
@@ -5670,16 +5662,10 @@ def _gf_modules() -> Tuple[Any, Any]:
     return _gf_store_mod, _gf_meta_mod
 
 
-class GfStoreInfo(NamedTuple):
-    id: str
-    label: str
-    sample_rate: float
-    has_earthmodel: bool
-
-
-def _gf_store_info_result(store_dir: str) -> GfStoreInfo:
-    """Read a mounted GF store's config (no ``store_ext`` / network needed) and
-    register it so its embedded 1D earth model is selectable in Cake Phase.
+def gf_store_label(store_dir: str) -> str:
+    """Read a mounted GF store's config (no ``store_ext`` / network needed),
+    register it so its embedded 1D earth model is selectable in Cake Phase, and
+    return its dropdown label.
 
     Raises on failure; the ``call()`` failsafe turns that into a BridgeError.
     """
@@ -5687,16 +5673,7 @@ def _gf_store_info_result(store_dir: str) -> GfStoreInfo:
     cfg = gfstore.Store(store_dir).config
     sid = str(cfg.id)
     _GF_STORES[sid] = store_dir
-    return GfStoreInfo(
-        id=sid,
-        label=GF_STORE_PREFIX + sid,
-        sample_rate=float(getattr(cfg, "sample_rate", 0.0) or 0.0),
-        has_earthmodel=getattr(cfg, "earthmodel_1d", None) is not None,
-    )
-
-
-def gf_store_label(store_dir: str) -> str:
-    return _gf_store_info_result(store_dir).label
+    return GF_STORE_PREFIX + sid
 
 
 def _time_fractional_digits() -> int:
@@ -6555,6 +6532,31 @@ def _replace_marker_rows(
             target.nslc_indexes.append(table_index)
 
 
+def _marker_retention_rank(
+    marker: snuffling_pb2.SnufMarker, index: int, strength: Optional[float] = None
+) -> Tuple[int, int, float, float, int]:
+    """One marker's claim to survive a budget cut; higher tuples are kept.
+
+    Retention tiers before raw strength: event markers carry no incidence angle
+    and would otherwise score 0.0, so a mixed over-budget set would keep only
+    phase picks and drop every event those picks reference. The active marker
+    outranks everything. Shared by ``_MarkerAccumulator`` and
+    ``_truncate_marker_result`` so the two bounds cannot drift apart.
+    """
+    if strength is None and marker.HasField("incidence_angle"):
+        strength = float(marker.incidence_angle)
+    score = float(strength or 0.0)
+    if not math.isfinite(score):
+        score = 0.0
+    return (
+        int(marker.active),
+        int(marker.is_event),
+        score,
+        -float(marker.t),
+        -index,
+    )
+
+
 class _MarkerAccumulator:
     """Keeps only the strongest marker candidates while counting every result."""
 
@@ -6580,22 +6582,7 @@ class _MarkerAccumulator:
     ) -> None:
         index = self.total
         self.total += 1
-        if strength is None and marker.HasField("incidence_angle"):
-            strength = float(marker.incidence_angle)
-        score = float(strength or 0.0)
-        if not math.isfinite(score):
-            score = 0.0
-        # Retention tiers before raw strength: event markers carry no incidence
-        # angle and would otherwise score 0.0, so a mixed over-budget file would
-        # keep only phase picks and drop every event those picks reference. The
-        # active marker outranks everything, matching _truncate_marker_result.
-        quality = (
-            int(marker.active),
-            int(marker.is_event),
-            score,
-            -float(marker.t),
-            -index,
-        )
+        quality = _marker_retention_rank(marker, index, strength)
         entry = (quality, index, marker, tuple(nslcs), payload)
         if len(self._heap) < self.limit:
             heapq.heappush(self._heap, entry)
@@ -6636,21 +6623,11 @@ def _truncate_marker_result(result: _MarkerResultT, budget: _MarkerBudget) -> _M
     result.marker_budget = limit
     if count <= limit:
         return result
-    active = [(index, marker) for index, marker in enumerate(result.markers) if marker.active]
-    active_ids = {index for index, _marker in active[:limit]}
     ranked = sorted(
-        ((index, marker) for index, marker in enumerate(result.markers) if index not in active_ids),
-        # Same retention tiers as _MarkerAccumulator.add: events outrank
-        # strengthless-scored picks so a mixed over-budget result cannot drop
-        # every event its picks reference.
-        key=lambda item: (
-            not item[1].is_event,
-            -float(item[1].incidence_angle) if item[1].HasField("incidence_angle") else 0.0,
-            float(item[1].t),
-            item[0],
-        ),
-    )[: max(0, limit - len(active_ids))]
-    ranked.extend(active[:limit])
+        enumerate(result.markers),
+        key=lambda item: _marker_retention_rank(item[1], item[0]),
+        reverse=True,
+    )[:limit]
     ranked.sort(key=lambda item: item[0])
     kept: List[Tuple[snuffling_pb2.SnufMarker, List[NslcId]]] = []
     for _, marker in ranked:
@@ -7005,15 +6982,10 @@ class _BridgeServicer:
         warmed = bootstrap.warm()
         return bridge_pb2.StringValue(value=",".join(warmed))
 
-    def mount_gf_store(
-        self, request: bridge_pb2.MountGfStoreRequest, data: Any
-    ) -> bridge_pb2.StringValue:
-        if not request.handle_id or not data:
-            raise ValueError("mounting a GF store requires a registered directory handle")
+    def mount_gf_store(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
+        if not data:
+            raise ValueError("mounting a GF store requires a mounted directory path")
         return bridge_pb2.StringValue(value=gf_store_label(str(data)))
-
-    def gf_store_label(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
-        return bridge_pb2.StringValue(value=gf_store_label(data or ""))
 
 
 _SERVICER = _BridgeServicer()
@@ -7114,12 +7086,12 @@ async def call(
             return bridge_dispatch.cancelled_result()
         update = _SESSION_STORE.capture_update()
         _SESSION_STORE.restore_snapshot(snapshot)
-        committed = _SESSION_STORE.commit(snapshot.generation, update)
-        if committed.committed:
+        stale_commit = _SESSION_STORE.commit(snapshot.generation, update)
+        if stale_commit is None:
             return result
         stale = bridge_pb2.BridgeResult()
-        stale.stale.expected_generation = committed.expected_generation
-        stale.stale.actual_generation = committed.actual_generation
+        stale.stale.expected_generation = stale_commit.expected_generation
+        stale.stale.actual_generation = stale_commit.actual_generation
         return {"result": stale.SerializeToString()}
     except KeyboardInterrupt:
         # On the view lane this is defensive only: no interrupt can reach it

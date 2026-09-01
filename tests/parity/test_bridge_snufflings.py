@@ -1108,7 +1108,7 @@ def test_view_projection_is_shallow_and_preserves_workspace_identity() -> None:
         update = bridge._SESSION_STORE.capture_update()
         bridge._SESSION_STORE.restore_snapshot(snapshot)
         outcome = bridge._SESSION_STORE.commit(snapshot.generation, update)
-        assert outcome.committed
+        assert outcome is None
         assert bridge._TRACES[0] is held
     finally:
         if bridge._SESSION_STORE._transaction_snapshot is not None:

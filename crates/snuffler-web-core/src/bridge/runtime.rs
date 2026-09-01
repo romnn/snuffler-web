@@ -85,7 +85,5 @@ pub(super) struct LiveIngestBatch {
 pub(super) struct LiveIngestMailbox {
     pub(super) batches: std::collections::VecDeque<LiveIngestBatch>,
     pub(super) bytes: usize,
-    pub(super) dropped_seq_first: Option<u64>,
-    pub(super) dropped_seq_last: Option<u64>,
     pub(super) dropped_bytes: u64,
 }

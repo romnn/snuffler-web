@@ -52,12 +52,7 @@ export function requestCancellation(control: Int32Array, interrupt: Uint8Array):
       if (transition(control, state, ExecutionControlState.CancellingDuringExternalWait)) {
         return ExecutionState.Computing;
       }
-    } else if (
-      state === ExecutionControlState.PublishingCancellationInterrupt ||
-      state === ExecutionControlState.CancellingWithoutInterpreter ||
-      state === ExecutionControlState.CancellingWithInterpreter ||
-      state === ExecutionControlState.CancellingDuringExternalWait
-    ) {
+    } else if (isCancellingState(state)) {
       return ExecutionState.Cancelling;
     } else if (state === ExecutionControlState.Committing) {
       return ExecutionState.Committing;
@@ -94,14 +89,20 @@ export function beginCommit(control: Int32Array, interrupt: Uint8Array): boolean
   }
 }
 
-export function cancellationRequested(control: Int32Array): boolean {
-  const state = Atomics.load(control, STATE);
+// The one definition of "cancellation has been requested and not resolved":
+// requestCancellation's already-cancelling arm and cancellationRequested must
+// classify identically, or a future state could join one list and not the other.
+function isCancellingState(state: ExecutionControlState): boolean {
   return (
     state === ExecutionControlState.PublishingCancellationInterrupt ||
     state === ExecutionControlState.CancellingWithoutInterpreter ||
     state === ExecutionControlState.CancellingWithInterpreter ||
     state === ExecutionControlState.CancellingDuringExternalWait
   );
+}
+
+export function cancellationRequested(control: Int32Array): boolean {
+  return isCancellingState(Atomics.load(control, STATE) as ExecutionControlState);
 }
 
 export function markExecutionDone(control: Int32Array, interrupt: Uint8Array): void {

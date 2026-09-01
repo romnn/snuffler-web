@@ -10,7 +10,6 @@ import {
   CancelJobRequestSchema,
   MlDevice as ProtoMlDevice,
   MlDeviceStatusSchema,
-  MountGfStoreRequestSchema,
   RuntimeFailureSchema,
   RuntimeInfoSchema,
   WorkerEventSchema,
@@ -22,16 +21,11 @@ import {
   requestCancellation,
 } from "./execution_control.js";
 import {
-  AddCakeModelRequestSchema,
   BrowserFileLoadPageRequestSchema,
   BrowserFileLoadPageSchema,
   BrowserFileSchema,
   BrowserReadFailureSchema,
   BrowserSourceAckListSchema,
-  LoadEventsRequestSchema,
-  LoadMarkersRequestSchema,
-  LoadStationXmlRequestSchema,
-  LoadStationsRequestSchema,
   type BrowserFile,
   type BrowserReadFailure,
 } from "./proto/snuffler/bridge/v1/data_pb.js";
@@ -77,8 +71,6 @@ type SourceKind = "waveform" | "bundle";
 type OpenSource = { handle: FileSystemFileHandle; mtime: number; kind: SourceKind };
 const _openSources = new Map<string, OpenSource>();
 let _sourceCounter = 0;
-const _gfStoreDirectoryHandles = new Map<string, FileSystemDirectoryHandle>();
-let _gfStoreDirectoryHandleCounter = 0;
 const FILE_PAGE_BYTES = 32 * 1024 * 1024;
 const FILE_PAGE_COUNT = 64;
 type BrowserFileSource =
@@ -569,16 +561,12 @@ export function takeOperationEvents(): Uint8Array[] {
   return operationEvents.splice(0);
 }
 
-export async function addCakeModel(jobId: bigint) {
+// Picker only: the AddCakeModel rpc itself is issued by the Rust flow, which
+// re-checks its ledger identity between this unbounded dialog wait and the
+// call, like every other picker importer.
+export async function pickCakeModel() {
   const files = await pickFiles(false);
-  if (files.length === 0) return "";
-  const f = files[0];
-  const content = new Uint8Array(await f.arrayBuffer());
-  const request = toBinary(
-    AddCakeModelRequestSchema,
-    create(AddCakeModelRequestSchema, { name: f.name, content })
-  );
-  return resultText(await rpcBytes(rpc("addCakeModel"), { request, jobId }));
+  return pickedFilePage(files);
 }
 
 export async function addGfStore(jobId: bigint) {
@@ -595,23 +583,14 @@ export async function addGfStore(jobId: bigint) {
     if (e instanceof DOMException && e.name === "AbortError") return "";
     throw e;
   }
-  const handleId = `directory:${++_gfStoreDirectoryHandleCounter}`;
-  _gfStoreDirectoryHandles.set(handleId, handle as FileSystemDirectoryHandle);
-  try {
-    const request = toBinary(
-      MountGfStoreRequestSchema,
-      create(MountGfStoreRequestSchema, { handleId })
-    );
-    return resultText(
-      await rpcBytes(BridgeMethod.mountGfStore, {
-        request,
-        handle: _gfStoreDirectoryHandles.get(handleId),
-        jobId,
-      })
-    );
-  } finally {
-    _gfStoreDirectoryHandles.delete(handleId);
-  }
+  // The handle rides the postMessage payload itself — browser handles cannot
+  // be serialized into the protobuf request, and the rpc needs nothing else.
+  return resultText(
+    await rpcBytes(BridgeMethod.mountGfStore, {
+      handle: handle as FileSystemDirectoryHandle,
+      jobId,
+    })
+  );
 }
 
 // Reload the Python snuffling code (bridge.py) in the worker, preserving the
