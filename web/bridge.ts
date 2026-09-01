@@ -9,8 +9,11 @@ import {
   CancelJobReplySchema,
   CancelJobRequestSchema,
   MlDevice as ProtoMlDevice,
+  MlDeviceStatusSchema,
   MountGfStoreRequestSchema,
+  RuntimeInfoSchema,
   WorkerEventSchema,
+  type RuntimeInfo,
 } from "./proto/snuffler/bridge/v1/bridge_pb.js";
 import {
   ExecutionState,
@@ -19,7 +22,8 @@ import {
 } from "./execution_control.js";
 import {
   AddCakeModelRequestSchema,
-  BrowserFileManifestSchema,
+  BrowserFileLoadPageRequestSchema,
+  BrowserFileLoadPageSchema,
   BrowserFileSchema,
   BrowserReadFailureSchema,
   BrowserSourceAckListSchema,
@@ -31,15 +35,21 @@ import {
   type BrowserReadFailure,
 } from "./proto/snuffler/bridge/v1/data_pb.js";
 import { rpc, BridgeMethod, type BridgeMethodId } from "./rpc.js";
-import { WORKER_RELOAD_SNUFFLINGS, type WorkerCommand } from "./worker_command.js";
+import { WORKER_RELOAD_SNUFFLINGS } from "./worker_command.js";
+import {
+  type WorkerEventMessage,
+  type WorkerMessage,
+  type WorkerRequest,
+  type WorkerRequestMethod,
+  type WorkerSuccessMessage,
+} from "./worker_protocol.js";
 
-// What the worker accepts as a request `method`: any BridgeService rpc id, plus
-// the single worker-only command (the GF-store directory mount).
-type SeamMethod = BridgeMethodId | WorkerCommand;
 const BRIDGE_PERF_LOG = false;
 const WORKER_BOOT_TIMEOUT_MS = 300_000;
+const NON_CANCELLABLE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_PENDING_REQUESTS = 8;
-type WorkerEventMessage = { type: "workerEvent"; epoch: number; event: Uint8Array };
+const GET_VIEW_METHOD = rpc("getView");
+const LIST_EXAMPLES_METHOD = rpc("listExamples");
 
 // Cosmetic progress hook (set by index.html) + the File System Access API. Typed
 // loosely — optional integration points, not the typed proto boundary.
@@ -48,23 +58,11 @@ declare global {
     __snufflerProgress?: (frac: number, label: string) => void;
     // The Pyodide worker index.html starts at page load, with the messages its
     // placeholder listener parked until ensureWorker() takes over.
-    __snufflerWorker?: { worker: Worker; queue: MessageEvent[]; epoch: number };
+    __snufflerWorker?: { worker: Worker; queue: MessageEvent<WorkerMessage>[]; epoch: number };
     showDirectoryPicker?: (opts?: { mode?: string }) => Promise<unknown>;
     showOpenFilePicker?: (opts?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>;
   }
 }
-
-// What the worker reports once Python is up, read back from the live interpreter
-// rather than assumed. Rust shows it in the About window.
-type RuntimeInfo = {
-  threaded: boolean;
-  simd: boolean;
-  pthreads: boolean;
-  python: string;
-  numpy: string;
-  pyrocko: string;
-  cores: number;
-};
 
 // Re-readable handles for files opened via the File System Access API, keyed by a
 // stable source id, so "reload modified files" can re-read them from disk.
@@ -72,21 +70,49 @@ type SourceKind = "waveform" | "bundle";
 type OpenSource = { handle: FileSystemFileHandle; mtime: number; kind: SourceKind };
 const _openSources = new Map<string, OpenSource>();
 let _sourceCounter = 0;
-const _nativeHandles = new Map<string, FileSystemDirectoryHandle>();
-let _nativeHandleCounter = 0;
+const _gfStoreDirectoryHandles = new Map<string, FileSystemDirectoryHandle>();
+let _gfStoreDirectoryHandleCounter = 0;
+const FILE_PAGE_BYTES = 32 * 1024 * 1024;
+const FILE_PAGE_COUNT = 64;
+type BrowserFileSource =
+  | { case: "snapshot"; sourceId: ""; file: File }
+  | {
+      case: "handle";
+      sourceId: string;
+      handle: FileSystemFileHandle;
+      file?: File;
+      kind?: SourceKind;
+      previousMtime?: number;
+    };
+type BrowserFileLoad = {
+  iterator: AsyncIterator<BrowserFileSource>;
+  pending?: BrowserFileSource;
+  done: boolean;
+};
+const _fileLoads = new Map<string, BrowserFileLoad>();
+let _fileLoadCounter = 0;
+
+function cancelledFileLoadPage(): Uint8Array {
+  return toBinary(
+    BrowserFileLoadPageSchema,
+    create(BrowserFileLoadPageSchema, { cancelled: true })
+  );
+}
 
 export function clearOpenSources() {
   _openSources.clear();
+  _fileLoads.clear();
 }
 
-type Pending = {
-  resolve: (msg: any) => void;
+type PendingRequest = {
+  resolve: (msg: WorkerSuccessMessage) => void;
   reject: (err: Error) => void;
-  method: SeamMethod;
+  method: WorkerRequestMethod;
   requestBytes: number;
   sentMs: number;
   jobId: bigint;
   control: Int32Array;
+  deadline: number | null;
 };
 
 let worker: Worker | null = null;
@@ -94,12 +120,12 @@ let nextRequestId = 1;
 let runtimeEpoch = typeof window === "undefined" ? 0 : (window.__snufflerWorker?.epoch ?? 0);
 let bootTimer: number | null = null;
 let interruptBuffer = new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT);
-const pending = new Map<string, Pending>();
+const pendingRequests = new Map<string, PendingRequest>();
 let mlDevice = ProtoMlDevice.WASM;
 const operationEvents: Uint8Array[] = [];
 let latestRuntimeInfo: RuntimeInfo | null = null;
 
-function pendingKey(epoch: number, id: number): string {
+function pendingRequestKey(epoch: number, id: number): string {
   return `${epoch}:${id}`;
 }
 
@@ -116,10 +142,18 @@ function clearBootTimer(): void {
   }
 }
 
-function rejectAllPending(error: Error): void {
-  const unsettled = [...pending.values()];
-  pending.clear();
-  for (const slot of unsettled) slot.reject(error);
+function takePendingRequest(key: string): PendingRequest | undefined {
+  const slot = pendingRequests.get(key);
+  if (!slot) return undefined;
+  pendingRequests.delete(key);
+  if (slot.deadline != null) window.clearTimeout(slot.deadline);
+  return slot;
+}
+
+function rejectAllPendingRequests(error: Error): void {
+  for (const key of [...pendingRequests.keys()]) {
+    takePendingRequest(key)?.reject(error);
+  }
 }
 
 function handleWorkerEvent(msg: WorkerEventMessage, epoch: number): void {
@@ -128,38 +162,41 @@ function handleWorkerEvent(msg: WorkerEventMessage, epoch: number): void {
   const event = decoded.event;
   switch (event.case) {
     case "boot":
-      prog(event.value.fraction, event.value.label);
+      reportBootProgress(event.value.fraction, event.value.label);
       break;
     case "mlDevice":
       mlDevice = event.value.device;
       break;
     case "operation":
+    case "runtimeFailure":
       operationEvents.push(msg.event.slice());
       if (operationEvents.length > 256) operationEvents.splice(0, operationEvents.length - 256);
+      break;
+    case "runtimeInfo":
+      clearBootTimer();
+      latestRuntimeInfo = event.value;
       break;
   }
 }
 
-function handleWorkerMessage(instance: Worker, epoch: number, event: MessageEvent): void {
+function handleWorkerMessage(
+  instance: Worker,
+  epoch: number,
+  event: MessageEvent<WorkerMessage>
+): void {
   if (worker !== instance || runtimeEpoch !== epoch) return;
   const receivedMs = performance.now();
   const receivedEpochMs = Date.now();
-  const msg = event.data || {};
+  const msg = event.data;
   if (msg.epoch !== epoch) return;
-  if (msg.type === "workerEvent") {
+  if ("type" in msg) {
     handleWorkerEvent(msg as WorkerEventMessage, epoch);
     return;
   }
-  if (msg.type === "runtime") {
-    clearBootTimer();
-    latestRuntimeInfo = msg as RuntimeInfo;
-    return;
-  }
-  const key = pendingKey(epoch, msg.id);
-  const slot = pending.get(key);
+  const key = pendingRequestKey(epoch, msg.id);
+  const slot = takePendingRequest(key);
   if (!slot) return;
-  pending.delete(key);
-  if (BRIDGE_PERF_LOG && msg.perf && slot.method === BridgeMethod.getView) {
+  if (msg.ok && BRIDGE_PERF_LOG && msg.perf && slot.method === BridgeMethod.getView) {
     const workerToMainMs =
       typeof msg.perf.worker_post_epoch_ms === "number"
         ? receivedEpochMs - msg.perf.worker_post_epoch_ms
@@ -232,7 +269,7 @@ function recreateWorker(reason: Error): void {
   clearBootTimer();
   worker = null;
   latestRuntimeInfo = null;
-  rejectAllPending(reason);
+  rejectAllPendingRequests(reason);
   if (previous) {
     previous.onmessage = null;
     previous.onerror = null;
@@ -258,38 +295,40 @@ export function restartRuntime(reason = "Python runtime restart requested"): num
   return runtimeEpoch;
 }
 
-function prog(frac, label) {
+function reportBootProgress(fraction, label) {
   try {
     if (typeof window !== "undefined" && window.__snufflerProgress) {
-      window.__snufflerProgress(frac, label);
+      window.__snufflerProgress(fraction, label);
     }
   } catch (_e) {
     // Ignore loading-overlay failures; they are cosmetic.
   }
 }
 
-function copyBytes(value) {
+function copyBytes(
+  value: Uint8Array | ArrayBufferLike | null | undefined
+): Uint8Array<ArrayBuffer> | null {
   if (value == null) return null;
-  const src = value instanceof Uint8Array ? value : new Uint8Array(value.buffer || value);
+  const src = value instanceof Uint8Array ? value : new Uint8Array(value);
   const out = new Uint8Array(src.byteLength);
   out.set(src);
   return out;
 }
 
-export function seisbenchDevice() {
+export function seisbenchDevice(): Uint8Array<ArrayBuffer> {
   ensureWorker();
-  return mlDevice === ProtoMlDevice.WEBGPU ? "WebGPU" : "CPU (wasm)";
+  return toBinary(MlDeviceStatusSchema, create(MlDeviceStatusSchema, { device: mlDevice }));
 }
 
 // The booted Python runtime, or null until the worker reports it.
-export function runtimeInfo() {
-  return latestRuntimeInfo;
+export function runtimeInfo(): Uint8Array<ArrayBuffer> | null {
+  return latestRuntimeInfo == null ? null : toBinary(RuntimeInfoSchema, latestRuntimeInfo);
 }
 
 // Post one request to the worker and resolve when its reply with the same id
 // arrives. `rpc(name)` (imported) names the method; this just pipes bytes.
 function send(
-  method: SeamMethod,
+  method: WorkerRequestMethod,
   {
     request = null,
     data = null,
@@ -305,7 +344,7 @@ function send(
   if (jobId <= 0n) {
     return Promise.reject(new Error("Python bridge calls require a ledger job id"));
   }
-  if (pending.size >= MAX_PENDING_REQUESTS) {
+  if (pendingRequests.size >= MAX_PENDING_REQUESTS) {
     return Promise.reject(
       new Error(`Python bridge pending limit reached (${MAX_PENDING_REQUESTS})`)
     );
@@ -313,14 +352,14 @@ function send(
   const target = ensureWorker();
   const epoch = runtimeEpoch;
   const id = nextRequestId++;
-  const key = pendingKey(epoch, id);
+  const key = pendingRequestKey(epoch, id);
   const control = createExecutionControl();
-  const payload: Record<string, any> = {
+  const payload: WorkerRequest = {
     epoch,
     id,
     method,
     jobId,
-    control: control.buffer,
+    control: control.buffer as SharedArrayBuffer,
     interrupt: interruptBuffer,
   };
   const transfer: Transferable[] = [];
@@ -339,8 +378,8 @@ function send(
 
   if (handle != null) payload.handle = handle;
 
-  const promise = new Promise<any>((resolve, reject) => {
-    pending.set(key, {
+  const promise = new Promise<WorkerSuccessMessage>((resolve, reject) => {
+    pendingRequests.set(key, {
       resolve,
       reject,
       method,
@@ -348,14 +387,25 @@ function send(
       sentMs: performance.now(),
       jobId: BigInt(jobId),
       control,
+      deadline: null,
     });
   });
+  if (method === GET_VIEW_METHOD || method === LIST_EXAMPLES_METHOD) {
+    const slot = pendingRequests.get(key);
+    if (slot) {
+      slot.deadline = window.setTimeout(() => {
+        if (worker === target && runtimeEpoch === epoch && pendingRequests.has(key)) {
+          recreateWorker(
+            new Error(`${String(method)} exceeded ${NON_CANCELLABLE_REQUEST_TIMEOUT_MS} ms`)
+          );
+        }
+      }, NON_CANCELLABLE_REQUEST_TIMEOUT_MS);
+    }
+  }
   try {
     target.postMessage(payload, transfer);
   } catch (error) {
-    const slot = pending.get(key);
-    pending.delete(key);
-    slot?.reject(error instanceof Error ? error : new Error(String(error)));
+    takePendingRequest(key)?.reject(error instanceof Error ? error : new Error(String(error)));
   }
   return promise;
 }
@@ -363,13 +413,11 @@ function send(
 /** Requests cancellation for a ledger job and returns a typed disposition. */
 export function cancelJob(requestBytes): Uint8Array {
   const request = fromBinary(CancelJobRequestSchema, copyBytes(requestBytes) || new Uint8Array());
-  const slot = [...pending.values()].find((candidate) => candidate.jobId === request.jobId);
+  const slot = [...pendingRequests.values()].find((candidate) => candidate.jobId === request.jobId);
   let disposition = CancelDisposition.NOT_FOUND;
   if (slot) {
     const previous = requestCancellation(slot.control, new Uint8Array(interruptBuffer));
-    if (previous === ExecutionState.Computing) {
-      disposition = CancelDisposition.CANCELLING;
-    } else if (previous === ExecutionState.Cancelling) {
+    if (previous === ExecutionState.Computing || previous === ExecutionState.Cancelling) {
       disposition = CancelDisposition.CANCELLING;
     } else {
       disposition = CancelDisposition.TOO_LATE;
@@ -380,13 +428,16 @@ export function cancelJob(requestBytes): Uint8Array {
 
 // Both data helpers now carry the BridgeResult envelope bytes in `result`
 // (success variant OR BridgeError); Rust decodes the oneof. rpcBytes returns the
-// envelope bytes; rpcBufferResult additionally carries the zero-copy ys buffer.
-async function rpcBytes(method: SeamMethod, args: Parameters<typeof send>[1]): Promise<Uint8Array> {
+// envelope bytes; rpcResultWithBuffer additionally carries the zero-copy ys buffer.
+async function rpcBytes(
+  method: WorkerRequestMethod,
+  args: Parameters<typeof send>[1]
+): Promise<Uint8Array> {
   const msg = await send(method, args);
   return new Uint8Array(msg.result || new ArrayBuffer(0));
 }
 
-async function rpcBufferResult(method: BridgeMethodId, args: Parameters<typeof send>[1]) {
+async function rpcResultWithBuffer(method: BridgeMethodId, args: Parameters<typeof send>[1]) {
   const msg = await send(method, args);
   return {
     result: new Uint8Array(msg.result || new ArrayBuffer(0)),
@@ -433,7 +484,7 @@ export async function call(
 ) {
   let out;
   try {
-    out = await rpcBufferResult(method, { request, data, jobId });
+    out = await rpcResultWithBuffer(method, { request, data, jobId });
   } finally {
     // Complete the loading overlay once the first post-boot work has settled; the
     // boot sequence itself stops at 0.97. Not just the synthetic example: an app
@@ -443,7 +494,7 @@ export async function call(
     // error it produced is in the status line behind the splash.
     if (!bootOverlayDone && BOOT_DONE_METHODS.includes(method)) {
       bootOverlayDone = true;
-      prog(1.0, "Ready");
+      reportBootProgress(1.0, "Ready");
     }
   }
   // After the FIRST view, not the first scene: the scene is only data, the view is
@@ -482,8 +533,8 @@ export async function addGfStore(jobId: bigint) {
     if (e instanceof DOMException && e.name === "AbortError") return "";
     throw e;
   }
-  const handleId = `directory:${++_nativeHandleCounter}`;
-  _nativeHandles.set(handleId, handle as FileSystemDirectoryHandle);
+  const handleId = `directory:${++_gfStoreDirectoryHandleCounter}`;
+  _gfStoreDirectoryHandles.set(handleId, handle as FileSystemDirectoryHandle);
   try {
     const request = toBinary(
       MountGfStoreRequestSchema,
@@ -492,12 +543,12 @@ export async function addGfStore(jobId: bigint) {
     return resultText(
       await rpcBytes(BridgeMethod.mountGfStore, {
         request,
-        handle: _nativeHandles.get(handleId),
+        handle: _gfStoreDirectoryHandles.get(handleId),
         jobId,
       })
     );
   } finally {
-    _nativeHandles.delete(handleId);
+    _gfStoreDirectoryHandles.delete(handleId);
   }
 }
 
@@ -544,91 +595,133 @@ function isZip(data: Uint8Array) {
   return data.length >= 4 && ZIP_MAGIC.every((byte, i) => data[i] === byte);
 }
 
+async function* fileSources(files: File[]): AsyncGenerator<BrowserFileSource> {
+  for (const file of files) yield { case: "snapshot", sourceId: "", file };
+}
+
+async function* handleSources(handles: FileSystemFileHandle[]): AsyncGenerator<BrowserFileSource> {
+  for (const handle of handles) {
+    yield { case: "handle", sourceId: `src${_sourceCounter++}`, handle };
+  }
+}
+
+async function readNextFileLoadPage(loadId: string): Promise<Uint8Array> {
+  const load = _fileLoads.get(loadId);
+  if (!load) throw new Error(`unknown browser file load ${loadId}`);
+  const files: BrowserFile[] = [];
+  const failures: BrowserReadFailure[] = [];
+  let pageBytes = 0;
+  while (files.length + failures.length < FILE_PAGE_COUNT) {
+    let source = load.pending;
+    load.pending = undefined;
+    if (!source) {
+      const next = await load.iterator.next();
+      if (next.done) {
+        load.done = true;
+        break;
+      }
+      source = next.value;
+    }
+    let file: File;
+    try {
+      file =
+        source.case === "snapshot" ? source.file : (source.file ?? (await source.handle.getFile()));
+      if (
+        source.case === "handle" &&
+        source.previousMtime != null &&
+        file.lastModified === source.previousMtime
+      ) {
+        continue;
+      }
+      if (file.size > FILE_PAGE_BYTES) {
+        failures.push(
+          create(BrowserReadFailureSchema, {
+            handleId: source.sourceId,
+            name: file.name,
+            detail: `file is ${file.size} bytes; the per-file limit is ${FILE_PAGE_BYTES}`,
+          })
+        );
+        continue;
+      }
+      if (pageBytes > 0 && pageBytes + file.size > FILE_PAGE_BYTES) {
+        load.pending = { ...source, file };
+        break;
+      }
+      const data = new Uint8Array(await file.arrayBuffer());
+      const bundle = (source.case === "handle" && source.kind === "bundle") || isZip(data);
+      if (source.case === "handle" && source.previousMtime == null) {
+        _openSources.set(source.sourceId, {
+          handle: source.handle,
+          mtime: 0,
+          kind: bundle ? "bundle" : "waveform",
+        });
+      }
+      pageBytes += data.byteLength;
+      files.push(
+        create(BrowserFileSchema, {
+          handleId: source.sourceId,
+          name: file.name,
+          content: data,
+          lastModified: BigInt(file.lastModified),
+          bundle,
+        })
+      );
+    } catch (error) {
+      if (source.case === "handle" && source.previousMtime == null) {
+        _openSources.delete(source.sourceId);
+      }
+      failures.push(
+        create(BrowserReadFailureSchema, {
+          handleId: source.sourceId,
+          name: source.case === "handle" ? source.handle.name : source.file.name,
+          detail: error instanceof Error ? error.message : String(error),
+        })
+      );
+    }
+  }
+  const hasMore = !load.done || load.pending != null;
+  if (!hasMore) _fileLoads.delete(loadId);
+  return toBinary(
+    BrowserFileLoadPageSchema,
+    create(BrowserFileLoadPageSchema, { files, failures, loadId, hasMore })
+  );
+}
+
+async function startFileLoad(iterator: AsyncIterator<BrowserFileSource>): Promise<Uint8Array> {
+  const loadId = `load${_fileLoadCounter++}`;
+  _fileLoads.set(loadId, { iterator, done: false });
+  return await readNextFileLoadPage(loadId);
+}
+
+export async function readFileLoadPage(requestBytes: Uint8Array): Promise<Uint8Array> {
+  const request = fromBinary(BrowserFileLoadPageRequestSchema, requestBytes);
+  return await readNextFileLoadPage(request.loadId);
+}
+
+export function cancelFileLoad(requestBytes: Uint8Array): void {
+  const request = fromBinary(BrowserFileLoadPageRequestSchema, requestBytes);
+  _fileLoads.delete(request.loadId);
+}
+
 export async function openFiles() {
   // Prefer showOpenFilePicker (Chromium): it yields re-readable handles so the
-  // files can later be reloaded from disk. Fall back to a hidden <input> (File
-  // snapshots, no reload) on browsers without the File System Access API.
+  // files can later be reloaded from disk.
+  // Fall back to a hidden <input> (File snapshots, no reload) on browsers
+  // without the File System Access API.
   if (typeof window.showOpenFilePicker === "function") {
     let handles: FileSystemFileHandle[];
     try {
       handles = await window.showOpenFilePicker({ multiple: true });
     } catch {
-      return toBinary(
-        BrowserFileManifestSchema,
-        create(BrowserFileManifestSchema, { cancelled: true })
-      );
+      return cancelledFileLoadPage();
     }
-    const files: BrowserFile[] = [];
-    const failures: BrowserReadFailure[] = [];
-    for (const handle of handles) {
-      const sourceId = `src${_sourceCounter++}`;
-      try {
-        const f = await handle.getFile();
-        const data = new Uint8Array(await f.arrayBuffer());
-        const bundle = isZip(data);
-        _openSources.set(sourceId, {
-          handle,
-          mtime: 0,
-          kind: bundle ? "bundle" : "waveform",
-        });
-        files.push(
-          create(BrowserFileSchema, {
-            handleId: sourceId,
-            name: f.name,
-            content: data,
-            lastModified: BigInt(f.lastModified),
-            bundle,
-          })
-        );
-      } catch (e) {
-        _openSources.delete(sourceId);
-        failures.push(
-          create(BrowserReadFailureSchema, {
-            handleId: sourceId,
-            name: handle.name || "?",
-            detail: e instanceof Error ? e.message : String(e),
-          })
-        );
-      }
-    }
-    return toBinary(
-      BrowserFileManifestSchema,
-      create(BrowserFileManifestSchema, { files, failures })
-    );
+    return await startFileLoad(handleSources(handles));
   }
   const files = await pickFiles(true);
   if (files.length === 0) {
-    return toBinary(
-      BrowserFileManifestSchema,
-      create(BrowserFileManifestSchema, { cancelled: true })
-    );
+    return cancelledFileLoadPage();
   }
-  const manifestFiles: BrowserFile[] = [];
-  const failures: BrowserReadFailure[] = [];
-  for (const f of files) {
-    try {
-      const data = new Uint8Array(await f.arrayBuffer());
-      manifestFiles.push(
-        create(BrowserFileSchema, {
-          name: f.name,
-          content: data,
-          lastModified: BigInt(f.lastModified),
-          bundle: isZip(data),
-        })
-      );
-    } catch (e) {
-      failures.push(
-        create(BrowserReadFailureSchema, {
-          name: f.name || "?",
-          detail: e instanceof Error ? e.message : String(e),
-        })
-      );
-    }
-  }
-  return toBinary(
-    BrowserFileManifestSchema,
-    create(BrowserFileManifestSchema, { files: manifestFiles, failures })
-  );
+  return await startFileLoad(fileSources(files));
 }
 
 // Recursively load every file under a picked directory (snuffler's "Open
@@ -650,10 +743,7 @@ export async function openDirectory() {
   try {
     dir = await pick({ mode: "read" });
   } catch {
-    return toBinary(
-      BrowserFileManifestSchema,
-      create(BrowserFileManifestSchema, { cancelled: true })
-    );
+    return cancelledFileLoadPage();
   }
   async function* walk(d: any): AsyncGenerator<any> {
     for await (const [, h] of d.entries()) {
@@ -661,43 +751,12 @@ export async function openDirectory() {
       else if (h.kind === "directory") yield* walk(h);
     }
   }
-  const files: BrowserFile[] = [];
-  const failures: BrowserReadFailure[] = [];
-  for await (const handle of walk(dir)) {
-    const sourceId = `src${_sourceCounter++}`;
-    try {
-      const f = await handle.getFile();
-      const data = new Uint8Array(await f.arrayBuffer());
-      const bundle = isZip(data);
-      _openSources.set(sourceId, {
-        handle,
-        mtime: 0,
-        kind: bundle ? "bundle" : "waveform",
-      });
-      files.push(
-        create(BrowserFileSchema, {
-          handleId: sourceId,
-          name: f.name,
-          content: data,
-          lastModified: BigInt(f.lastModified),
-          bundle,
-        })
-      );
-    } catch (e) {
-      _openSources.delete(sourceId);
-      failures.push(
-        create(BrowserReadFailureSchema, {
-          handleId: sourceId,
-          name: handle.name || "?",
-          detail: e instanceof Error ? e.message : String(e),
-        })
-      );
+  async function* directorySources(): AsyncGenerator<BrowserFileSource> {
+    for await (const handle of walk(dir)) {
+      yield { case: "handle", sourceId: `src${_sourceCounter++}`, handle };
     }
   }
-  return toBinary(
-    BrowserFileManifestSchema,
-    create(BrowserFileManifestSchema, { files, failures })
-  );
+  return await startFileLoad(directorySources());
 }
 
 // Re-read any opened files whose on-disk mtime changed and replace their traces
@@ -711,41 +770,18 @@ export async function reloadFiles() {
         "reloading files from disk needs a Chromium-based browser."
     );
   }
-  const files: BrowserFile[] = [];
-  const failures: BrowserReadFailure[] = [];
-  for (const [sourceId, src] of Array.from(_openSources)) {
-    let name = src.handle.name || sourceId;
-    let file: File;
-    let data: Uint8Array;
-    try {
-      file = await src.handle.getFile();
-      name = file.name;
-      if (file.lastModified === src.mtime) continue;
-      data = new Uint8Array(await file.arrayBuffer());
-    } catch (error) {
-      failures.push(
-        create(BrowserReadFailureSchema, {
-          handleId: sourceId,
-          name,
-          detail: error instanceof Error ? error.message : String(error),
-        })
-      );
-      continue;
+  async function* reloadSources(): AsyncGenerator<BrowserFileSource> {
+    for (const [sourceId, source] of Array.from(_openSources)) {
+      yield {
+        case: "handle",
+        sourceId,
+        handle: source.handle,
+        kind: source.kind,
+        previousMtime: source.mtime,
+      };
     }
-    files.push(
-      create(BrowserFileSchema, {
-        handleId: sourceId,
-        name: file.name,
-        content: data,
-        lastModified: BigInt(file.lastModified),
-        bundle: src.kind === "bundle" || isZip(data),
-      })
-    );
   }
-  return toBinary(
-    BrowserFileManifestSchema,
-    create(BrowserFileManifestSchema, { files, failures })
-  );
+  return await startFileLoad(reloadSources());
 }
 
 export function acknowledgeSources(bytes: Uint8Array) {
@@ -819,36 +855,33 @@ export async function saveSvg(svg, filename) {
 
 export async function loadMarkers() {
   const files = await pickFiles(false);
-  return pickedFileManifest(files);
+  return pickedFilePage(files);
 }
 
 export async function loadStationXml() {
   const files = await pickFiles(true);
-  return pickedFileManifest(files);
+  return pickedFilePage(files);
 }
 
 export async function loadStations() {
   // Any number of station files in one gesture, as Qt's picker takes them; the
   // format is line-based, so the documents concatenate into one table.
   const files = await pickFiles(true);
-  return pickedFileManifest(files);
+  return pickedFilePage(files);
 }
 
 export async function loadEvents() {
   const files = await pickFiles(false);
-  return pickedFileManifest(files);
+  return pickedFilePage(files);
 }
 
-async function pickedFileManifest(files: File[]) {
+async function pickedFilePage(files: File[]) {
   if (files.length === 0) {
-    return toBinary(
-      BrowserFileManifestSchema,
-      create(BrowserFileManifestSchema, { cancelled: true })
-    );
+    return cancelledFileLoadPage();
   }
   return toBinary(
-    BrowserFileManifestSchema,
-    create(BrowserFileManifestSchema, {
+    BrowserFileLoadPageSchema,
+    create(BrowserFileLoadPageSchema, {
       files: await Promise.all(
         files.map(async (file) =>
           create(BrowserFileSchema, {
