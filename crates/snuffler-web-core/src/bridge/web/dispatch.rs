@@ -125,6 +125,32 @@ where
     })
 }
 
+/// [`submit_job`] for work that must know its own ledger identity: a flow that
+/// suspends on browser-local awaits (pickers, directory walks, downloads) can
+/// outlive a runtime loss, and only its own [`JobHandle`] lets it detect that
+/// the job lane has since been freed or handed to a replacement job.
+pub(super) fn submit_flow<W, F>(
+    inner: Rc<RefCell<Inner>>,
+    repaint: Repaint,
+    operation: Operation,
+    detail: Option<String>,
+    dedup_key: Vec<u8>,
+    work: W,
+) -> Submission
+where
+    W: FnOnce(JobHandle) -> F + 'static,
+    F: Future<Output = Result<(), BridgeError>> + 'static,
+{
+    submit_flow_with_outcome(
+        inner,
+        repaint,
+        operation,
+        detail,
+        dedup_key,
+        move |flow| async move { work(flow).await.map(|()| Outcome::Succeeded) },
+    )
+}
+
 pub(super) fn submit_local_future<F>(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,
@@ -166,13 +192,14 @@ where
     submission
 }
 
-async fn run_admitted_job<F>(
+async fn run_admitted_job<W, F>(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,
     operation: Operation,
     handle: JobHandle,
-    work: F,
+    work: W,
 ) where
+    W: FnOnce(JobHandle) -> F,
     F: Future<Output = Result<Outcome, BridgeError>>,
 {
     let epoch = RuntimeEpoch::new(js_current_runtime_epoch());
@@ -189,7 +216,7 @@ async fn run_admitted_job<F>(
     let lane = operation.activity().lane;
     let registered = REGISTERED_LANE_JOBS.with(|active| active.borrow_mut().register(handle, lane));
     let result = if registered {
-        work.await
+        work(handle).await
     } else {
         Err(BridgeError::browser(
             "dispatching Python work",
@@ -235,6 +262,25 @@ pub(super) fn submit_job_with_outcome<F>(
     work: F,
 ) -> Submission
 where
+    F: Future<Output = Result<Outcome, BridgeError>> + 'static,
+{
+    submit_flow_with_outcome(inner, repaint, operation, detail, dedup_key, move |_flow| {
+        work
+    })
+}
+
+/// [`submit_job_with_outcome`] for work that must know its own ledger identity
+/// (see [`submit_flow`]).
+pub(super) fn submit_flow_with_outcome<W, F>(
+    inner: Rc<RefCell<Inner>>,
+    repaint: Repaint,
+    operation: Operation,
+    detail: Option<String>,
+    dedup_key: Vec<u8>,
+    work: W,
+) -> Submission
+where
+    W: FnOnce(JobHandle) -> F + 'static,
     F: Future<Output = Result<Outcome, BridgeError>> + 'static,
 {
     sync_runtime(&inner);
@@ -394,40 +440,54 @@ pub(super) fn client() -> pb::BridgeServiceClient<WorkerTransport> {
     pb::BridgeServiceClient::new(WorkerTransport)
 }
 
-pub(super) fn update_current_job_progress(
+/// Records progress against the flow's own ledger identity. By-handle rather
+/// than by-lane-slot: a retired flow's handle is terminal, where
+/// `update_progress` is a no-op, so a ghost can never overwrite a replacement
+/// job's progress bar.
+pub(super) fn update_flow_progress(
     inner: &Rc<RefCell<Inner>>,
+    flow: JobHandle,
     done: u64,
     total: u64,
     phase: String,
 ) {
+    inner.borrow_mut().activity.update_progress(
+        flow,
+        Progress::Count {
+            done,
+            total: Some(total),
+            phase: phase.into(),
+        },
+    );
+}
+
+/// Retires every lane registration. Runtime loss must call this: the ledger
+/// terminates the owning jobs, but their executor futures may still be alive,
+/// and a stale registration would let a retired flow keep issuing children
+/// against the replacement interpreter while blocking every new job-lane
+/// submission with an occupied lane.
+pub(super) fn clear_lane_registrations() {
     REGISTERED_LANE_JOBS.with(|active| {
-        let job = active.borrow().get(crate::activity::Lane::Job);
-        if let Some(job) = job {
-            inner.borrow_mut().activity.update_progress(
-                job,
-                Progress::Count {
-                    done,
-                    total: Some(total),
-                    phase: phase.into(),
-                },
-            );
-        }
+        let mut active = active.borrow_mut();
+        active.job = None;
+        active.view = None;
     });
 }
 
-/// Whether the ledger has a cancellation pending against the job-lane flow
-/// currently executing. A multi-child flow has windows with no transport
-/// call in flight, so a cancel there finds nothing to interrupt; the
-/// Cancelling state is the request, honored at the next child boundary.
-pub(super) fn current_job_cancellation_requested(inner: &Rc<RefCell<Inner>>) -> bool {
-    REGISTERED_LANE_JOBS.with(|active| {
-        let job = active.borrow().get(crate::activity::Lane::Job);
-        job.is_some_and(|job| {
-            inner
-                .borrow()
-                .activity
-                .get(job)
-                .is_some_and(|record| matches!(record.state(), JobState::Cancelling { .. }))
-        })
+/// Whether the flow owning `flow` must stop at its next child boundary. A
+/// multi-child flow has windows with no transport call in flight, so a cancel
+/// there finds nothing to interrupt; the Cancelling state is the request,
+/// honored here. The identity comparison is exact: after a runtime loss frees
+/// the lane, the slot may already hold a replacement job, and a ghost flow
+/// that consulted the slot alone would adopt that live job's identity — its
+/// children would commit into the replacement interpreter's session under the
+/// wrong job id.
+pub(super) fn job_flow_interrupted(inner: &Rc<RefCell<Inner>>, flow: JobHandle) -> bool {
+    let owner = REGISTERED_LANE_JOBS.with(|active| active.borrow().get(crate::activity::Lane::Job));
+    if owner != Some(flow) {
+        return true;
+    }
+    inner.borrow().activity.get(flow).is_none_or(|record| {
+        matches!(record.state(), JobState::Cancelling { .. }) || record.state().is_terminal()
     })
 }

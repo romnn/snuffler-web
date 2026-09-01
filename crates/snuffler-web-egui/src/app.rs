@@ -471,6 +471,18 @@ impl App {
                 crate::pool::record_worker_png_export();
                 let _ = tx.send(png);
             });
+            if let Some(displaced) = self.export_rx.take() {
+                // Unreachable behind the one-export-at-a-time request guard,
+                // but a displaced receiver must not leak its ledger job as
+                // permanently running.
+                self.session.bridge.finish_local(
+                    displaced.job,
+                    Err(BridgeError::browser(
+                        "exporting PNG",
+                        "superseded by a newer export",
+                    )),
+                );
+            }
             self.export_rx = Some(PngExport {
                 receiver: rx,
                 filename: export_filename("png"),
@@ -1222,6 +1234,53 @@ impl App {
         });
     }
 
+    /// The Cancel and Restart Python buttons beside the status line, when the
+    /// active job or the runtime is in a state the user can act on.
+    fn show_recovery_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        runtime: &RuntimeState,
+        active: Option<(JobHandle, &JobRecord)>,
+    ) {
+        // A failed runtime no longer recreates workers on its own (a persistent
+        // boot failure would loop forever), so recovery needs a button here.
+        if matches!(runtime, RuntimeState::Failed(_)) && ui.small_button("Restart Python").clicked()
+        {
+            self.session.bridge.restart_runtime();
+        }
+        if matches!(runtime, RuntimeState::Ready)
+            && let Some((handle, record)) = active
+        {
+            let queued = matches!(record.state(), JobState::Queued);
+            let cancellable = queued
+                || (record.operation().activity().cancellation
+                    != CancellationCapability::NotSupported
+                    && !matches!(record.state(), JobState::Cancelling { .. }));
+            if cancellable && ui.small_button("Cancel").clicked() {
+                let _disposition = self.session.bridge.cancel(handle);
+            }
+            // Restarting is the recovery of last resort, so it appears only for
+            // a cancellation the worker stopped honoring, or a non-cancellable
+            // rpc running long enough to look wedged — that one has no Cancel
+            // button and would otherwise hold the job lane with no way out
+            // short of a page reload.
+            let stuck = match record.state() {
+                JobState::Cancelling { since_s, .. } => {
+                    js_sys::Date::now() / 1000.0 - since_s > 5.0
+                }
+                JobState::Running { since_s, .. } => {
+                    record.operation().activity().cancellation
+                        == CancellationCapability::NotSupported
+                        && js_sys::Date::now() / 1000.0 - since_s > 30.0
+                }
+                _ => false,
+            };
+            if stuck && ui.small_button("Restart Python").clicked() {
+                self.session.bridge.restart_runtime();
+            }
+        }
+    }
+
     /// What the app is doing right now: the status line, the picking badge, and
     /// the time under the pointer.
     fn show_activity(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, total_tracks: usize) {
@@ -1236,24 +1295,7 @@ impl App {
         }
         let active = active_job(jobs, now_s);
         let (status, urgency) = show_primary_activity(ui, &runtime, jobs, active, total_tracks);
-        if matches!(runtime, RuntimeState::Ready)
-            && let Some((handle, record)) = active
-        {
-            let queued = matches!(record.state(), JobState::Queued);
-            let cancellable = queued
-                || (record.operation().activity().cancellation
-                    != CancellationCapability::NotSupported
-                    && !matches!(record.state(), JobState::Cancelling { .. }));
-            if cancellable && ui.small_button("Cancel").clicked() {
-                let _disposition = self.session.bridge.cancel(handle);
-            }
-            if let JobState::Cancelling { since_s, .. } = record.state()
-                && js_sys::Date::now() / 1000.0 - since_s > 5.0
-                && ui.small_button("Restart Python").clicked()
-            {
-                self.session.bridge.restart_runtime();
-            }
-        }
+        self.show_recovery_actions(ui, &runtime, active);
         crate::a11y::announce_changes(ctx, &status, urgency);
         if let Some(error) = self.session.bridge.diagnostic() {
             ui.separator();
@@ -1530,6 +1572,11 @@ impl App {
             }
         }
 
+        // Poll BEFORE consuming a new request: a rasterization that already
+        // finished must free its slot first, or a click landing in that gap
+        // would be rejected by the one-export-at-a-time guard for no reason.
+        #[cfg(all(feature = "svg-raster", feature = "threads"))]
+        self.poll_png_export(ctx);
         #[cfg(feature = "svg-raster")]
         if let Some(job) = self.png_prepare_job.take() {
             self.start_png_export(ctx, job);
@@ -1537,13 +1584,22 @@ impl App {
         if std::mem::take(&mut self.screenshot_request) {
             #[cfg(feature = "svg-raster")]
             {
-                let submission = self
-                    .session
-                    .bridge
-                    .begin_local(Operation::ExportPng, Some("waveform view".to_owned()));
-                if let Submission::Accepted(job) = submission {
-                    self.png_prepare_job = Some(job);
-                    ctx.request_repaint();
+                #[cfg(feature = "threads")]
+                let rasterizing = self.export_rx.is_some();
+                #[cfg(not(feature = "threads"))]
+                let rasterizing = false;
+                // One PNG export at a time: a second start while the first is
+                // preparing or rasterizing would overwrite `export_rx` and leak
+                // the displaced ledger job as permanently running.
+                if self.png_prepare_job.is_none() && !rasterizing {
+                    let submission = self
+                        .session
+                        .bridge
+                        .begin_local(Operation::ExportPng, Some("waveform view".to_owned()));
+                    if let Submission::Accepted(job) = submission {
+                        self.png_prepare_job = Some(job);
+                        ctx.request_repaint();
+                    }
                 }
             }
             #[cfg(not(feature = "svg-raster"))]
@@ -1553,8 +1609,6 @@ impl App {
                 self.screenshot_awaiting = true;
             }
         }
-        #[cfg(all(feature = "svg-raster", feature = "threads"))]
-        self.poll_png_export(ctx);
         self.deliver_screenshot(ctx);
     }
 
@@ -1824,29 +1878,56 @@ fn next_activity_reveal_delay(
         .min()
 }
 
-fn unresolved_failure(jobs: &[(JobHandle, JobRecord)]) -> Option<&JobError> {
-    // One pass: a failure is resolved by any later submission of the same
-    // operation, so the newest record per operation decides, and the newest
-    // unresolved failure wins.
-    let mut newest_per_operation: std::collections::HashMap<Operation, (u64, &JobRecord)> =
+// One pass: an outcome is resolved by any later submission of the same
+// operation, so the newest record per operation decides.
+fn newest_per_operation(jobs: &[(JobHandle, JobRecord)]) -> Vec<(u64, &JobRecord)> {
+    let mut newest: std::collections::HashMap<Operation, (u64, &JobRecord)> =
         std::collections::HashMap::new();
     for (handle, record) in jobs {
         let id = handle.id().get();
-        let entry = newest_per_operation
-            .entry(record.operation())
-            .or_insert((id, record));
+        let entry = newest.entry(record.operation()).or_insert((id, record));
         if id > entry.0 {
             *entry = (id, record);
         }
     }
-    newest_per_operation
-        .into_values()
+    newest.into_values().collect()
+}
+
+fn unresolved_failure(jobs: &[(JobHandle, JobRecord)]) -> Option<&JobError> {
+    newest_per_operation(jobs)
+        .into_iter()
         .filter_map(|(id, record)| match record.state() {
             JobState::Done(Outcome::Failed(error)) => Some((id, error)),
             _ => None,
         })
         .max_by_key(|(id, _)| *id)
         .map(|(_, error)| error)
+}
+
+/// A partial or lost terminal outcome no later submission superseded. These are
+/// not failures — committed work remains installed — but staying silent about
+/// them would leave the user with 3 of 400 files and a status line that says
+/// only "Ready".
+fn unresolved_stop_notice(jobs: &[(JobHandle, JobRecord)]) -> Option<String> {
+    newest_per_operation(jobs)
+        .into_iter()
+        .filter_map(|(id, record)| {
+            let label = record.operation().activity().label;
+            match record.state() {
+                // `skipped` is a lower bound: a lazy directory iteration only
+                // knows one more page existed, not how many entries it held.
+                JobState::Done(Outcome::Stopped { committed, skipped }) => Some((
+                    id,
+                    format!("{label} stopped: {committed} committed, ≥{skipped} skipped"),
+                )),
+                JobState::Done(Outcome::Lost(_)) => {
+                    Some((id, format!("{label} was interrupted by a Python restart")))
+                }
+                _ => None,
+            }
+        })
+        .max_by_key(|(id, _)| *id)
+        .map(|(_, text)| text)
 }
 
 fn active_job_text(record: &JobRecord, queued: usize) -> String {
@@ -1947,6 +2028,12 @@ fn show_primary_activity(
                     JobError::Rejected(_) | JobError::RuntimeLost => label,
                 };
                 return (label, crate::a11y::Urgency::Urgent);
+            }
+            if let Some(notice) = unresolved_stop_notice(jobs) {
+                return (
+                    ui.colored_label(egui::Color32::from_rgb(0xC0, 0x60, 0x20), notice),
+                    crate::a11y::Urgency::Urgent,
+                );
             }
             (
                 ui.label(format!("Ready · {total_tracks} traces")),

@@ -137,6 +137,10 @@ fn note_runtime_lost(state: &mut Inner, epoch: RuntimeEpoch) {
     state.station_dists_job = None;
     state.map_job = None;
     state.figures.clear();
+    // The owning executor futures may still be alive; without this, a retired
+    // composite flow would keep resolving child owners against the replacement
+    // interpreter while blocking every new job-lane submission.
+    clear_lane_registrations();
     state.activity.runtime_lost(epoch);
     state.python_session_generation = 0;
     state.scientific_tools_requested = false;
@@ -331,7 +335,10 @@ fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError
     if page.cancelled {
         return Ok(Vec::new());
     }
-    if page.files.is_empty() && !page.failures.is_empty() {
+    // These aggregate imports are all-or-error: silently loading four of five
+    // station files would leave the user with an incomplete table and no signal,
+    // so any per-file failure (oversized, unreadable) rejects the operation.
+    if !page.failures.is_empty() {
         return Err(BridgeError::browser(
             "reading selected files",
             page.failures
@@ -559,26 +566,40 @@ enum BrowserFileOutcome {
 enum FilePageOutcome {
     More,
     Complete,
-    Cancelled { remaining: u32 },
+    Cancelled {
+        remaining: u32,
+    },
+    /// A child failed below the rpc layer (transport, protocol drift, stale
+    /// generation), so the flow itself is broken and must not issue further
+    /// children — after a runtime loss they would commit into the replacement
+    /// interpreter's fresh session under an already-retired job.
+    Aborted(CallError),
 }
 
 #[derive(Default)]
 struct FileLoadProgress {
     committed: u32,
     processed: u32,
-    failures: Vec<String>,
+    failures: Vec<ReloadSourceError>,
 }
 
 async fn load_file_page(
     inner: &Rc<RefCell<Inner>>,
-    page: BrowserFileLoadPage,
+    flow: JobHandle,
+    mut page: BrowserFileLoadPage,
     mode: SourceLoadMode,
     progress: &mut FileLoadProgress,
 ) -> FilePageOutcome {
     progress.failures.extend(
-        page.failures
-            .iter()
-            .map(|failure| format!("{}: {}", failure.name, failure.detail)),
+        std::mem::take(&mut page.failures)
+            .into_iter()
+            .map(|failure| ReloadSourceError {
+                source_id: failure.handle_id,
+                name: failure.name,
+                reason: ReloadFailureReason::BrowserRead {
+                    detail: failure.detail,
+                },
+            }),
     );
     let page_count = u32::try_from(page.files.len()).unwrap_or(u32::MAX);
     let known_total = progress
@@ -589,11 +610,12 @@ async fn load_file_page(
         let remaining = page_count
             .saturating_sub(u32::try_from(index).unwrap_or(u32::MAX))
             .saturating_add(u32::from(page.has_more));
-        if current_job_cancellation_requested(inner) {
+        if job_flow_interrupted(inner, flow) {
             return FilePageOutcome::Cancelled { remaining };
         }
-        update_current_job_progress(
+        update_flow_progress(
             inner,
+            flow,
             u64::from(progress.processed),
             u64::from(known_total),
             format!("Loading {}", file.name),
@@ -607,7 +629,30 @@ async fn load_file_page(
             Err(CallError::Cancelled { .. }) => {
                 return FilePageOutcome::Cancelled { remaining };
             }
-            Err(error) => progress.failures.push(format!("{}: {error}", file.name)),
+            // Only a pyrocko rejection is a per-file verdict worth continuing
+            // past; anything below the rpc layer is a broken flow. The abort
+            // still joins the failure list, so the diagnostic keeps the
+            // per-file failures that accumulated before the flow broke.
+            Err(CallError::Remote(remote)) => progress.failures.push(ReloadSourceError {
+                source_id: file.handle_id.clone(),
+                name: file.name.clone(),
+                reason: ReloadFailureReason::Remote(remote),
+            }),
+            Err(error) => {
+                progress.failures.push(ReloadSourceError {
+                    source_id: file.handle_id.clone(),
+                    name: file.name.clone(),
+                    reason: match &error {
+                        CallError::Transport(transport) => ReloadFailureReason::Transport {
+                            detail: transport.to_string(),
+                        },
+                        other => ReloadFailureReason::Protocol {
+                            detail: other.to_string(),
+                        },
+                    },
+                });
+                return FilePageOutcome::Aborted(error);
+            }
         }
         progress.processed = progress.processed.saturating_add(1);
     }
@@ -618,53 +663,83 @@ async fn load_file_page(
     }
 }
 
+fn cancel_browser_file_load(load_id: &str) {
+    if !load_id.is_empty() {
+        js_cancel_file_load(
+            pb::BrowserFileLoadPageRequest {
+                load_id: load_id.to_owned(),
+            }
+            .encode_to_vec(),
+        );
+    }
+}
+
+/// Failures that survive to a terminal outcome surface as one typed per-source
+/// diagnostic, so a pyrocko rejection keeps its traceback.
+fn set_reload_diagnostic(inner: &Rc<RefCell<Inner>>, failures: &mut Vec<ReloadSourceError>) {
+    if !failures.is_empty() {
+        let error = BridgeError::from(ReloadError {
+            failures: std::mem::take(failures),
+        });
+        inner.borrow_mut().diagnostic = Some(error);
+    }
+}
+
+fn stop_file_load(
+    inner: &Rc<RefCell<Inner>>,
+    progress: &mut FileLoadProgress,
+    skipped: u32,
+    load_id: &str,
+) -> Result<Outcome, BridgeError> {
+    cancel_browser_file_load(load_id);
+    set_reload_diagnostic(inner, &mut progress.failures);
+    if progress.committed == 0 {
+        Err(BridgeError::Call(CallError::Cancelled {
+            method: "browser file load",
+        }))
+    } else {
+        Ok(Outcome::Stopped {
+            committed: progress.committed,
+            skipped,
+        })
+    }
+}
+
 async fn run_file_load(
     inner: Rc<RefCell<Inner>>,
+    flow: JobHandle,
     mut page: BrowserFileLoadPage,
     mode: SourceLoadMode,
 ) -> Result<Outcome, BridgeError> {
     let load_id = page.load_id.clone();
-    let cancel_load = || {
-        if !load_id.is_empty() {
-            js_cancel_file_load(
-                pb::BrowserFileLoadPageRequest {
-                    load_id: load_id.clone(),
-                }
-                .encode_to_vec(),
-            );
-        }
-    };
-    let stopped = |committed: u32, skipped: u32| {
-        cancel_load();
-        if committed == 0 {
-            Err(BridgeError::Call(CallError::Cancelled {
-                method: "browser file load",
-            }))
-        } else {
-            Ok(Outcome::Stopped { committed, skipped })
-        }
-    };
-    if current_job_cancellation_requested(&inner) {
-        return stopped(
-            0,
-            u32::from(page.has_more)
-                .saturating_add(u32::try_from(page.files.len()).unwrap_or(u32::MAX)),
-        );
+    if job_flow_interrupted(&inner, flow) {
+        cancel_browser_file_load(&load_id);
+        return Err(BridgeError::Call(CallError::Cancelled {
+            method: "browser file load",
+        }));
     }
     if page.cancelled {
         return Ok(Outcome::Succeeded);
     }
     let mut progress = FileLoadProgress::default();
     loop {
-        match load_file_page(&inner, page, mode, &mut progress).await {
+        match load_file_page(&inner, flow, page, mode, &mut progress).await {
             FilePageOutcome::More => {}
             FilePageOutcome::Complete => break,
             FilePageOutcome::Cancelled { remaining } => {
-                return stopped(progress.committed, remaining);
+                return stop_file_load(&inner, &mut progress, remaining, &load_id);
+            }
+            FilePageOutcome::Aborted(error) => {
+                cancel_browser_file_load(&load_id);
+                // The failure list already carries the abort plus everything
+                // accumulated before it; the flow's terminal outcome carries
+                // the systemic error itself.
+                set_reload_diagnostic(&inner, &mut progress.failures);
+                return Err(BridgeError::Call(error));
             }
         }
-        if current_job_cancellation_requested(&inner) {
-            return stopped(progress.committed, 1);
+        if job_flow_interrupted(&inner, flow) {
+            return stop_file_load(&inner, &mut progress, 1, &load_id);
         }
         let page_request = pb::BrowserFileLoadPageRequest {
             load_id: load_id.clone(),
@@ -677,27 +752,34 @@ async fn run_file_load(
         ) {
             Ok(next) => next,
             Err(error) => {
-                cancel_load();
+                cancel_browser_file_load(&load_id);
                 return Err(error);
             }
         };
     }
-    update_current_job_progress(
+    update_flow_progress(
         &inner,
+        flow,
         u64::from(progress.processed),
         u64::from(progress.processed),
         "Finishing file load".to_owned(),
     );
-    if current_job_cancellation_requested(&inner) {
+    if job_flow_interrupted(&inner, flow) {
+        // Cancellation arrived after the final commit; nothing was skipped,
+        // but per-file failures accumulated on the way must still surface.
+        set_reload_diagnostic(&inner, &mut progress.failures);
         return Ok(Outcome::TooLate);
     }
     if progress.failures.is_empty() {
         inner.borrow_mut().diagnostic = None;
         return Ok(Outcome::Succeeded);
     }
-    let error = BridgeError::browser("loading selected files", progress.failures.join("; "));
+    let committed = progress.committed;
+    let error = BridgeError::from(ReloadError {
+        failures: progress.failures,
+    });
     inner.borrow_mut().diagnostic = Some(error.clone());
-    if progress.committed == 0 {
+    if committed == 0 {
         Err(error)
     } else {
         Ok(Outcome::Succeeded)
@@ -1482,16 +1564,16 @@ impl Bridge {
     pub fn open_files(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job_with_outcome(
+        submit_flow_with_outcome(
             inner,
             self.repaint.clone(),
             Operation::OpenSelectedFiles,
             Some("selected files".to_owned()),
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let page =
                     decode_browser_file_page(js_open_files().await, "open_files", "opening files")?;
-                run_file_load(work_inner, page, SourceLoadMode::Append).await
+                run_file_load(work_inner, flow, page, SourceLoadMode::Append).await
             },
         )
     }
@@ -1501,19 +1583,19 @@ impl Bridge {
     pub fn open_directory(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job_with_outcome(
+        submit_flow_with_outcome(
             inner,
             self.repaint.clone(),
             Operation::OpenDirectory,
             Some("selected directory".to_owned()),
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let page = decode_browser_file_page(
                     js_open_directory().await,
                     "open_directory",
                     "opening a directory",
                 )?;
-                run_file_load(work_inner, page, SourceLoadMode::Append).await
+                run_file_load(work_inner, flow, page, SourceLoadMode::Append).await
             },
         )
     }
@@ -1554,19 +1636,19 @@ impl Bridge {
         let inner = self.inner.clone();
         inner.borrow_mut().diagnostic = None;
         let work_inner = inner.clone();
-        submit_job_with_outcome(
+        submit_flow_with_outcome(
             inner,
             self.repaint.clone(),
             Operation::ReloadOpenFiles,
             Some("modified files".to_owned()),
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let page = decode_browser_file_page(
                     js_reload_files().await,
                     "reload_files",
                     "reloading files",
                 )?;
-                run_file_load(work_inner, page, SourceLoadMode::Replace).await
+                run_file_load(work_inner, flow, page, SourceLoadMode::Replace).await
             },
         )
     }
@@ -1578,19 +1660,19 @@ impl Bridge {
     pub fn save_waveforms_and_stations(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job(
+        submit_flow(
             inner,
             self.repaint.clone(),
             Operation::ExportWaveforms,
             Some("waveforms and stations".to_owned()),
             Vec::new(),
-            async move {
+            move |flow| async move {
                 // Both halves run even when the first fails: one refused file
                 // must not cost the user the other download.
                 // The first failure takes the diagnostic slot.
                 let waveforms =
                     download_blob(client().export_waveforms().await, "downloading waveforms").await;
-                if current_job_cancellation_requested(&work_inner) {
+                if job_flow_interrupted(&work_inner, flow) {
                     return Err(BridgeError::Call(CallError::Cancelled {
                         method: "waveform and station export",
                     }));
@@ -1717,15 +1799,22 @@ impl Bridge {
     pub fn load_markers(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job(
+        submit_flow(
             inner,
             self.repaint.clone(),
             Operation::LoadMarkers,
             None,
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let texts =
                     picked_file_texts(js_load_markers().await, "markers", "loading markers")?;
+                // The picker is an unbounded browser-local wait; the flow may
+                // have been retired (runtime loss) while it was open.
+                if job_flow_interrupted(&work_inner, flow) {
+                    return Err(BridgeError::Call(CallError::Cancelled {
+                        method: "loading markers",
+                    }));
+                }
                 let Some(text) = texts.into_iter().next() else {
                     return Ok(());
                 };
@@ -1764,18 +1853,23 @@ impl Bridge {
     pub fn load_station_xml(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job(
+        submit_flow(
             inner,
             self.repaint.clone(),
             Operation::LoadStationXml,
             None,
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let texts = picked_file_texts(
                     js_load_station_xml().await,
                     "stationxml",
                     "loading StationXML",
                 )?;
+                if job_flow_interrupted(&work_inner, flow) {
+                    return Err(BridgeError::Call(CallError::Cancelled {
+                        method: "loading StationXML",
+                    }));
+                }
                 if texts.is_empty() {
                     return Ok(());
                 }
@@ -1796,15 +1890,20 @@ impl Bridge {
     pub fn load_stations(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job(
+        submit_flow(
             inner,
             self.repaint.clone(),
             Operation::LoadStations,
             None,
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let texts =
                     picked_file_texts(js_load_stations().await, "stations", "loading stations")?;
+                if job_flow_interrupted(&work_inner, flow) {
+                    return Err(BridgeError::Call(CallError::Cancelled {
+                        method: "loading stations",
+                    }));
+                }
                 if texts.is_empty() {
                     return Ok(());
                 }
@@ -1828,14 +1927,19 @@ impl Bridge {
     pub fn load_events(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job(
+        submit_flow(
             inner,
             self.repaint.clone(),
             Operation::LoadEvents,
             None,
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let texts = picked_file_texts(js_load_events().await, "events", "loading events")?;
+                if job_flow_interrupted(&work_inner, flow) {
+                    return Err(BridgeError::Call(CallError::Cancelled {
+                        method: "loading events",
+                    }));
+                }
                 let Some(text) = texts.into_iter().next() else {
                     return Ok(());
                 };
@@ -1948,19 +2052,19 @@ impl Bridge {
     pub fn poll_watched_files(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
-        submit_job_with_outcome(
+        submit_flow_with_outcome(
             inner,
             self.repaint.clone(),
             Operation::PollWatchedFiles,
             None,
             Vec::new(),
-            async move {
+            move |flow| async move {
                 let page = decode_browser_file_page(
                     js_reload_files().await,
                     "poll_watched_files",
                     "watching files",
                 )?;
-                run_file_load(work_inner, page, SourceLoadMode::Replace).await
+                run_file_load(work_inner, flow, page, SourceLoadMode::Replace).await
             },
         )
     }

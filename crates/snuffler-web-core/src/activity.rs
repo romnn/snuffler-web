@@ -162,7 +162,9 @@ pub enum Outcome {
     Stopped {
         /// Children committed before cancellation took effect.
         committed: u32,
-        /// Children not attempted after cancellation took effect.
+        /// Lower bound on children not attempted after cancellation took
+        /// effect — a lazily enumerated flow only knows more pages existed,
+        /// not how many entries they held.
         skipped: u32,
     },
     /// The worker died after this job was dispatched.
