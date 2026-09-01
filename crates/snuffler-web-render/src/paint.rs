@@ -191,7 +191,9 @@ fn web_toward_canvas(stroke: Color32, pal: &Palette, keep: f32) -> Color32 {
 /// The coloring keys one row contributes to the palette numbering: one per
 /// painted span, since a row can carry traces with different keys, or the row's
 /// own identity's when it has no spans — so the numbering does not shift when a
-/// track happens to have no data in the window.
+/// track happens to have no data in the window. (A span-less *grouped* row is
+/// the exception, filtered at the `stroke_color_map` call site: its own "*" is
+/// no identity, and the label it would fall back to is window-dependent there.)
 fn track_color_keys(track: &ViewTrack, subsort: Subsort, exact: bool) -> Vec<String> {
     if track.spans.is_empty() {
         vec![color_key(track, &track.loc, subsort, exact)]
@@ -248,19 +250,28 @@ fn stroke_color_map(
     } else {
         // Snuffler Web replaces an empty key with the track label (see
         // `color_key`), so the pile-wide empty key never gets looked up there —
-        // keeping it would waste a palette slot and shift every later key. The
-        // label fallbacks come from the full track universe (every pile row is a
-        // track now, occupied or not), so they are as scroll-stable as the keys.
+        // keeping it would waste a palette slot and shift every later key.
         let mut keys: Vec<String> = pile_keys
             .iter()
             .filter(|key| !key.is_empty() && key.as_str() != "*")
             .cloned()
             .collect();
-        keys.extend(
-            tracks
-                .iter()
-                .flat_map(|track| track_color_keys(track, subsort, exact)),
-        );
+        // Whether real location keys make up the numbering. That decides what a
+        // span-less grouped row may add: with real keys, the keys it would paint
+        // with — its sensors' locations — are already in the pile-wide list,
+        // while its own "*" would fall back to the label, a key that exists only
+        // while the row is empty in the current window. Its arrival or departure
+        // would renumber every key sorting after it, recoloring other traces on
+        // a mere pan or zoom. Without real keys (single-location data) the
+        // labels ARE the numbering, and every grouped row contributes its own
+        // whether occupied or not, so that numbering never moves either.
+        let numbered_by_location = !keys.is_empty();
+        keys.extend(tracks.iter().flat_map(|track| {
+            if numbered_by_location && track.spans.is_empty() && track.loc == "*" {
+                return Vec::new();
+            }
+            track_color_keys(track, subsort, exact)
+        }));
         keys
     };
     keys.sort();
@@ -1873,6 +1884,57 @@ mod tests {
         assert!(first.is_some());
         assert!(second.is_some());
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn empty_grouped_rows_leave_a_location_numbering_alone() {
+        // A span-less grouped row paints nothing, and the keys it would paint
+        // with — its sensors' locations — are already in the pile-wide list.
+        // Letting its label pad the numbering instead would add and remove a
+        // key as data moves in and out of the window, recoloring other
+        // stations' traces on a mere pan or zoom (the blue↔olive flip where
+        // the seven-colour ramp wraps).
+        let pile_keys = vec!["00".to_owned(), "10".to_owned()];
+        let mut occupied = track("XL", "CO01", "*", "BHZ", "XL CO01 BHZ");
+        occupied.spans = vec![
+            ViewSpan {
+                loc: "00".into(),
+                ..ViewSpan::default()
+            },
+            ViewSpan {
+                loc: "10".into(),
+                ..ViewSpan::default()
+            },
+        ];
+        let empty = track("XL", "CO02", "*", "BHZ", "XL CO02 BHZ");
+        let with_empty = stroke_color_map(
+            &pile_keys,
+            &[occupied.clone(), empty],
+            Subsort::NscGroupL,
+            WiggleTheme::SnufflerWeb,
+            Theme::Light,
+        );
+        let alone = stroke_color_map(
+            &pile_keys,
+            &[occupied],
+            Subsort::NscGroupL,
+            WiggleTheme::SnufflerWeb,
+            Theme::Light,
+        );
+        assert_eq!(with_empty, alone);
+
+        // Single-location data filters the pile list to nothing, so there the
+        // labels ARE the numbering and an empty row keeps contributing its own.
+        let single_occupied = track("XL", "CO01", "*", "BHZ", "XL CO01 BHZ");
+        let single_empty = track("XL", "CO02", "*", "BHZ", "XL CO02 BHZ");
+        let labels = stroke_color_map(
+            &[String::new()],
+            &[single_occupied, single_empty.clone()],
+            Subsort::NscGroupL,
+            WiggleTheme::SnufflerWeb,
+            Theme::Light,
+        );
+        assert!(labels.contains_key(&single_empty.label));
     }
 
     #[test]
