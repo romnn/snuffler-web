@@ -5011,6 +5011,14 @@ class SessionCommitResult(NamedTuple):
 
 def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
     trace_copies: Dict[int, ptrace.Trace] = {}
+    # One memo across every event-object-carrying field: _replace_derived_events
+    # retires registry entries by object identity, and _ACTIVE_MT aliases the
+    # registered event's moment tensor. Independent deepcopy calls would give
+    # the workspace two distinct copies of the same event, so retirement would
+    # silently stop matching and superseded derived events would leak in the
+    # registry forever. (_ACTIVE_EVENT needs no copy: it is an immutable float
+    # tuple snapshot, not a reference into the registry.)
+    event_memo: Dict[int, Any] = {}
 
     def clone_trace(trace: ptrace.Trace) -> ptrace.Trace:
         cloned = trace_copies.get(id(trace))
@@ -5036,13 +5044,13 @@ def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
         derived_traces={
             origin: clone_traces(traces) for origin, traces in state.derived_traces.items()
         },
-        derived_events=copy.deepcopy(state.derived_events),
+        derived_events=copy.deepcopy(state.derived_events, event_memo),
         pile_is_example=state.pile_is_example,
         stations=dict(state.stations),
         active_event=state.active_event,
         active_hash=state.active_hash,
-        active_mt=copy.deepcopy(state.active_mt),
-        event_registry=copy.deepcopy(state.event_registry),
+        active_mt=copy.deepcopy(state.active_mt, event_memo),
+        event_registry=copy.deepcopy(state.event_registry, event_memo),
         stationxmls=copy.deepcopy(state.stationxmls),
         warned_no_response=set(state.warned_no_response),
         hidden=list(state.hidden),
@@ -6162,12 +6170,18 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
                 marker.event_hash = _ACTIVE_HASH
             if _ACTIVE_EVENT is not None:
                 marker.event_time = _ACTIVE_EVENT[3]
-            markers.add(marker, [(net, sta, "*", "*")], inc)
-            lines.append(
-                "%-14s %-8s %12.3f %8.1f %8.1f" % ("%s.%s" % (net, sta), name, tt, inc, tko)
-            )
+            # The table row rides as the accumulator payload so the text stays
+            # bounded by — and in agreement with — the retained picks instead of
+            # growing with the total detection count.
+            markers.add(marker, [(net, sta, "*", "*")], inc, payload=(net, sta, name, tt, inc, tko))
 
+    for _marker, payload in markers.retained_candidates():
+        net, sta, name, tt, inc, tko = payload
+        lines.append("%-14s %-8s %12.3f %8.1f %8.1f" % ("%s.%s" % (net, sta), name, tt, inc, tko))
     npicks = markers.total
+    dropped = npicks - (len(lines) - 1)
+    if dropped > 0:
+        lines.append("… %d more arrival(s) beyond the marker budget not shown" % dropped)
     header = "Cake arrivals (%s): %d pick(s) at %d station(s)." % (model, npicks, nstations)
     if errors:
         header += "\nSkipped phases: " + ", ".join(errors)
@@ -6549,7 +6563,7 @@ class _MarkerAccumulator:
         self.total = 0
         self._heap: List[
             Tuple[
-                Tuple[float, float, int],
+                Tuple[int, int, float, float, int],
                 int,
                 snuffling_pb2.SnufMarker,
                 Tuple[NslcId, ...],
@@ -6571,7 +6585,17 @@ class _MarkerAccumulator:
         score = float(strength or 0.0)
         if not math.isfinite(score):
             score = 0.0
-        quality = (score, -float(marker.t), -index)
+        # Retention tiers before raw strength: event markers carry no incidence
+        # angle and would otherwise score 0.0, so a mixed over-budget file would
+        # keep only phase picks and drop every event those picks reference. The
+        # active marker outranks everything, matching _truncate_marker_result.
+        quality = (
+            int(marker.active),
+            int(marker.is_event),
+            score,
+            -float(marker.t),
+            -index,
+        )
         entry = (quality, index, marker, tuple(nslcs), payload)
         if len(self._heap) < self.limit:
             heapq.heappush(self._heap, entry)
@@ -6616,7 +6640,11 @@ def _truncate_marker_result(result: _MarkerResultT, budget: _MarkerBudget) -> _M
     active_ids = {index for index, _marker in active[:limit]}
     ranked = sorted(
         ((index, marker) for index, marker in enumerate(result.markers) if index not in active_ids),
+        # Same retention tiers as _MarkerAccumulator.add: events outrank
+        # strengthless-scored picks so a mixed over-budget result cannot drop
+        # every event its picks reference.
         key=lambda item: (
+            not item[1].is_event,
             -float(item[1].incidence_angle) if item[1].HasField("incidence_angle") else 0.0,
             float(item[1].t),
             item[0],
@@ -6999,6 +7027,7 @@ async def call(
     begin_commit: Any = None,
     begin_external_wait: Any = None,
     end_external_wait: Any = None,
+    enter_protected_frame: Any = None,
 ) -> Dict[str, Any]:
     """Dispatch a bridge method through the generated typed servicer; always
     return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Async because some
@@ -7011,10 +7040,27 @@ async def call(
     end_wait_token = _END_EXTERNAL_WAIT.set(cast(Optional[ExternalWaitCallback], end_external_wait))
     commit_gate = cast(Optional[CommitGate], begin_commit)
 
+    sealed: Optional[bool] = None
+
+    def seal_execution() -> bool:
+        """Linearize this exit against cancellation. The gate CAS disarms the
+        interrupt byte and moves the control word somewhere no later
+        `requestCancellation` can arm it, so rollback and reply marshalling can
+        never receive a stray SIGINT. Returns False when cancellation won.
+
+        Memoized: the gate is a one-shot CAS, so a second invocation — a commit
+        that failed after sealing, unwinding into the BaseException arm — would
+        read False and mislabel the failure as a cancellation nobody asked for.
+        """
+        nonlocal sealed
+        if sealed is None:
+            sealed = commit_gate is None or commit_gate()
+        return sealed
+
     def finish_call_result(
         result: Dict[str, Any], snapshot: Optional[SessionSnapshot]
     ) -> Dict[str, Any]:
-        if commit_gate is not None and not commit_gate():
+        if not seal_execution():
             if snapshot is not None:
                 _SESSION_STORE.rollback(snapshot)
             return bridge_dispatch.cancelled_result()
@@ -7022,9 +7068,25 @@ async def call(
             _SESSION_STORE.rollback(snapshot)
         return result
 
-    activity = bridge_dispatch.ACTIVITY_BY_METHOD[method]
-    if activity.lane == "VIEW":
-        try:
+    snapshot: Optional[SessionSnapshot] = None
+    in_view_lane = False
+    try:
+        # Interpreter ownership is granted HERE, from the first protected
+        # bytecodes, never by the worker before the call: until this callback
+        # runs the control word stays ...WithoutInterpreter, where cancellation
+        # cannot arm SIGINT, so Pyodide's coroutine-scheduling plumbing between
+        # the JS invocation and this frame can never consume an interrupt. If
+        # cancellation is already pending, the callback arms the byte and the
+        # very next bytecode raises the typed cancellation inside this try.
+        if enter_protected_frame is not None:
+            enter_protected_frame()
+        # The activity lookup runs inside the protecting try: a cancellation
+        # interrupt landing in these first bytecodes — or a method id the
+        # generated table does not know — must surface as a typed envelope, not
+        # escape to JS as a transport error.
+        activity = bridge_dispatch.ACTIVITY_BY_METHOD[method]
+        if activity.lane == "VIEW":
+            in_view_lane = True
             _SESSION_STORE.enter_view()
             result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
             envelope = bridge_pb2.BridgeResult.FromString(result["result"])
@@ -7034,27 +7096,10 @@ async def call(
                     _SERVICER, method, _raw_bytes(request), data
                 )
             return finish_call_result(result, None)
-        except KeyboardInterrupt:
-            # Defensive only: no interrupt can reach the view lane today —
-            # GetView is the sole VIEW rpc and is NOT_CANCELLABLE, and the
-            # ownership handoff clears the byte before a view runs. If a
-            # cancellable view rpc is ever added, revisit enter_view/exit_view
-            # first: they self-heal from a partial projection (retained
-            # workspace, gated cache stash) but are not fully atomic. The typed
-            # envelope keeps the reply structured so Rust retries the view.
-            return bridge_dispatch.cancelled_result()
-        except BaseException as exc:
-            return bridge_dispatch.failure_result(exc)
-        finally:
-            _SESSION_STORE.exit_view()
-            _OPERATION_REPORTER.reset(token)
-            _BEGIN_EXTERNAL_WAIT.reset(begin_wait_token)
-            _END_EXTERNAL_WAIT.reset(end_wait_token)
-    snapshot: Optional[SessionSnapshot] = None
-    try:
-        # Setup runs inside the protecting try: a cancellation interrupt during
-        # the workspace clone must surface as the typed cancelled envelope, not
-        # escape as a transport error with _transaction_snapshot left installed.
+        # Transaction setup runs inside the protecting try too: a cancellation
+        # interrupt during the workspace clone must surface as the typed
+        # cancelled envelope, not escape as a transport error with
+        # _transaction_snapshot left installed.
         if activity.session_access == "MUTATING":
             snapshot = _SESSION_STORE.snapshot()
             _SESSION_STORE.begin_transaction(snapshot)
@@ -7064,7 +7109,7 @@ async def call(
         envelope = bridge_pb2.BridgeResult.FromString(result["result"])
         if envelope.WhichOneof("result") in ("error", "cancelled", "stale"):
             return finish_call_result(result, snapshot)
-        if commit_gate is not None and not commit_gate():
+        if not seal_execution():
             _SESSION_STORE.rollback(snapshot)
             return bridge_dispatch.cancelled_result()
         update = _SESSION_STORE.capture_update()
@@ -7077,14 +7122,29 @@ async def call(
         stale.stale.actual_generation = committed.actual_generation
         return {"result": stale.SerializeToString()}
     except KeyboardInterrupt:
+        # On the view lane this is defensive only: no interrupt can reach it
+        # today — GetView is the sole VIEW rpc and is NOT_CANCELLABLE, and the
+        # ownership handoff clears the byte before a view runs. If a cancellable
+        # view rpc is ever added, revisit enter_view/exit_view first: they
+        # self-heal from a partial projection (retained workspace, gated cache
+        # stash) but are not fully atomic. The typed envelope keeps the reply
+        # structured so Rust retries the view.
+        seal_execution()
         if snapshot is not None:
             _SESSION_STORE.rollback(snapshot)
         return bridge_dispatch.cancelled_result()
     except BaseException as exc:
+        cancellation_won = not seal_execution()
         if snapshot is not None:
             _SESSION_STORE.rollback(snapshot)
+        # Cancellation-won takes precedence over the failure, matching the
+        # error-envelope path in finish_call_result.
+        if cancellation_won:
+            return bridge_dispatch.cancelled_result()
         return bridge_dispatch.failure_result(exc)
     finally:
+        if in_view_lane:
+            _SESSION_STORE.exit_view()
         _OPERATION_REPORTER.reset(token)
         _BEGIN_EXTERNAL_WAIT.reset(begin_wait_token)
         _END_EXTERNAL_WAIT.reset(end_wait_token)

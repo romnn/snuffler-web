@@ -750,6 +750,51 @@ def test_marker_accumulator_bounds_candidates_and_compacts_unique_nslcs() -> Non
     assert result.markers_dropped == 997
 
 
+def test_marker_accumulator_retains_event_and_active_markers_under_pressure() -> None:
+    # Event markers carry no incidence angle and score 0.0; without a retention
+    # tier, an over-budget file of strong phase picks would displace every
+    # event, leaving the picks' event_hash references dangling.
+    accumulator = bridge._MarkerAccumulator(bridge.snuffling_pb2.MarkerBudget(max_markers=4))
+    for index in range(100):
+        pick = bridge.snuffling_pb2.SnufMarker(t=float(index))
+        pick.incidence_angle = 50.0 + float(index)
+        accumulator.add(pick)
+    event = bridge.snuffling_pb2.SnufMarker(t=1000.0, is_event=True)
+    accumulator.add(event)
+    active = bridge.snuffling_pb2.SnufMarker(t=2000.0, is_event=True, active=True)
+    accumulator.add(active)
+
+    result = accumulator.finish(bridge.snuffling_pb2.SnufflingResult())
+    assert len(result.markers) == 4
+    retained_events = [marker for marker in result.markers if marker.is_event]
+    assert {marker.t for marker in retained_events} == {1000.0, 2000.0}
+    assert any(marker.active for marker in retained_events)
+
+
+def test_workspace_clone_preserves_event_identity_across_the_event_maps() -> None:
+    # _replace_derived_events retires registry entries by object identity, and
+    # _ACTIVE_MT aliases the registered event's moment tensor. The clone must
+    # keep those aliases (one shared deepcopy memo); independent copies would
+    # leak superseded derived events in the registry forever.
+    from pyrocko import model, moment_tensor
+
+    event = model.Event(time=1.0, lat=0.0, lon=0.0, depth=0.0)
+    event.moment_tensor = moment_tensor.MomentTensor(strike=30.0, dip=60.0, rake=90.0)
+    state = bridge._empty_dataset_state([])
+    state = state._replace(
+        derived_events={"seismosizer": {"h1": event}},
+        event_registry={"h1": event},
+        active_mt=event.moment_tensor,
+        active_hash="h1",
+    )
+
+    clone = bridge._clone_dataset_state(state)
+
+    assert clone.derived_events["seismosizer"]["h1"] is clone.event_registry["h1"]
+    assert clone.active_mt is clone.event_registry["h1"].moment_tensor
+    assert clone.event_registry["h1"] is not event
+
+
 def test_event_projection_is_bounded_and_retains_the_active_event() -> None:
     from pyrocko import model
 
