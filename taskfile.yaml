@@ -368,7 +368,7 @@ tasks:
     deps: ["fetch:pyrocko"]
     cmds:
       - buf generate
-      - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py {{.CLI_ARGS}}
+      - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py tests/parity/test_view_span_order.py {{.CLI_ARGS}}
 
   test:parity:inventory:
     desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"

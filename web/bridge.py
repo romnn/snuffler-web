@@ -2054,11 +2054,15 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     wanted_tracks = 0
     sample_tracks = 0
     for row_idx, (_row_key, head) in enumerate(rows):
-        # Time order within a row, with the nslc id as a tiebreak: two traces can
-        # start at the same instant when the row groups several channels together,
-        # and a stack that reshuffles between identical requests is worse than
-        # either order.
-        members = sorted(members_by_row[row_idx], key=lambda item: (item[1].tmin, item[1].nslc_id))
+        # One deterministic layering per row, independent of the window: the
+        # chop start snaps to each member's own sample grid, so ordering by
+        # chopped tmin first let a pan or zoom reorder which co-located trace
+        # draws last — visibly recoloring a grouped row wherever near-identical
+        # channels overlap (different sample rates snap differently, and the
+        # nslc tiebreak only fires on exact equality). Channel identity first
+        # gives every window the same stack; tmin still time-orders the gapped
+        # segments within one channel.
+        members = sorted(members_by_row[row_idx], key=lambda item: (item[1].nslc_id, item[1].tmin))
         wanted_tracks += 1
         # A row is named by what it groups on: an element the rows merge over drops
         # out of the label and becomes '*' in the identity rather than showing one
