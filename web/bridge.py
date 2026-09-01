@@ -1156,10 +1156,19 @@ def _fft_filter(
     seg.set_ydata(y - slope * it - offset)
     freqs, fdata = seg.spectrum(pad_to_pow2=True, tfade=None)
     nfreqs = int(fdata.size)
+    # The response is resolved BEFORE the cache lookup and a fingerprint of its
+    # content rides the key: responses are epoch-dependent, so two same-shaped
+    # windows on one channel straddling a StationXML epoch boundary must not
+    # share whichever transfer function was computed first. The fingerprint is
+    # over the serialized response (each resolve builds a fresh object, so
+    # object identity would defeat the cache); two windows inside one epoch
+    # serialize identically and keep sharing the cached transfer function.
+    inst_resp = _get_instrument_response(seg.nslc_id, resp_tmin, resp_tmax) if remove_resp else None
     key = (
         float(seg.deltat),
         nfreqs,
         tuple(seg.nslc_id) if remove_resp else None,
+        None if inst_resp is None else hash(inst_resp.dump()),
         _float_key(hp),
         _float_key(lp),
         _RESPONSE_GEN,
@@ -1176,7 +1185,6 @@ def _fft_filter(
         else:
             tf = np.ones(nfreqs, dtype=complex)
         if remove_resp:
-            inst_resp = _get_instrument_response(seg.nslc_id, resp_tmin, resp_tmax)
             if inst_resp is not None:
                 f1, f2, f3, f4 = _decon_freq_limits(float(seg.deltat), int(seg.data_len()), hp, lp)
                 taper = ptrace.CosTaper(f1, f2, f3, f4)
@@ -1462,10 +1470,15 @@ def _prepare_cutout(
                             _filter_seg(tr, hp, lp, False, lphp)
                     processed_traces.append(tr)
 
-                if remove_resp and not fft:
-                    processed_traces = [
-                        _remove_response(tr, True, hp, lp, tmin, tmax) for tr in processed_traces
-                    ]
+            # Outside the chopper loop, over the completed list: the inverse
+            # transfer is not idempotent, so mapping it over the accumulated
+            # list per batch would restitute earlier batches once per later
+            # batch. With tinc=None the chopper yields exactly once today, but
+            # the placement must not corrupt data the day that changes.
+            if remove_resp and not fft:
+                processed_traces = [
+                    _remove_response(tr, True, hp, lp, tmin, tmax) for tr in processed_traces
+                ]
 
         if rotate != 0.0:
             _rotate_pairs_inplace(processed_traces, rotate)
@@ -1511,9 +1524,10 @@ def _stable_bin_stride(samples_per_bin: float) -> int:
 
     The envelope below bins on an absolute sample grid so that panning slides the
     trace instead of reshuffling which samples are extrema. That only holds while
-    the stride itself holds still, and a stride taken straight from the window
-    would change with every pixel of zoom. Quantising to powers of 2**0.25 keeps
-    it constant across small zooms and never more than 19 % coarser than asked.
+    the stride itself holds still, and an unquantised stride would change with
+    every pixel of zoom. Quantising to powers of 2**0.25 keeps it constant across
+    small zooms; the double ceiling (once on the input, once on the ladder value)
+    makes the worst case about 25 % coarser than asked.
     """
     stride = max(1, int(math.ceil(samples_per_bin)))
     if stride <= 1:
@@ -1525,7 +1539,7 @@ def _stable_bin_stride(samples_per_bin: float) -> int:
 
 
 def _display_envelope(
-    y: np.ndarray, deltat: float, t0: float, bins: int
+    y: np.ndarray, deltat: float, t0: float, bins: int, window_len: float
 ) -> Tuple[np.ndarray, float, float]:
     """Reduce a slice to about ``bins`` bins, as the min and max of each.
 
@@ -1539,17 +1553,21 @@ def _display_envelope(
 
     Bins are anchored to the trace's absolute sample grid rather than to the
     slice, so a pan moves the trace without changing which sample is a peak.
-    Up to one bin at each end falls outside the grid and is dropped; the slice
-    carries four samples of margin for exactly that kind of trim.
+    Up to one bin (up to ``stride`` samples) at each end falls outside the grid
+    and is dropped — at the envelope's ~1 bin/pixel that trim is under a pixel.
 
     Returns the payload with its new sample spacing and start time, or the input
     unchanged when it is already at or below the target.
     """
     n = int(y.size)
-    if bins <= 0 or n <= 2 * bins:
+    if bins <= 0 or n == 0 or deltat <= 0.0:
         return y, deltat, t0
-    stride = _stable_bin_stride(n / float(bins))
-    if stride < 2:
+    # The stride derives from the WINDOW, not from the clipped slice length:
+    # the slice gains or loses a sample as the window's sub-sample phase moves,
+    # and a slice-derived samples-per-bin could cross a ladder rung on a pure
+    # pan, re-binning the whole trace at once. The window is pan-invariant.
+    stride = _stable_bin_stride(window_len / (float(deltat) * float(bins)))
+    if stride < 2 or n <= 2 * stride:
         return y, deltat, t0
     # Which absolute sample the slice starts on; deltat divides the trace's own
     # tmin exactly, so this is the index pyrocko would give it.
@@ -1573,6 +1591,7 @@ def _display_envelope(
 def _waterfall_row_strips(
     slices: "List[Tuple[np.ndarray, float, float]]",
     npx: int,
+    window: Tuple[float, float],
     want_abs: bool,
     want_integrate: bool,
     color_scale: str = "lin",
@@ -1598,18 +1617,30 @@ def _waterfall_row_strips(
     if not slices:
         return []
     # One target resolution for the row: the coarsest any piece would have
-    # chosen on its own, so no piece is stretched past its own sampling.
+    # chosen on its own, so no piece is stretched past its own sampling. The
+    # per-piece stride comes from the WINDOW, not from the clipped slice
+    # length: the slice gains or loses a sample as the window's sub-sample
+    # phase moves, and a stride derived from it would jump on a pure pan.
+    window_len = max(0.0, float(window[1]) - float(window[0]))
     target_dt = max(
-        float(deltat) * max(1, int(np.asarray(y).size // max(1, 2 * int(npx))))
-        for y, _t0, deltat in slices
+        float(deltat) * max(1, int(window_len / (float(deltat) * max(1, 2 * int(npx)))))
+        for _y, _t0, deltat in slices
     )
     prepared: "List[Tuple[np.ndarray, float, float]]" = []
     for y, t0, deltat in slices:
         step = max(1, int(round(target_dt / float(deltat))))
-        data = np.ascontiguousarray(np.asarray(y, dtype=np.float64)[::step])
+        # Anchor the take to the trace's own absolute sample grid, exactly as
+        # `_display_envelope` anchors its bins: `y[::step]` alone selects
+        # samples relative to the chopped start, which advances one sample per
+        # sample of pan, so every column re-sampled and the strip shimmered
+        # instead of sliding. (Qt anchors on the trace's tmin the same way,
+        # pile_viewer_waterfall.py:124.)
+        base = int(math.floor(float(t0) / float(deltat) + 0.5))
+        offset = (-base) % step
+        data = np.ascontiguousarray(np.asarray(y, dtype=np.float64)[offset::step])
         if want_integrate:
             data = np.cumsum(data) * float(deltat)
-        prepared.append((data, float(t0), float(deltat) * step))
+        prepared.append((data, float(t0) + offset * float(deltat), float(deltat) * step))
 
     peak = max(
         (float(np.abs(data).max()) if data.size else 0.0 for data, _t0, _dt in prepared),
@@ -2040,6 +2071,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         view_tmax=tmax,
         session_generation=_SESSION_STORE.generation,
         view_sequence=req.view_sequence,
+        subsort=subsort,
     )
     meta.color_keys.extend(_pile_color_keys(subsort))
     ys_parts: List[np.ndarray] = []
@@ -2060,9 +2092,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         # draws last — visibly recoloring a grouped row wherever near-identical
         # channels overlap (different sample rates snap differently, and the
         # nslc tiebreak only fires on exact equality). Channel identity first
-        # gives every window the same stack; tmin still time-orders the gapped
-        # segments within one channel.
-        members = sorted(members_by_row[row_idx], key=lambda item: (item[1].nslc_id, item[1].tmin))
+        # gives every window the same stack; deltat separates same-nslc
+        # duplicates at different rates whose chopped tmins could still cross;
+        # tmin time-orders the gapped segments within one channel.
+        members = sorted(
+            members_by_row[row_idx],
+            key=lambda item: (item[1].nslc_id, item[1].deltat, item[1].tmin),
+        )
         wanted_tracks += 1
         # A row is named by what it groups on: an element the rows merge over drops
         # out of the label and becomes '*' in the identity rather than showing one
@@ -2156,7 +2192,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             # it. Adaptive is the case that needs one, because nothing bounded
             # what was fetched.
             if adaptive_visible_length:
-                yview, deltat, ytmin = _display_envelope(yview, deltat, ytmin, npx)
+                yview, deltat, ytmin = _display_envelope(yview, deltat, ytmin, npx, tmax - tmin)
             if yview.size:
                 spans.append(
                     _SpanBuild(ytmin - tmin, deltat, int(yview.size), yview.astype("<f4"), tr)
@@ -2166,6 +2202,7 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             strips = _waterfall_row_strips(
                 [(y, t0, dt) for y, t0, dt, _tr in wf_slices],
                 npx,
+                (tmin, tmax),
                 wf_abs,
                 wf_integrate,
                 wf_color_scale,
@@ -2176,11 +2213,28 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 nf = 1
                 wf_range = (float(strip.min()), float(strip.max())) if wf_abs else None
                 spans.append(_SpanBuild(t0 - tmin, dt, int(strip.size), strip, tr, wf_range))
-        # In waterfall mode a row without an image strip is dropped; a wiggle row
-        # is kept even with no spans — snuffler's stack is one labelled row per
-        # pile gather key, occupied or not.
-        if mode == "waterfall" and not spans:
-            continue
+            if wf_abs and spans:
+                # One colour range per ROW, spanning its segments — the state
+                # contract says the clip sliders are relative to each track's
+                # own range, and a page-wide range would recolour a track
+                # whenever a louder neighbour scrolled into the page.
+                row_lo = min(build.wf_range[0] for build in spans if build.wf_range)
+                row_hi = max(build.wf_range[1] for build in spans if build.wf_range)
+                if row_hi <= row_lo:
+                    row_hi = row_lo + 1e-12
+                spans = [
+                    build._replace(wf_range=(row_lo, row_hi)) if build.wf_range else build
+                    for build in spans
+                ]
+        # A row with no image strip (or no spans) is kept in BOTH modes:
+        # snuffler's stack is one labelled row per pile gather key, occupied or
+        # not, and the frontend treats `meta.tracks` as that full universe — it
+        # derives the scroll range and the next page request from its length.
+        # Waterfall used to drop span-less rows here, which collapsed the
+        # universe to the occupied page: scrolling died (max offset hit zero)
+        # and each shorter reply shrank the next request, ratcheting the stack
+        # down to the leading occupied rows. The painter draws a strip-less
+        # waterfall row as an empty labelled row, like a wiggle row without data.
         t = meta.tracks.add()
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
@@ -2213,14 +2267,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
 
     perf_loop = time.monotonic()
     if mode == "waterfall":
-        if wf_abs:
-            lo = min((span.ymin for span, _ in scaled_spans), default=0.0)
-            hi = max((span.ymax for span, _ in scaled_spans), default=1.0)
-            if hi <= lo:
-                hi = lo + 1e-12
-            for span, _source in scaled_spans:
-                span.ymin = lo
-                span.ymax = hi
+        # The Abs colour range was settled per row above; nothing spans rows.
+        pass
     elif range_traces or data_ranges:
         if range_traces:
             mode_param, outer_mode = _scaling_base_modes(base)

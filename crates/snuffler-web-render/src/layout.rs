@@ -41,6 +41,12 @@ pub struct TrackGeom {
     pub off: usize,
     /// Number of rows needed to cover the track area.
     pub n_draw: usize,
+    /// Rows a FULL page shows — `n_draw` before the clamp to the rows that
+    /// remain past the offset. The view request and the per-track payload
+    /// budget size themselves on this, not on `n_draw`: a partial last page
+    /// must not change the horizontal resolution (and with it the request
+    /// identity) of a purely vertical scroll.
+    pub n_page: usize,
     /// Portion of the first row clipped above the track area.
     pub top_shift: f32,
     /// Clamped fractional row offset.
@@ -79,6 +85,7 @@ pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom 
             row_h,
             off,
             n_draw,
+            n_page: n,
             top_shift: 0.0,
             scroll,
             height: if automatic { 0.0 } else { row_h },
@@ -90,12 +97,13 @@ pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom 
         let scroll = state.track_scroll.clamp(0.0, max_scroll);
         let off = scroll.floor() as usize;
         let top_shift = (scroll - off as f32) * row_h;
-        let n_draw = ((top_shift + area) / row_h).ceil() as usize;
-        let n_draw = n_draw.min(total.saturating_sub(off));
+        let n_page = ((top_shift + area) / row_h).ceil() as usize;
+        let n_draw = n_page.min(total.saturating_sub(off));
         TrackGeom {
             row_h,
             off,
             n_draw,
+            n_page,
             top_shift,
             scroll,
             height: if automatic { 0.0 } else { height },

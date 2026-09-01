@@ -46,17 +46,39 @@ const SCALE_PT: f32 = 10.0;
 /// The `"*"` a span-less grouped row offers as its location is no key either, so it
 /// falls back the same way. Under the Snuffler Qt theme there is no fallback: that
 /// theme's whole claim is to look like snuffler, which does paint them alike.
-fn color_key(track: &ViewTrack, loc: &str, subsort: Subsort, exact: bool) -> String {
+///
+/// `fallback` gates that substitution on the pile actually having no usable key
+/// (see [`label_fallback_active`]): in a MIXED pile, a blank location keeps its
+/// own pile-wide-stable `""` key instead — a label there would exist only while
+/// the row's blank-location member has data in the window, and a key entering or
+/// leaving the sorted numbering shifts every key after it on a mere pan.
+fn color_key(
+    track: &ViewTrack,
+    loc: &str,
+    subsort: Subsort,
+    exact: bool,
+    fallback: bool,
+) -> String {
     let key = match subsort {
         Subsort::Nslc | Subsort::NscGroupL | Subsort::SncGroupL => loc.to_owned(),
         Subsort::Nscl | Subsort::Sncl | Subsort::Lnsc => track.cha.clone(),
         Subsort::Cnsl => format!("{}.{}.{}", track.net, track.sta, loc),
     };
-    if !exact && (key.is_empty() || key == "*") {
+    if !exact && fallback && (key.is_empty() || key == "*") {
         track.label.clone()
     } else {
         key
     }
+}
+
+/// Whether the web theme's label fallback is on: only when the whole pile has
+/// no usable coloring key (single/empty-location data), the case the fallback
+/// was written for. Then every row contributes its label whether it has data
+/// in the window or not, so the label numbering is window-independent too.
+fn label_fallback_active(pile_keys: &[String]) -> bool {
+    pile_keys
+        .iter()
+        .all(|key| key.is_empty() || key.as_str() == "*")
 }
 
 /// Whether a theme reproduces snuffler's own colouring rather than this frontend's.
@@ -194,14 +216,19 @@ fn web_toward_canvas(stroke: Color32, pal: &Palette, keep: f32) -> Color32 {
 /// track happens to have no data in the window. (A span-less *grouped* row is
 /// the exception, filtered at the `stroke_color_map` call site: its own "*" is
 /// no identity, and the label it would fall back to is window-dependent there.)
-fn track_color_keys(track: &ViewTrack, subsort: Subsort, exact: bool) -> Vec<String> {
+fn track_color_keys(
+    track: &ViewTrack,
+    subsort: Subsort,
+    exact: bool,
+    fallback: bool,
+) -> Vec<String> {
     if track.spans.is_empty() {
-        vec![color_key(track, &track.loc, subsort, exact)]
+        vec![color_key(track, &track.loc, subsort, exact, fallback)]
     } else {
         track
             .spans
             .iter()
-            .map(|span| color_key(track, &span.loc, subsort, exact))
+            .map(|span| color_key(track, &span.loc, subsort, exact, fallback))
             .collect()
     }
 }
@@ -240,37 +267,42 @@ fn stroke_color_map(
         (237, 212, 0),
     ];
     let exact = colors_exactly_like_qt(wiggle);
+    let fallback = label_fallback_active(pile_keys);
     let mut keys: Vec<String> = if pile_keys.is_empty() {
         tracks
             .iter()
-            .flat_map(|track| track_color_keys(track, subsort, exact))
+            .flat_map(|track| track_color_keys(track, subsort, exact, fallback))
             .collect()
     } else if exact {
         pile_keys.to_vec()
+    } else if fallback {
+        // No usable pile key (single/empty-location data): the labels ARE the
+        // numbering, and every row contributes its own whether occupied or not,
+        // so that numbering never moves with the window. The pile-wide
+        // empty/wildcard keys are never looked up (the fallback replaces them
+        // at draw time), so keeping them would waste a palette slot.
+        tracks
+            .iter()
+            .flat_map(|track| track_color_keys(track, subsort, exact, fallback))
+            .collect()
     } else {
-        // Snuffler Web replaces an empty key with the track label (see
-        // `color_key`), so the pile-wide empty key never gets looked up there —
-        // keeping it would waste a palette slot and shift every later key.
+        // Real location keys make up the numbering, and the label fallback is
+        // off (see `color_key`): a blank location keeps its own pile-wide ""
+        // key. Only the grouped-row "*" wildcard is dropped — it is a row
+        // identity, not a key anything draws with. A span-less grouped row
+        // contributes nothing: the keys it would paint with are locations the
+        // pile-wide list already carries, and anything window-dependent it
+        // added would renumber every key sorting after it on a mere pan.
         let mut keys: Vec<String> = pile_keys
             .iter()
-            .filter(|key| !key.is_empty() && key.as_str() != "*")
+            .filter(|key| key.as_str() != "*")
             .cloned()
             .collect();
-        // Whether real location keys make up the numbering. That decides what a
-        // span-less grouped row may add: with real keys, the keys it would paint
-        // with — its sensors' locations — are already in the pile-wide list,
-        // while its own "*" would fall back to the label, a key that exists only
-        // while the row is empty in the current window. Its arrival or departure
-        // would renumber every key sorting after it, recoloring other traces on
-        // a mere pan or zoom. Without real keys (single-location data) the
-        // labels ARE the numbering, and every grouped row contributes its own
-        // whether occupied or not, so that numbering never moves either.
-        let numbered_by_location = !keys.is_empty();
         keys.extend(tracks.iter().flat_map(|track| {
-            if numbered_by_location && track.spans.is_empty() && track.loc == "*" {
+            if track.spans.is_empty() && track.loc == "*" {
                 return Vec::new();
             }
-            track_color_keys(track, subsort, exact)
+            track_color_keys(track, subsort, exact, fallback)
         }));
         keys
     };
@@ -422,7 +454,13 @@ pub fn paint(
     let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
     let point_margin = 4.0;
     let time_margin = f64::from(point_margin / rect.width().max(1.0)) * window;
-    let in_x = |x: f32| x >= rect.left() - point_margin && x <= rect.right() + point_margin;
+    // Colour from the subsort the REPLY was produced under, not the live UI
+    // state: after a subsort change, a whole round trip still paints the old
+    // reply's tracks and color_keys, and keying those with the new subsort
+    // produced a transient palette belonging to neither state. An unknown wire
+    // value (an empty pre-first-reply view) falls back to the live state.
+    let subsort = Subsort::from_wire(&view.meta.subsort).unwrap_or(state.subsort);
+    let label_fallback = label_fallback_active(&view.meta.color_keys);
 
     // Stroke colors by coloring key; the row tints and the colored strokes both
     // look their key up here.
@@ -431,7 +469,7 @@ pub fn paint(
         stroke_color_map(
             &view.meta.color_keys,
             &view.meta.tracks,
-            state.subsort,
+            subsort,
             state.wiggle_theme,
             theme,
         )
@@ -807,7 +845,7 @@ pub fn paint(
             for span in &t.spans {
                 let trace_col = if colored_strokes {
                     stroke_colors
-                        .get(&color_key(t, &span.loc, state.subsort, qt_colors))
+                        .get(&color_key(t, &span.loc, subsort, qt_colors, label_fallback))
                         .copied()
                         .unwrap_or(pal.trace)
                 } else {
@@ -824,19 +862,32 @@ pub fn paint(
                         let start_idx = ((view_tmin - time_margin - base_abs) / span.dt)
                             .floor()
                             .max(0.0) as usize;
-                        let end_idx = ((view_tmax + time_margin - base_abs) / span.dt)
-                            .ceil()
+                        // floor + 2, not ceil: the range end is exclusive, and
+                        // it must reach one sample PAST the right edge so the
+                        // crossing segment exists (floor lands on the last
+                        // sample at or before the edge; +2 includes the first
+                        // one beyond it, whether or not the edge sits exactly
+                        // on the grid).
+                        let end_idx = (((view_tmax + time_margin - base_abs) / span.dt).floor()
+                            + 2.0)
                             .clamp(0.0, samples.len() as f64)
                             as usize;
+                        // Every sample in the widened slice is emitted, outside
+                        // points included: the slice reaches one sample beyond
+                        // each edge, and the clip rect cuts the crossing
+                        // segment geometrically (as Qt's painter does).
+                        // Filtering points by x instead dropped the
+                        // boundary-crossing segment, so at picking zooms the
+                        // wiggle detached from both canvas edges and its ends
+                        // snapped sample by sample under a pan.
                         let points: Vec<_> = samples
                             .get(start_idx..end_idx)
                             .unwrap_or(&[])
                             .iter()
                             .enumerate()
-                            .filter_map(|(i, &v)| {
+                            .map(|(i, &v)| {
                                 let t_abs = base_abs + (start_idx + i) as f64 * span.dt;
-                                let x = x_of(t_abs);
-                                in_x(x).then(|| pos2(x, y_of(span, f64::from(v))))
+                                pos2(x_of(t_abs), y_of(span, f64::from(v)))
                             })
                             .collect();
                         if points.len() >= 2 {
@@ -853,10 +904,7 @@ pub fn paint(
                                     samples,
                                     base_abs,
                                 },
-                                &|t_abs, v| {
-                                    let x = x_of(t_abs);
-                                    in_x(x).then(|| pos2(x, y_of(span, v)))
-                                },
+                                &|t_abs, v| Some(pos2(x_of(t_abs), y_of(span, v))),
                             );
                         }
                     }
@@ -878,7 +926,7 @@ pub fn paint(
                 let mut uoffnext = uoff;
                 let col = if colored_strokes {
                     stroke_colors
-                        .get(&color_key(t, &span.loc, state.subsort, qt_colors))
+                        .get(&color_key(t, &span.loc, subsort, qt_colors, label_fallback))
                         .copied()
                         .unwrap_or(pal.trace)
                 } else {
@@ -1632,7 +1680,7 @@ mod tests {
         tracks
             .iter()
             .map(|track| {
-                map.get(&color_key(track, &track.loc, subsort, false))
+                map.get(&color_key(track, &track.loc, subsort, false, true))
                     .copied()
                     .unwrap_or(Color32::TRANSPARENT)
             })
@@ -1879,8 +1927,8 @@ mod tests {
         let [grouped, _] = &tracks;
         // Two locations across the stack, so exactly two keys get numbered.
         assert_eq!(map.len(), 2);
-        let first = map.get(&color_key(grouped, "00", Subsort::NscGroupL, false));
-        let second = map.get(&color_key(grouped, "10", Subsort::NscGroupL, false));
+        let first = map.get(&color_key(grouped, "00", Subsort::NscGroupL, false, true));
+        let second = map.get(&color_key(grouped, "10", Subsort::NscGroupL, false, true));
         assert!(first.is_some());
         assert!(second.is_some());
         assert_ne!(first, second);
@@ -2265,6 +2313,80 @@ mod tests {
     }
 
     #[test]
+    fn boundary_crossing_samples_are_emitted_for_the_clip_to_cut() {
+        // At picking zooms adjacent samples sit many pixels apart, and the
+        // segment reaching the canvas edge has its outer endpoint off-screen.
+        // Culling those points individually dropped the crossing segment, so
+        // the wiggle detached from both edges and its ends snapped sample by
+        // sample under a pan. The points are emitted and the clip rect cuts
+        // the line geometrically, as Qt's painter does.
+        let state = AppState {
+            tmin: 1_700_000_000.0,
+            tmax: 1_700_000_010.0,
+            ..AppState::default()
+        };
+        let mut t = track("XX", "AAA", "", "HHZ", "XX.AAA..HHZ");
+        t.spans = vec![ViewSpan {
+            t0_rel: -3.0,
+            dt: 3.0,
+            count: 6,
+            offset: 0,
+            ymin: -1.0,
+            ymax: 1.0,
+            yscale: 1.0,
+            ..ViewSpan::default()
+        }];
+        let view = ViewData {
+            meta: ViewMeta {
+                view_tmin: state.tmin,
+                view_tmax: state.tmax,
+                tracks: vec![t],
+                ..ViewMeta::default()
+            },
+            ys: vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5],
+        };
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0));
+        let layout = compute_layout(&state, &view, rect);
+        let colors = palette(Theme::Light, WiggleTheme::SnufflerWeb);
+        let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
+            Vec2::new(text.len() as f32 * size * 0.5, size)
+        });
+        paint(
+            &mut target,
+            &state,
+            &view,
+            &colors,
+            &layout,
+            Theme::Light,
+            false,
+            false,
+        );
+        let svg = target.finish();
+        let xs: Vec<f32> = svg
+            .split("<polyline points=\"")
+            .skip(1)
+            .flat_map(|rest| {
+                rest.split('"')
+                    .next()
+                    .unwrap_or("")
+                    .split(' ')
+                    .filter_map(|pair| pair.split(',').next().and_then(|x| x.parse::<f32>().ok()))
+            })
+            .collect();
+        assert!(!xs.is_empty(), "the span must produce a polyline");
+        let min_x = xs.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_x = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            min_x < 0.0,
+            "the point before the left edge is emitted (got min x {min_x})"
+        );
+        assert!(
+            max_x > 640.0,
+            "the point past the right edge is emitted (got max x {max_x})"
+        );
+    }
+
+    #[test]
     fn track_labels_are_drawn_verbatim_as_the_bridge_composed_them() {
         let state = AppState {
             tmin: 1_700_000_000.0,
@@ -2291,10 +2413,7 @@ mod tests {
                 view_tmin: state.tmin,
                 view_tmax: state.tmax,
                 tracks: vec![track("HHZ", "12.3 km"), track("HHN", "")],
-                notices: Vec::new(),
-                color_keys: Vec::new(),
-                session_generation: 0,
-                view_sequence: 0,
+                ..ViewMeta::default()
             },
             ys: Vec::new(),
         };

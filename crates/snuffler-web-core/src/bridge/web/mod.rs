@@ -2342,16 +2342,21 @@ impl Bridge {
                                     i.python_session_generation = vd.meta.session_generation;
                                     i.view_last_error = None;
                                     i.view_retry_after_s = 0.0;
-                                    if i.desired
-                                        .as_ref()
-                                        .is_none_or(|desired| desired == &work_canonical_params)
-                                    {
-                                        i.view = Some(std::sync::Arc::new(vd));
-                                        i.view_epoch += 1;
-                                        i.applied = Some(work_canonical_params.clone());
-                                        if i.desired.as_ref() == Some(&work_canonical_params) {
-                                            i.desired = None;
-                                        }
+                                    // Every reply that passed the sequence and
+                                    // generation fences is applied, even when a
+                                    // newer window is already desired: during a
+                                    // continuous drag the desired params are
+                                    // always newer than any reply, and skipping
+                                    // the fresh reply froze the canvas at the
+                                    // pre-gesture window for the whole gesture.
+                                    // The newer request still goes out —
+                                    // `desired` stays set and maybe_redispatch
+                                    // compares it against `applied` below.
+                                    i.view = Some(std::sync::Arc::new(vd));
+                                    i.view_epoch += 1;
+                                    i.applied = Some(work_canonical_params.clone());
+                                    if i.desired.as_ref() == Some(&work_canonical_params) {
+                                        i.desired = None;
                                     }
                                     Ok(())
                                 }
