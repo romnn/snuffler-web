@@ -17,6 +17,14 @@ pub enum FrameError {
         /// Maximum incomplete packet size.
         limit: usize,
     },
+    /// Complete records in one WebSocket message exceed the ingest bound.
+    #[error("SeedLink message contains {actual} payload bytes; ingest limit is {limit} bytes")]
+    PayloadOversized {
+        /// Payload bytes decoded from complete packets.
+        actual: usize,
+        /// Maximum payload returned by one framing pass.
+        limit: usize,
+    },
 }
 
 /// Converts classic channel selectors into `SeedLink` 4 selector syntax.
@@ -76,7 +84,7 @@ fn find_header(bytes: &[u8]) -> Option<usize> {
 ///
 /// # Errors
 ///
-/// Returns [`FrameError`] when a v4 header advertises a packet beyond the framing bound.
+/// Returns [`FrameError`] when one packet or the aggregate decoded payload exceeds the bound.
 pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
     // A consumed-bytes cursor with one drain at the end: a WebSocket message
     // carries back-to-back packets, and per-packet drains plus full-buffer
@@ -94,9 +102,7 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
         } else {
             // No header anywhere: everything but a possible partial-header tail
             // is garbage the next message cannot complete.
-            cursor = cursor.saturating_add(
-                bytes.len().saturating_sub(V4_FIXED_HEADER_BYTES - 1),
-            );
+            cursor = cursor.saturating_add(bytes.len().saturating_sub(V4_FIXED_HEADER_BYTES - 1));
             break;
         };
         if is_v3_header(bytes) {
@@ -104,6 +110,14 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
                 break;
             }
             if let Some(record) = bytes.get(V3_RECORD_OFFSET..V3_PACKET_BYTES) {
+                let actual = records.len().saturating_add(record.len());
+                if actual > MAX_FRAME_BUFFER_BYTES {
+                    buffer.drain(..cursor.min(buffer.len()));
+                    return Err(FrameError::PayloadOversized {
+                        actual,
+                        limit: MAX_FRAME_BUFFER_BYTES,
+                    });
+                }
                 records.extend_from_slice(record);
             }
             cursor = cursor.saturating_add(V3_PACKET_BYTES);
@@ -138,6 +152,14 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
             if matches!(bytes.get(2), Some(b'2' | b'3')) && bytes.get(3) == Some(&b'D') {
                 let payload_start = V4_FIXED_HEADER_BYTES + station_len;
                 if let Some(payload) = bytes.get(payload_start..packet_len) {
+                    let actual = records.len().saturating_add(payload.len());
+                    if actual > MAX_FRAME_BUFFER_BYTES {
+                        buffer.drain(..cursor.min(buffer.len()));
+                        return Err(FrameError::PayloadOversized {
+                            actual,
+                            limit: MAX_FRAME_BUFFER_BYTES,
+                        });
+                    }
                     records.extend_from_slice(payload);
                 }
             }
@@ -204,6 +226,21 @@ mod tests {
         assert!(matches!(
             drain_records(&mut packet),
             Err(FrameError::Oversized { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_aggregate_complete_records_beyond_the_ingest_bound() {
+        let packet_count = MAX_FRAME_BUFFER_BYTES / 512 + 1;
+        let mut buffer = Vec::with_capacity(packet_count * 520);
+        for sequence in 0..packet_count {
+            buffer.extend_from_slice(format!("SL{sequence:06X}").as_bytes());
+            buffer.extend(std::iter::repeat_n(7, 512));
+        }
+
+        assert!(matches!(
+            drain_records(&mut buffer),
+            Err(FrameError::PayloadOversized { .. })
         ));
     }
 }

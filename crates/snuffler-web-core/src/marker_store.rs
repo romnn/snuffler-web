@@ -40,6 +40,14 @@ impl MarkerBudget {
     }
 }
 
+impl From<MarkerBudget> for snuffler_web_proto::bridge::v1::MarkerBudget {
+    fn from(budget: MarkerBudget) -> Self {
+        Self {
+            max_markers: budget.get(),
+        }
+    }
+}
+
 /// Fully decoded markers ready for one atomic origin replacement.
 pub struct StagedMarkers {
     /// Markers already bounded by the Python producer.
@@ -55,7 +63,7 @@ pub struct StagedMarkers {
 /// Result that forces callers to surface producer truncation.
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommitOutcome {
+pub enum MarkerCommitOutcome {
     /// Every produced marker was installed.
     Committed {
         /// Number installed.
@@ -106,6 +114,33 @@ struct TimeIndex {
     starts: Vec<(f64, MarkerId)>,
     endpoints: Vec<(f64, MarkerId)>,
     max_span: f64,
+    selected: usize,
+    earliest_marker_start: f64,
+    latest_starting_marker_end: f64,
+    active_hash: Option<String>,
+}
+
+fn inclusive_time_range(
+    entries: &[(f64, MarkerId)],
+    lower: f64,
+    upper: f64,
+) -> std::ops::Range<usize> {
+    let begin = entries.partition_point(|(time, _)| time.total_cmp(&lower).is_lt());
+    let end = entries.partition_point(|(time, _)| !time.total_cmp(&upper).is_gt());
+    begin..end
+}
+
+/// Cached aggregates used by marker rendering without rescanning the store.
+#[derive(Clone, Debug)]
+pub struct MarkerSummary {
+    /// Number of selected markers.
+    pub selected: usize,
+    /// Earliest marker start.
+    pub earliest_marker_start: f64,
+    /// End of the latest-starting marker.
+    pub latest_starting_marker_end: f64,
+    /// Hash of the active event, when one exists.
+    pub active_hash: Option<String>,
 }
 
 /// Owns markers in insertion order while preserving identity across compaction.
@@ -230,9 +265,9 @@ impl MarkerStore {
 
     /// Mutates one marker with the closure itself reporting whether anything
     /// changed, skipping [`Self::edit`]'s clone-and-compare — the per-frame
-    /// path for widget rows, where every mutation site is explicit. Returns
-    /// whether the marker existed and reported a change.
-    pub fn edit_reported(
+    /// path for widget rows, where every mutation site is explicit.
+    /// Returns whether the marker existed and reported a change.
+    pub fn edit_with_change_flag(
         &mut self,
         id: MarkerId,
         edit: impl FnOnce(&mut Marker) -> bool,
@@ -282,21 +317,46 @@ impl MarkerStore {
     }
 
     /// Applies one producer result as an atomic derived-origin replacement.
-    pub fn commit(&mut self, staged: StagedMarkers) -> CommitOutcome {
-        if let Some(origin) = staged.origin.as_deref() {
+    pub fn commit(&mut self, staged: StagedMarkers) -> MarkerCommitOutcome {
+        let StagedMarkers {
+            mut markers,
+            origin,
+            mut dropped,
+            budget,
+        } = staged;
+        if let Some(origin) = origin.as_deref() {
             self.retain(|marker| marker.origin.as_deref() != Some(origin));
         }
-        let added = staged.markers.len();
-        for marker in staged.markers {
+        let available = usize::try_from(MAX_MARKER_BUDGET)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(self.len());
+        let allowed = available.min(usize::try_from(budget.get()).unwrap_or(usize::MAX));
+        if markers.len() > allowed {
+            if allowed > 0
+                && !markers
+                    .get(..allowed)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|marker| marker.active)
+                && let Some(active) = markers.iter().position(|marker| marker.active)
+            {
+                markers.swap(allowed - 1, active);
+            }
+            let omitted = markers.len().saturating_sub(allowed);
+            dropped = dropped.saturating_add(u64::try_from(omitted).unwrap_or(u64::MAX));
+            markers.truncate(allowed);
+        }
+        let added = markers.len();
+        for marker in markers {
             self.insert(marker);
         }
-        if staged.dropped == 0 {
-            CommitOutcome::Committed { added }
+        if dropped == 0 {
+            MarkerCommitOutcome::Committed { added }
         } else {
-            CommitOutcome::Truncated {
+            MarkerCommitOutcome::Truncated {
                 added,
-                dropped: staged.dropped,
-                budget: staged.budget,
+                dropped,
+                budget,
             }
         }
     }
@@ -339,13 +399,49 @@ impl MarkerStore {
         self.ensure_time_index();
         let index = self.time_index.borrow();
         let lower = tmin - index.max_span;
-        let begin = index
-            .starts
-            .partition_point(|(time, _)| time.total_cmp(&lower).is_lt());
-        let end = index
-            .starts
-            .partition_point(|(time, _)| !time.total_cmp(&tmax).is_gt());
-        end.saturating_sub(begin)
+        inclusive_time_range(&index.starts, lower, tmax).len()
+    }
+
+    /// Returns markers overlapping a time window under a bounded candidate contract.
+    #[must_use]
+    pub fn overlapping(&self, tmin: f64, tmax: f64, maximum: usize) -> MarkerCandidates {
+        self.ensure_time_index();
+        let index = self.time_index.borrow();
+        let lower = tmin - index.max_span;
+        let range = inclusive_time_range(&index.starts, lower, tmax);
+        let candidates = index.starts.get(range).unwrap_or_default();
+        let mut ids = Vec::with_capacity(candidates.len().min(maximum));
+        let mut count = 0;
+        for &(_, id) in candidates {
+            if self
+                .by_id(id)
+                .is_some_and(|marker| marker.tmin < tmax && tmin < marker.tmax)
+            {
+                count += 1;
+                if ids.len() < maximum {
+                    ids.push(id);
+                }
+            }
+        }
+        if count > maximum {
+            MarkerCandidates::Overloaded { count }
+        } else {
+            ids.sort_by_key(|id| self.index_of(*id).unwrap_or(usize::MAX));
+            MarkerCandidates::Exact(ids)
+        }
+    }
+
+    /// Returns generation-cached aggregates for the renderer and marker table.
+    #[must_use]
+    pub fn summary(&self) -> MarkerSummary {
+        self.ensure_time_index();
+        let index = self.time_index.borrow();
+        MarkerSummary {
+            selected: index.selected,
+            earliest_marker_start: index.earliest_marker_start,
+            latest_starting_marker_end: index.latest_starting_marker_end,
+            active_hash: index.active_hash.clone(),
+        }
     }
 
     /// Returns the markers whose endpoints fall inside a time tolerance.
@@ -355,13 +451,9 @@ impl MarkerStore {
         let index = self.time_index.borrow();
         let lower = time - tolerance.abs();
         let upper = time + tolerance.abs();
-        let begin = index
-            .endpoints
-            .partition_point(|(endpoint, _)| endpoint.total_cmp(&lower).is_lt());
-        let end = index
-            .endpoints
-            .partition_point(|(endpoint, _)| !endpoint.total_cmp(&upper).is_gt());
-        let candidate_count = end.saturating_sub(begin);
+        let range = inclusive_time_range(&index.endpoints, lower, upper);
+        let candidates = index.endpoints.get(range).unwrap_or_default();
+        let candidate_count = candidates.len();
         if candidate_count > maximum {
             return MarkerCandidates::Overloaded {
                 count: candidate_count,
@@ -370,7 +462,7 @@ impl MarkerStore {
 
         let mut seen = HashSet::with_capacity(candidate_count);
         let mut ids = Vec::with_capacity(candidate_count);
-        for &(_, id) in index.endpoints.get(begin..end).unwrap_or_default() {
+        for &(_, id) in candidates {
             if seen.insert(id) {
                 ids.push(id);
             }
@@ -402,6 +494,11 @@ impl MarkerStore {
         let mut starts = Vec::with_capacity(self.markers.len());
         let mut endpoints = Vec::with_capacity(self.markers.len().saturating_mul(2));
         let mut max_span = 0.0_f64;
+        let mut selected = 0;
+        let mut earliest_marker_start = f64::INFINITY;
+        let mut latest_start = f64::NEG_INFINITY;
+        let mut latest_starting_marker_end = f64::NEG_INFINITY;
+        let mut active_hash = None;
         for (id, marker) in self.iter_with_ids() {
             starts.push((marker.tmin, id));
             endpoints.push((marker.tmin, id));
@@ -409,6 +506,15 @@ impl MarkerStore {
                 endpoints.push((marker.tmax, id));
             }
             max_span = max_span.max(marker.tmax - marker.tmin);
+            selected += usize::from(marker.selected);
+            earliest_marker_start = earliest_marker_start.min(marker.tmin);
+            if marker.tmin > latest_start {
+                latest_start = marker.tmin;
+                latest_starting_marker_end = marker.tmax;
+            }
+            if marker.active {
+                active_hash.clone_from(&marker.event_hash);
+            }
         }
         starts.sort_by(|left, right| left.0.total_cmp(&right.0));
         endpoints.sort_by(|left, right| left.0.total_cmp(&right.0));
@@ -417,6 +523,10 @@ impl MarkerStore {
             starts,
             endpoints,
             max_span,
+            selected,
+            earliest_marker_start,
+            latest_starting_marker_end,
+            active_hash,
         };
     }
 }
@@ -442,7 +552,10 @@ impl<'a> IntoIterator for &'a mut MarkerStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommitOutcome, MarkerBudget, MarkerCandidates, MarkerStore, StagedMarkers};
+    use super::{
+        MAX_MARKER_BUDGET, MarkerBudget, MarkerCandidates, MarkerCommitOutcome, MarkerStore,
+        StagedMarkers,
+    };
     use crate::markers::Marker;
 
     /// Surviving markers keep their identity when a preceding slot is removed and reused.
@@ -509,7 +622,7 @@ mod tests {
 
         assert_eq!(
             outcome,
-            CommitOutcome::Truncated {
+            MarkerCommitOutcome::Truncated {
                 added: 1,
                 dropped: 9,
                 budget,
@@ -525,6 +638,35 @@ mod tests {
             store
                 .iter()
                 .any(|marker| (marker.tmin - 3.0).abs() < f64::EPSILON)
+        );
+    }
+
+    #[test]
+    fn repeated_originless_commits_cannot_exceed_the_global_cap() {
+        let mut store = MarkerStore::default();
+        for index in 0..MAX_MARKER_BUDGET {
+            store.insert(Marker::new(f64::from(index), f64::from(index), 0));
+        }
+        let budget = MarkerBudget::from_wire(1);
+
+        let outcome = store.commit(StagedMarkers {
+            markers: vec![Marker::new(200_000.0, 200_000.0, 0)],
+            origin: None,
+            dropped: 0,
+            budget,
+        });
+
+        assert_eq!(
+            outcome,
+            MarkerCommitOutcome::Truncated {
+                added: 0,
+                dropped: 1,
+                budget,
+            }
+        );
+        assert_eq!(
+            store.len(),
+            usize::try_from(MAX_MARKER_BUDGET).unwrap_or(usize::MAX)
         );
     }
 }

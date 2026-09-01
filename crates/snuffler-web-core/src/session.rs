@@ -8,15 +8,16 @@
 )]
 
 use crate::bridge::{
-    ActiveEventResult, Bridge, Nslc, Repaint, SnufflingRequestParams, SnufflingSpan, ViewParams,
+    ActiveEventResult, Bridge, Nslc, Repaint, SnufMarker, SnufflingRequestParams, SnufflingSpan,
+    ViewParams,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::bridge::{
     CommandOutcome, CommandRequest, RemoveEventsRequest, SeedlinkParams, SetActiveEventRequest,
 };
-use crate::marker_store::MarkerBudget as StoreMarkerBudget;
+use crate::marker_store::MarkerBudget;
 #[cfg(target_arch = "wasm32")]
-use crate::marker_store::{CommitOutcome, MarkerBudget, StagedMarkers};
+use crate::marker_store::{MarkerCommitOutcome, StagedMarkers};
 use crate::markers::Marker;
 #[cfg(target_arch = "wasm32")]
 use crate::markers::{MarkersCommand, parse_markers_command};
@@ -33,7 +34,7 @@ pub struct Session {
     pub snufflings: SnufflingConfigs,
     last_scene_gen: u64,
     last_scene_bounds: Option<(f64, f64)>,
-    last_watch_poll: f64,
+    last_watched_file_check_s: f64,
     last_active_event_gen: u64,
     last_snuffling_gen: u64,
     /// The window follow mode last wrote; any other value means the user (or a
@@ -45,11 +46,61 @@ pub struct Session {
     /// first packet already snapped the track scroll, so later packets leave
     /// the user's scrolling alone.
     live_scroll_snapped_for: Option<u64>,
+    annotation_cache_reset_pending: bool,
 }
 
 /// How long an interactive range change suspends live following, snuffler's
 /// `interactive_range_change_delay_time` (`pile_viewer.py:1253`).
 const FOLLOW_SUSPEND_S: f64 = 10.0;
+
+fn marker_from_snuffling(marker: &SnufMarker, nslc_table: &[Nslc], origin: &str) -> Marker {
+    let mut mapped = Marker::new(
+        marker.t,
+        marker.tmax.unwrap_or(marker.t),
+        u8::try_from(marker.kind).unwrap_or(0),
+    );
+    mapped.phase.clone_from(&marker.phase);
+    mapped.is_event = marker.is_event;
+    mapped.nslc_ids = marker
+        .nslc_indexes
+        .iter()
+        .filter_map(|index| {
+            let nslc = nslc_table.get(usize::try_from(*index).ok()?)?;
+            Some((
+                nslc.net.clone(),
+                nslc.sta.clone(),
+                nslc.loc.clone(),
+                nslc.cha.clone(),
+            ))
+        })
+        .collect();
+    mapped.polarity = marker.polarity.and_then(|value| i8::try_from(value).ok());
+    mapped.moment_tensor = marker.moment_tensor.as_ref().map(|tensor| {
+        [
+            tensor.mnn, tensor.mee, tensor.mdd, tensor.mne, tensor.mnd, tensor.med,
+        ]
+    });
+    mapped.kagan_deg = marker.kagan_deg;
+    mapped.uncertainty = marker.uncertainty;
+    mapped.event_hash.clone_from(&marker.event_hash);
+    mapped.magnitude = marker.magnitude;
+    mapped.depth_km = marker.depth.map(|depth| depth / 1000.0);
+    mapped.lat = marker.lat;
+    mapped.lon = marker.lon;
+    mapped.automatic = marker.automatic;
+    mapped.incidence_angle = marker.incidence_angle;
+    mapped.takeoff_angle = marker.takeoff_angle;
+    mapped.event_name.clone_from(&marker.event_name);
+    mapped.region.clone_from(&marker.region);
+    mapped.catalog.clone_from(&marker.catalog);
+    mapped.event_time = marker.event_time;
+    mapped.dist_active_km = marker.dist_active_km;
+    mapped.active = marker.active;
+    if !origin.is_empty() {
+        mapped.origin = Some(origin.to_owned());
+    }
+    mapped
+}
 
 impl Session {
     /// Creates an empty viewer session and installs its frontend repaint scheduler.
@@ -61,12 +112,13 @@ impl Session {
             snufflings: SnufflingConfigs::default(),
             last_scene_gen: 0,
             last_scene_bounds: None,
-            last_watch_poll: 0.0,
+            last_watched_file_check_s: 0.0,
             last_active_event_gen: 0,
             last_snuffling_gen: 0,
             follow_window: None,
             follow_interrupted_at: None,
             live_scroll_snapped_for: None,
+            annotation_cache_reset_pending: false,
         }
     }
 
@@ -159,7 +211,6 @@ impl Session {
     /// Replaces the current source with live `SeedLink` acquisition.
     #[cfg(target_arch = "wasm32")]
     pub fn start_seedlink(&mut self, params: SeedlinkParams) {
-        self.clear_annotations();
         self.bridge.start_seedlink(params);
     }
 
@@ -167,7 +218,6 @@ impl Session {
     /// it, back to the blank viewer Qt boots into with no arguments.
     #[cfg(target_arch = "wasm32")]
     pub fn close_all(&mut self) {
-        self.clear_annotations();
         let _submission = self.bridge.empty_scene();
     }
 
@@ -179,9 +229,17 @@ impl Session {
         self.state.remove_event_hashes.clear();
         self.state.picking = None;
         self.state.uncertainty_drag_last_y = None;
+        self.annotation_cache_reset_pending = true;
+    }
+
+    /// Takes the pending request to clear frontend-owned annotation caches.
+    #[cfg(target_arch = "wasm32")]
+    pub fn take_annotation_cache_reset(&mut self) -> bool {
+        std::mem::take(&mut self.annotation_cache_reset_pending)
     }
 
     fn consume_empty_scene(&mut self, scene_gen: u64) {
+        self.clear_annotations();
         self.state.track_scroll = 0.0;
         self.state.track_offset = 0;
         self.last_scene_bounds = None;
@@ -217,9 +275,9 @@ impl Session {
         }
         if self.state.watch_files {
             // 1000 ms, matching snuffler's watch timer (pile_viewer.py:1225).
-            if now_s - self.last_watch_poll > 1.0 {
-                self.last_watch_poll = now_s;
-                let _submission = self.bridge.watch_poll();
+            if now_s - self.last_watched_file_check_s > 1.0 {
+                self.last_watched_file_check_s = now_s;
+                let _submission = self.bridge.poll_watched_files();
             }
             self.bridge
                 .request_repaint_after(std::time::Duration::from_secs(1));
@@ -399,9 +457,7 @@ impl Session {
                         .collect(),
                 })
                 .collect(),
-            marker_budget: Some(snuffler_web_proto::bridge::v1::MarkerBudget {
-                max_markers: StoreMarkerBudget::standard().get(),
-            }),
+            marker_budget: Some(MarkerBudget::standard().into()),
         }
     }
 
@@ -421,63 +477,22 @@ impl Session {
         let mut staged_markers = Vec::with_capacity(result.markers.len());
         let mut activates_event = false;
         for marker in &result.markers {
-            let mut mapped = Marker::new(
-                marker.t,
-                marker.tmax.unwrap_or(marker.t),
-                u8::try_from(marker.kind).unwrap_or(0),
-            );
-            mapped.phase.clone_from(&marker.phase);
-            mapped.is_event = marker.is_event;
-            mapped.nslc_ids = marker
-                .nslc_indexes
-                .iter()
-                .filter_map(|index| {
-                    let nslc = result.nslc_table.get(usize::try_from(*index).ok()?)?;
-                    Some((
-                        nslc.net.clone(),
-                        nslc.sta.clone(),
-                        nslc.loc.clone(),
-                        nslc.cha.clone(),
-                    ))
-                })
-                .collect();
-            mapped.polarity = marker.polarity.and_then(|value| i8::try_from(value).ok());
-            mapped.moment_tensor = marker.moment_tensor.as_ref().map(|tensor| {
-                [
-                    tensor.mnn, tensor.mee, tensor.mdd, tensor.mne, tensor.mnd, tensor.med,
-                ]
-            });
-            mapped.kagan_deg = marker.kagan_deg;
-            mapped.uncertainty = marker.uncertainty;
-            mapped.event_hash.clone_from(&marker.event_hash);
-            mapped.magnitude = marker.magnitude;
-            mapped.depth_km = marker.depth.map(|depth| depth / 1000.0);
-            mapped.lat = marker.lat;
-            mapped.lon = marker.lon;
-            mapped.automatic = marker.automatic;
-            mapped.incidence_angle = marker.incidence_angle;
-            mapped.takeoff_angle = marker.takeoff_angle;
-            mapped.event_name.clone_from(&marker.event_name);
-            mapped.region.clone_from(&marker.region);
-            mapped.catalog.clone_from(&marker.catalog);
-            mapped.event_time = marker.event_time;
-            mapped.dist_active_km = marker.dist_active_km;
             // Python-side auto-activation (largest catalog magnitude) arrives on
             // the marker so the canvas and table *show* the active event rather
             // than silently measuring distances from an invisible one.
             if marker.active {
                 activates_event = true;
-                mapped.active = true;
-            }
-            if !result.origin.is_empty() {
-                mapped.origin = Some(result.origin.clone());
             }
             if marker.is_event {
                 has_event = true;
                 event_min = event_min.min(marker.t);
                 event_max = event_max.max(marker.t);
             }
-            staged_markers.push(mapped);
+            staged_markers.push(marker_from_snuffling(
+                marker,
+                &result.nslc_table,
+                &result.origin,
+            ));
         }
         if activates_event {
             for existing in &mut self.state.markers {
@@ -492,8 +507,8 @@ impl Session {
             budget,
         });
         let truncation = match outcome {
-            CommitOutcome::Committed { .. } => None,
-            CommitOutcome::Truncated {
+            MarkerCommitOutcome::Committed { .. } => None,
+            MarkerCommitOutcome::Truncated {
                 added,
                 dropped,
                 budget,
@@ -542,6 +557,7 @@ impl Session {
             // scroll once (Qt's `follow` zeroes the interrupt clock,
             // pile_viewer.py:4257); later packets leave scrolling alone.
             if self.live_scroll_snapped_for != Some(live.started_at.to_bits()) {
+                self.clear_annotations();
                 self.live_scroll_snapped_for = Some(live.started_at.to_bits());
                 self.state.track_scroll = 0.0;
                 self.state.track_offset = 0;
