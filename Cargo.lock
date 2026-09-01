@@ -803,7 +803,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "ecolor"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "bytemuck",
  "emath",
@@ -812,7 +812,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -845,7 +845,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "accesskit",
  "ahash",
@@ -871,7 +871,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -891,7 +891,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "bytemuck",
  "egui",
@@ -912,7 +912,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 [[package]]
 name = "emath"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "bytemuck",
 ]
@@ -920,7 +920,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -941,7 +941,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.34.3"
-source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#242294f189416b958304231d4d009beee2aa62c4"
+source = "git+https://github.com/romnn/egui.git?branch=web-accesskit#2e34b10e54dc9de692f492af4d4a8f48f5d5c885"
 
 [[package]]
 name = "equivalent"
@@ -2563,6 +2563,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost",
+ "prost-types",
+]
+
+[[package]]
 name = "prost-types"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3390,6 +3400,7 @@ dependencies = [
  "color-eyre",
  "prost",
  "prost-build",
+ "prost-reflect",
  "thiserror 2.0.18",
 ]
 
@@ -3418,6 +3429,7 @@ dependencies = [
  "prost",
  "rayon",
  "resvg",
+ "ryu",
  "snuffler-web-core",
 ]
 

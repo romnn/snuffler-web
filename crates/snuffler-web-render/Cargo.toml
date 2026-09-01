@@ -11,6 +11,7 @@ workspace = true
 ecolor = { workspace = true }
 emath = { workspace = true }
 png = "0.18"
+ryu = "1"
 snuffler-web-core = { path = "../snuffler-web-core", default-features = false }
 
 [dev-dependencies]
