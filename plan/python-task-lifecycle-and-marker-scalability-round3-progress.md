@@ -76,8 +76,12 @@ is immutable; this file records the repairs and their verification.
   runtime loss while one of those pickers is open can still deliver one stale child into the
   replacement session. Narrow (requires loss during the dialog) and benign against the fresh
   session; the proper fix splits the picker from the rpc so the Rust flow can guard between them.
+  *(Resolved for `addCakeModel` in the round-5 simplification pass — see
+  `python-task-lifecycle-and-marker-scalability-simplification-pass.md`; `mountGfStore` stays
+  bundled by design, since a directory handle cannot cross the protobuf boundary.)*
 - `proto` still declares `ReloadFailure`/`ReloadBatchResult` with no producer; the live typed path
-  is the Rust `ReloadError` family. Schema cleanup deferred to its own change.
+  is the Rust `ReloadError` family. Schema cleanup deferred to its own change. *(Done in the
+  round-5 simplification pass.)*
 
 ## New regressions guarding the repairs
 
