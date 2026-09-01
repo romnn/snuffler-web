@@ -8,6 +8,8 @@ import { readFileSync } from "node:fs";
 import {
   BridgeResultSchema,
   EmptySchema,
+  MlDevice,
+  MlDeviceStatusSchema,
   WorkerEventSchema,
   type BridgeResult,
 } from "../web/proto/snuffler/bridge/v1/bridge_pb.js";
@@ -40,7 +42,7 @@ interface BridgeModule {
     ys: Uint8Array,
     jobId: bigint
   ): Promise<{ result: Uint8Array }>;
-  seisbenchDevice(): string;
+  seisbenchDevice(): Uint8Array;
   takeOperationEvents(): Uint8Array[];
 }
 
@@ -201,7 +203,7 @@ async function callBridge(
           const out = await bridge.call(rpcMethod, new Uint8Array(request), new Uint8Array(), 999n);
           return {
             result: Array.from(out.result),
-            device: bridge.seisbenchDevice(),
+            device: Array.from(bridge.seisbenchDevice()),
             // This harness stubs the egui module and owns the bridge alone, so
             // draining here yields exactly the events this call produced.
             events: bridge.takeOperationEvents().map((bytes) => Array.from(bytes)),
@@ -222,10 +224,11 @@ async function callBridge(
           operation.event.case === "progress" ? [operation.event.value] : []
         );
       const progress = progressEvents.at(-1);
+      const device = fromBinary(MlDeviceStatusSchema, new Uint8Array(evaluated.device));
       return {
         result: evaluated.result,
-        device: evaluated.device,
-        progress: progress?.fraction ?? -1,
+        device: device.device === MlDevice.WEBGPU ? "WebGPU" : "CPU (wasm)",
+        progress: progress?.progress.case === "fraction" ? progress.progress.value : -1,
         progressLabel: progress?.phase ?? "",
         eventDebug: workerEvents.map((worker) => worker.event.case ?? "empty"),
       };
@@ -350,7 +353,9 @@ async function runBrowserPass({
             toBinary(ViewParamsSchema, view)
           );
           if (!viewFinishedFirst) {
-            throw new Error("GetView did not complete while the SeisBench job was suspended");
+            throw new Error(
+              "GetView did not complete while the SeisBench job yielded the interpreter"
+            );
           }
         }
         const reply = await callBridge(

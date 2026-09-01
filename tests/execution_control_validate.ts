@@ -5,6 +5,7 @@
 // the resulting state and interrupt byte. (`Atomics.wait` paths are exercised
 // only from states that never wait, since this runs single-threaded.)
 import {
+  ExecutionControlState,
   ExecutionState,
   beginCommit,
   cancellationRequested,
@@ -12,17 +13,9 @@ import {
   executionControl,
   markExecutionDone,
   requestCancellation,
-  setInterpreterOwner,
+  setExternalWait,
+  setInterpreterOwnership,
 } from "../web/execution_control.js";
-
-// Mirrors the module-private ControlState encoding; a drift here fails loudly
-// below because every assertion goes through the public API's behavior.
-const COMPUTING_SUSPENDED = 1;
-const COMPUTING_OWNED = 2;
-const CANCELLING_SUSPENDED = 4;
-const CANCELLING_OWNED = 5;
-const COMMITTING = 6;
-const DONE = 7;
 
 let failures = 0;
 
@@ -35,7 +28,7 @@ function check(name: string, actual: unknown, expected: unknown): void {
   }
 }
 
-function fresh(state?: number): { control: Int32Array; interrupt: Uint8Array } {
+function fresh(state?: ExecutionControlState): { control: Int32Array; interrupt: Uint8Array } {
   const control = createExecutionControl();
   if (state !== undefined) Atomics.store(control, 0, state);
   const interrupt = new Uint8Array(new SharedArrayBuffer(1));
@@ -43,110 +36,227 @@ function fresh(state?: number): { control: Int32Array; interrupt: Uint8Array } {
 }
 
 {
-  // A new control is suspended: the worker grants ownership explicitly.
+  // A new job has no interpreter ownership until the worker grants it.
   const { control } = fresh();
-  check("initial state is ComputingSuspended", Atomics.load(control, 0), COMPUTING_SUSPENDED);
+  check(
+    "initial state is ComputingWithoutInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.ComputingWithoutInterpreter
+  );
 }
 
 {
   // executionControl re-wraps the same buffer, not a copy.
-  const { control } = fresh(COMPUTING_OWNED);
+  const { control } = fresh(ExecutionControlState.ComputingWithInterpreter);
   const rewrapped = executionControl(control.buffer as SharedArrayBuffer);
-  check("executionControl shares the buffer", Atomics.load(rewrapped, 0), COMPUTING_OWNED);
+  check(
+    "executionControl shares the buffer",
+    Atomics.load(rewrapped, 0),
+    ExecutionControlState.ComputingWithInterpreter
+  );
 }
 
 {
-  // Cancelling a suspended job must not write the interrupt byte: the
-  // interpreter may be running another lane's Python.
-  const { control, interrupt } = fresh(COMPUTING_SUSPENDED);
+  // Cancelling without interpreter ownership must not write the interrupt byte.
+  // The interpreter may be running another lane's Python.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithoutInterpreter);
   const seen = requestCancellation(control, interrupt);
-  check("suspended cancel reports Computing", seen, ExecutionState.Computing);
-  check("suspended cancel -> CancellingSuspended", Atomics.load(control, 0), CANCELLING_SUSPENDED);
-  check("suspended cancel leaves the byte", Atomics.load(interrupt, 0), 0);
+  check("cancel without the interpreter reports Computing", seen, ExecutionState.Computing);
+  check(
+    "cancel without the interpreter -> CancellingWithoutInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithoutInterpreter
+  );
+  check("cancel without the interpreter leaves the byte clear", Atomics.load(interrupt, 0), 0);
 }
 
 {
-  // Cancelling an owning job publishes the byte and lands in CancellingOwned.
-  const { control, interrupt } = fresh(COMPUTING_OWNED);
+  // A cancelling job that owns the interpreter must publish the interrupt byte.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithInterpreter);
   const seen = requestCancellation(control, interrupt);
-  check("owned cancel reports Computing", seen, ExecutionState.Computing);
-  check("owned cancel -> CancellingOwned", Atomics.load(control, 0), CANCELLING_OWNED);
-  check("owned cancel arms the byte", Atomics.load(interrupt, 0), 2);
+  check("cancel with the interpreter reports Computing", seen, ExecutionState.Computing);
+  check(
+    "cancel with the interpreter -> CancellingWithInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithInterpreter
+  );
+  check("cancel with the interpreter arms the byte", Atomics.load(interrupt, 0), 2);
   check("cancellationRequested sees it", cancellationRequested(control), true);
   const again = requestCancellation(control, interrupt);
   check("second cancel reports Cancelling", again, ExecutionState.Cancelling);
 }
 
 {
-  // Commit wins from ComputingOwned and clears the byte.
-  const { control, interrupt } = fresh(COMPUTING_OWNED);
+  // Commit wins while the job owns the interpreter and clears the byte.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithInterpreter);
   Atomics.store(interrupt, 0, 2);
-  check("beginCommit wins from owned", beginCommit(control, interrupt), true);
-  check("owned commit -> Committing", Atomics.load(control, 0), COMMITTING);
-  check("owned commit clears the byte", Atomics.load(interrupt, 0), 0);
-  check("late cancel reports Committing", requestCancellation(control, interrupt), ExecutionState.Committing);
+  check("beginCommit wins with the interpreter", beginCommit(control, interrupt), true);
+  check(
+    "commit with the interpreter -> Committing",
+    Atomics.load(control, 0),
+    ExecutionControlState.Committing
+  );
+  check("commit with the interpreter clears the byte", Atomics.load(interrupt, 0), 0);
+  check(
+    "late cancel reports Committing",
+    requestCancellation(control, interrupt),
+    ExecutionState.Committing
+  );
 }
 
 {
-  // Commit must also win from ComputingSuspended: a job whose safe-point
-  // resume outruns the view's release legally executes while suspended, and a
-  // gate that failed there would misreport a never-cancelled job as cancelled.
-  const { control, interrupt } = fresh(COMPUTING_SUSPENDED);
-  check("beginCommit wins from suspended", beginCommit(control, interrupt), true);
-  check("suspended commit -> Committing", Atomics.load(control, 0), COMMITTING);
+  // Commit must also win without interpreter ownership: a job whose safe-point
+  // resume outruns the view's release can legally finish in that state.
+  // Rejecting the commit there would misreport a never-cancelled job as cancelled.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithoutInterpreter);
+  check("beginCommit wins without the interpreter", beginCommit(control, interrupt), true);
+  check(
+    "commit without the interpreter -> Committing",
+    Atomics.load(control, 0),
+    ExecutionControlState.Committing
+  );
 }
 
 {
   // A lost commit means the cancel won, and the pending byte must be cleared
   // so it cannot fire inside rollback or reply marshalling.
-  const { control, interrupt } = fresh(COMPUTING_OWNED);
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithInterpreter);
   requestCancellation(control, interrupt);
   check("byte armed before the gate", Atomics.load(interrupt, 0), 2);
   check("beginCommit loses to cancel", beginCommit(control, interrupt), false);
   check("lost commit clears the byte", Atomics.load(interrupt, 0), 0);
-  check("state stays CancellingOwned", Atomics.load(control, 0), CANCELLING_OWNED);
+  check(
+    "state stays CancellingWithInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithInterpreter
+  );
 }
 
 {
-  // Suspension hands the byte back clean; resumption of a cancelled job
-  // re-arms it.
-  const { control, interrupt } = fresh(COMPUTING_OWNED);
+  // Releasing interpreter ownership clears the byte.
+  // Regaining ownership for a cancelled job re-arms it.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithInterpreter);
   requestCancellation(control, interrupt);
-  setInterpreterOwner(control, false, interrupt);
-  check("suspend -> CancellingSuspended", Atomics.load(control, 0), CANCELLING_SUSPENDED);
-  check("suspend clears the byte", Atomics.load(interrupt, 0), 0);
-  setInterpreterOwner(control, true, interrupt);
-  check("resume -> CancellingOwned", Atomics.load(control, 0), CANCELLING_OWNED);
-  check("resume re-arms the byte", Atomics.load(interrupt, 0), 2);
+  setInterpreterOwnership(control, false, interrupt);
+  check(
+    "release interpreter -> CancellingWithoutInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithoutInterpreter
+  );
+  check("releasing the interpreter clears the byte", Atomics.load(interrupt, 0), 0);
+  setInterpreterOwnership(control, true, interrupt);
+  check(
+    "regain interpreter -> CancellingWithInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithInterpreter
+  );
+  check("regaining the interpreter re-arms the byte", Atomics.load(interrupt, 0), 2);
 }
 
 {
-  // The damaging negatives: resuming a NON-cancelled job must never arm the
-  // byte (every job that yields to a view resumes through this path), and an
-  // uncancelled suspension must hand the byte back clean.
-  const { control, interrupt } = fresh(COMPUTING_SUSPENDED);
+  // Granting the interpreter to a non-cancelled job must never arm the byte.
+  // Every job that yields to a view later regains ownership through this path.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithoutInterpreter);
   check("uncancelled job is not cancelling", cancellationRequested(control), false);
-  setInterpreterOwner(control, true, interrupt);
-  check("uncancelled resume -> ComputingOwned", Atomics.load(control, 0), COMPUTING_OWNED);
-  check("uncancelled resume leaves the byte", Atomics.load(interrupt, 0), 0);
-  check("owned uncancelled job is not cancelling", cancellationRequested(control), false);
+  setInterpreterOwnership(control, true, interrupt);
+  check(
+    "uncancelled ownership -> ComputingWithInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.ComputingWithInterpreter
+  );
+  check("uncancelled ownership leaves the byte clear", Atomics.load(interrupt, 0), 0);
+  check(
+    "uncancelled job with the interpreter is not cancelling",
+    cancellationRequested(control),
+    false
+  );
   Atomics.store(interrupt, 0, 2);
-  setInterpreterOwner(control, false, interrupt);
-  check("uncancelled suspend -> ComputingSuspended", Atomics.load(control, 0), COMPUTING_SUSPENDED);
-  check("uncancelled suspend clears the byte", Atomics.load(interrupt, 0), 0);
+  setInterpreterOwnership(control, false, interrupt);
+  check(
+    "uncancelled release -> ComputingWithoutInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.ComputingWithoutInterpreter
+  );
+  check("uncancelled release clears the byte", Atomics.load(interrupt, 0), 0);
+}
+
+{
+  // External waits keep cancellation observable without exposing Pyodide's
+  // promise resolver to the job's SIGINT.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithInterpreter);
+  Atomics.store(interrupt, 0, 2);
+  setExternalWait(control, true, false, interrupt);
+  check(
+    "external wait -> ComputingDuringExternalWait",
+    Atomics.load(control, 0),
+    ExecutionControlState.ComputingDuringExternalWait
+  );
+  check("external wait clears the byte", Atomics.load(interrupt, 0), 0);
+  check(
+    "cancel during external wait reports Computing",
+    requestCancellation(control, interrupt),
+    ExecutionState.Computing
+  );
+  check(
+    "cancel during external wait -> CancellingDuringExternalWait",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingDuringExternalWait
+  );
+  check("cancel during external wait leaves the byte clear", Atomics.load(interrupt, 0), 0);
+  setInterpreterOwnership(control, true, interrupt);
+  check(
+    "view release preserves CancellingDuringExternalWait",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingDuringExternalWait
+  );
+  setExternalWait(control, false, true, interrupt);
+  check(
+    "external wait ends -> CancellingWithInterpreter",
+    Atomics.load(control, 0),
+    ExecutionControlState.CancellingWithInterpreter
+  );
+  check("ending the external wait re-arms the byte", Atomics.load(interrupt, 0), 2);
+}
+
+{
+  // A coroutine can resume before the view's JS finally block releases its
+  // ownership bookkeeping, so resumption must preserve suspension in that gap.
+  const { control, interrupt } = fresh(ExecutionControlState.ComputingWithInterpreter);
+  setExternalWait(control, true, false, interrupt);
+  setInterpreterOwnership(control, true, interrupt);
+  setExternalWait(control, false, false, interrupt);
+  check(
+    "ending a wait under a view keeps the interpreter unavailable",
+    Atomics.load(control, 0),
+    ExecutionControlState.ComputingWithoutInterpreter
+  );
+  check("ending a wait under a view leaves the byte clear", Atomics.load(interrupt, 0), 0);
 }
 
 {
   // markExecutionDone reaches Done from every stable state and zeroes the byte.
-  for (const start of [COMPUTING_SUSPENDED, COMPUTING_OWNED, CANCELLING_SUSPENDED, CANCELLING_OWNED, COMMITTING, DONE]) {
+  for (const start of [
+    ExecutionControlState.ComputingWithoutInterpreter,
+    ExecutionControlState.ComputingWithInterpreter,
+    ExecutionControlState.CancellingWithoutInterpreter,
+    ExecutionControlState.CancellingWithInterpreter,
+    ExecutionControlState.Committing,
+    ExecutionControlState.Done,
+    ExecutionControlState.ComputingDuringExternalWait,
+    ExecutionControlState.CancellingDuringExternalWait,
+  ]) {
     const { control, interrupt } = fresh(start);
     Atomics.store(interrupt, 0, 2);
     markExecutionDone(control, interrupt);
-    check(`done from state ${start}`, Atomics.load(control, 0), DONE);
+    check(`done from state ${start}`, Atomics.load(control, 0), ExecutionControlState.Done);
     check(`done zeroes the byte from ${start}`, Atomics.load(interrupt, 0), 0);
   }
-  const { control, interrupt } = fresh(DONE);
-  check("cancel after done reports Done", requestCancellation(control, interrupt), ExecutionState.Done);
+  const { control, interrupt } = fresh(ExecutionControlState.Done);
+  check(
+    "cancel after done reports Done",
+    requestCancellation(control, interrupt),
+    ExecutionState.Done
+  );
 }
 
 if (failures > 0) {
