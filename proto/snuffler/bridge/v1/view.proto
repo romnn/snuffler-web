@@ -164,4 +164,9 @@ message ViewMeta {
   repeated string color_keys = 5;
   uint64 session_generation = 6;
   uint64 view_sequence = 7;
+  // The subsort this reply was produced under. The painter colours from it, not
+  // from the live UI state: after a subsort change, a whole round trip still
+  // paints the OLD reply's tracks and color_keys, and keying them with the NEW
+  // subsort produced a transient palette belonging to neither.
+  string subsort = 8;
 }

@@ -296,13 +296,18 @@ pub fn show(
         deltatmin,
     );
 
-    // Resolve the controls into row geometry and cache the on-screen window so the
-    // next view request fetches exactly the visible (possibly partial) tracks.
+    // Resolve the controls into row geometry and cache the on-screen window so
+    // the next view request fetches the visible page. The cached count is the
+    // FULL page (`n_page`), not the possibly-clamped `n_draw`: it sizes the
+    // per-track payload budget and rides the request identity, and a partial
+    // last page changing the horizontal resolution (and forcing a re-fetch) on
+    // a purely vertical scroll was a determinism bug. A page reaching past the
+    // last row just returns fewer rows.
     let g = track_geometry(state, total, track_area_h);
     state.track_height = g.height;
     state.track_scroll = g.scroll;
     state.track_offset = g.off;
-    state.ntracks_shown = g.n_draw.max(1);
+    state.ntracks_shown = g.n_page.max(1);
 
     let overflow = (total as f32) > track_area_h / g.row_h.max(1.0) + 1e-3;
     let sb_w = if overflow { SCROLLBAR_W } else { 0.0 };
