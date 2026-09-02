@@ -22,6 +22,14 @@ SEISBENCH_VERSION = "0.11.7"
 _MANIFEST: dict[str, Any] | None = None
 
 
+async def _await_external_operation(awaitable: Any) -> Any:
+    # Import lazily because bridge imports this module while it is still
+    # establishing the per-request operation context.
+    import bridge
+
+    return await bridge._await_external_operation(awaitable)
+
+
 class Annotation(NamedTuple):
     data: NDArray[np.float64]
     sampling_rate: float
@@ -35,10 +43,12 @@ async def load_manifest() -> dict[str, Any]:
         from pyodide.http import pyfetch
 
         url = str(js.URL.new("assets/seisbench_models.json", js.location.href).href)
-        resp = await pyfetch(url)
+        resp = await _await_external_operation(pyfetch(url))
         if not resp.ok:
             raise RuntimeError("fetch %s: HTTP %s" % (url, resp.status))
-        _MANIFEST = cast(dict[str, Any], json.loads(str(await resp.string())))
+        _MANIFEST = cast(
+            dict[str, Any], json.loads(str(await _await_external_operation(resp.string())))
+        )
         if _MANIFEST.get("seisbench_version") != SEISBENCH_VERSION:
             raise RuntimeError(
                 "SeisBench manifest version %r does not match runtime port %r"
@@ -294,11 +304,13 @@ async def _ort_forward(
     import js
 
     contiguous = np.ascontiguousarray(batch, dtype=np.float32)
-    result = await js.__snufflerOrtInfer(
-        model_url,
-        contiguous.reshape(-1),
-        [int(x) for x in contiguous.shape],
-        progress_label,
+    result = await _await_external_operation(
+        js.__snufflerOrtInfer(
+            model_url,
+            contiguous.reshape(-1),
+            [int(x) for x in contiguous.shape],
+            progress_label,
+        )
     )
     dims = _js_int_list(result.dims)
     raw = bytes(

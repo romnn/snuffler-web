@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[package.metadata.cargo-fc]
+# The browser bridge is cfg-gated inside this crate, so dependency compilation
+# through the egui package cannot lint its spawn and transport boundaries.
+targets = { add = ["wasm32-unknown-unknown"] }
+
 [lints]
 workspace = true
 

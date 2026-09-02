@@ -12,11 +12,12 @@ and wraps everything in the error-as-proto failsafe. bridge.py implements the
 
 import sys
 
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.compiler import plugin_pb2
 
 # Responses paired with the out-of-band zero-copy float32 buffer (same convention
 # the Rust ServiceGenerator uses): the handler returns (message, ys).
-BUFFER_RESPONSES = {"ViewMeta", "SpecMeta"}
+BUFFER_RESPONSES = {"ViewMeta"}
 
 
 def camel_to_snake(name: str) -> str:
@@ -32,6 +33,24 @@ def lower_camel(name: str) -> str:
     # protoc-gen-es localName for our PascalCase rpc names: lowercase the first
     # character (MakeExample -> makeExample, GfStoreLabel -> gfStoreLabel).
     return name[:1].lower() + name[1:]
+
+
+def activity_options(req: plugin_pb2.CodeGeneratorRequest) -> tuple[object, object]:
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(descriptor_pb2.DESCRIPTOR.serialized_pb)
+    for proto in req.proto_file:
+        if proto.name == "google/protobuf/descriptor.proto":
+            continue
+        pool.AddSerializedFile(proto.SerializeToString())
+    options_descriptor = pool.FindMessageTypeByName("google.protobuf.MethodOptions")
+    return message_factory.GetMessageClass(options_descriptor), pool.FindExtensionByName(
+        "snuffler.bridge.v1.activity"
+    )
+
+
+def enum_name(message: object, field: str) -> str:
+    descriptor = message.DESCRIPTOR.fields_by_name[field].enum_type
+    return descriptor.values_by_number[getattr(message, field)].name
 
 
 def main() -> None:
@@ -68,6 +87,7 @@ def main() -> None:
 
     pkg = service_file.package
     pkg_path = pkg.replace(".", "/")
+    options_class, activity_extension = activity_options(req)
 
     # Response message class -> BridgeResult oneof field, read from the descriptor.
     variant_field: dict[str, str] = {}
@@ -78,6 +98,20 @@ def main() -> None:
     methods = []
     used_modules = {"bridge_pb2"}  # BridgeResult / BridgeError / Empty live here
     for m in service.method:
+        options = options_class.FromString(m.options.SerializeToString())
+        if not options.HasExtension(activity_extension):
+            raise SystemExit(f"BridgeService.{m.name}: missing required activity option")
+        activity = options.Extensions[activity_extension]
+        empty_fields = [
+            field
+            for field in ("label", "lane", "policy", "session_access", "cancellation")
+            if not getattr(activity, field)
+        ]
+        if empty_fields:
+            raise SystemExit(
+                f"BridgeService.{m.name}: activity has empty/UNSPECIFIED "
+                + ", ".join(empty_fields)
+            )
         req_mod, req_cls = msg_module[m.input_type], msg_class[m.input_type]
         resp_mod, resp_cls = msg_module[m.output_type], msg_class[m.output_type]
         variant = variant_field.get(resp_cls)
@@ -97,6 +131,16 @@ def main() -> None:
                 "resp": f"{resp_mod}.{resp_cls}",
                 "variant": variant,
                 "buffer": resp_cls in BUFFER_RESPONSES,
+                # Only the fields this language consumes are emitted (Python:
+                # the dispatcher's lane branch and mutating-session decision;
+                # TS: the worker's lane assertions). Every field was validated
+                # non-UNSPECIFIED above regardless.
+                "activity": {
+                    "lane": enum_name(activity, "lane").removeprefix("ACTIVITY_LANE_"),
+                    "session_access": enum_name(activity, "session_access").removeprefix(
+                        "SESSION_ACCESS_"
+                    ),
+                },
             }
         )
 
@@ -109,9 +153,32 @@ def main() -> None:
     out.append("")
     out.append("import inspect")
     out.append("import traceback")
-    out.append("from typing import Any, Awaitable, Dict, Protocol, Tuple, Union")
+    out.append(
+        "from typing import Any, Awaitable, Dict, Literal, NamedTuple, Protocol, Tuple, Union"
+    )
     out.append("")
     out.append(f"from {pkg} import {', '.join(sorted(used_modules))}")
+    out.append("")
+    out.append("")
+    lane_values = sorted({mm["activity"]["lane"] for mm in methods})
+    access_values = sorted({mm["activity"]["session_access"] for mm in methods})
+    out.append(f"ActivityLaneName = Literal[{', '.join(map(repr, lane_values))}]")
+    out.append(f"SessionAccessName = Literal[{', '.join(map(repr, access_values))}]")
+    out.append("")
+    out.append("")
+    out.append("class ActivityMeta(NamedTuple):")
+    out.append("    lane: ActivityLaneName")
+    out.append("    session_access: SessionAccessName")
+    out.append("")
+    out.append("")
+    out.append("ACTIVITY_BY_METHOD: Dict[str, ActivityMeta] = {")
+    for mm in methods:
+        activity = mm["activity"]
+        out.append(
+            f'    "{mm["wire"]}": ActivityMeta({activity["lane"]!r}, '
+            f'{activity["session_access"]!r}),'
+        )
+    out.append("}")
     out.append("")
     out.append("")
     out.append("class BridgeServicer(Protocol):")
@@ -126,6 +193,20 @@ def main() -> None:
         base = f"Tuple[{mm['resp']}, Any]" if mm["buffer"] else mm["resp"]
         ret = f"Union[{base}, Awaitable[{base}]]"
         out.append(f"    def {mm['snake']}(self, request: {mm['req']}, data: Any) -> {ret}: ...")
+    out.append("")
+    out.append("")
+    out.append("def cancelled_result() -> Dict[str, Any]:")
+    out.append("    result = bridge_pb2.BridgeResult()")
+    out.append("    result.cancelled.SetInParent()")
+    out.append('    return {"result": result.SerializeToString()}')
+    out.append("")
+    out.append("")
+    out.append("def failure_result(exc: BaseException) -> Dict[str, Any]:")
+    out.append("    result = bridge_pb2.BridgeResult()")
+    out.append("    result.error.kind = type(exc).__name__")
+    out.append("    result.error.message = str(exc)")
+    out.append("    result.error.traceback = traceback.format_exc()")
+    out.append('    return {"result": result.SerializeToString()}')
     out.append("")
     out.append("")
     out.append("async def dispatch(")
@@ -161,12 +242,10 @@ def main() -> None:
             out.append(f"            result.{mm['variant']}.CopyFrom({out_var})")
             out.append('            return {"result": result.SerializeToString()}')
     out.append('        raise KeyError("unknown bridge method: " + method)')
+    out.append("    except KeyboardInterrupt:")
+    out.append("        return cancelled_result()")
     out.append("    except Exception as exc:  # noqa: BLE001 — the whole point is to catch all")
-    out.append("        err = bridge_pb2.BridgeResult()")
-    out.append("        err.error.kind = type(exc).__name__")
-    out.append("        err.error.message = str(exc)")
-    out.append("        err.error.traceback = traceback.format_exc()")
-    out.append('        return {"result": err.SerializeToString()}')
+    out.append("        return failure_result(exc)")
     out.append("")
 
     f = resp.file.add()
@@ -197,6 +276,18 @@ def main() -> None:
         "// The canonical gRPC id of a BridgeService rpc: a closed union of the literal id",
         "// strings above. A plain `string` (or any non-member literal) is NOT assignable.",
         "export type BridgeMethodId = (typeof BridgeMethod)[BridgeMethodName];",
+        "",
+        "export const BridgeActivity = {",
+    ]
+    for mm in methods:
+        activity = mm["activity"]
+        ts.append(f"  [BridgeMethod.{mm['local']}]: {{ lane: {activity['lane']!r} }},")
+    ts += [
+        "} as const;",
+        "",
+        "// Only the field the worker consumes (its per-lane busy assertions); the",
+        "// full activity declaration lives in the .proto and the Rust ledger.",
+        "export type ActivityMeta = (typeof BridgeActivity)[BridgeMethodId];",
         "",
     ]
     tf = resp.file.add()

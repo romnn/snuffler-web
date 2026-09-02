@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use ecolor::Color32;
 use emath::{Align2, Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
+use snuffler_web_core::marker_store::{MarkerCandidates, MarkerId};
 use snuffler_web_core::markers::{MARKER_COLORS, Marker};
 use snuffler_web_core::state::{AppState, Subsort, WiggleTheme};
 use snuffler_web_core::timeaxis;
@@ -190,7 +191,9 @@ fn web_toward_canvas(stroke: Color32, pal: &Palette, keep: f32) -> Color32 {
 /// The coloring keys one row contributes to the palette numbering: one per
 /// painted span, since a row can carry traces with different keys, or the row's
 /// own identity's when it has no spans — so the numbering does not shift when a
-/// track happens to have no data in the window.
+/// track happens to have no data in the window. (A span-less *grouped* row is
+/// the exception, filtered at the `stroke_color_map` call site: its own "*" is
+/// no identity, and the label it would fall back to is window-dependent there.)
 fn track_color_keys(track: &ViewTrack, subsort: Subsort, exact: bool) -> Vec<String> {
     if track.spans.is_empty() {
         vec![color_key(track, &track.loc, subsort, exact)]
@@ -247,19 +250,28 @@ fn stroke_color_map(
     } else {
         // Snuffler Web replaces an empty key with the track label (see
         // `color_key`), so the pile-wide empty key never gets looked up there —
-        // keeping it would waste a palette slot and shift every later key. The
-        // label fallbacks come from the full track universe (every pile row is a
-        // track now, occupied or not), so they are as scroll-stable as the keys.
+        // keeping it would waste a palette slot and shift every later key.
         let mut keys: Vec<String> = pile_keys
             .iter()
             .filter(|key| !key.is_empty() && key.as_str() != "*")
             .cloned()
             .collect();
-        keys.extend(
-            tracks
-                .iter()
-                .flat_map(|track| track_color_keys(track, subsort, exact)),
-        );
+        // Whether real location keys make up the numbering. That decides what a
+        // span-less grouped row may add: with real keys, the keys it would paint
+        // with — its sensors' locations — are already in the pile-wide list,
+        // while its own "*" would fall back to the label, a key that exists only
+        // while the row is empty in the current window. Its arrival or departure
+        // would renumber every key sorting after it, recoloring other traces on
+        // a mere pan or zoom. Without real keys (single-location data) the
+        // labels ARE the numbering, and every grouped row contributes its own
+        // whether occupied or not, so that numbering never moves either.
+        let numbered_by_location = !keys.is_empty();
+        keys.extend(tracks.iter().flat_map(|track| {
+            if numbered_by_location && track.spans.is_empty() && track.loc == "*" {
+                return Vec::new();
+            }
+            track_color_keys(track, subsort, exact)
+        }));
         keys
     };
     keys.sort();
@@ -692,6 +704,14 @@ pub fn paint(
     // skipped along with the marker layers instead of paying markers × spans
     // on every repaint first.
     let markers_over = markers_overloaded(state);
+    let marker_ids = if markers_over {
+        Vec::new()
+    } else {
+        match state.markers.overlapping(state.tmin, state.tmax, 2000) {
+            MarkerCandidates::Exact(ids) => ids,
+            MarkerCandidates::Overloaded { .. } => Vec::new(),
+        }
+    };
 
     // tracks (clipped to the track area so a partially-scrolled first/last row
     // never bleeds over the time axis or the top edge)
@@ -826,10 +846,13 @@ pub fn paint(
                             draw_marker_snippets(
                                 target,
                                 state,
-                                t,
-                                span,
-                                samples,
-                                base_abs,
+                                MarkerSnippet {
+                                    marker_ids: &marker_ids,
+                                    track: t,
+                                    span,
+                                    samples,
+                                    base_abs,
+                                },
                                 &|t_abs, v| {
                                     let x = x_of(t_abs);
                                     in_x(x).then(|| pos2(x, y_of(span, v)))
@@ -983,6 +1006,7 @@ pub fn paint(
         &x_of,
         pal.axis_text,
         markers_over,
+        &marker_ids,
     );
     target.pop_clip();
 
@@ -1132,15 +1156,28 @@ pub fn marker_row_spans(
 /// an instantaneous pick gets one square at its interpolated amplitude. Runs
 /// inside the trace loop because that is where the samples and their y
 /// projection live — exactly where Qt calls it.
+#[derive(Clone, Copy)]
+struct MarkerSnippet<'a> {
+    marker_ids: &'a [MarkerId],
+    track: &'a ViewTrack,
+    span: &'a ViewSpan,
+    samples: &'a [f32],
+    base_abs: f64,
+}
+
 fn draw_marker_snippets(
     target: &mut dyn DrawTarget,
     state: &AppState,
-    t: &ViewTrack,
-    span: &ViewSpan,
-    samples: &[f32],
-    base_abs: f64,
+    snippet: MarkerSnippet<'_>,
     px: &impl Fn(f64, f64) -> Option<emath::Pos2>,
 ) {
+    let MarkerSnippet {
+        marker_ids,
+        track,
+        span,
+        samples,
+        base_abs,
+    } = snippet;
     // Qt chops with `snap=(ceil, floor)` and `include_last`: the first sample
     // at or after tmin through the last at or before tmax, clipped to the
     // trace — its `drawpoint(..., clip=True)` squares land on the trace's own
@@ -1165,7 +1202,10 @@ fn draw_marker_snippets(
         target.line(r.right_bottom(), r.left_bottom(), 2.0, col);
         target.line(r.left_bottom(), r.left_top(), 2.0, col);
     };
-    for (i, m) in state.markers.iter().enumerate() {
+    for (id, m) in marker_ids
+        .iter()
+        .filter_map(|id| state.markers.by_id(*id).map(|marker| (*id, marker)))
+    {
         // The same visibility filter the marker layers apply — Qt's strict
         // window overlap, written without the negation — plus Qt's per-trace
         // pattern match against this concrete trace.
@@ -1173,11 +1213,11 @@ fn draw_marker_snippets(
             || m.tmin >= state.tmax
             || state.tmin >= m.tmax
             || !state.marker_kind_visible(m.kind)
-            || !marker_matches_trace(m, t, &span.loc)
+            || !marker_matches_trace(m, track, &span.loc)
         {
             continue;
         }
-        let col = m.color_for(state.hovered_marker == Some(i));
+        let col = m.color_for(state.hovered_marker == Some(id));
         if m.is_span() {
             let Some((i0, i1)) = chop(m) else {
                 continue;
@@ -1316,17 +1356,7 @@ fn marker_label(m: &Marker) -> String {
 /// markers × spans pass per frame is exactly the cost the count readout
 /// exists to avoid.
 fn markers_overloaded(state: &AppState) -> bool {
-    let deltat_max = state
-        .markers
-        .iter()
-        .map(|m| m.tmax - m.tmin)
-        .fold(0.0, f64::max);
-    let in_window = state
-        .markers
-        .iter()
-        .filter(|m| m.tmin >= state.tmin - deltat_max && m.tmin <= state.tmax)
-        .count();
-    in_window > 2000
+    state.markers.overload_count(state.tmin, state.tmax) > 2000
 }
 
 /// Draws every visible marker the way snuffler layers them (`drawit`,
@@ -1357,6 +1387,7 @@ fn draw_markers(
     x_of: &impl Fn(f64) -> f32,
     fg: Color32,
     overloaded: bool,
+    marker_ids: &[MarkerId],
 ) {
     let v0 = area.top();
     let v1 = area.bottom();
@@ -1365,8 +1396,9 @@ fn draw_markers(
     // a count take over (Qt's TooMany fallback, pile_viewer.py:3030) — a
     // catalog load or a picker run over a long window reaches that easily.
     if overloaded {
+        let summary = state.markers.summary();
         let n_all = state.markers.len();
-        let n_sel = state.markers.iter().filter(|m| m.selected).count();
+        let n_sel = summary.selected;
         let suffix = if n_sel == n_all {
             " (all selected)".to_owned()
         } else if n_sel > 0 {
@@ -1377,23 +1409,21 @@ fn draw_markers(
         // Qt takes the first marker's tmin and the last's tmax; its list is
         // sorted by tmin, so that is the earliest start and the end of the
         // latest-starting marker.
-        let t_first = state
-            .markers
-            .iter()
-            .map(|m| m.tmin)
-            .fold(f64::INFINITY, f64::min);
-        let t_last = state
-            .markers
-            .iter()
-            .max_by(|a, b| a.tmin.total_cmp(&b.tmin))
-            .map_or(f64::NEG_INFINITY, |m| m.tmax);
-        let umin = x_of(t_first).max(area.left());
-        let umax = x_of(t_last).min(area.right());
+        let first_x = x_of(summary.earliest_marker_start).max(area.left());
+        let last_x = x_of(summary.latest_starting_marker_end).min(area.right());
         // DotLine on a width-2 pen: 2 px dots, 4 px gaps.
-        dashed_line(target, pos2(umin, v0), pos2(umax, v0), 2.0, fg, 2.0, 4.0);
+        dashed_line(
+            target,
+            pos2(first_x, v0),
+            pos2(last_x, v0),
+            2.0,
+            fg,
+            2.0,
+            4.0,
+        );
         draw_marker_label(
             target,
-            pos2(umin + 10.0, v0 - 10.0),
+            pos2(first_x + 10.0, v0 - 10.0),
             Align2::LEFT_BOTTOM,
             &format!("{n_all} Markers{suffix}"),
             fg,
@@ -1407,20 +1437,19 @@ fn draw_markers(
     let shown = |m: &Marker| {
         m.tmin < state.tmax && state.tmin < m.tmax && state.marker_kind_visible(m.kind)
     };
-    let active_hash = state
-        .markers
-        .iter()
-        .find(|m| m.active)
-        .and_then(|m| m.event_hash.clone());
+    let active_hash = state.markers.summary().active_hash;
 
     // Per-track layer (`Marker.draw_trace`): events draw nothing here
     // (`EventMarker.draw_trace` is a pass). An unscoped marker matches every
     // trace, so it paints these on every row, exactly as Qt does.
-    for (i, m) in state.markers.iter().enumerate() {
+    for (id, m) in marker_ids
+        .iter()
+        .filter_map(|id| state.markers.by_id(*id).map(|marker| (*id, marker)))
+    {
         if m.is_event || !shown(m) {
             continue;
         }
-        let hovered = state.hovered_marker == Some(i);
+        let hovered = state.hovered_marker == Some(id);
         let col = m.color_for(hovered);
         let u_min = x_of(m.tmin);
         let u_max = x_of(m.tmax);
@@ -1479,11 +1508,14 @@ fn draw_markers(
     }
 
     // Overview layer (`Marker.draw` via `draw_visible_markers`), painted on top.
-    for (i, m) in state.markers.iter().enumerate() {
+    for (id, m) in marker_ids
+        .iter()
+        .filter_map(|id| state.markers.by_id(*id).map(|marker| (*id, marker)))
+    {
         if !shown(m) {
             continue;
         }
-        let hovered = state.hovered_marker == Some(i);
+        let hovered = state.hovered_marker == Some(id);
         let col = m.color_for(hovered);
         let u_min = x_of(m.tmin);
         let u_max = x_of(m.tmax);
@@ -1563,8 +1595,8 @@ mod tests {
     use crate::palette::{Theme, palette};
 
     use super::{
-        color_key, draw_marker_snippets, marker_matches_track, paint, stroke_color_map,
-        web_band_share, web_stroke_palette, web_toward_canvas,
+        MarkerSnippet, color_key, draw_marker_snippets, marker_matches_track, paint,
+        stroke_color_map, web_band_share, web_stroke_palette, web_toward_canvas,
     };
     use ecolor::Color32;
     use snuffler_web_core::state::Subsort;
@@ -1855,6 +1887,57 @@ mod tests {
     }
 
     #[test]
+    fn empty_grouped_rows_leave_a_location_numbering_alone() {
+        // A span-less grouped row paints nothing, and the keys it would paint
+        // with — its sensors' locations — are already in the pile-wide list.
+        // Letting its label pad the numbering instead would add and remove a
+        // key as data moves in and out of the window, recoloring other
+        // stations' traces on a mere pan or zoom (the blue↔olive flip where
+        // the seven-colour ramp wraps).
+        let pile_keys = vec!["00".to_owned(), "10".to_owned()];
+        let mut occupied = track("XL", "CO01", "*", "BHZ", "XL CO01 BHZ");
+        occupied.spans = vec![
+            ViewSpan {
+                loc: "00".into(),
+                ..ViewSpan::default()
+            },
+            ViewSpan {
+                loc: "10".into(),
+                ..ViewSpan::default()
+            },
+        ];
+        let empty = track("XL", "CO02", "*", "BHZ", "XL CO02 BHZ");
+        let with_empty = stroke_color_map(
+            &pile_keys,
+            &[occupied.clone(), empty],
+            Subsort::NscGroupL,
+            WiggleTheme::SnufflerWeb,
+            Theme::Light,
+        );
+        let alone = stroke_color_map(
+            &pile_keys,
+            &[occupied],
+            Subsort::NscGroupL,
+            WiggleTheme::SnufflerWeb,
+            Theme::Light,
+        );
+        assert_eq!(with_empty, alone);
+
+        // Single-location data filters the pile list to nothing, so there the
+        // labels ARE the numbering and an empty row keeps contributing its own.
+        let single_occupied = track("XL", "CO01", "*", "BHZ", "XL CO01 BHZ");
+        let single_empty = track("XL", "CO02", "*", "BHZ", "XL CO02 BHZ");
+        let labels = stroke_color_map(
+            &[String::new()],
+            &[single_occupied, single_empty.clone()],
+            Subsort::NscGroupL,
+            WiggleTheme::SnufflerWeb,
+            Theme::Light,
+        );
+        assert!(labels.contains_key(&single_empty.label));
+    }
+
+    #[test]
     fn markers_match_grouped_rows_through_the_location_wildcard() {
         // A location-grouped row carries '*' as its location (the bridge writes
         // snuffler's own `track_patterns` wildcard), so a marker picked on one
@@ -1928,7 +2011,7 @@ mod tests {
             let t = state.tmin + f64::from(k) * 0.01;
             let mut m = snuffler_web_core::markers::Marker::new(t, t, 0);
             m.selected = k < 5;
-            state.markers.push(m);
+            state.markers.insert(m);
         }
         let view = ViewData {
             meta: ViewMeta {
@@ -1972,7 +2055,7 @@ mod tests {
             let t0 = state.tmin + f64::from(k) * 0.02;
             state
                 .markers
-                .push(snuffler_web_core::markers::Marker::new(t0, t0 + 0.5, 2));
+                .insert(snuffler_web_core::markers::Marker::new(t0, t0 + 0.5, 2));
         }
         let mut row = track("XX", "STA01", "", "HHZ", "XX.STA01..HHZ");
         row.spans = vec![ViewSpan {
@@ -2059,11 +2142,23 @@ mod tests {
                 tmax: 400.0,
                 ..AppState::default()
             };
-            state.markers.push(marker);
+            state.markers.insert(marker);
+            let marker_ids: Vec<_> = state.markers.iter_with_ids().map(|(id, _)| id).collect();
             let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
                 Vec2::new(text.len() as f32 * size * 0.5, size)
             });
-            draw_marker_snippets(&mut target, &state, &row, &span, &seg_samples, 0.0, &px);
+            draw_marker_snippets(
+                &mut target,
+                &state,
+                MarkerSnippet {
+                    marker_ids: &marker_ids,
+                    track: &row,
+                    span: &span,
+                    samples: &seg_samples,
+                    base_abs: 0.0,
+                },
+                &px,
+            );
             target.finish()
         };
         // Wholly past the segment: silence, as after Qt's NoData.
@@ -2198,6 +2293,8 @@ mod tests {
                 tracks: vec![track("HHZ", "12.3 km"), track("HHN", "")],
                 notices: Vec::new(),
                 color_keys: Vec::new(),
+                session_generation: 0,
+                view_sequence: 0,
             },
             ys: Vec::new(),
         };

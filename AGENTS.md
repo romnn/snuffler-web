@@ -102,8 +102,10 @@
     slug. Keep those distinctions when you add a failure mode; they are the whole
     reason the type exists, since a status line can only ever show one sentence
     but the app can act on the variant. `BridgeError` deliberately holds no
-    `JsValue`: it is stored in `Status` and read by the egui frontend, both of
-    which build on the host. Stringify the JS exception at the boundary instead.
+    `JsValue`: it is stored in the activity ledger (`JobError::Bridge`,
+    `RuntimeState::Failed`) and in the bridge's `diagnostic` slot, and read by
+    the egui frontend — all of which build on the host. Stringify the JS
+    exception at the boundary instead.
   - **Tests use `color-eyre`, and only where they can actually fail.** A test that
     reaches for a fixture returns `eyre::Result<()>` and propagates with `?`,
     `bail!`, `ensure!`, or `let ... else { bail!(…) }`. A test whose only failure

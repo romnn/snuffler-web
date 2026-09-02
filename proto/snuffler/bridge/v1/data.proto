@@ -137,11 +137,24 @@ message IngestMiniSeedRequest {
   // Rolling retention window in seconds for live acquisition. Zero keeps all
   // data from start_time onward.
   double retain_seconds = 5;
+  uint64 stream_id = 6;
+  uint64 session_epoch = 7;
+  uint64 batch_seq_first = 8;
+  uint64 batch_seq_last = 9;
+}
+
+message IngestMiniSeedResult {
+  SceneMeta scene = 1;
+  uint64 stream_id = 2;
+  uint64 session_epoch = 3;
+  uint64 ack_seq_first = 4;
+  uint64 ack_seq_last = 5;
 }
 
 // A pyrocko marker file's text, picked in the browser and parsed in Python.
 message LoadMarkersRequest {
   string text = 1;
+  MarkerBudget marker_budget = 2;
 }
 
 // StationXML documents picked in the browser (the picker is multi-select) and
@@ -161,6 +174,44 @@ message LoadStationsRequest {
 // markers + the active event for distance/azimuth sorting).
 message LoadEventsRequest {
   string text = 1;
+  MarkerBudget marker_budget = 2;
+}
+
+message BrowserFile {
+  string handle_id = 1;
+  string name = 2;
+  bytes content = 3;
+  uint64 last_modified = 4;
+  bool bundle = 5;
+}
+
+message BrowserReadFailure {
+  string handle_id = 1;
+  string name = 2;
+  string detail = 3;
+}
+
+// One bounded page of a browser-selected file load.
+message BrowserFileLoadPage {
+  repeated BrowserFile files = 1;
+  repeated BrowserReadFailure failures = 2;
+  bool cancelled = 3;
+  string load_id = 4;
+  bool has_more = 5;
+}
+
+message BrowserFileLoadPageRequest {
+  string load_id = 1;
+}
+
+message BrowserSourceAck {
+  string handle_id = 1;
+  uint64 last_modified = 2;
+  bool bundle = 3;
+}
+
+message BrowserSourceAckList {
+  repeated BrowserSourceAck sources = 1;
 }
 
 // A user-picked cake earth model (.nd text), written into the Pyodide FS.
@@ -208,6 +259,7 @@ message CatalogRequest {
   // instead of the lightweight text summary, so event markers carry a focal
   // mechanism (beachball + Kagan angle). Falls back to text when unset.
   bool with_mt = 5;
+  MarkerBudget marker_budget = 6;
 }
 
 message MarkerFileEntry {
@@ -250,6 +302,9 @@ message MarkerFile {
 message SnufMarkerList {
   repeated SnufMarker markers = 1;
   ActiveEventResult event_state = 2;
+  uint64 markers_dropped = 3;
+  uint32 marker_budget = 4;
+  repeated Nslc nslc_table = 5;
 }
 
 // One entry of `assets/examples/examples.json`: a dataset the app can fetch on
@@ -283,6 +338,7 @@ message LoadBundleRequest {
   // Exactly one of `url` and `content` is set.
   bytes content = 3;
   string name = 4; // filename, for the summary the load reports
+  MarkerBudget marker_budget = 5;
 }
 
 // The view a bundle asks to be opened in, in the same vocabulary the frontend

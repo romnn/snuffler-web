@@ -16,3 +16,4 @@ color-eyre = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
+prost-reflect = { workspace = true }

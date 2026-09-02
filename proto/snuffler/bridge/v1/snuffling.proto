@@ -141,6 +141,11 @@ message SnufflingRequestParams {
   // chop window plus a trace filter from the marker's channel patterns. Empty =
   // fall back to the visible window.
   repeated SnufflingSpan selected_spans = 3;
+  MarkerBudget marker_budget = 4;
+}
+
+message MarkerBudget {
+  uint32 max_markers = 1;
 }
 
 // One selected marker's extent, as a snuffling's processing scope.
@@ -160,7 +165,7 @@ message SnufMarker {
   // The channels the marker applies to — a *list*, as pyrocko's `nslc_ids` is
   // (marker.py:168): a Qt pick binds to every channel gathered onto the clicked
   // track, and a loaded file legally carries several. Empty = every track.
-  repeated Nslc nslc_ids = 6;
+  repeated uint32 nslc_indexes = 6;
   optional int32 polarity = 7;
   // Focal mechanism for an event marker sourced from a catalog moment tensor,
   // plus the Kagan angle (degrees) to the active event and the event's catalog
@@ -211,6 +216,9 @@ message SnufflingResult {
   // Empty = the markers accumulate (marker-file loads, catalog searches).
   string origin = 5;
   ActiveEventResult event_state = 6;
+  uint64 markers_dropped = 7;
+  uint32 marker_budget = 8;
+  repeated Nslc nslc_table = 9;
 }
 
 message NamedSnufflingRequest {

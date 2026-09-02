@@ -156,17 +156,11 @@ impl DrawTarget for SvgTarget {
             return;
         }
         let (col, op) = css_color(color);
-        let mut d = String::with_capacity(pts.len() * 12);
-        for p in &pts {
-            let _ = write!(d, "{:.2},{:.2} ", p.x, p.y);
-        }
+        let _ = write!(self.body, "<polyline points=\"");
+        push_points(&mut self.body, &pts);
         let _ = write!(
             self.body,
-            "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-opacity=\"{:.3}\" stroke-width=\"{:.2}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>",
-            d.trim_end(),
-            col,
-            op,
-            width
+            "\" fill=\"none\" stroke=\"{col}\" stroke-opacity=\"{op:.3}\" stroke-width=\"{width:.2}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
         );
     }
 
@@ -175,17 +169,9 @@ impl DrawTarget for SvgTarget {
             return;
         }
         let (col, op) = css_color(fill);
-        let mut d = String::with_capacity(pts.len() * 12);
-        for p in &pts {
-            let _ = write!(d, "{:.2},{:.2} ", p.x, p.y);
-        }
-        let _ = write!(
-            self.body,
-            "<polygon points=\"{}\" fill=\"{}\" fill-opacity=\"{:.3}\"/>",
-            d.trim_end(),
-            col,
-            op
-        );
+        let _ = write!(self.body, "<polygon points=\"");
+        push_points(&mut self.body, &pts);
+        let _ = write!(self.body, "\" fill=\"{col}\" fill-opacity=\"{op:.3}\"/>");
     }
 
     fn text(&mut self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
@@ -268,6 +254,23 @@ impl DrawTarget for SvgTarget {
             self.body.push_str("</g>");
             self.open_clips -= 1;
         }
+    }
+}
+
+fn push_points(out: &mut String, points: &[Pos2]) {
+    // General-purpose fixed-point formatting dominated large waveform exports.
+    // Rounding first preserves the existing hundredth-pixel precision while ryu
+    // emits the equivalent SVG numbers without allocating an intermediate path.
+    let mut buffer = ryu::Buffer::new();
+    for (index, point) in points.iter().enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        let x = (f64::from(point.x) * 100.0).round() / 100.0;
+        let y = (f64::from(point.y) * 100.0).round() / 100.0;
+        out.push_str(buffer.format(x));
+        out.push(',');
+        out.push_str(buffer.format(y));
     }
 }
 
@@ -363,5 +366,19 @@ mod tests {
         assert!(svg.contains("clip-path=\"url(#c0)\""));
         assert!(svg.contains("P &lt; S &amp; surface"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    #[test]
+    fn svg_points_keep_hundredth_pixel_precision() {
+        let mut target =
+            SvgTarget::new(200.0, 100.0, HashMap::new(), |_text, size| vec2(size, size));
+        target.polyline(
+            vec![pos2(1.234, -0.006), pos2(2.0, 3.456)],
+            1.0,
+            Color32::WHITE,
+        );
+
+        let svg = target.finish();
+        assert!(svg.contains("points=\"1.23,-0.01 2.0,3.46\""));
     }
 }

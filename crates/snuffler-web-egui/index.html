@@ -362,10 +362,18 @@
         // coi-serviceworker shim reloads the page to get there — so starting a
         // download now would just be thrown away by that reload.
         if (window.crossOriginIsolated) {
-            const worker = new Worker("bridge_worker.js", { type: "module" });
+            const epoch = 0;
+            const worker = new Worker(`bridge_worker.js?epoch=${epoch}`, { type: "module" });
             const queue = [];
+            // A worker whose module script fails to load (404, syntax error)
+            // reports it through `error`, not `message`; park that too, or the
+            // failure is silent until bridge.js's five-minute boot deadline.
+            const early = { worker, queue, epoch, failure: null };
             worker.onmessage = (event) => queue.push(event);
-            window.__snufflerWorker = { worker, queue };
+            worker.onerror = (event) => {
+                early.failure = (event && event.message) || "the Python worker script failed to load";
+            };
+            window.__snufflerWorker = early;
         }
     </script>
 </body>

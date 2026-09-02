@@ -58,6 +58,7 @@ message ViewParams {
   // bin, which is the resolution the canvas can draw anyway. `visible_length` is
   // ignored while this is set, and is sent unset.
   bool adaptive_visible_length = 39;
+  uint64 view_sequence = 40;
 }
 
 // One contiguous run of payload on a track.
@@ -161,4 +162,6 @@ message ViewMeta {
   // trace palette by. Numbering over the visible slice instead renumbers the
   // palette on every scroll, which snuffler cannot do.
   repeated string color_keys = 5;
+  uint64 session_generation = 6;
+  uint64 view_sequence = 7;
 }

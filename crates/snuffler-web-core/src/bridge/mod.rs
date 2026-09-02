@@ -14,15 +14,36 @@
     )
 )]
 
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::activity::{
+    ActivityLedger, CancelRequest, JobError, JobHandle, JobRecord, Operation, Outcome,
+    RuntimeState, Submission,
+};
+#[cfg(target_arch = "wasm32")]
+use crate::activity::{JobState, Progress};
 
 mod error;
+mod jobs;
 mod proto;
+mod runtime;
 
 pub use error::{
     BridgeError, MarshalError, ReloadError, ReloadFailureReason, ReloadSourceError, SeedlinkError,
 };
+pub use jobs::{CommandOutcome, FigureData, ReadyTile, TileRequest, ViewData};
+use jobs::{FigureSlot, TileState};
+#[cfg(target_arch = "wasm32")]
+use jobs::{TILE_BATCH, TILE_BATCHES_IN_FLIGHT};
+pub use runtime::{
+    LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, SeedlinkParams,
+    SeisbenchProgress,
+};
+#[cfg(target_arch = "wasm32")]
+use runtime::{LiveIngestBatch, SessionEpoch, StreamId};
+use runtime::{LiveIngestMailbox, LiveIngestState};
 pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 
 // The decoded protobuf messages ARE the app-facing domain model — no parallel
@@ -30,212 +51,38 @@ pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
 // proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
     ActiveEventResult, BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest,
-    CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest,
-    IngestMiniSeedRequest, MapData, MapRequest, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
-    PolarizationSnufflingParams, ReloadBatchResult, RemoveEventsRequest, RmsSnufflingParams,
-    SceneMeta, SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest,
-    SnufflingParams, SnufflingRequestParams, SnufflingResult, SnufflingSpan,
-    SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest,
-    TraceBox, ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
+    CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest, MapData, MapRequest,
+    MarkerFile, MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams,
+    RemoveEventsRequest, RmsSnufflingParams, RuntimeInfo, SceneMeta, SeisbenchSnufflingParams,
+    SeismosizerSnufflingParams, SetActiveEventRequest, SnufMarker, SnufflingParams,
+    SnufflingRequestParams, SnufflingResult, SnufflingSpan, SpectrogramSnufflingParams,
+    SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, TraceBox, ViewMeta, ViewParams,
+    ViewSpan, ViewTrack, WaveformDownloadRequest,
+};
+// Wire shapes only the wasm bridge implementation touches; not part of the
+// crate's app-facing surface.
+#[cfg(target_arch = "wasm32")]
+pub(crate) use proto::pb::{
+    BrowserFileLoadPage, BrowserSourceAck, BrowserSourceAckList, IngestMiniSeedRequest,
 };
 
 /// Local-file header of a zip archive, which is how a dataset bundle is
 /// recognized wherever one can arrive.
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
-/// Visible live waveform window once enough samples have arrived.
-pub const LIVE_FOLLOW_SECONDS: f64 = 300.0;
-/// Amount of live data kept in the Pyodide trace pile before older samples are
-/// discarded.
-pub const LIVE_RETAIN_SECONDS: f64 = 1800.0;
-
-/// Metadata for the currently active `SeedLink` acquisition session.
-#[derive(Clone, Copy, Debug)]
-pub struct LiveSeedlinkSession {
-    /// Epoch time when the current live source was started by the user.
-    pub started_at: f64,
-    /// Width of the live-follow viewport, in seconds.
-    pub follow_seconds: f64,
-}
-
-/// A view: prost metadata plus the out-of-band `f32` sample buffer (`ys` rides
-/// alongside the proto, never inside it — see the worker transfer).
-#[derive(Clone, Debug, Default)]
-pub struct ViewData {
-    /// Track metadata and the absolute time represented by the sample buffer.
-    pub meta: ViewMeta,
-    /// Out-of-band waveform samples or packed waterfall cells.
-    pub ys: Vec<f32>,
-}
-
-impl ViewData {
-    /// Raw uniform samples or waterfall cells for one span as a flat slice.
-    #[must_use]
-    pub fn samples<'a>(&'a self, span: &ViewSpan) -> &'a [f32] {
-        let off = usize::try_from(span.offset).unwrap_or(usize::MAX);
-        let cnt = usize::try_from(span.count).unwrap_or(usize::MAX);
-        let end = off.saturating_add(cnt).min(self.ys.len());
-        self.ys.get(off.min(self.ys.len())..end).unwrap_or(&[])
-    }
-}
-
-/// A rendered pyrocko/matplotlib figure: PNG bytes, or a non-empty `error` string
-/// the window shows as text (a figure that fails never takes down the viewer —
-/// mirroring how snuffling errors surface). The frontend decodes the PNG into a
-/// texture once per `FigureSlot::generation`; the texture carries its own size.
-#[derive(Clone, Debug, Default)]
-pub struct FigureData {
-    /// Encoded matplotlib PNG, empty until a successful render lands.
-    pub png: Vec<u8>,
-    /// Render failure text, empty when `png` is valid.
-    pub error: String,
-}
-
-/// User-entered parameters for a live `SeedLink` acquisition.
-#[derive(Clone, Debug, Default)]
-pub struct SeedlinkParams {
-    /// `SeedLink` server hostname.
-    pub host: String,
-    /// `SeedLink` TCP port.
-    pub port: String,
-    /// Network selector.
-    pub net: String,
-    /// Station selector.
-    pub sta: String,
-    /// Channel selector expression.
-    pub selectors: String,
-    /// Width of the live-follow viewport in seconds (Qt's `--follow N`);
-    /// non-positive falls back to [`LIVE_FOLLOW_SECONDS`].
-    pub follow_s: f64,
-    /// Seconds of live data to keep before older samples are discarded.
-    /// A bound is not optional on wasm32's single fixed-size heap — Qt keeps
-    /// everything — but the number is the user's; non-positive falls back to
-    /// [`LIVE_RETAIN_SECONDS`].
-    pub retain_s: f64,
-}
-
-/// One figure window's latest render, keyed by figure kind in `Inner::figures`.
-/// `gen` bumps on every fresh render so the frontend re-decodes the image only then;
-/// `in_flight` de-dupes concurrent requests for the same kind.
-#[derive(Clone, Debug, Default)]
-struct FigureSlot {
-    data: FigureData,
-    generation: u64,
-    in_flight: bool,
-}
-
-/// Lifecycle of a map tile fetch (RGBA bytes are handed to the view once, which
-/// turns them into a texture and caches it there).
-enum TileState {
-    InFlight,
-    Ready(u32, u32, Vec<u8>),
-    Consumed,
-    Failed,
-}
-
-/// A map tile the view wants on screen, and where to get it.
-///
-/// The view submits every visible tile at once ([`Bridge::request_tiles`]) rather
-/// than one call per tile, so the scheduler can order the whole screenful by
-/// `priority` instead of by whatever order the loop happened to walk in.
-#[derive(Clone, Debug)]
-pub struct TileRequest {
-    /// Integer zoom level.
-    pub z: u8,
-    /// Tile column.
-    pub x: u32,
-    /// Tile row.
-    pub y: u32,
-    /// Fully substituted URL for the currently selected basemap.
-    pub url: String,
-    /// Fetch order; lower goes first. The view scores by distance from the middle
-    /// of the screen, which is where the eye is.
-    pub priority: i32,
-}
-
-/// A decoded tile, handed to the view exactly once so it can upload a texture.
-#[derive(Clone, Debug)]
-pub struct ReadyTile {
-    /// Integer zoom level.
-    pub z: u8,
-    /// Tile column.
-    pub x: u32,
-    /// Tile row.
-    pub y: u32,
-    /// Decoded width in pixels.
-    pub width: u32,
-    /// Decoded height in pixels.
-    pub height: u32,
-    /// Unmultiplied RGBA samples, `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
-}
-
-/// Tiles started in one crossing of the wasm boundary. Sized to keep a screenful
-/// moving without letting a burst of stale requests outlive the view that wanted
-/// them — the queue is re-scored every frame, so anything not yet started is
-/// free to be replaced.
-const TILE_BATCH: usize = 8;
-
-/// Batches allowed to be in flight at once. Two keeps the connection busy while
-/// one batch is finishing, without queueing so deeply that a fast zoom leaves a
-/// long tail of tiles nobody is looking at any more.
-const TILE_BATCHES_IN_FLIGHT: usize = 2;
-
-/// Current lifecycle state of the asynchronous pyrocko bridge.
-#[derive(Clone, Debug, Default)]
-pub enum Status {
-    /// Pyodide and the worker have not finished initializing.
-    #[default]
-    Booting,
-    /// A user-visible operation is in progress.
-    Loading(String),
-    /// The bridge can accept requests.
-    Ready,
-    /// The latest operation failed. The variant says which layer gave out, and
-    /// [`BridgeError::traceback`] recovers pyrocko's traceback when it was
-    /// pyrocko that raised.
-    Error(BridgeError),
-}
-
-/// How a ':' command line executed by pyrocko turned out.
-#[derive(Clone, Debug)]
-pub enum CommandOutcome {
-    /// The command ran; any view change it asked for has been applied.
-    Succeeded,
-    /// The command was rejected, with the message to show under the input.
-    Failed(String),
-}
-
-/// The Python runtime the worker booted, read back from the live interpreter
-/// rather than assumed from the build, so the About window reports what is
-/// actually running.
-#[derive(Clone, Debug)]
-pub struct RuntimeInfo {
-    /// `sys.version`'s first token, e.g. `3.14.0`.
-    pub python: String,
-    /// `numpy.__version__`.
-    pub numpy: String,
-    /// `pyrocko.__version__`, or `unknown` on a build that does not carry one.
-    pub pyrocko: String,
-    /// True once pthreads are confirmed live in the interpreter — meaning the
-    /// py-mt build came up with `OpenMP` and SIMD, not a single-threaded fallback.
-    pub threaded: bool,
-    /// `navigator.hardwareConcurrency` as seen by the worker; 0 when unavailable.
-    pub cores: u32,
-}
-
-/// Progress reported by the in-browser `SeisBench` runtime.
-#[derive(Clone, Debug)]
-pub struct SeisbenchProgress {
-    /// Completed fraction in the inclusive range `0.0..=1.0`.
-    pub fraction: f32,
-    /// Current model-loading or inference phase.
-    pub label: String,
-}
+/// The job list shared with the per-frame activity UI.
+type ActivityJobs = Rc<Vec<(JobHandle, JobRecord)>>;
 
 #[derive(Default)]
 struct Inner {
-    status: Status,
+    activity: ActivityLedger,
+    /// The last runtime epoch observed by [`web::sync_runtime`]. A change with no
+    /// RPC in flight is the only evidence of an idle worker death, so the sync
+    /// poll compares against this to report the loss exactly once.
+    runtime_epoch: Option<crate::activity::RuntimeEpoch>,
+    /// The record snapshot handed to the per-frame activity UI, keyed by the
+    /// ledger revision it was built from, so idle frames share one allocation.
+    activity_cache: Option<(u64, ActivityJobs)>,
     /// Latest recoverable failure that should remain visible without making the
     /// bridge operationally unavailable.
     diagnostic: Option<BridgeError>,
@@ -243,7 +90,7 @@ struct Inner {
     /// Incremented every time a new scene is loaded, so the frontend can reset its
     /// view window when (and only when) the data actually changes.
     scene_gen: u64,
-    view: Option<ViewData>,
+    view: Option<Arc<ViewData>>,
     /// Incremented whenever new view data lands (for texture caching).
     view_epoch: u64,
     /// Latest render of each open figure window (amplitude spectrum, cake, …),
@@ -251,26 +98,22 @@ struct Inner {
     figures: std::collections::HashMap<String, FigureSlot>,
     snuffling: Option<SnufflingResult>,
     snuffling_gen: u64,
-    seisbench_in_flight: bool,
-    last_seisbench_progress: Option<SeisbenchProgress>,
-    next_seisbench_progress_poll_s: f64,
     /// A custom model name the user just uploaded ("Add Model"), for the frontend to
     /// add to the Cake Phase dropdown and select.
     pending_cake_model: Option<String>,
     map: Option<MapData>,
     map_request: Option<MapRequest>,
     map_request_gen: u64,
-    map_in_flight: bool,
+    map_job: Option<JobHandle>,
     /// Great-circle distance (degrees) from the active event to each station,
     /// keyed by (net, sta), for the marker editor's distance column. Refetched
     /// when the snuffling generation it was computed for changes.
     station_dists: std::collections::HashMap<(String, String), f64>,
     station_dists_gen: Option<(u64, u64)>,
-    station_dists_in_flight: bool,
+    station_dists_job: Option<JobHandle>,
     /// Bumped whenever Python returns a canonical event-state projection.
     active_event_gen: u64,
     event_state: Option<ActiveEventResult>,
-    event_request_gen: u64,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
     /// Bumped by [`Bridge::clear_tiles`]. Tiles are keyed by `(z, x, y)` alone, so
     /// a fetch still in flight when the basemap changes would otherwise land in
@@ -282,7 +125,11 @@ struct Inner {
     tile_queue: Vec<TileRequest>,
     /// How many batches are out; see [`TILE_BATCHES_IN_FLIGHT`].
     tile_batches: usize,
-    view_in_flight: Option<ViewParams>,
+    view_job: Option<(JobHandle, ViewParams)>,
+    view_last_error: Option<BridgeError>,
+    view_retry_after_s: f64,
+    next_view_sequence: u64,
+    python_session_generation: u64,
     desired: Option<ViewParams>,
     applied: Option<ViewParams>,
     view_request_gen: u64,
@@ -292,6 +139,11 @@ struct Inner {
     /// to close itself or show the error.
     command_outcome: Option<CommandOutcome>,
     live_seedlink_started_at: Option<f64>,
+    session_epoch: u64,
+    next_stream_id: u64,
+    live_ingest: LiveIngestState,
+    ingest_job: Option<JobHandle>,
+    ingest_mailbox: LiveIngestMailbox,
     /// Follow-viewport width of the active live session, from its start form
     /// (0.0 while no session runs; readers fall back to the default).
     live_seedlink_follow_s: f64,
@@ -299,7 +151,8 @@ struct Inner {
     /// opened rather than compiled in — so a deployment can gain an example
     /// without a new wasm build. `None` until it has been asked for.
     examples: Option<Result<Vec<ExampleDataset>, BridgeError>>,
-    examples_in_flight: bool,
+    examples_job: Option<JobHandle>,
+    scientific_tools_requested: bool,
     /// The view a just-loaded bundle asked for, for the frontend to apply — the
     /// bridge does not own the sort state, so it parks it here the way a fetched
     /// cake model waits in `pending_cake_model`.
@@ -318,15 +171,6 @@ struct Inner {
     /// than something the frontend should have to infer by watching for the
     /// generation to change.
     dataset_note_unseen: bool,
-}
-
-fn finish_reload_batch(inner: &mut Inner, diagnostic: Option<BridgeError>) {
-    inner.status = Status::Ready;
-    inner.diagnostic = diagnostic;
-}
-
-fn record_diagnostic(inner: &mut Inner, error: BridgeError) {
-    inner.diagnostic = Some(error);
 }
 
 fn install_bundle_presentation(
@@ -386,10 +230,116 @@ impl Bridge {
         }
     }
 
-    /// Returns the latest bridge lifecycle state.
+    /// Returns runtime health and a shared snapshot of all visible jobs,
+    /// rebuilt only when the ledger revision moved since the previous frame.
     #[must_use]
-    pub fn status(&self) -> Status {
-        self.inner.borrow().status.clone()
+    pub fn activity_snapshot(&self) -> (RuntimeState, ActivityJobs) {
+        #[cfg(target_arch = "wasm32")]
+        web::sync_runtime(&self.inner);
+        let mut borrow = self.inner.borrow_mut();
+        let state = &mut *borrow;
+        let revision = state.activity.revision();
+        if state
+            .activity_cache
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != revision)
+        {
+            let jobs: Vec<(JobHandle, JobRecord)> = state
+                .activity
+                .records()
+                .map(|(handle, record)| (handle, record.clone()))
+                .collect();
+            state.activity_cache = Some((revision, Rc::new(jobs)));
+        }
+        let jobs = state
+            .activity_cache
+            .as_ref()
+            .map(|(_, jobs)| Rc::clone(jobs))
+            .unwrap_or_default();
+        (state.activity.runtime().clone(), jobs)
+    }
+
+    /// Whether any queued or executing job will replace marker output when it
+    /// commits — the window in which a destructive marker edit would appear to
+    /// be undone by the commit landing after it.
+    #[must_use]
+    pub fn marker_update_active(&self) -> bool {
+        self.inner.borrow().activity.records().any(|(_, record)| {
+            record.operation().activity().may_update_markers && !record.state().is_terminal()
+        })
+    }
+
+    /// Registers executor-owned local work before it leaves the render loop.
+    pub fn begin_local(&self, operation: Operation, detail: Option<String>) -> Submission {
+        #[cfg(target_arch = "wasm32")]
+        let now_s = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now_s = 0.0;
+        self.inner
+            .borrow_mut()
+            .activity
+            .submit_local(operation, detail, now_s)
+    }
+
+    /// Records the sole terminal result for executor-owned local work.
+    pub fn finish_local(&self, handle: JobHandle, result: Result<(), BridgeError>) {
+        let outcome = match result {
+            Ok(()) => Outcome::Succeeded,
+            Err(error) => Outcome::Failed(JobError::Bridge(error)),
+        };
+        self.inner.borrow_mut().activity.complete(handle, outcome);
+        self.repaint.request_repaint();
+    }
+
+    /// Requests cancellation without allowing repeated UI actions to resubmit work.
+    #[must_use]
+    pub fn cancel(&self, handle: JobHandle) -> proto::pb::CancelDisposition {
+        #[cfg(target_arch = "wasm32")]
+        let now_s = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now_s = 0.0;
+        let request = self
+            .inner
+            .borrow_mut()
+            .activity
+            .request_cancel(handle, now_s);
+        let disposition = match request {
+            CancelRequest::Cancelled => proto::pb::CancelDisposition::Queued,
+            CancelRequest::Interrupt | CancelRequest::AlreadyCancelling => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    match web::cancel_job(handle) {
+                        Ok(disposition) => disposition,
+                        Err(error) => {
+                            self.inner.borrow_mut().diagnostic = Some(error);
+                            proto::pb::CancelDisposition::Cancelling
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    proto::pb::CancelDisposition::Cancelling
+                }
+            }
+            CancelRequest::TooLate => proto::pb::CancelDisposition::TooLate,
+            CancelRequest::NotFound => proto::pb::CancelDisposition::NotFound,
+            CancelRequest::NotCancellable => proto::pb::CancelDisposition::NotCancellable,
+        };
+        if disposition == proto::pb::CancelDisposition::TooLate {
+            self.inner
+                .borrow_mut()
+                .activity
+                .mark_cancel_too_late(handle);
+        }
+        self.repaint.request_repaint();
+        disposition
+    }
+
+    /// Replaces an unresponsive Python worker after cancellation escalation.
+    pub fn restart_runtime(&self) {
+        #[cfg(target_arch = "wasm32")]
+        web::restart_runtime(&self.inner);
+        self.repaint.request_repaint();
     }
 
     /// Returns the latest recoverable diagnostic while the bridge remains ready.
@@ -427,50 +377,38 @@ impl Bridge {
 
     /// Returns the current inference device and optional `SeisBench` progress.
     #[cfg(target_arch = "wasm32")]
+    #[must_use]
     pub fn seisbench_runtime(&self) -> (String, Option<SeisbenchProgress>) {
         let progress = self
             .inner
             .borrow()
-            .seisbench_in_flight
-            .then(web::seisbench_progress)
-            .flatten();
-        (web::seisbench_device(), progress)
-    }
-
-    /// Polls `SeisBench` progress at a bounded rate and schedules another repaint.
-    #[cfg(target_arch = "wasm32")]
-    pub fn refresh_seisbench_progress(&self, now: f64) {
-        let repaint = self.repaint.clone();
-        {
-            let mut i = self.inner.borrow_mut();
-            if !i.seisbench_in_flight {
-                return;
-            }
-            if now < i.next_seisbench_progress_poll_s {
-                repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                return;
-            }
-            i.next_seisbench_progress_poll_s = now + 0.1;
-        }
-        if let Some(progress) = web::seisbench_progress() {
-            let pct = (progress.fraction * 100.0).round().clamp(0.0, 100.0);
-            let mut i = self.inner.borrow_mut();
-            let changed = i.last_seisbench_progress.as_ref().is_none_or(|last| {
-                (last.fraction - progress.fraction).abs() > f32::EPSILON
-                    || last.label != progress.label
+            .activity
+            .records()
+            .find_map(|(_, record)| {
+                if record.operation() != Operation::RunSnuffling
+                    || record.detail() != Some("seisbench_picker")
+                {
+                    return None;
+                }
+                let JobState::Running {
+                    progress: Progress::Fraction { fraction, phase },
+                    ..
+                } = record.state()
+                else {
+                    return None;
+                };
+                Some(SeisbenchProgress {
+                    fraction: *fraction,
+                    label: phase.to_string(),
+                })
             });
-            if changed {
-                i.status = Status::Loading(format!("{} · {pct:.0}%", progress.label));
-                i.last_seisbench_progress = Some(progress);
-            }
-        }
-        repaint.request_repaint_after(std::time::Duration::from_millis(17));
+        (web::seisbench_device(), progress)
     }
 
     /// Returns the latest scene metadata snapshot.
     #[must_use]
     pub fn scene(&self) -> Option<SceneMeta> {
-        self.inner.borrow().scene.clone()
+        self.inner.borrow().scene
     }
 
     /// Generation counter that increments on each new scene load.
@@ -525,6 +463,16 @@ impl Bridge {
             .map_or(0, |slot| slot.generation)
     }
 
+    /// Returns the ledger handle behind a pending figure render.
+    #[must_use]
+    pub fn figure_job(&self, kind: &str) -> Option<JobHandle> {
+        self.inner
+            .borrow()
+            .figures
+            .get(kind)
+            .and_then(|slot| slot.job)
+    }
+
     /// The latest rendered figure for a kind (PNG bytes or an error string).
     #[must_use]
     pub fn figure(&self, kind: &str) -> Option<FigureData> {
@@ -541,10 +489,12 @@ impl Bridge {
         self.inner.borrow().snuffling_gen
     }
 
-    /// Returns the latest marker/text result produced by a snuffling request.
+    /// Takes the latest marker/text result produced by a snuffling request.
+    /// Its sole consumer is gated on [`Self::snuffling_gen`], so moving the
+    /// result out (up to a full marker budget) beats cloning it.
     #[must_use]
-    pub fn snuffling(&self) -> Option<SnufflingResult> {
-        self.inner.borrow().snuffling.clone()
+    pub fn take_snuffling(&self) -> Option<SnufflingResult> {
+        self.inner.borrow_mut().snuffling.take()
     }
 
     /// Takes a custom model name added via "Add Model" for shared configs to register.
@@ -675,2411 +625,35 @@ impl Bridge {
         i.tile_epoch = i.tile_epoch.wrapping_add(1);
     }
 
-    /// Borrow the current view (decimated waveforms) for drawing.
+    /// Returns an owned snapshot of the current view (decimated waveforms).
+    ///
+    /// The snapshot must not expose the bridge's `RefCell` guard: frontend code
+    /// may call back into the bridge while it renders or exports this data.
     #[must_use]
-    pub fn view(&self) -> Option<Ref<'_, ViewData>> {
-        let b = self.inner.borrow();
-        Ref::filter_map(b, |i| i.view.as_ref()).ok()
+    pub fn view(&self) -> Option<Arc<ViewData>> {
+        self.inner.borrow().view.clone()
     }
 
     /// Whether the current view is drawable and has no replacement queued or in flight.
     #[must_use]
     pub fn view_is_settled(&self) -> bool {
         let i = self.inner.borrow();
-        matches!(i.status, Status::Ready)
-            && i.view.is_some()
-            && i.desired.is_none()
-            && i.view_in_flight.is_none()
+        i.view.is_some() && i.desired.is_none() && i.view_job.is_none()
     }
 }
 
 // Web target: drive Pyodide through web/bridge.js.
 #[cfg(target_arch = "wasm32")]
-mod web {
-    #![allow(
-        clippy::wildcard_imports,
-        clippy::needless_pass_by_value,
-        reason = "the web bridge re-uses most parent types and marshals owned values \
-                  (JsValue, protobuf bytes, params) across the JS/async boundary, where \
-                  by-value parameters keep the call sites clean"
-    )]
-
-    use super::proto::{self, pb};
-    use super::*;
-    use std::cell::{Cell, RefCell as StdRefCell};
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::spawn_local;
-
-    // The module path escapes the crate (`/` roots it at the crate directory,
-    // `../..` walks up to the repo), so wasm-bindgen cannot embed the file as a
-    // snippet: the emitted import resolves to `web/gen/bridge.js` under the site
-    // root, and the trunk post-build hook must stage the file there
-    // (`stage_bridge_module` in scripts/trunk-post-build.sh).
-    #[wasm_bindgen(module = "/../../web/gen/bridge.js")]
-    extern "C" {
-        // The single transport seam for every unary proto RPC: (method, request
-        // bytes, optional out-of-band data bytes) -> { result: BridgeResult bytes,
-        // ys: Uint8Array }. bridge.js forwards it to the Pyodide worker, which runs
-        // bridge.py and ships the out-of-band ys buffer alongside the proto. This is
-        // the custom transport the typed service client rides on.
-        #[wasm_bindgen(js_name = call, catch)]
-        async fn js_call(method: &str, request: Vec<u8>, data: Vec<u8>)
-        -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = seisbenchDevice)]
-        fn js_seisbench_device() -> String;
-
-        #[wasm_bindgen(js_name = seisbenchProgressFraction)]
-        fn js_seisbench_progress_fraction() -> f32;
-
-        #[wasm_bindgen(js_name = seisbenchProgressLabel)]
-        fn js_seisbench_progress_label() -> String;
-
-        #[wasm_bindgen(js_name = clearSeisbenchProgress)]
-        fn js_clear_seisbench_progress();
-
-        #[wasm_bindgen(js_name = runtimeInfo)]
-        fn js_runtime_info() -> JsValue;
-
-        // DOM-only calls keep bespoke externs: they drive browser APIs (file
-        // pickers, downloads, the File System Access API, tile fetch+decode) that
-        // can't be expressed as a uniform request->response RPC.
-        #[wasm_bindgen(js_name = addCakeModel, catch)]
-        async fn js_add_cake_model() -> Result<JsValue, JsValue>;
-
-        #[cfg(feature = "gf")]
-        #[wasm_bindgen(js_name = addGfStore, catch)]
-        async fn js_add_gf_store() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = fetchTiles, catch)]
-        async fn js_fetch_tiles(
-            urls: js_sys::Array,
-            on_tile: js_sys::Function,
-        ) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = openFiles, catch)]
-        async fn js_open_files() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = reloadFiles, catch)]
-        async fn js_reload_files() -> Result<JsValue, JsValue>;
-        #[wasm_bindgen(js_name = clearOpenSources)]
-        fn js_clear_open_sources();
-
-        #[wasm_bindgen(js_name = openDirectory, catch)]
-        async fn js_open_directory() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = reloadSnufflings, catch)]
-        async fn js_reload_snufflings() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = downloadFile, catch)]
-        async fn js_download_file(
-            bytes: Vec<u8>,
-            filename: String,
-            mime: String,
-        ) -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = loadMarkers, catch)]
-        async fn js_load_markers() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = loadStationXml, catch)]
-        async fn js_load_station_xml() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = loadStations, catch)]
-        async fn js_load_stations() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = loadEvents, catch)]
-        async fn js_load_events() -> Result<JsValue, JsValue>;
-
-        #[wasm_bindgen(js_name = savePng)]
-        fn js_save_png(bytes: &[u8], filename: &str);
-
-        #[wasm_bindgen(js_name = saveSvg)]
-        fn js_save_svg(svg: &str, filename: &str);
-    }
-
-    fn jsval_to_string(v: JsValue) -> String {
-        v.as_string().unwrap_or_else(|| format!("{v:?}"))
-    }
-
-    pub(super) fn seisbench_device() -> String {
-        js_seisbench_device()
-    }
-
-    pub(super) fn runtime_info() -> Option<RuntimeInfo> {
-        let info = js_runtime_info();
-        if !info.is_object() {
-            return None;
-        }
-        let string = |key: &str| {
-            js_sys::Reflect::get(&info, &JsValue::from_str(key))
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_else(|| "unknown".to_owned())
-        };
-        let flag = |key: &str| {
-            js_sys::Reflect::get(&info, &JsValue::from_str(key))
-                .ok()
-                .and_then(|v| v.as_bool())
-                == Some(true)
-        };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "hardwareConcurrency is a small non-negative core count"
-        )]
-        let cores = js_sys::Reflect::get(&info, &JsValue::from_str("cores"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
-            .max(0.0) as u32;
-        Some(RuntimeInfo {
-            python: string("python"),
-            numpy: string("numpy"),
-            pyrocko: string("pyrocko"),
-            // Both have to be true: the build says it is threaded, the live
-            // interpreter says pthreads really came up.
-            threaded: flag("threaded") && flag("pthreads"),
-            cores,
-        })
-    }
-
-    pub(super) fn seisbench_progress() -> Option<SeisbenchProgress> {
-        let fraction = js_seisbench_progress_fraction();
-        if !(0.0..=1.0).contains(&fraction) {
-            return None;
-        }
-        Some(SeisbenchProgress {
-            fraction,
-            label: js_seisbench_progress_label(),
-        })
-    }
-
-    fn js_bytes(v: JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
-        use wasm_bindgen::JsCast;
-
-        v.dyn_into::<js_sys::Uint8Array>()
-            .map_err(|_| MarshalError::NotBytes { field })
-            .map(|arr| arr.to_vec())
-    }
-
-    fn picker_result<T>(
-        result: Result<JsValue, JsValue>,
-        field: &'static str,
-        action: &'static str,
-        decode: impl FnOnce(&[u8], &'static str) -> Result<T, CallError>,
-    ) -> Result<Option<T>, BridgeError> {
-        let value = result.map_err(|error| BridgeError::browser(action, jsval_to_string(error)))?;
-        let bytes = js_bytes(value, field)?;
-        if bytes.is_empty() {
-            return Ok(None);
-        }
-        decode(&bytes, field).map(Some).map_err(Into::into)
-    }
-
-    async fn download_bytes(
-        bytes: Vec<u8>,
-        filename: String,
-        mime: String,
-        action: &'static str,
-    ) -> Result<(), BridgeError> {
-        js_download_file(bytes, filename, mime)
-            .await
-            .map_err(|error| BridgeError::browser(action, jsval_to_string(error)))?;
-        Ok(())
-    }
-
-    async fn download_blob(
-        result: Result<pb::FileBlob, CallError>,
-        action: &'static str,
-    ) -> Result<(), BridgeError> {
-        let blob = result?;
-        download_bytes(blob.content, blob.filename, blob.mime, action).await
-    }
-
-    fn object_uint8(obj: &JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
-        let val = js_sys::Reflect::get(obj, &JsValue::from_str(field))
-            .map_err(|_| MarshalError::Missing { field })?;
-        js_bytes(val, field)
-    }
-
-    fn object_f32(obj: &JsValue, field: &'static str) -> Result<Vec<f32>, MarshalError> {
-        use wasm_bindgen::JsCast;
-
-        let val = js_sys::Reflect::get(obj, &JsValue::from_str(field))
-            .map_err(|_| MarshalError::Missing { field })?;
-        let arr = val
-            .dyn_into::<js_sys::Uint8Array>()
-            .map_err(|_| MarshalError::NotBytes { field })?;
-        if arr.byte_length() % 4 != 0 {
-            return Err(MarshalError::UnalignedSamples {
-                field,
-                len: arr.byte_length(),
-            });
-        }
-        let values = arr.byte_length() / 4;
-        Ok(js_sys::Float32Array::new_with_byte_offset_and_length(
-            &arr.buffer(),
-            arr.byte_offset(),
-            values,
-        )
-        .to_vec())
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::cast_precision_loss,
-        reason = "transport diagnostics convert byte counts to MB and keep separate phase timings"
-    )]
-    fn log_transport_perf(
-        method: &str,
-        request_bytes: usize,
-        result_bytes: usize,
-        ys_bytes: usize,
-        js_call_ms: f64,
-        result_copy_ms: f64,
-        ys_copy_ms: f64,
-        total_ms: f64,
-    ) {
-        if !method.ends_with("/GetView") {
-            return;
-        }
-        log::info!(
-            "[bridge.transport] method=getView request_bytes={} result_bytes={} ys_bytes={} ys_mb={:.3} js_call_ms={:.2} rust_result_copy_ms={:.2} rust_ys_copy_ms={:.2} total_ms={:.2}",
-            request_bytes,
-            result_bytes,
-            ys_bytes,
-            ys_bytes as f64 / 1_000_000.0,
-            js_call_ms,
-            result_copy_ms,
-            ys_copy_ms,
-            total_ms,
-        );
-    }
-
-    /// The frontend's `BridgeTransport`: the generated typed client marshals each
-    /// encoded request through `js_call` to the worker and reads back the
-    /// `BridgeResult` bytes (and the out-of-band `ys` for buffer methods). Unit
-    /// struct — the worker holds all session state.
-    struct WorkerTransport;
-
-    const BRIDGE_TRANSPORT_PERF_LOG: bool = false;
-
-    impl pb::BridgeTransport for WorkerTransport {
-        async fn unary(
-            &self,
-            method: &'static str,
-            request: Vec<u8>,
-        ) -> Result<Vec<u8>, TransportError> {
-            let obj = js_call(method, request, Vec::new())
-                .await
-                .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-            object_uint8(&obj, "result").map_err(|e| TransportError::new(method, e.to_string()))
-        }
-
-        async fn unary_with_buffer(
-            &self,
-            method: &'static str,
-            request: Vec<u8>,
-        ) -> Result<(Vec<u8>, Vec<f32>), TransportError> {
-            let marshal = |e: MarshalError| TransportError::new(method, e.to_string());
-            if !BRIDGE_TRANSPORT_PERF_LOG {
-                let obj = js_call(method, request, Vec::new())
-                    .await
-                    .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-                return Ok((
-                    object_uint8(&obj, "result").map_err(marshal)?,
-                    object_f32(&obj, "ys").map_err(marshal)?,
-                ));
-            }
-            let t0 = js_sys::Date::now();
-            let request_bytes = request.len();
-            let obj = js_call(method, request, Vec::new())
-                .await
-                .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-            let js_done = js_sys::Date::now();
-            let result = object_uint8(&obj, "result").map_err(marshal)?;
-            let result_done = js_sys::Date::now();
-            let ys = object_f32(&obj, "ys").map_err(marshal)?;
-            let done = js_sys::Date::now();
-            log_transport_perf(
-                method,
-                request_bytes,
-                result.len(),
-                ys.len() * 4,
-                js_done - t0,
-                result_done - js_done,
-                done - result_done,
-                done - t0,
-            );
-            Ok((result, ys))
-        }
-    }
-
-    fn client() -> pb::BridgeServiceClient<WorkerTransport> {
-        pb::BridgeServiceClient::new(WorkerTransport)
-    }
-
-    thread_local! {
-        static LIVE_SEEDLINK: StdRefCell<Option<LiveSeedlinkHandle>> = const { StdRefCell::new(None) };
-    }
-
-    struct LiveSeedlinkHandle {
-        ws: web_sys::WebSocket,
-        on_open: Closure<dyn FnMut(web_sys::Event)>,
-        on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
-        on_error: Closure<dyn FnMut(web_sys::ErrorEvent)>,
-        on_close: Closure<dyn FnMut(web_sys::Event)>,
-    }
-
-    impl Drop for LiveSeedlinkHandle {
-        fn drop(&mut self) {
-            self.ws.set_onopen(None);
-            self.ws.set_onmessage(None);
-            self.ws.set_onerror(None);
-            self.ws.set_onclose(None);
-            let _ = self.ws.close();
-            let _ = (
-                &self.on_open,
-                &self.on_message,
-                &self.on_error,
-                &self.on_close,
-            );
-        }
-    }
-
-    impl LiveSeedlinkHandle {
-        fn connect(
-            inner: Rc<RefCell<Inner>>,
-            repaint: Repaint,
-            params: SeedlinkParams,
-            started_at: f64,
-        ) -> Result<Self, SeedlinkError> {
-            let conn = seedlink_connection(&params)?;
-            let first_batch = Rc::new(Cell::new(true));
-            let retain_s = if params.retain_s > 0.0 {
-                params.retain_s
-            } else {
-                LIVE_RETAIN_SECONDS
-            };
-            let on_open = seedlink_on_open(
-                conn.ws.clone(),
-                inner.clone(),
-                repaint.clone(),
-                conn.source.clone(),
-                conn.commands,
-            );
-            let on_message = seedlink_on_message(
-                inner.clone(),
-                repaint.clone(),
-                conn.source.clone(),
-                started_at,
-                first_batch,
-                retain_s,
-            );
-            let on_error = seedlink_on_error(inner.clone(), repaint.clone());
-            let on_close = seedlink_on_close(inner, repaint, conn.source);
-
-            conn.ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-            conn.ws
-                .set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-            conn.ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-            conn.ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-
-            Ok(Self {
-                ws: conn.ws,
-                on_open,
-                on_message,
-                on_error,
-                on_close,
-            })
-        }
-    }
-
-    struct SeedlinkConnection {
-        ws: web_sys::WebSocket,
-        source: String,
-        commands: Vec<String>,
-    }
-
-    fn seedlink_connection(params: &SeedlinkParams) -> Result<SeedlinkConnection, SeedlinkError> {
-        let port = params
-            .port
-            .trim()
-            .parse::<u16>()
-            .map_err(|source| SeedlinkError::Port {
-                port: params.port.trim().to_owned(),
-                source,
-            })?;
-        let source = format!(
-            "{}:{} {}.{} {}",
-            params.host.trim(),
-            port,
-            params.net.trim(),
-            params.sta.trim(),
-            params.selectors.trim()
-        );
-        let url = seedlink_proxy_url(params.host.trim(), port);
-        let ws = web_sys::WebSocket::new(&url).map_err(|e| SeedlinkError::Connect {
-            url,
-            detail: jsval_to_string(e),
-        })?;
-        ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
-        Ok(SeedlinkConnection {
-            ws,
-            source,
-            commands: seedlink_commands(params),
-        })
-    }
-
-    fn seedlink_on_open(
-        ws: web_sys::WebSocket,
-        inner: Rc<RefCell<Inner>>,
-        repaint: Repaint,
-        source: String,
-        commands: Vec<String>,
-    ) -> Closure<dyn FnMut(web_sys::Event)> {
-        Closure::wrap(Box::new(move |_event: web_sys::Event| {
-            for command in &commands {
-                if let Err(err) = ws.send_with_str(command) {
-                    set_bridge_error(
-                        &inner,
-                        SeedlinkError::Send {
-                            command: command.clone(),
-                            detail: jsval_to_string(err),
-                        }
-                        .into(),
-                    );
-                    repaint.request_repaint();
-                    return;
-                }
-            }
-            set_snuffling_text(&inner, format!("SeedLink connected: {source}"), false);
-            inner.borrow_mut().status = Status::Ready;
-            repaint.request_repaint();
-        }) as Box<dyn FnMut(_)>)
-    }
-
-    fn seedlink_on_message(
-        inner: Rc<RefCell<Inner>>,
-        repaint: Repaint,
-        source: String,
-        started_at: f64,
-        first_batch: Rc<Cell<bool>>,
-        retain_s: f64,
-    ) -> Closure<dyn FnMut(web_sys::MessageEvent)> {
-        let buffer = Rc::new(RefCell::new(Vec::new()));
-        Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
-            let bytes = seedlink_event_bytes(&event);
-            if bytes.is_empty() {
-                return;
-            }
-            let records = {
-                let mut buf = buffer.borrow_mut();
-                buf.extend_from_slice(&bytes);
-                drain_seedlink_records(&mut buf)
-            };
-            if !records.is_empty() {
-                let reset = first_batch.replace(false);
-                ingest_live_mseed(
-                    inner.clone(),
-                    repaint.clone(),
-                    source.clone(),
-                    records,
-                    started_at,
-                    reset,
-                    retain_s,
-                );
-            }
-        }) as Box<dyn FnMut(_)>)
-    }
-
-    fn seedlink_on_error(
-        inner: Rc<RefCell<Inner>>,
-        repaint: Repaint,
-    ) -> Closure<dyn FnMut(web_sys::ErrorEvent)> {
-        Closure::wrap(Box::new(move |event: web_sys::ErrorEvent| {
-            let msg = event.message();
-            set_bridge_error(
-                &inner,
-                SeedlinkError::Socket {
-                    detail: if msg.is_empty() {
-                        "the browser gave no reason".to_owned()
-                    } else {
-                        msg
-                    },
-                }
-                .into(),
-            );
-            repaint.request_repaint();
-        }) as Box<dyn FnMut(_)>)
-    }
-
-    fn seedlink_on_close(
-        inner: Rc<RefCell<Inner>>,
-        repaint: Repaint,
-        source: String,
-    ) -> Closure<dyn FnMut(web_sys::Event)> {
-        Closure::wrap(Box::new(move |_event: web_sys::Event| {
-            inner.borrow_mut().live_seedlink_started_at = None;
-            set_snuffling_text(&inner, format!("SeedLink disconnected: {source}"), false);
-            repaint.request_repaint();
-            spawn_local(async {
-                LIVE_SEEDLINK.with(|slot| {
-                    slot.borrow_mut().take();
-                });
-            });
-        }) as Box<dyn FnMut(_)>)
-    }
-
-    fn seedlink_event_bytes(event: &web_sys::MessageEvent) -> Vec<u8> {
-        let data = event.data();
-        if data.is_instance_of::<js_sys::ArrayBuffer>() {
-            js_sys::Uint8Array::new(&data).to_vec()
-        } else if let Some(text) = data.as_string() {
-            text.into_bytes()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn set_bridge_error(inner: &Rc<RefCell<Inner>>, error: BridgeError) {
-        inner.borrow_mut().status = Status::Error(error);
-    }
-
-    fn set_snuffling_text(inner: &Rc<RefCell<Inner>>, text: String, show_window: bool) {
-        let mut i = inner.borrow_mut();
-        install_snuffling_result(
-            &mut i,
-            SnufflingResult {
-                show_window,
-                text,
-                markers: Vec::new(),
-                scene: None,
-                origin: String::new(),
-                event_state: None,
-            },
-        );
-    }
-
-    fn clear_map_state(inner: &mut Inner) {
-        inner.map = None;
-        inner.map_request = None;
-        inner.map_in_flight = false;
-        inner.map_request_gen = inner.map_request_gen.wrapping_add(1);
-    }
-
-    fn clear_event_state(inner: &mut Inner) {
-        inner.event_state = None;
-        inner.active_event_gen = inner.active_event_gen.wrapping_add(1);
-        clear_map_state(inner);
-    }
-
-    fn install_event_state(inner: &mut Inner, state: ActiveEventResult) {
-        inner.event_state = Some(state);
-        inner.active_event_gen = inner.active_event_gen.wrapping_add(1);
-        inner.station_dists_gen = None;
-        clear_map_state(inner);
-        invalidate_view_request(inner);
-    }
-
-    fn install_snuffling_result(inner: &mut Inner, mut result: SnufflingResult) {
-        if let Some(event_state) = result.event_state.take() {
-            install_event_state(inner, event_state);
-        }
-        inner.snuffling = Some(result);
-        inner.snuffling_gen = inner.snuffling_gen.wrapping_add(1);
-    }
-
-    fn install_scene(inner: &mut Inner, scene: Option<SceneMeta>) {
-        inner.scene = Some(scene.unwrap_or_default());
-        inner.scene_gen = inner.scene_gen.wrapping_add(1);
-        inner.diagnostic = None;
-        clear_view(inner);
-    }
-
-    fn install_waveform_result(inner: &mut Inner, mut result: pb::LoadBytesResult) {
-        install_scene(inner, result.scene.take());
-        if let Some(event_state) = result.event_state.take() {
-            install_event_state(inner, event_state);
-        }
-    }
-
-    fn install_bundle_result(inner: &mut Inner, mut result: pb::BundleResult) {
-        install_scene(inner, result.scene.take());
-        install_bundle_presentation(inner, result.view.take(), result.about.take());
-        if let Some(info) = result.info.take() {
-            install_snuffling_result(inner, info);
-        }
-    }
-
-    fn install_dataset_result(inner: &mut Inner, result: proto::DatasetResult) {
-        match result {
-            proto::DatasetResult::Waveform(result) => install_waveform_result(inner, result),
-            proto::DatasetResult::Bundle(result) => install_bundle_result(inner, result),
-        }
-    }
-
-    fn install_reload_batch(inner: &mut Inner, batch: ReloadBatchResult) -> Option<BridgeError> {
-        if let Some(outcome) = batch.outcome {
-            match outcome {
-                pb::reload_batch_result::Outcome::Waveform(result) => {
-                    install_waveform_result(inner, result);
-                }
-                pb::reload_batch_result::Outcome::Bundle(result) => {
-                    install_bundle_result(inner, result);
-                }
-            }
-        }
-
-        if batch.failures.is_empty() {
-            return None;
-        }
-        Some(
-            ReloadError {
-                failures: batch.failures.into_iter().map(Into::into).collect(),
-            }
-            .into(),
-        )
-    }
-
-    fn seedlink_proxy_url(host: &str, port: u16) -> String {
-        format!(
-            "ws://127.0.0.1:17684/seedlink?host={}&port={}",
-            encode_query_component(host),
-            port
-        )
-    }
-
-    fn encode_query_component(value: &str) -> String {
-        js_sys::encode_uri_component(value)
-            .as_string()
-            .unwrap_or_default()
-    }
-
-    fn seedlink_commands(params: &SeedlinkParams) -> Vec<String> {
-        let net = params.net.trim();
-        let sta = params.sta.trim();
-        let selectors = params.selectors.trim();
-        let mut commands = vec!["HELLO\r".to_owned(), "SLPROTO 4.0\r".to_owned()];
-        if !sta.is_empty() {
-            commands.push(if net.is_empty() {
-                format!("STATION {sta}\r")
-            } else {
-                format!("STATION {net}_{sta}\r")
-            });
-        }
-        if !selectors.is_empty() {
-            commands.push(format!(
-                "SELECT {}\r",
-                crate::seedlink::v4_selectors(selectors)
-            ));
-        }
-        commands.push("DATA\r".to_owned());
-        commands.push("END\r".to_owned());
-        commands
-    }
-
-    use crate::seedlink::drain_records as drain_seedlink_records;
-
-    fn ingest_live_mseed(
-        inner: Rc<RefCell<Inner>>,
-        repaint: Repaint,
-        source: String,
-        content: Vec<u8>,
-        start_time: f64,
-        reset: bool,
-        retain_s: f64,
-    ) {
-        spawn_local(async move {
-            let parsed = client()
-                .ingest_mini_seed(IngestMiniSeedRequest {
-                    source,
-                    content,
-                    start_time,
-                    reset,
-                    retain_seconds: retain_s,
-                })
-                .await;
-            {
-                let mut i = inner.borrow_mut();
-                match parsed {
-                    Ok(scene) => {
-                        i.scene = Some(scene);
-                        i.scene_gen += 1;
-                        i.status = Status::Ready;
-                        clear_view(&mut i);
-                    }
-                    Err(e) => i.status = Status::Error(e.into()),
-                }
-            }
-            repaint.request_repaint();
-        });
-    }
-
-    fn invalidate_view_request(i: &mut Inner) {
-        i.applied = None;
-        i.desired = None;
-        i.view_in_flight = None;
-        i.view_request_gen = i.view_request_gen.wrapping_add(1);
-    }
-
-    fn clear_view(i: &mut Inner) {
-        i.view = None;
-        invalidate_view_request(i);
-    }
-
-    /// The values one track would draw, flattened across its spans, for the
-    /// diagnostic log. A gapped channel contributes every segment.
-    fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
-        if track.nf > 0 {
-            return ("waterfall", Vec::new());
-        }
-        let mut kind = "missing";
-        let mut values = Vec::new();
-        for span in &track.spans {
-            if span.dt > 0.0 {
-                kind = "raw";
-                values.extend_from_slice(view.samples(span));
-            }
-        }
-        (kind, values)
-    }
-
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "sample count to f64 for diagnostic mean/rms; precision loss is irrelevant"
-    )]
-    fn finite_stats(values: &[f32]) -> Option<(f32, f32, f64, f64)> {
-        let mut n = 0usize;
-        let mut min_v = f32::INFINITY;
-        let mut max_v = f32::NEG_INFINITY;
-        let mut sum = 0.0f64;
-        let mut sum_sq = 0.0f64;
-        for &v in values.iter().filter(|v| v.is_finite()) {
-            n += 1;
-            min_v = min_v.min(v);
-            max_v = max_v.max(v);
-            let fv = f64::from(v);
-            sum += fv;
-            sum_sq += fv * fv;
-        }
-        if n == 0 {
-            return None;
-        }
-        Some((min_v, max_v, sum / n as f64, (sum_sq / n as f64).sqrt()))
-    }
-
-    fn sample_head(values: &[f32]) -> String {
-        values
-            .iter()
-            .take(8)
-            .map(|v| format!("{v:.5}"))
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "sample/pixel counts to f64 for a diagnostic ratio; precision loss is irrelevant"
-    )]
-    fn log_view_debug(params: &ViewParams, view: &ViewData, request_ms: f64) {
-        if params.mode != "wiggle" {
-            return;
-        }
-        let toff = usize::try_from(params.track_offset).unwrap_or(usize::MAX);
-        let tcount = usize::try_from(params.track_count).unwrap_or(usize::MAX);
-
-        let rendered_tracks: Vec<_> = view.meta.tracks.iter().skip(toff).take(tcount).collect();
-        // Counted per span: a track carries one per segment of its channel, and a
-        // gapped channel can well be raw in one piece and decimated in another.
-        let payload_spans = || {
-            rendered_tracks
-                .iter()
-                .filter(|track| track.nf == 0)
-                .flat_map(|track| track.spans.iter())
-                .filter(|span| span.count > 0)
-        };
-        let raw_tracks = payload_spans().filter(|span| span.dt > 0.0).count();
-        let point_tracks = payload_spans().filter(|span| span.dt == 0.0).count();
-        let legacy_tracks = payload_spans().filter(|span| span.dt < 0.0).count();
-        let window = params.tmax - params.tmin;
-        let ys_mb = view.ys.len() as f64 * 4.0 / 1_000_000.0;
-        let throughput = if request_ms > 0.0 {
-            ys_mb / (request_ms / 1000.0)
-        } else {
-            0.0
-        };
-        log::info!(
-            "[view] t=[{:.6},{:.6}] dt_window={:.3}s npx={} track_page={}..{} returned_tracks={} ys={} ys_mb={:.3} request_ms={:.2} effective_mb_s={:.1} rendered_modes raw={} points={} legacy={}",
-            params.tmin,
-            params.tmax,
-            window,
-            params.npx,
-            params.track_offset,
-            params.track_offset + params.track_count,
-            view.meta.tracks.len(),
-            view.ys.len(),
-            ys_mb,
-            request_ms,
-            throughput,
-            raw_tracks,
-            point_tracks,
-            legacy_tracks,
-        );
-
-        for (idx, track) in view.meta.tracks.iter().enumerate().skip(toff).take(tcount) {
-            let (mode, values) = view_track_values(view, track);
-            let points_per_px = if params.npx == 0 {
-                0.0
-            } else {
-                values.len() as f64 / f64::from(params.npx)
-            };
-            // The first span stands for the row in this diagnostic line; a row that
-            // carries several says so through `spans=`, and the detail belongs in a
-            // per-span line if anyone ever needs it.
-            let first = track.spans.first();
-            let t0_rel = first.map_or(0.0, |span| span.t0_rel);
-            let dt = first.map_or(0.0, |span| span.dt);
-            let ymin = first.map_or(0.0, |span| span.ymin);
-            let ymax = first.map_or(0.0, |span| span.ymax);
-            let ymean = first.map_or(0.0, |span| span.ymean);
-            let yscale = first.map_or(0.0, |span| span.yscale);
-            if let Some((min_v, max_v, mean, rms)) = finite_stats(&values) {
-                log::debug!(
-                    "[view.track] idx={} label={} mode={} spans={} count={} points_per_px={:.3} data_min={:.6} data_max={:.6} data_mean={:.6} data_rms={:.6} scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9} head=[{}]",
-                    idx,
-                    track.label,
-                    mode,
-                    track.spans.len(),
-                    values.len(),
-                    points_per_px,
-                    min_v,
-                    max_v,
-                    mean,
-                    rms,
-                    ymin,
-                    ymax,
-                    ymean,
-                    yscale,
-                    t0_rel,
-                    dt,
-                    sample_head(&values),
-                );
-            } else {
-                log::debug!(
-                    "[view.track] idx={} label={} mode={} spans={} count=0 scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9}",
-                    idx,
-                    track.label,
-                    mode,
-                    track.spans.len(),
-                    ymin,
-                    ymax,
-                    ymean,
-                    yscale,
-                    t0_rel,
-                    dt,
-                );
-            }
-        }
-    }
-
-    impl Bridge {
-        /// Replaces the current pile with the bundled synthetic example.
-        pub fn load_example(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Loading example…".into());
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().make_example().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            clear_event_state(&mut i);
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Empties the pile and the event context (`File ▸ Close all`), leaving
-        /// the blank viewer Qt starts with when given no arguments.
-        pub fn empty_scene(&self) {
-            let repaint = self.repaint.clone();
-            js_clear_open_sources();
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
-            {
-                let mut i = self.inner.borrow_mut();
-                i.status = Status::Loading("Closing…".into());
-                i.diagnostic = None;
-                i.snuffling = None;
-                clear_event_state(&mut i);
-                i.station_dists.clear();
-                i.station_dists_gen = None;
-                i.live_seedlink_started_at = None;
-            }
-            let inner = self.inner.clone();
-            spawn_local(async move {
-                let parsed = client().empty_scene().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Appends waveform bytes supplied by the frontend to the pile —
-        /// snuffler's `open_waveforms` appends too (`pile_viewer.py:1651`); the
-        /// boot example is dropped first by the bridge's example-pile rule.
-        pub fn load_file(&self, name: String, data: Vec<u8>, fmt: String) {
-            // A dropped file may be a whole dataset. Deciding on the bytes rather
-            // than the extension means a bundle behaves the same however it arrives
-            // — dropped, picked, or fetched from the Examples menu.
-            if data.starts_with(ZIP_MAGIC) {
-                self.load_bundle_bytes(name, data);
-                return;
-            }
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Loading {name}…"));
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client()
-                    .load_bytes(pb::LoadBytesRequest {
-                        name,
-                        fmt,
-                        append: true,
-                        content: data,
-                        source_id: String::new(),
-                        replace_source: false,
-                    })
-                    .await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(result) => {
-                            install_waveform_result(&mut i, result);
-                            i.status = Status::Ready;
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Replaces the current pile with a waveform fetched from a URL.
-        pub fn load_url(&self, url: String, fmt: String) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Loading {url}…"));
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().load_url(pb::LoadUrlRequest { url, fmt }).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            js_clear_open_sources();
-                            clear_event_state(&mut i);
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Fetch the example index, once.
-        ///
-        /// The menu calls this on every frame it is open, so "once" has to mean
-        /// once: a *failed* fetch is remembered too, or a datacenter that is down
-        /// would be retried at the frame rate. `force` is the user asking again,
-        /// from the retry the menu offers in its place.
-        pub fn list_examples(&self, force: bool) {
-            {
-                let mut i = self.inner.borrow_mut();
-                if i.examples_in_flight || (i.examples.is_some() && !force) {
-                    return;
-                }
-                i.examples_in_flight = true;
-            }
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            spawn_local(async move {
-                let parsed = client().list_examples().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    i.examples_in_flight = false;
-                    i.examples = Some(parsed.map(|list| list.examples).map_err(BridgeError::from));
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Replaces the current pile with a whole dataset fetched as one archive:
-        /// waveforms, station metadata and an event catalogue in a single request.
-        ///
-        /// The station and event results come back with the scene and are applied
-        /// through the same path a separate metadata load would use, so the event
-        /// markers appear exactly as if the catalogue had been opened by hand.
-        pub fn load_bundle(&self, url: String, sha256: String, title: String) {
-            let request = pb::LoadBundleRequest {
-                url,
-                sha256,
-                content: Vec::new(),
-                name: title.clone(),
-            };
-            self.dispatch_bundle(request, title);
-        }
-
-        /// Load an example by slug, fetching the index first if it has not been
-        /// read yet. This is what `?example=<slug>` resolves to: a link someone can
-        /// hand out that opens the app on a named dataset.
-        ///
-        /// An unknown slug is an error the user has to see — they followed a link
-        /// that promised data — so it lands in the status line rather than only in
-        /// the console.
-        pub fn open_example(&self, slug: String) {
-            let bridge = self.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Looking up {slug}…"));
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                let known = bridge.inner.borrow().examples.clone();
-                let listed = match known {
-                    Some(Ok(examples)) => Ok(examples),
-                    _ => client().list_examples().await.map(|list| list.examples),
-                };
-                match listed {
-                    Ok(examples) => {
-                        let found = examples.iter().find(|e| e.slug == slug).cloned();
-                        bridge.inner.borrow_mut().examples = Some(Ok(examples));
-                        match found {
-                            Some(example) => {
-                                bridge.load_bundle(example.url, example.sha256, example.title);
-                            }
-                            None => {
-                                bridge.inner.borrow_mut().status =
-                                    Status::Error(BridgeError::UnknownExample { slug });
-                            }
-                        }
-                    }
-                    Err(error) => bridge.inner.borrow_mut().status = Status::Error(error.into()),
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// The same load for an archive that is already in hand — dropped on the
-        /// window, or picked from disk — rather than fetched.
-        pub(super) fn load_bundle_bytes(&self, name: String, data: Vec<u8>) {
-            let request = pb::LoadBundleRequest {
-                url: String::new(),
-                sha256: String::new(),
-                content: data,
-                name: name.clone(),
-            };
-            self.dispatch_bundle(request, name);
-        }
-
-        fn dispatch_bundle(&self, request: pb::LoadBundleRequest, label: String) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading(format!("Loading {label}…"));
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().load_bundle(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(bundle) => {
-                            js_clear_open_sources();
-                            install_bundle_result(&mut i, bundle);
-                            i.status = Status::Ready;
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Render a real pyrocko/matplotlib figure (amplitude spectrum, cake, …)
-        /// in Pyodide and store the resulting PNG for the matching figure window.
-        /// Keyed by `req.kind`, so several figure windows can be open at once.
-        pub fn render_figure(&self, req: FigureRequest) {
-            let repaint = self.repaint.clone();
-            let kind = req.kind.clone();
-            {
-                let mut i = self.inner.borrow_mut();
-                if !matches!(i.status, Status::Ready) {
-                    return;
-                }
-                let slot = i.figures.entry(kind.clone()).or_default();
-                if slot.in_flight {
-                    return;
-                }
-                slot.in_flight = true;
-            }
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().render_figure(req).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    let slot = i.figures.entry(kind).or_default();
-                    slot.in_flight = false;
-                    if let Ok(fr) = parsed {
-                        slot.data = FigureData {
-                            png: fr.png,
-                            error: fr.error,
-                        };
-                        slot.generation = slot.generation.wrapping_add(1);
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Run a built-in snuffling (`MinMax`, `STA/LTA`, …) and store its result.
-        pub fn run_snuffling(&self, name: String, params: SnufflingRequestParams) {
-            let repaint = self.repaint.clone();
-            let is_seisbench = name == "seisbench_picker";
-            {
-                let mut i = self.inner.borrow_mut();
-                if !matches!(i.status, Status::Ready) {
-                    return;
-                }
-                if is_seisbench {
-                    js_clear_seisbench_progress();
-                    i.seisbench_in_flight = true;
-                    i.last_seisbench_progress = None;
-                    i.next_seisbench_progress_poll_s = 0.0;
-                    i.status = Status::Loading("SeisBench picker · 0%".to_owned());
-                }
-            }
-            let request = pb::NamedSnufflingRequest {
-                name,
-                params: Some(params),
-            };
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().run_snuffling(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if is_seisbench {
-                        i.seisbench_in_flight = false;
-                        i.last_seisbench_progress = None;
-                    }
-                    match parsed {
-                        Ok(mut r) => {
-                            if let Some(scene) = r.scene.take() {
-                                i.scene = Some(scene);
-                                i.scene_gen += 1;
-                                clear_view(&mut i);
-                            }
-                            i.status = Status::Ready;
-                            install_snuffling_result(&mut i, r);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Downloads waveforms from a CORS-enabled FDSN dataselect service and
-        /// append them to the pile (browser fetch; pyrocko parses).
-        pub fn download_waveforms(&self, params: WaveformDownloadRequest) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Downloading waveforms…".into());
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().download_waveforms(params).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(scene) => {
-                            i.scene = Some(scene);
-                            i.scene_gen += 1;
-                            i.status = Status::Ready;
-                            clear_view(&mut i);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Computes blockwise RMS traces, replacing the previous RMS run.
-        pub fn rms_traces(&self, params: SnufflingRequestParams) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().rms_traces(params).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match parsed {
-                        Ok(mut result) => {
-                            if let Some(scene) = result.scene.take() {
-                                i.scene = Some(scene);
-                                i.scene_gen += 1;
-                                clear_view(&mut i);
-                            }
-                            i.status = Status::Ready;
-                            install_snuffling_result(&mut i, result);
-                        }
-                        Err(e) => i.status = Status::Error(e.into()),
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Search a CORS-enabled FDSN event service; results become event markers.
-        /// The largest-magnitude hit becomes the active event, so this forces a
-        /// re-dispatch for the distance/azimuth sort to recompute against it.
-        pub fn catalog_search(&self, params: CatalogRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = match client().catalog_search(params).await {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: e.to_string(),
-                        markers: Vec::new(),
-                        scene: None,
-                        origin: String::new(),
-                        event_state: None,
-                    }),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        install_snuffling_result(&mut i, r);
-                    }
-                    invalidate_view_request(&mut i);
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Let the user pick a custom `.nd` model file ("Add Model"); the picked
-        /// name is stored for the frontend to add to the Cake Phase dropdown.
-        pub fn add_cake_model(&self) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                if let Ok(v) = js_add_cake_model().await
-                    && let Some(name) = v.as_string()
-                    && !name.is_empty()
-                {
-                    inner.borrow_mut().pending_cake_model = Some(name);
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Mount a Green's-functions store by fetching its files from an HTTP base
-        /// URL into the Pyodide filesystem (no directory picker) and register it as
-        /// `GF Store: <id>`. Errors surface in the snuffling text window.
-        pub fn load_gf_store_url(&self, url: String) {
-            let repaint = self.repaint.clone();
-            if !matches!(self.inner.borrow().status, Status::Ready) {
-                return;
-            }
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match client()
-                    .load_gf_store_url(pb::StringRequest { value: url })
-                    .await
-                {
-                    Ok(label) if !label.value.is_empty() => {
-                        inner.borrow_mut().pending_cake_model = Some(label.value);
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        let mut i = inner.borrow_mut();
-                        install_snuffling_result(
-                            &mut i,
-                            SnufflingResult {
-                                show_window: true,
-                                text: format!("Load GF store from URL failed: {e}"),
-                                markers: Vec::new(),
-                                scene: None,
-                                origin: String::new(),
-                                event_state: None,
-                            },
-                        );
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Mount a Green's-functions store directory (`NativeFS`, via the File
-        /// System Access API) and add its embedded 1D earth model to the Cake
-        /// Phase dropdown as `GF Store: <id>`. Errors (unsupported browser, not a
-        /// store) surface in the snuffling text window.
-        #[cfg(feature = "gf")]
-        pub fn add_gf_store(&self) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match js_add_gf_store().await {
-                    Ok(v) => {
-                        if let Some(name) = v.as_string()
-                            && !name.is_empty()
-                        {
-                            inner.borrow_mut().pending_cake_model = Some(name);
-                        }
-                    }
-                    Err(e) => {
-                        let mut i = inner.borrow_mut();
-                        install_snuffling_result(
-                            &mut i,
-                            SnufflingResult {
-                                show_window: true,
-                                text: format!("Add GF store failed: {}", jsval_to_string(e)),
-                                markers: Vec::new(),
-                                scene: None,
-                                origin: String::new(),
-                                event_state: None,
-                            },
-                        );
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Execute a ':' command line (goto / hide / unhide / reduce / scaling). A
-        /// goto stores a pending time the session jumps to; a visibility change swaps
-        /// the scene in place (no refit) and forces the view to re-dispatch. Either
-        /// way the outcome lands in `command_outcome` for the command line to act on.
-        pub fn run_command(&self, request: CommandRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let result = match client().run_command(request).await {
-                    Ok(r) => r,
-                    Err(e) => pb::CommandResult {
-                        action: "error".into(),
-                        message: Some(e.to_string()),
-                        ..Default::default()
-                    },
-                };
-                // Scoped so the borrow ends before `request_repaint()`: `Inner` is
-                // the same `RefCell` the render loop reads through its own `Rc`, and
-                // this is an async block, so a guard still alive at the repaint — or
-                // at any `.await` a later edit puts below — is a `BorrowMutError`
-                // panic on whichever frame or bridge result lands next.
-                {
-                    let mut i = inner.borrow_mut();
-                    match result.action.as_str() {
-                        "goto" => i.pending_goto = result.t.map(|t| (t, result.tlen)),
-                        "scene" => {
-                            if let Some(scene) = result.scene {
-                                i.scene = Some(scene);
-                                invalidate_view_request(&mut i); // re-dispatch without refitting time
-                            }
-                        }
-                        _ => {}
-                    }
-                    i.command_outcome = Some(match (result.action.as_str(), result.message) {
-                        ("error", Some(message)) => CommandOutcome::Failed(message),
-                        ("error", None) => CommandOutcome::Failed("command failed".to_owned()),
-                        _ => CommandOutcome::Succeeded,
-                    });
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Fetch station coordinates (FDSN station service) to enable distance /
-        /// azimuth sorting; forces the view to re-dispatch so the sort recomputes.
-        pub fn fetch_stations(&self, params: StationRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = match client().fetch_stations(params).await {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: e.to_string(),
-                        markers: Vec::new(),
-                        scene: None,
-                        origin: String::new(),
-                        event_state: None,
-                    }),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        install_snuffling_result(&mut i, r);
-                    }
-                    invalidate_view_request(&mut i); // re-dispatch so distance/azimuth sort recomputes
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Fetch instrument responses (`StationXML`) so Deconvolution can run;
-        /// forces a re-dispatch so the deconvolved view recomputes.
-        pub fn fetch_responses(&self, params: StationRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = match client().fetch_responses(params).await {
-                    Ok(r) => Some(r),
-                    Err(e) => Some(SnufflingResult {
-                        show_window: true,
-                        text: e.to_string(),
-                        markers: Vec::new(),
-                        scene: None,
-                        origin: String::new(),
-                        event_state: None,
-                    }),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    if let Some(r) = parsed {
-                        install_snuffling_result(&mut i, r);
-                    }
-                    invalidate_view_request(&mut i); // re-dispatch so deconvolution applies
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Reports whether a live `SeedLink` socket is active.
-        #[must_use]
-        pub fn seedlink_active(&self) -> bool {
-            let _scene_gen = self.inner.borrow().scene_gen;
-            LIVE_SEEDLINK.with(|slot| slot.borrow().is_some())
-        }
-
-        /// Starts a live `SeedLink` source and replaces the current pile.
-        pub fn start_seedlink(&self, params: SeedlinkParams) {
-            let repaint = self.repaint.clone();
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
-            let started_at = js_sys::Date::now() / 1000.0;
-            let follow_s = if params.follow_s > 0.0 {
-                params.follow_s
-            } else {
-                LIVE_FOLLOW_SECONDS
-            };
-            match LiveSeedlinkHandle::connect(
-                self.inner.clone(),
-                repaint.clone(),
-                params,
-                started_at,
-            ) {
-                Ok(handle) => {
-                    js_clear_open_sources();
-                    LIVE_SEEDLINK.with(|slot| {
-                        *slot.borrow_mut() = Some(handle);
-                    });
-                    let mut i = self.inner.borrow_mut();
-                    i.live_seedlink_started_at = Some(started_at);
-                    i.live_seedlink_follow_s = follow_s;
-                    i.scene = Some(SceneMeta {
-                        tmin: started_at,
-                        tmax: started_at + follow_s,
-                        tracks: Vec::new(),
-                    });
-                    i.scene_gen += 1;
-                    i.status = Status::Loading("Connecting SeedLink…".to_owned());
-                    i.diagnostic = None;
-                    i.snuffling = None;
-                    clear_event_state(&mut i);
-                    i.station_dists.clear();
-                    i.station_dists_gen = None;
-                    clear_view(&mut i);
-                }
-                Err(err) => {
-                    let mut i = self.inner.borrow_mut();
-                    i.live_seedlink_started_at = None;
-                    i.status = Status::Error(err.into());
-                }
-            }
-            repaint.request_repaint();
-        }
-
-        /// Stops live `SeedLink` acquisition while retaining received samples.
-        pub fn stop_seedlink(&self) {
-            LIVE_SEEDLINK.with(|slot| {
-                slot.borrow_mut().take();
-            });
-            self.inner.borrow_mut().live_seedlink_started_at = None;
-            set_snuffling_text(&self.inner, "SeedLink stopped".to_owned(), false);
-        }
-
-        /// Open local waveform files via a browser picker and append them.
-        pub fn open_files(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Opening files…".into());
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_open_files().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(v) => match js_bytes(v, "open_files") {
-                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => {
-                                match proto::scene_or_bundle_from_bytes(&bytes, "open_files") {
-                                    Ok(result) => {
-                                        // A picked bundle also loaded stations and
-                                        // events; its markers reach the app through
-                                        // the same installer as a direct bundle load.
-                                        install_dataset_result(&mut i, result);
-                                        i.status = Status::Ready;
-                                    }
-                                    Err(e) => i.status = Status::Error(e.into()),
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        },
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "opening files",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Recursively load every waveform file under a picked directory
-        /// (Chromium File System Access); appends them to the pile.
-        pub fn open_directory(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Loading directory…".into());
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_open_directory().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(v) => match js_bytes(v, "open_directory") {
-                            Ok(bytes) if bytes.is_empty() => i.status = Status::Ready,
-                            Ok(bytes) => {
-                                match proto::scene_or_bundle_from_bytes(&bytes, "open_directory") {
-                                    Ok(result) => {
-                                        install_dataset_result(&mut i, result);
-                                        i.status = Status::Ready;
-                                    }
-                                    Err(e) => i.status = Status::Error(e.into()),
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        },
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "opening a directory",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Reload the Python snuffling code (bridge.py) in the worker, preserving
-        /// the loaded pile (snuffler's Shift+R). Forces a view re-fetch since the
-        /// reload resets Python's view cache; the scene (track list) is unchanged.
-        pub fn reload_snufflings(&self) {
-            let repaint = self.repaint.clone();
-            self.inner.borrow_mut().status = Status::Loading("Reloading snufflings…".into());
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_reload_snufflings().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(_) => {
-                            i.status = Status::Ready;
-                            invalidate_view_request(&mut i);
-                        }
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "reloading snufflings",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Re-read any opened files whose on-disk mtime changed and replace their
-        /// traces (snuffler's "r").
-        ///
-        /// Successful sources are installed even when another source in the same
-        /// batch fails.
-        /// Those failures remain visible through [`Bridge::diagnostic`] while the
-        /// operational [`Status`] returns to [`Status::Ready`].
-        pub fn reload_files(&self) {
-            let repaint = self.repaint.clone();
-            {
-                let mut inner = self.inner.borrow_mut();
-                inner.status = Status::Loading("Reloading modified files…".into());
-                inner.diagnostic = None;
-            }
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let res = js_reload_files().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match res {
-                        Ok(v) => match js_bytes(v, "reload_files") {
-                            Ok(bytes) => {
-                                match proto::decode_message::<ReloadBatchResult>(
-                                    &bytes,
-                                    "reload_files",
-                                ) {
-                                    Ok(batch) => {
-                                        let diagnostic = install_reload_batch(&mut i, batch);
-                                        finish_reload_batch(&mut i, diagnostic);
-                                    }
-                                    Err(error) => i.status = Status::Error(error.into()),
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        },
-                        Err(e) => {
-                            i.status = Status::Error(BridgeError::browser(
-                                "reloading files",
-                                jsval_to_string(e),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Qt's download Save trigger: the loaded waveforms as one `MiniSEED`
-        /// download plus the station table as a pyrocko station file.
-        /// A refusal remains a typed recoverable diagnostic, so either successful
-        /// half still downloads and the viewer stays operational.
-        pub fn save_waveforms_and_stations(&self) {
-            let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                // Both halves run even when the first fails: one refused file
-                // must not cost the user the other download.
-                // The first failure takes the diagnostic slot.
-                let failed = [
-                    download_blob(client().export_waveforms().await, "downloading waveforms").await,
-                    download_blob(client().export_stations().await, "downloading stations").await,
-                ]
-                .into_iter()
-                .find_map(Result::err);
-                {
-                    let mut i = inner.borrow_mut();
-                    i.diagnostic = failed;
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// The waveform half alone — the live window's "save the buffer as
-        /// `MiniSEED`" (a stream rarely has a station table to save with it).
-        /// A refusal surfaces as a recoverable diagnostic.
-        pub fn save_waveforms(&self) {
-            let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                let result =
-                    download_blob(client().export_waveforms().await, "downloading waveforms").await;
-                {
-                    let mut i = inner.borrow_mut();
-                    i.diagnostic = result.err();
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Serializes markers through pyrocko and downloads the resulting text.
-        /// A failure surfaces as a typed recoverable diagnostic.
-        pub fn save_markers(&self, markers: MarkerFile) {
-            let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            spawn_local(async move {
-                let result = match client().markers_to_text(markers).await {
-                    Ok(text) => {
-                        download_bytes(
-                            text.value.into_bytes(),
-                            "markers.txt".to_owned(),
-                            "text/plain".to_owned(),
-                            "downloading markers",
-                        )
-                        .await
-                    }
-                    Err(error) => Err(error.into()),
-                };
-                {
-                    let mut i = inner.borrow_mut();
-                    i.diagnostic = result.err();
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Trigger a browser download of encoded image bytes (PNG export).
-        #[allow(
-            clippy::unused_self,
-            reason = "method form mirrors the other bridge calls; the download needs no state"
-        )]
-        pub fn save_image_png(&self, bytes: Vec<u8>, filename: String) {
-            js_save_png(&bytes, &filename);
-        }
-
-        /// Trigger a browser download of an SVG document (vector image export).
-        #[allow(
-            clippy::unused_self,
-            reason = "method form mirrors the other bridge calls; the download needs no state"
-        )]
-        pub fn save_image_svg(&self, svg: String, filename: String) {
-            js_save_svg(&svg, &filename);
-        }
-
-        /// Load a marker file via a browser picker; results land as markers.
-        pub fn load_markers(&self) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_markers().await,
-                    "markers",
-                    "loading markers",
-                    proto::markers_from_bytes,
-                ) {
-                    Ok(Some(loaded)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        let n = loaded.markers.len();
-                        install_snuffling_result(
-                            &mut i,
-                            SnufflingResult {
-                                show_window: true,
-                                text: format!("loaded {n} marker(s)"),
-                                markers: loaded.markers,
-                                scene: None,
-                                origin: String::new(),
-                                event_state: loaded.event_state,
-                            },
-                        );
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Pick and merge local `StationXML` files (instrument responses for
-        /// deconvolution + station coordinates for sorting) using the same parsing
-        /// as fetched `FDSN` responses.
-        pub fn load_station_xml(&self) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_station_xml().await,
-                    "stationxml",
-                    "loading StationXML",
-                    proto::snuffling_from_bytes,
-                ) {
-                    Ok(Some(result)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        install_snuffling_result(&mut i, result);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Pick a local pyrocko station file and load its station coordinates
-        /// (distance/azimuth sorting, cake, map) via `model.load_stations`.
-        pub fn load_stations(&self) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_stations().await,
-                    "stations",
-                    "loading stations",
-                    proto::snuffling_from_bytes,
-                ) {
-                    Ok(Some(result)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        install_snuffling_result(&mut i, result);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Pick a local pyrocko event file and load it: event markers + the active
-        /// event (largest magnitude) for distance/azimuth sorting, which forces a
-        /// re-dispatch so that sort recomputes against the new active event.
-        pub fn load_events(&self) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                match picker_result(
-                    js_load_events().await,
-                    "events",
-                    "loading events",
-                    proto::snuffling_from_bytes,
-                ) {
-                    Ok(Some(result)) => {
-                        let mut i = inner.borrow_mut();
-                        i.diagnostic = None;
-                        install_snuffling_result(&mut i, result);
-                        invalidate_view_request(&mut i);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let mut i = inner.borrow_mut();
-                        record_diagnostic(&mut i, error);
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Fetch station + event coordinates for the Map overlay.
-        pub fn fetch_map_data(&self, request: MapRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                if i.map_in_flight && i.map_request.as_ref() == Some(&request) {
-                    return;
-                }
-                let changed = i.map_request.as_ref() != Some(&request);
-                i.map_request = Some(request.clone());
-                i.map_request_gen = i.map_request_gen.wrapping_add(1);
-                i.map_in_flight = true;
-                if changed {
-                    i.map = None;
-                }
-                i.map_request_gen
-            };
-            spawn_local(async move {
-                let result = client().map_data(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.map_request_gen == request_gen {
-                        i.map = result.ok();
-                        i.map_in_flight = false;
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Ensure the per-station distances are current for the given snuffling
-        /// generation (the active event changes with each catalog/event load). A
-        /// no-op if already fetched for this generation or a fetch is in flight.
-        pub fn ensure_station_distances(&self, snuffling_gen: u64) {
-            let repaint = self.repaint.clone();
-            let token;
-            {
-                let mut i = self.inner.borrow_mut();
-                token = (snuffling_gen, i.active_event_gen);
-                if i.station_dists_in_flight
-                    || i.station_dists_gen == Some(token)
-                    || !matches!(i.status, Status::Ready)
-                {
-                    return;
-                }
-                i.station_dists_in_flight = true;
-            }
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let parsed = client().station_distances().await.ok();
-                {
-                    let mut i = inner.borrow_mut();
-                    i.station_dists_in_flight = false;
-                    i.station_dists_gen = Some(token);
-                    if let Some(list) = parsed {
-                        i.station_dists.clear();
-                        for s in list.stations {
-                            i.station_dists.insert((s.net, s.sta), s.distance_deg);
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Polls watched files without showing a loading status.
-        ///
-        /// Successful changes install immediately; source failures still surface
-        /// because otherwise their earlier batch peers would change invisibly.
-        pub fn watch_poll(&self) {
-            let repaint = self.repaint.clone();
-            if !matches!(self.inner.borrow().status, Status::Ready) {
-                return;
-            }
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            spawn_local(async move {
-                let result = js_reload_files().await;
-                {
-                    let mut i = inner.borrow_mut();
-                    match result {
-                        Ok(value) => match js_bytes(value, "watch_poll") {
-                            Ok(bytes) => match proto::decode_message::<ReloadBatchResult>(
-                                &bytes,
-                                "watch_poll",
-                            ) {
-                                Ok(batch) => {
-                                    let diagnostic = install_reload_batch(&mut i, batch);
-                                    i.diagnostic = diagnostic;
-                                }
-                                Err(error) => {
-                                    i.diagnostic = None;
-                                    i.status = Status::Error(error.into());
-                                }
-                            },
-                            Err(error) => {
-                                i.diagnostic = None;
-                                i.status = Status::Error(error.into());
-                            }
-                        },
-                        Err(error) => {
-                            i.diagnostic = None;
-                            i.status = Status::Error(BridgeError::browser(
-                                "watching files",
-                                jsval_to_string(error),
-                            ));
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Sets or clears the active event and installs Python's canonical registry.
-        pub fn set_active_event(&self, req: SetActiveEventRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                i.event_request_gen = i.event_request_gen.wrapping_add(1);
-                i.event_request_gen
-            };
-            spawn_local(async move {
-                let result = client().set_active_event(req).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.event_request_gen == request_gen {
-                        match result {
-                            Ok(state) => {
-                                i.diagnostic = None;
-                                install_event_state(&mut i, state);
-                            }
-                            Err(error) => record_diagnostic(&mut i, error.into()),
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Replaces one canonical event after an inline marker-table edit.
-        pub fn update_event(&self, event: EventSnapshot) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                i.event_request_gen = i.event_request_gen.wrapping_add(1);
-                i.event_request_gen
-            };
-            spawn_local(async move {
-                let result = client().update_event(event).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.event_request_gen == request_gen {
-                        match result {
-                            Ok(state) => {
-                                i.diagnostic = None;
-                                install_event_state(&mut i, state);
-                            }
-                            Err(error) => record_diagnostic(&mut i, error.into()),
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Removes canonical events whose final frontend marker was deleted.
-        pub fn remove_events(&self, request: RemoveEventsRequest) {
-            let repaint = self.repaint.clone();
-            let inner = self.inner.clone();
-            let request_gen = {
-                let mut i = inner.borrow_mut();
-                i.event_request_gen = i.event_request_gen.wrapping_add(1);
-                i.event_request_gen
-            };
-            spawn_local(async move {
-                let result = client().remove_events(request).await;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.event_request_gen == request_gen {
-                        match result {
-                            Ok(state) => {
-                                i.diagnostic = None;
-                                install_event_state(&mut i, state);
-                            }
-                            Err(error) => record_diagnostic(&mut i, error.into()),
-                        }
-                    }
-                }
-                repaint.request_repaint();
-            });
-        }
-
-        /// Submit every tile the map wants on screen right now.
-        ///
-        /// This replaces the pending queue rather than adding to it, which is what
-        /// makes a zoom or a pan cheap: tiles the view has moved away from and
-        /// that no batch has started yet are simply dropped, and the survivors are
-        /// re-ordered by the priority the view just scored them with. Tiles
-        /// already fetched, in flight, or known to have failed are skipped, so
-        /// calling this every frame costs a filter over a screenful of keys.
-        pub fn request_tiles(&self, wanted: Vec<TileRequest>) {
-            {
-                let mut i = self.inner.borrow_mut();
-                let mut queue: Vec<TileRequest> = wanted
-                    .into_iter()
-                    .filter(|t| !i.tiles.contains_key(&(t.z, t.x, t.y)))
-                    .collect();
-                queue.sort_by_key(|t| t.priority);
-                i.tile_queue = queue;
-            }
-            self.pump_tiles();
-        }
-
-        /// Start batches until the queue empties or the in-flight cap is reached.
-        fn pump_tiles(&self) {
-            loop {
-                let batch = {
-                    let mut i = self.inner.borrow_mut();
-                    if i.tile_batches >= TILE_BATCHES_IN_FLIGHT || i.tile_queue.is_empty() {
-                        return;
-                    }
-                    let take = i.tile_queue.len().min(TILE_BATCH);
-                    let batch: Vec<TileRequest> = i.tile_queue.drain(..take).collect();
-                    for tile in &batch {
-                        i.tiles
-                            .insert((tile.z, tile.x, tile.y), TileState::InFlight);
-                    }
-                    i.tile_batches += 1;
-                    batch
-                };
-                self.spawn_tile_batch(batch);
-            }
-        }
-
-        /// Fetch and decode one batch in the browser, filing each tile as it lands.
-        fn spawn_tile_batch(&self, batch: Vec<TileRequest>) {
-            let inner = self.inner.clone();
-            let repaint = self.repaint.clone();
-            let me = self.clone();
-            let epoch = self.inner.borrow().tile_epoch;
-            let keys: Vec<(u8, u32, u32)> = batch.iter().map(|t| (t.z, t.x, t.y)).collect();
-            let urls = js_sys::Array::new();
-            for tile in &batch {
-                urls.push(&JsValue::from_str(&tile.url));
-            }
-
-            spawn_local(async move {
-                let on_tile = {
-                    let inner = inner.clone();
-                    let repaint = repaint.clone();
-                    let keys = keys.clone();
-                    // Tile dimensions arrive as JS numbers that are small
-                    // non-negative pixel counts.
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "tile width/height are small non-negative integers"
-                    )]
-                    Closure::<dyn FnMut(f64, f64, f64, js_sys::Uint8Array)>::new(
-                        move |index: f64, width: f64, height: f64, rgba: js_sys::Uint8Array| {
-                            let Some(&key) = keys.get(index as usize) else {
-                                return;
-                            };
-                            let (width, height) = (width as u32, height as u32);
-                            let bytes = rgba.to_vec();
-                            let decoded = width > 0
-                                && height > 0
-                                && bytes.len() == (width as usize) * (height as usize) * 4;
-                            {
-                                let mut i = inner.borrow_mut();
-                                // The basemap changed while this tile was in
-                                // flight; it now holds the wrong provider's
-                                // imagery for its key.
-                                if i.tile_epoch != epoch {
-                                    return;
-                                }
-                                i.tiles.insert(
-                                    key,
-                                    if decoded {
-                                        TileState::Ready(width, height, bytes)
-                                    } else {
-                                        TileState::Failed
-                                    },
-                                );
-                            }
-                            repaint.request_repaint();
-                        },
-                    )
-                };
-                let delivered = js_fetch_tiles(
-                    urls,
-                    on_tile.as_ref().unchecked_ref::<js_sys::Function>().clone(),
-                )
-                .await;
-                drop(on_tile);
-                {
-                    let mut i = inner.borrow_mut();
-                    i.tile_batches = i.tile_batches.saturating_sub(1);
-                    // The batch as a whole can reject before every callback fired
-                    // (the module failed to load, say). Anything still marked
-                    // in-flight has no other way to be retired, and would block
-                    // its key from ever being requested again.
-                    if i.tile_epoch == epoch && delivered.is_err() {
-                        for key in keys {
-                            if matches!(i.tiles.get(&key), Some(TileState::InFlight)) {
-                                i.tiles.insert(key, TileState::Failed);
-                            }
-                        }
-                    }
-                }
-                repaint.request_repaint();
-                me.pump_tiles();
-            });
-        }
-
-        /// Request a view for the given params, coalescing rapid changes so that
-        /// at most one Python call is in flight at a time.
-        pub fn ensure_view(&self, params: ViewParams) {
-            let repaint = self.repaint.clone();
-            {
-                let mut i = self.inner.borrow_mut();
-                if !matches!(i.status, Status::Ready) {
-                    return;
-                }
-                if i.applied.as_ref() == Some(&params) {
-                    if i.view_in_flight.is_none() {
-                        i.desired = None;
-                    } else {
-                        i.desired = Some(params);
-                        repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                    }
-                    return;
-                }
-                if i.view_in_flight.as_ref() == Some(&params) {
-                    i.desired = None;
-                    repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                    return;
-                }
-                i.desired = Some(params);
-                if i.view_in_flight.is_some() {
-                    repaint.request_repaint_after(std::time::Duration::from_millis(17));
-                    return;
-                }
-            }
-            self.dispatch_view();
-        }
-
-        fn dispatch_view(&self) {
-            let repaint = self.repaint.clone();
-            let (params, request_gen) = {
-                let mut i = self.inner.borrow_mut();
-                if i.view_in_flight.is_some() {
-                    return;
-                }
-                let Some(params) = i.desired.take() else {
-                    return;
-                };
-                if i.applied.as_ref() == Some(&params) {
-                    return;
-                }
-                i.view_in_flight = Some(params.clone());
-                (params, i.view_request_gen)
-            };
-            repaint.request_repaint_after(std::time::Duration::from_millis(17));
-            let inner = self.inner.clone();
-            let repaint = repaint.clone();
-            let me = self.clone();
-            spawn_local(async move {
-                let t0 = js_sys::Date::now();
-                let parsed = client()
-                    .get_view(params.clone())
-                    .await
-                    .map(|(meta, ys)| ViewData { meta, ys });
-                let request_ms = js_sys::Date::now() - t0;
-                {
-                    let mut i = inner.borrow_mut();
-                    if i.view_request_gen == request_gen {
-                        match parsed {
-                            Ok(vd) => {
-                                log_view_debug(&params, &vd, request_ms);
-                                if i.desired.as_ref().is_none_or(|desired| desired == &params) {
-                                    i.view = Some(vd);
-                                    i.view_epoch += 1;
-                                    i.applied = Some(params.clone());
-                                    if i.desired.as_ref() == Some(&params) {
-                                        i.desired = None;
-                                    }
-                                }
-                            }
-                            Err(e) => i.status = Status::Error(e.into()),
-                        }
-                        if i.view_in_flight.as_ref() == Some(&params) {
-                            i.view_in_flight = None;
-                        }
-                    } else if i.view_in_flight.as_ref() == Some(&params) {
-                        i.view_in_flight = None;
-                    }
-                }
-                repaint.request_repaint();
-                me.maybe_redispatch();
-            });
-        }
-
-        fn maybe_redispatch(&self) {
-            let need = {
-                let mut i = self.inner.borrow_mut();
-                if i.view_in_flight.is_some() {
-                    false
-                } else if i.desired.is_some() && i.applied.as_ref() != i.desired.as_ref() {
-                    true
-                } else {
-                    i.desired = None;
-                    false
-                }
-            };
-            if need {
-                self.dispatch_view();
-            }
-        }
-    }
-}
+mod web;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
-        BridgeError, BundleAbout, BundleView, Inner, Status, finish_reload_batch,
-        install_bundle_presentation, record_diagnostic,
+        Bridge, BundleAbout, BundleView, Inner, Operation, Repaint, ViewData,
+        install_bundle_presentation,
     };
-
-    #[test]
-    fn recoverable_reload_diagnostics_leave_the_bridge_ready() {
-        let mut inner = Inner {
-            status: Status::Loading("Reloading modified files…".to_owned()),
-            ..Default::default()
-        };
-        let diagnostic = BridgeError::browser("reading a file for reload", "permission revoked");
-
-        finish_reload_batch(&mut inner, Some(diagnostic));
-
-        assert!(matches!(inner.status, Status::Ready));
-        assert!(inner.diagnostic.is_some());
-    }
-
-    #[test]
-    fn recoverable_operation_diagnostics_do_not_disable_the_bridge() {
-        let mut inner = Inner {
-            status: Status::Ready,
-            ..Default::default()
-        };
-
-        record_diagnostic(
-            &mut inner,
-            BridgeError::browser("loading markers", "malformed marker file"),
-        );
-
-        assert!(matches!(inner.status, Status::Ready));
-        assert!(inner.diagnostic.is_some());
-    }
 
     #[test]
     fn bundle_presentation_uses_the_installed_scene_generation() {
@@ -3112,5 +686,21 @@ mod tests {
                 .map(|(generation, about)| (*generation, about.title.as_str())),
             Some((7, "Changed bundle"))
         );
+    }
+
+    #[test]
+    fn view_snapshot_outlives_public_bridge_mutation() {
+        fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+
+        assert_send_sync_static::<Arc<ViewData>>();
+        let bridge = Bridge::new(Repaint::new(|| {}, |_| {}));
+        bridge.inner.borrow_mut().view = Some(Arc::new(ViewData::default()));
+
+        let snapshot: Option<Arc<ViewData>> = bridge.view();
+        let submission = bridge.begin_local(Operation::ExportSvg, None);
+        bridge.finish_local(submission.handle(), Ok(()));
+
+        assert!(snapshot.is_some());
+        assert!(bridge.view().is_some());
     }
 }

@@ -1,0 +1,9 @@
+# The activity ledger is the only place work may become invisible to the user:
+# a bare spawn bypasses it and yields long-running work with no spinner, no
+# cancel, and no failure surface. Spawning is therefore opt-in per call site —
+# the ledger's own composition points carry a narrow #[expect] naming the job
+# that keeps the work visible.
+disallowed-methods = [
+    { path = "wasm_bindgen_futures::spawn_local", reason = "mint a ledger job (submit_job / begin_local) and spawn only at the bridge's own composition points" },
+    { path = "rayon::spawn", reason = "mint a ledger job (submit_job / begin_local) and spawn only at the bridge's own composition points" },
+]

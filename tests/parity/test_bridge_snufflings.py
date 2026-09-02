@@ -19,6 +19,7 @@ import io
 import sys
 import types
 import zipfile
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
 import bridge
@@ -309,13 +310,16 @@ def test_failed_bundle_load_restores_the_entire_previous_dataset(
     assert bridge._STATIONXMLS == [stationxml]
 
 
-def test_live_reset_retires_the_boot_example_flag() -> None:
+def test_valid_live_reset_retires_the_boot_example_flag(tmp_path: Path) -> None:
     bridge._TRACES[:] = [make_trace("BOOT", "DEMO", "BHZ", 0.0, 100, 1.0)]
     bridge._PILE_IS_EXAMPLE = True
+    live = make_trace("LV", "STRM", "BHZ", 0.0, 100, 1.0)
+    path = tmp_path / "live.mseed"
+    bridge.pio.save([live], str(path), format="mseed")
 
-    bridge._append_mseed_scene("live", b"", reset=True)
+    bridge._append_mseed_scene("live", path.read_bytes(), reset=True)
 
-    assert bridge._TRACES == []
+    assert [trace.nslc_id for trace in bridge._TRACES] == [live.nslc_id]
     assert not bridge._PILE_IS_EXAMPLE
 
 
@@ -513,7 +517,7 @@ def test_minmax_folds_file_split_fragments_into_one_row() -> None:
             make_trace("XX", "STA1", "BHN", 0.0, 2000, 2.0),
         ]
     )
-    res = bridge._run_snuffling_result("minmax", base_req())
+    res = asyncio.run(bridge._run_snuffling_result("minmax", base_req()))
     rows = [ln for ln in res.text.splitlines()[1:] if ln.strip()]
     # Qt prints one aggregate per NSLC (`trace.minmax`, minmax.py:49) — never
     # one row of local extrema per file fragment.
@@ -535,7 +539,7 @@ def test_minmax_honours_the_markers_channel_scope() -> None:
     )
     req = base_req()
     select_span(req, 0.0, 20.0, ("XX", "STA1", "*", "BHN"))
-    res = bridge._run_snuffling_result("minmax", req)
+    res = asyncio.run(bridge._run_snuffling_result("minmax", req))
     rows = [ln for ln in res.text.splitlines()[1:] if ln.strip()]
     # A channel-scoped selected marker admits only its own channel.
     assert len(rows) == 1
@@ -571,13 +575,13 @@ def test_stalta_and_rms_cross_a_contiguous_file_boundary() -> None:
     request.snufflings.stalta.stalta_level = 0.5
     request.snufflings.stalta.stalta_show_level_traces = True
 
-    bridge._run_snuffling_result("stalta", request)
+    asyncio.run(bridge._run_snuffling_result("stalta", request))
 
     stalta = bridge._DERIVED_TRACES["stalta"]
     assert len([trace for trace in stalta if trace.station == "STA1"]) == 1
 
     request.snufflings.rms.rms_block = 2.0
-    bridge._rms_scene(request)
+    asyncio.run(bridge._rms_scene(request))
 
     rms = bridge._DERIVED_TRACES["rms"]
     assert len(rms) == 1
@@ -597,7 +601,7 @@ def test_spectrogram_inventory_merges_split_fragments() -> None:
     assert panels == [(("XX", "STA1", "", "BHZ"), 0.01)]
 
 
-def test_failed_stalta_and_rms_runs_keep_the_cleaned_scene(
+def test_failed_stalta_and_rms_calls_preserve_the_committed_scene(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     load([make_trace("XX", "STA1", "BHZ", 0.0, 2000, 1.0)])
@@ -612,22 +616,220 @@ def test_failed_stalta_and_rms_runs_keep_the_cleaned_scene(
 
     monkeypatch.setattr(bridge, "_chopper_selected_traces", fail_chopper)
 
-    with pytest.raises(RuntimeError, match="injected chopper failure"):
-        bridge._run_snuffling_result("stalta", base_req())
-    stalta_request = bridge.snuffling_pb2.NamedSnufflingRequest(name="stalta", params=base_req())
-    stalta_result = asyncio.run(bridge._BridgeServicer().run_snuffling(stalta_request, None))
-    rms_result = bridge._BridgeServicer().rms_traces(base_req(), None)
+    def trace_bytes() -> List[Tuple[Tuple[str, str, str, str], bytes]]:
+        return [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES]
 
-    assert stale_stalta not in bridge._TRACES
-    assert stale_rms not in bridge._TRACES
-    assert bridge._DERIVED_TRACES["stalta"] == []
-    assert bridge._DERIVED_TRACES["rms"] == []
-    assert stalta_result.origin == "stalta"
-    assert stalta_result.HasField("scene")
-    assert "injected chopper failure" in stalta_result.text
-    assert rms_result.origin == "rms"
-    assert rms_result.HasField("scene")
-    assert "injected chopper failure" in rms_result.text
+    before = trace_bytes()
+    stalta_request = bridge.snuffling_pb2.NamedSnufflingRequest(name="stalta", params=base_req())
+    stalta_reply = asyncio.run(
+        bridge.call(
+            "/snuffler.bridge.v1.BridgeService/RunSnuffling",
+            stalta_request.SerializeToString(),
+        )
+    )
+    stalta_result = bridge.bridge_pb2.BridgeResult.FromString(stalta_reply["result"])
+
+    assert stalta_result.WhichOneof("result") == "error"
+    assert "injected chopper failure" in stalta_result.error.message
+    assert trace_bytes() == before
+
+    rms_reply = asyncio.run(
+        bridge.call(
+            "/snuffler.bridge.v1.BridgeService/RmsTraces",
+            base_req().SerializeToString(),
+        )
+    )
+    rms_result = bridge.bridge_pb2.BridgeResult.FromString(rms_reply["result"])
+
+    assert rms_result.WhichOneof("result") == "error"
+    assert "injected chopper failure" in rms_result.error.message
+    assert trace_bytes() == before
+    assert len(bridge._DERIVED_TRACES["stalta"]) == 1
+    assert len(bridge._DERIVED_TRACES["rms"]) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [SystemExit("stop"), GeneratorExit("close"), BaseException("base")],
+    ids=["system-exit", "generator-exit", "base-exception"],
+)
+def test_outer_boundary_serializes_every_base_exception(
+    monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    load([make_trace("XX", "STA1", "BHZ", 0.0, 2000, 1.0)])
+    before = [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES]
+
+    async def fail_dispatch(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        raise failure
+
+    monkeypatch.setattr(bridge.bridge_dispatch, "dispatch", fail_dispatch)
+    reply = asyncio.run(bridge.call("/snuffler.bridge.v1.BridgeService/EmptyScene"))
+    result = bridge.bridge_pb2.BridgeResult.FromString(reply["result"])
+
+    assert result.WhichOneof("result") == "error"
+    assert result.error.kind == type(failure).__name__
+    assert result.error.message == str(failure)
+    assert [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES] == before
+
+
+def test_cancellation_gate_wins_before_commit_and_preserves_the_scene() -> None:
+    load([make_trace("XX", "STA1", "BHZ", 0.0, 2000, 1.0)])
+    before = [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES]
+
+    reply = asyncio.run(
+        bridge.call(
+            "/snuffler.bridge.v1.BridgeService/EmptyScene",
+            begin_commit=lambda: False,
+        )
+    )
+    result = bridge.bridge_pb2.BridgeResult.FromString(reply["result"])
+
+    assert result.WhichOneof("result") == "cancelled"
+    assert [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES] == before
+
+
+def test_malformed_seedlink_reset_preserves_the_committed_scene() -> None:
+    load([make_trace("XX", "STA1", "BHZ", 0.0, 2000, 1.0)])
+    before = [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES]
+    request = bridge.data_pb2.IngestMiniSeedRequest(
+        source="test",
+        content=b"not miniSEED",
+        reset=True,
+        stream_id=7,
+        session_epoch=3,
+        batch_seq_first=0,
+        batch_seq_last=0,
+    )
+
+    reply = asyncio.run(
+        bridge.call(
+            "/snuffler.bridge.v1.BridgeService/IngestMiniSeed",
+            request.SerializeToString(),
+        )
+    )
+    result = bridge.bridge_pb2.BridgeResult.FromString(reply["result"])
+
+    assert result.WhichOneof("result") == "error"
+    assert [(trace.nslc_id, trace.ydata.tobytes()) for trace in bridge._TRACES] == before
+
+
+def test_marker_budget_truncates_before_serialization_and_interns_nslcs() -> None:
+    result = bridge.snuffling_pb2.SnufflingResult()
+    result.nslc_table.add(net="XX", sta="STA", loc="", cha="BHZ")
+    for index, strength in enumerate((0.1, 0.9, 0.2, 0.8, 0.3)):
+        marker = result.markers.add()
+        marker.t = float(index)
+        marker.incidence_angle = strength
+        marker.nslc_indexes.append(0)
+
+    bridge._truncate_marker_result(result, bridge.snuffling_pb2.MarkerBudget(max_markers=2))
+
+    assert len(result.markers) == 2
+    assert [marker.t for marker in result.markers] == [1.0, 3.0]
+    assert result.markers_dropped == 3
+    assert result.marker_budget == 2
+    assert len(result.nslc_table) == 1
+    assert all(list(marker.nslc_indexes) == [0] for marker in result.markers)
+
+
+def test_marker_accumulator_bounds_candidates_and_compacts_unique_nslcs() -> None:
+    accumulator = bridge._MarkerAccumulator(bridge.snuffling_pb2.MarkerBudget(max_markers=3))
+    for index in range(1000):
+        marker = bridge.snuffling_pb2.SnufMarker(t=float(index))
+        accumulator.add(
+            marker,
+            [("XX", f"S{index:04d}", "", "BHZ")],
+            strength=float(index),
+        )
+
+    assert len(accumulator._heap) == 3
+    result = accumulator.finish(bridge.snuffling_pb2.SnufflingResult())
+    assert len(result.markers) == 3
+    assert [marker.t for marker in result.markers] == [997.0, 998.0, 999.0]
+    assert len(result.nslc_table) == 3
+    assert result.markers_dropped == 997
+
+
+def test_marker_accumulator_retains_event_and_active_markers_under_pressure() -> None:
+    # Event markers carry no incidence angle and score 0.0; without a retention
+    # tier, an over-budget file of strong phase picks would displace every
+    # event, leaving the picks' event_hash references dangling.
+    accumulator = bridge._MarkerAccumulator(bridge.snuffling_pb2.MarkerBudget(max_markers=4))
+    for index in range(100):
+        pick = bridge.snuffling_pb2.SnufMarker(t=float(index))
+        pick.incidence_angle = 50.0 + float(index)
+        accumulator.add(pick)
+    event = bridge.snuffling_pb2.SnufMarker(t=1000.0, is_event=True)
+    accumulator.add(event)
+    active = bridge.snuffling_pb2.SnufMarker(t=2000.0, is_event=True, active=True)
+    accumulator.add(active)
+
+    result = accumulator.finish(bridge.snuffling_pb2.SnufflingResult())
+    assert len(result.markers) == 4
+    retained_events = [marker for marker in result.markers if marker.is_event]
+    assert {marker.t for marker in retained_events} == {1000.0, 2000.0}
+    assert any(marker.active for marker in retained_events)
+
+
+def test_workspace_clone_preserves_event_identity_across_the_event_maps() -> None:
+    # _replace_derived_events retires registry entries by object identity, and
+    # _ACTIVE_MT aliases the registered event's moment tensor. The clone must
+    # keep those aliases (one shared deepcopy memo); independent copies would
+    # leak superseded derived events in the registry forever.
+    from pyrocko import model, moment_tensor
+
+    event = model.Event(time=1.0, lat=0.0, lon=0.0, depth=0.0)
+    event.moment_tensor = moment_tensor.MomentTensor(strike=30.0, dip=60.0, rake=90.0)
+    state = bridge._empty_dataset_state([])
+    state = state._replace(
+        derived_events={"seismosizer": {"h1": event}},
+        event_registry={"h1": event},
+        active_mt=event.moment_tensor,
+        active_hash="h1",
+    )
+
+    clone = bridge._clone_dataset_state(state)
+
+    assert clone.derived_events["seismosizer"]["h1"] is clone.event_registry["h1"]
+    assert clone.active_mt is clone.event_registry["h1"].moment_tensor
+    assert clone.event_registry["h1"] is not event
+
+
+def test_event_projection_is_bounded_and_retains_the_active_event() -> None:
+    from pyrocko import model
+
+    for index in range(5):
+        bridge._register_event(
+            f"event-{index}",
+            model.Event(time=float(index), lat=float(index), lon=0.0, depth=0.0),
+        )
+    bridge._activate_event("event-0")
+
+    state = bridge._event_state(2)
+
+    assert len(state.events) == 2
+    assert {event.event_hash for event in state.events} == {"event-0", "event-4"}
+    assert len(state.kagan) == 2
+
+
+def test_interrupted_view_invalidation_clears_every_view_owned_cache() -> None:
+    bridge._PILE = object()
+    bridge._PILE_GEN = 9
+    bridge._CUTOUT_VEC = np.array([1.0])
+    bridge._CUTOUT_TRACES = [make_trace("XX", "STA", "BHZ", 0.0, 10, 1.0)]
+    bridge._CUTOUT_NOTICES[:] = ["cutout"]
+    bridge._VIEW_NOTICES[:] = ["view"]
+    bridge._OLD_DATA_RANGES["track"] = (1.0, 2.0)
+
+    bridge._invalidate_interrupted_view()
+
+    assert bridge._PILE is None
+    assert bridge._PILE_GEN is None
+    assert bridge._CUTOUT_VEC is None
+    assert bridge._CUTOUT_TRACES is None
+    assert bridge._CUTOUT_NOTICES == []
+    assert bridge._VIEW_NOTICES == []
+    assert bridge._OLD_DATA_RANGES == {}
 
 
 def test_polarization_analyses_a_hidden_component() -> None:
@@ -642,7 +844,7 @@ def test_polarization_analyses_a_hidden_component() -> None:
     bridge._mark_traces_changed()
     req = base_req()
     select_span(req, 5.0, 6.0, ("XX", "STA1", "", "BHZ"))
-    res = bridge._run_snuffling_result("polarization", req)
+    res = asyncio.run(bridge._run_snuffling_result("polarization", req))
     # Qt choppers the raw pile with only its channel pattern
     # (polarization.py:300): hiding one component must not break the station's
     # three-component analysis.
@@ -661,7 +863,7 @@ def test_polarization_requires_the_padded_window() -> None:
         )
         req = base_req()
         select_span(req, 5.0, 6.0, ("XX", "STA1", "", "BHZ"))
-        res = bridge._run_snuffling_result("polarization", req)
+        res = asyncio.run(bridge._run_snuffling_result("polarization", req))
         return any("STA1" in ln for ln in res.text.splitlines()[1:])
 
     # Data covering only [4.5, 6.5] misses the margin: no result — where an
@@ -715,7 +917,7 @@ def test_stalta_cleanup_preserves_user_cg_locations() -> None:
     req.snufflings.stalta.stalta_ratio = 3.0
     req.snufflings.stalta.stalta_level = 0.5
 
-    bridge._run_snuffling_result("stalta", req)
+    asyncio.run(bridge._run_snuffling_result("stalta", req))
 
     assert user in bridge._TRACES
     assert stale not in bridge._TRACES
@@ -727,7 +929,7 @@ def test_rms_cleanup_preserves_user_rms_channel_names() -> None:
     req = base_req()
     req.snufflings.rms.rms_block = 1.0
 
-    bridge._rms_scene(req)
+    asyncio.run(bridge._rms_scene(req))
 
     assert user in bridge._TRACES
     assert user not in bridge._DERIVED_TRACES["rms"]
@@ -836,7 +1038,7 @@ def test_a_failed_seismosizer_run_leaves_the_cleaned_state() -> None:
     bridge._GF_STORES["broken"] = "/nonexistent-store-dir"
     req = base_req()
     req.snufflings.seismosizer.seis_store = bridge.GF_STORE_PREFIX + "broken"
-    res = bridge._run_snuffling_result("seismosizer", req)
+    res = asyncio.run(bridge._run_snuffling_result("seismosizer", req))
 
     # Qt's `call()` cleans up before any validation (seismosizer.py:97), and
     # every failure — this one dies opening the store — must ship the cleaned
@@ -868,3 +1070,47 @@ def test_seismosizer_cleanup_preserves_a_newer_event_with_the_same_hash() -> Non
     assert bridge._EVENT_REGISTRY["shared"] is replacement
     assert bridge._ACTIVE_HASH == "shared"
     assert bridge._ACTIVE_EVENT == (3.0, 4.0, 0.0, 20.0)
+
+
+def test_reload_snapshot_carries_the_session_store() -> None:
+    # Shift+R must not reset the session generation Rust fences view replies
+    # with: a fresh store at generation zero would leave every later view
+    # rejected as stale.
+    store = bridge._SESSION_STORE
+    saved = bridge._reload_snapshot()
+    try:
+        assert saved.get("_SESSION_STORE") is store
+    finally:
+        bridge._reload_restore(saved)
+    assert bridge._SESSION_STORE is store
+
+
+def test_view_projection_is_shallow_and_preserves_workspace_identity() -> None:
+    # An interleaved view projects committed state without deep-copying the
+    # workspace, and reinstalls the same trace objects afterwards — a handler
+    # suspended at a safe point may still hold references into the workspace,
+    # and replacing them with clones would silently drop its later mutations
+    # from the committed update.
+    load([make_trace("XX", "AAA", "BHZ", 0.0, 512, 1.0)])
+    snapshot = bridge._SESSION_STORE.snapshot()
+    bridge._SESSION_STORE.begin_transaction(snapshot)
+    try:
+        held = bridge._TRACES[0]
+        committed = snapshot.state.traces[0]
+        assert held is not committed
+
+        bridge._SESSION_STORE.enter_view()
+        assert bridge._TRACES[0] is committed
+        bridge._SESSION_STORE.exit_view()
+        assert bridge._TRACES[0] is held
+
+        held.set_ydata(held.get_ydata() * 2.0)
+        update = bridge._SESSION_STORE.capture_update()
+        bridge._SESSION_STORE.restore_snapshot(snapshot)
+        outcome = bridge._SESSION_STORE.commit(snapshot.generation, update)
+        assert outcome is None
+        assert bridge._TRACES[0] is held
+    finally:
+        if bridge._SESSION_STORE._transaction_snapshot is not None:
+            bridge._SESSION_STORE.rollback(snapshot)
+        load([])

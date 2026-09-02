@@ -21,10 +21,38 @@ interface A11yStats {
   placed: number;
 }
 
+interface FrameStats {
+  emaMs: number;
+  fps: number;
+}
+
+interface ExportProbeWindow extends Window {
+  __snufflerExportFrames?: number;
+  __snufflerExportLongTasks?: number[];
+  __snufflerExportProbeActive?: boolean;
+  __snufflerExportObserver?: PerformanceObserver;
+}
+
+interface BridgeModule {
+  call(
+    method: "/snuffler.bridge.v1.BridgeService/ListExamples",
+    request: Uint8Array,
+    data: Uint8Array,
+    jobId: bigint
+  ): Promise<{ result: Uint8Array }>;
+  currentRuntimeEpoch(): number;
+  restartRuntime(reason?: string): number;
+}
+
 // The wasm module exposes its exports on `window.wasmBindings` (trunk's loader).
 declare global {
   interface Window {
-    wasmBindings?: { snuffler_a11y_stats(): string };
+    wasmBindings?: {
+      snuffler_a11y_stats(): string;
+      snuffler_frame_stats(): string;
+      snuffler_rayon_ready(): boolean;
+      snuffler_worker_png_export_count(): number;
+    };
   }
 }
 
@@ -75,6 +103,9 @@ async function boot(page: Page, params: Record<string, string> = {}): Promise<vo
     .getByText("Importing pyrocko...")
     .first()
     .waitFor({ state: "hidden", timeout: TIMEOUT_MS });
+  await page
+    .locator('#the_canvas_id[data-snuffler-ready="true"]')
+    .waitFor({ state: "attached", timeout: TIMEOUT_MS });
   await page.waitForTimeout(2000);
 }
 
@@ -163,7 +194,9 @@ async function main(): Promise<void> {
   const browser = await chromium.launch({ headless: HEADLESS });
   const page = await browser.newPage();
   const consoleErrors: string[] = [];
-  page.on("pageerror", (e) => consoleErrors.push(String(e).slice(0, 200)));
+  const pageCrashes: string[] = [];
+  page.on("crash", () => pageCrashes.push("page crashed"));
+  page.on("pageerror", (e) => consoleErrors.push((e.stack || String(e)).slice(0, 500)));
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text().slice(0, 200));
   });
@@ -330,6 +363,229 @@ async function main(): Promise<void> {
     // The bar only has to catch a regression that would put the projection into a
     // frame's critical path.
     check("a pass stays well inside the frame budget", perPass < 2000, `${perPass.toFixed(1)}us`);
+
+    console.log("\neifel marker bounds");
+    await page.setViewportSize({ width: 1200, height: 781 });
+    await boot(page, { a11y: "pointer", example: "eifel" });
+    await page.getByText("Ready · 1061 traces").first().waitFor({ timeout: TIMEOUT_MS });
+    const defaultTrackHeight = Number(
+      await page.getByRole("slider", { name: "Track height:" }).getAttribute("aria-valuenow")
+    );
+    check(
+      "the default layout keeps several tracks visible",
+      Number.isFinite(defaultTrackHeight) && defaultTrackHeight < 200,
+      `${defaultTrackHeight}px`
+    );
+    const trackHeight = page.getByRole("slider", { name: "Track height:" });
+    await trackHeight.focus();
+    await page.keyboard.press("ArrowRight");
+    await page.waitForTimeout(100);
+    const transientStatuses = await page.locator("#snuffler-a11y [aria-live]").allTextContents();
+    check(
+      "a short wiggle refresh does not flash activity feedback",
+      transientStatuses.every((status) => !status.includes("Updating view")),
+      transientStatuses.join(" | ")
+    );
+    await page.getByText("Ready · 1061 traces").first().waitFor({ timeout: TIMEOUT_MS });
+    const datasetClose = page.getByRole("button", { name: "Close window" });
+    if (await datasetClose.isVisible()) await datasetClose.click();
+    await page.getByRole("button", { name: "Snufflings" }).click();
+    await page.getByRole("checkbox", { name: "Markers" }).click();
+    await page.getByRole("dialog", { name: "Markers" }).waitFor({ timeout: TIMEOUT_MS });
+    await page.waitForTimeout(500);
+    const markerProjection = await page.evaluate(() => ({
+      nodes: document.querySelectorAll("#snuffler-a11y *").length,
+      names: [...document.querySelectorAll("#snuffler-a11y *")].map(
+        (node) => node.getAttribute("aria-label") || node.textContent || ""
+      ),
+    }));
+    check(
+      "the eifel marker table projects only visible rows",
+      markerProjection.nodes < 800 &&
+        markerProjection.names.some((name) => name.includes("717 markers")),
+      `${markerProjection.nodes} nodes`
+    );
+
+    const canvas = page.locator("#the_canvas_id");
+    const canvasBox = await canvas.boundingBox();
+    if (!canvasBox) throw new Error("canvas has no bounding box");
+    for (let i = 0; i < 30; i += 1) {
+      await page.mouse.move(
+        canvasBox.x + canvasBox.width * (0.2 + (i % 10) * 0.05),
+        canvasBox.y + canvasBox.height * (0.35 + (i % 2) * 0.1)
+      );
+      await page.waitForTimeout(17);
+    }
+    const frameStats = await page.evaluate(() => {
+      if (!window.wasmBindings) throw new Error("wasmBindings missing");
+      return JSON.parse(window.wasmBindings.snuffler_frame_stats()) as FrameStats;
+    });
+    check(
+      "the open eifel marker editor stays within the frame budget",
+      frameStats.emaMs > 0 && frameStats.emaMs < 40,
+      `${frameStats.emaMs.toFixed(1)}ms (${frameStats.fps.toFixed(1)} fps)`
+    );
+
+    console.log("\nimage export");
+    const closeMarkerDialog = page
+      .getByRole("dialog", { name: "Markers" })
+      .getByRole("button", { name: "Close window" });
+    if (await closeMarkerDialog.isVisible()) await closeMarkerDialog.click();
+    // Force the anchor-download fallback because Playwright cannot accept the
+    // native File System Access save picker in headless mode.
+    await page.evaluate(() => {
+      Object.defineProperty(window, "showSaveFilePicker", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    const workerBefore = await page.evaluate(() => {
+      if (!window.wasmBindings) throw new Error("wasmBindings missing");
+      return {
+        isolated: crossOriginIsolated,
+        ready: window.wasmBindings.snuffler_rayon_ready(),
+        exports: window.wasmBindings.snuffler_worker_png_export_count(),
+      };
+    });
+    check(
+      "the threaded export pool is genuinely available",
+      workerBefore.isolated && workerBefore.ready,
+      `isolated=${workerBefore.isolated}, ready=${workerBefore.ready}`
+    );
+    await page.evaluate(() => {
+      const target = window as ExportProbeWindow;
+      target.__snufflerExportFrames = 0;
+      target.__snufflerExportLongTasks = [];
+      target.__snufflerExportProbeActive = true;
+      const countFrame = () => {
+        if (!target.__snufflerExportProbeActive) return;
+        target.__snufflerExportFrames = (target.__snufflerExportFrames ?? 0) + 1;
+        requestAnimationFrame(countFrame);
+      };
+      requestAnimationFrame(countFrame);
+      if (PerformanceObserver.supportedEntryTypes.includes("longtask")) {
+        target.__snufflerExportObserver = new PerformanceObserver((list) => {
+          target.__snufflerExportLongTasks?.push(
+            ...list.getEntries().map((entry) => entry.duration)
+          );
+        });
+        target.__snufflerExportObserver.observe({ entryTypes: ["longtask"] });
+      }
+    });
+    await page.getByRole("button", { name: "File" }).click();
+    const pngDownload = page.waitForEvent("download", { timeout: TIMEOUT_MS });
+    await page.getByRole("button", { name: /Save image \(PNG\)/ }).click();
+    const download = await pngDownload;
+    const downloadStream = await download.createReadStream();
+    let pngBytes = 0;
+    for await (const chunk of downloadStream) pngBytes += chunk.length;
+    const exportErrors = [...pageCrashes, ...consoleErrors];
+    check(
+      "PNG export downloads a non-empty image without crashing",
+      download.suggestedFilename().endsWith(".png") && pngBytes > 0 && exportErrors.length === 0,
+      `${download.suggestedFilename()}, ${pngBytes} bytes${
+        exportErrors.length > 0 ? `, ${exportErrors.join(" | ")}` : ""
+      }`
+    );
+    const workerAfter = await page.evaluate(() => {
+      if (!window.wasmBindings) throw new Error("wasmBindings missing");
+      return window.wasmBindings.snuffler_worker_png_export_count();
+    });
+    check(
+      "PNG rasterization actually completes on rayon",
+      workerAfter > workerBefore.exports,
+      `${workerBefore.exports} -> ${workerAfter}`
+    );
+    await page.waitForTimeout(100);
+    const exportResponsiveness = await page.evaluate(() => {
+      const target = window as ExportProbeWindow;
+      target.__snufflerExportProbeActive = false;
+      target.__snufflerExportObserver?.disconnect();
+      return {
+        frames: target.__snufflerExportFrames ?? 0,
+        maxLongTaskMs: Math.max(0, ...(target.__snufflerExportLongTasks ?? [])),
+      };
+    });
+    check(
+      "the browser keeps painting during PNG export",
+      exportResponsiveness.frames > 1 && exportResponsiveness.maxLongTaskMs < 500,
+      `${exportResponsiveness.frames} frames, longest task ${exportResponsiveness.maxLongTaskMs.toFixed(1)}ms`
+    );
+    check(
+      "the app remains interactive after PNG export",
+      await page.locator('#the_canvas_id[data-snuffler-ready="true"]').isVisible()
+    );
+    await page.getByRole("button", { name: "File" }).click();
+    const svgDownload = page.waitForEvent("download", { timeout: TIMEOUT_MS });
+    await page.getByRole("button", { name: /Save image \(SVG\)/ }).click();
+    const svg = await svgDownload;
+    const svgStream = await svg.createReadStream();
+    let svgBytes = 0;
+    for await (const chunk of svgStream) svgBytes += chunk.length;
+    check(
+      "SVG export also remains on the browser-safe path",
+      svg.suggestedFilename().endsWith(".svg") && svgBytes > 0 && consoleErrors.length === 0,
+      `${svg.suggestedFilename()}, ${svgBytes} bytes`
+    );
+    // Stub the native picker to cover its write path and a second use of the
+    // rayon pool without opening browser chrome that Playwright cannot drive.
+    await page.evaluate(() => {
+      const target = window as typeof window & { __snufflerSavedBytes?: number };
+      target.__snufflerSavedBytes = 0;
+      Object.defineProperty(window, "showSaveFilePicker", {
+        configurable: true,
+        value: async () => ({
+          createWritable: async () => ({
+            close: async () => undefined,
+            write: async (blob: Blob) => {
+              target.__snufflerSavedBytes = blob.size;
+            },
+          }),
+        }),
+      });
+    });
+    await page.getByRole("button", { name: "File" }).click();
+    await page.getByRole("button", { name: /Save image \(PNG\)/ }).click();
+    await page.waitForFunction(
+      () =>
+        ((window as typeof window & { __snufflerSavedBytes?: number }).__snufflerSavedBytes ?? 0) >
+        0,
+      undefined,
+      { timeout: TIMEOUT_MS }
+    );
+    const pickerBytes = await page.evaluate(
+      () => (window as typeof window & { __snufflerSavedBytes?: number }).__snufflerSavedBytes ?? 0
+    );
+    check(
+      "a repeated PNG export writes through the native-picker path",
+      pickerBytes > 0 && pageCrashes.length === 0 && consoleErrors.length === 0,
+      `${pickerBytes} bytes`
+    );
+
+    console.log("\nworker recovery");
+    const recovery = await page.evaluate(async () => {
+      const bridgeUrl = new URL("web/gen/bridge.js", document.baseURI).href;
+      const bridge = (await import(bridgeUrl)) as BridgeModule;
+      const before = bridge.currentRuntimeEpoch();
+      const after = bridge.restartRuntime("browser recovery regression");
+      const reply = await bridge.call(
+        "/snuffler.bridge.v1.BridgeService/ListExamples",
+        new Uint8Array(),
+        new Uint8Array(),
+        999n
+      );
+      return { before, after, replyBytes: reply.result.byteLength };
+    });
+    check(
+      "a recreated Python worker advances its epoch",
+      recovery.after === recovery.before + 1,
+      `${recovery.before} -> ${recovery.after}`
+    );
+    check(
+      "the recreated Python worker accepts a fresh request",
+      recovery.replyBytes > 0,
+      `${recovery.replyBytes} reply bytes`
+    );
 
     console.log("\noff switch");
     await boot(page, { a11y: "0" });

@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1.fixture;
+
+import "snuffler/bridge/v1/activity.proto";
+
+message Empty {}
+
+message BridgeResult {
+  oneof result {
+    Empty empty = 1;
+  }
+}
+
+service BridgeService {
+  rpc MissingActivity(Empty) returns (Empty);
+}

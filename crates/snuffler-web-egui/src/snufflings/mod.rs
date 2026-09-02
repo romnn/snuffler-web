@@ -66,10 +66,8 @@ impl SnufflingPanels {
     }
 }
 
-/// The Snufflings menu. Each entry *runs* the snuffling with its current
-/// parameters — Qt's menu item calls `check_call` (snuffling.py:1524) — and
-/// opens its panel so the parameters are at hand; the returned action is the
-/// run to dispatch.
+/// The Snufflings menu opens configuration panels; work starts only from the
+/// panel's explicit Run or Plot control.
 #[expect(
     clippy::too_many_lines,
     reason = "one menu, one entry per snuffling; splitting it hides the order"
@@ -105,12 +103,10 @@ pub fn menu(
         ui.separator();
         if ui.button("Minimum / Maximum (peak-to-peak)").clicked() {
             panels.open(Panel::MinMax);
-            action = Some(Action::Run("minmax"));
             ui.close();
         }
         if ui.button("STA/LTA detector").clicked() {
             panels.open(Panel::Stalta);
-            action = Some(Action::Run("stalta"));
             ui.close();
         }
         if ui
@@ -134,7 +130,6 @@ pub fn menu(
             .clicked()
         {
             panels.open(Panel::Rms);
-            action = Some(Action::Rms);
             ui.close();
         }
         ui.separator();
@@ -147,7 +142,6 @@ pub fn menu(
             .clicked()
         {
             panels.open(Panel::Cake);
-            action = Some(Action::Run("cake"));
             ui.close();
         }
         if ui
@@ -159,7 +153,6 @@ pub fn menu(
             .clicked()
         {
             panels.open(Panel::Seismosizer);
-            action = Some(Action::Run("seismosizer"));
             ui.close();
         }
         ui.separator();
@@ -201,7 +194,6 @@ pub fn menu(
             .clicked()
         {
             panels.open(Panel::SeisbenchPicker);
-            action = Some(Action::Run("seisbench_picker"));
             ui.close();
         }
         ui.separator();

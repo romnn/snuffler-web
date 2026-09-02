@@ -8,20 +8,44 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
   BootProgressSchema,
+  BridgeResultSchema,
+  CancelledSchema,
   MlDevice,
   MlDeviceStatusSchema,
-  SeisbenchProgressSchema,
+  OperationCountProgressSchema,
+  OperationEventSchema,
+  OperationProgressSchema,
+  OperationStartedSchema,
+  RuntimeFailureSchema,
+  RuntimeInfoSchema,
+  StringValueSchema,
   WorkerEventSchema,
+  type OperationProgress,
   type WorkerEvent,
 } from "./proto/snuffler/bridge/v1/bridge_pb.js";
-import { rpc } from "./rpc.js";
 import {
-  WORKER_MOUNT_GF_STORE,
-  WORKER_RELOAD_SNUFFLINGS,
-  WORKER_WARM_DEFERRED,
-} from "./worker_command.js";
+  beginCommit,
+  cancellationRequested,
+  executionControl,
+  markExecutionDone,
+  setExternalWait,
+  setInterpreterOwnership,
+} from "./execution_control.js";
+import { BridgeActivity, BridgeMethod, rpc, type ActivityMeta } from "./rpc.js";
+import { WORKER_RELOAD_SNUFFLINGS } from "./worker_command.js";
+import {
+  type BridgeTimings,
+  type WorkerEventMessage,
+  type WorkerFailureMessage,
+  type WorkerReplyPayload,
+  type WorkerRequest,
+  type WorkerSuccessMessage,
+} from "./worker_protocol.js";
 
 const PYODIDE_BASE = new URL("py-mt/", self.location.href).href;
+const epochParameter = Number(new URL(self.location.href).searchParams.get("epoch") || 0);
+const RUNTIME_EPOCH =
+  Number.isSafeInteger(epochParameter) && epochParameter >= 0 ? epochParameter >>> 0 : 0;
 
 // TextDecoder.decode() throws "The provided ArrayBufferView value must not be
 // shared" when handed a view backed by a SharedArrayBuffer in this engine. Our
@@ -62,9 +86,16 @@ let pyodideReadyPromise: Promise<any> | null = null;
 let py: any = null;
 let bridge: any = null;
 let gfStoreCounter = 0;
+let activeSeisbenchJobId = 0n;
+// One value, not parallel variables: "a job is active" and "that job excludes
+// views" are facts about the same request, and coupling them makes the state
+// "blocks views, but no active job" unrepresentable.
+let activeJob: { control: Int32Array; blocksView: boolean } | null = null;
+let activeViewControl: Int32Array | null = null;
+let pyodideInterrupt: Uint8Array | null = null;
 const GET_VIEW_METHOD = rpc("getView");
 const BRIDGE_PERF_LOG = false;
-type BridgePerf = Record<string, number>;
+type PythonLane = ActivityMeta["lane"];
 type MlDeviceInfo = { device: MlDevice; adapter: unknown | null };
 type OrtWorkerDevice = "webgpu" | "wasm";
 type OrtRequest = {
@@ -97,7 +128,7 @@ type OrtResultMessage =
       error: string;
       device: OrtWorkerDevice;
     };
-type OrtPending = {
+type PendingOrtRequest = {
   resolve: (value: { data: ArrayBuffer; dims: number[]; device: OrtWorkerDevice }) => void;
   reject: (error: Error) => void;
   timer: number | null;
@@ -110,7 +141,7 @@ type OrtPending = {
 type OrtClient = {
   worker: Worker;
   device: OrtWorkerDevice;
-  pending: Map<number, OrtPending>;
+  pending: Map<number, PendingOrtRequest>;
   nextId: number;
 };
 
@@ -162,8 +193,12 @@ function responseHeadersFor(url: string, bytes: Uint8Array): Headers {
 }
 
 function postWorkerEvent(event: WorkerEvent["event"]) {
-  const bytes = toBinary(WorkerEventSchema, create(WorkerEventSchema, { event }));
-  self.postMessage({ type: "workerEvent", event: bytes }, [bytes.buffer]);
+  const bytes = toBinary(
+    WorkerEventSchema,
+    create(WorkerEventSchema, { event, runtimeEpoch: RUNTIME_EPOCH })
+  );
+  const message: WorkerEventMessage = { type: "workerEvent", epoch: RUNTIME_EPOCH, event: bytes };
+  self.postMessage(message, [bytes.buffer]);
 }
 
 function postMlDevice(device: MlDevice) {
@@ -181,13 +216,191 @@ function postBootProgress(fraction: number, label: string) {
 }
 
 function postSeisbenchProgress(fraction: number, label: string) {
-  postWorkerEvent({
-    case: "seisbench",
-    value: create(SeisbenchProgressSchema, {
-      fraction: Math.max(0, Math.min(1, Number(fraction))),
-      label: String(label || "Running SeisBench picker"),
+  if (activeSeisbenchJobId === 0n) return;
+  postOperationProgress(activeSeisbenchJobId, String(label || "Running SeisBench picker"), {
+    case: "fraction",
+    value: Math.max(0, Math.min(1, Number(fraction))),
+  });
+}
+
+function postCountProgress(jobId: bigint, done: number, total: number | null, phase: string) {
+  postOperationProgress(jobId, phase, {
+    case: "count",
+    value: create(OperationCountProgressSchema, {
+      done: BigInt(Math.max(0, Math.trunc(done))),
+      total: total == null ? undefined : BigInt(Math.max(0, Math.trunc(total))),
     }),
   });
+}
+
+function postOperationProgress(
+  jobId: bigint,
+  phase: string,
+  progress: OperationProgress["progress"]
+) {
+  if (jobId === 0n) return;
+  postWorkerEvent({
+    case: "operation",
+    value: create(OperationEventSchema, {
+      jobId,
+      event: {
+        case: "progress",
+        value: create(OperationProgressSchema, { phase, progress }),
+      },
+    }),
+  });
+}
+
+function postOperationStarted(jobId: bigint) {
+  postWorkerEvent({
+    case: "operation",
+    value: create(OperationEventSchema, {
+      jobId,
+      event: { case: "started", value: create(OperationStartedSchema) },
+    }),
+  });
+}
+
+function postRuntimeFailure(error: unknown) {
+  const value = error instanceof Error ? error : new Error(String(error));
+  postWorkerEvent({
+    case: "runtimeFailure",
+    value: create(RuntimeFailureSchema, {
+      kind: value.name || "Error",
+      message: value.message || "Python runtime boot failed",
+    }),
+  });
+}
+
+function postRuntimeInfo() {
+  const threaded = Boolean(
+    py.runPython("import sys; bool(getattr(sys._emscripten_info, 'pthreads', False))")
+  );
+  postWorkerEvent({
+    case: "runtimeInfo",
+    value: create(RuntimeInfoSchema, {
+      threaded,
+      python: String(py.runPython("import sys; sys.version.split()[0]")),
+      numpy: String(py.runPython("import numpy; numpy.__version__")),
+      pyrocko: String(py.runPython("import pyrocko; getattr(pyrocko, '__version__', 'unknown')")),
+      cores: (self.navigator && self.navigator.hardwareConcurrency) || 0,
+    }),
+  });
+}
+
+function acquireInterpreter(
+  msg: WorkerRequest,
+  control: Int32Array,
+  interrupt: Uint8Array
+): PythonLane {
+  const activity = msg.method === WORKER_RELOAD_SNUFFLINGS ? null : BridgeActivity[msg.method];
+  if (msg.method !== WORKER_RELOAD_SNUFFLINGS && !activity) {
+    throw new Error(`protocol fault: unknown Python method ${String(msg.method)}`);
+  }
+  const lane = activity?.lane ?? "JOB";
+  if (lane === "VIEW") {
+    if (activeViewControl) {
+      throw new Error("protocol fault: a second view request reached the Python worker");
+    }
+    if (activeJob?.blocksView) {
+      throw new Error("protocol fault: a view request overlapped an exclusive Python job");
+    }
+    activeViewControl = control;
+    if (activeJob) {
+      setInterpreterOwnership(activeJob.control, false, interrupt);
+      // The job keeps its cancellation state while the view owns the interpreter.
+      // Its interrupt is re-armed when the view releases the interpreter.
+    }
+  } else {
+    if (activeJob) {
+      throw new Error("protocol fault: a second job request reached the Python worker");
+    }
+    const blocksView = msg.method === WORKER_RELOAD_SNUFFLINGS;
+    if (blocksView && activeViewControl) {
+      throw new Error("protocol fault: an exclusive Python job overlapped a view request");
+    }
+    activeJob = { control, blocksView };
+  }
+  // Interpreter ownership is NOT granted here. The request's control word stays
+  // ...WithoutInterpreter — where cancellation cannot arm SIGINT — until Python
+  // itself calls enterProtectedFrame from bridge.call's first protected
+  // bytecodes, so no interrupt can be consumed in the coroutine-scheduling
+  // plumbing between this point and the target frame.
+  return lane;
+}
+
+function releaseInterpreter(lane: PythonLane, control: Int32Array, interrupt: Uint8Array): void {
+  let jobWaitingForInterpreter: Int32Array | null = null;
+  if (lane === "VIEW" && activeViewControl === control) {
+    activeViewControl = null;
+    jobWaitingForInterpreter = activeJob?.control ?? null;
+  } else if (lane === "JOB" && activeJob?.control === control) {
+    activeJob = null;
+  }
+  markExecutionDone(control, interrupt);
+  if (jobWaitingForInterpreter) {
+    setInterpreterOwnership(jobWaitingForInterpreter, true, interrupt);
+  }
+}
+
+function operationCallbacks(
+  msg: WorkerRequest,
+  lane: PythonLane,
+  control: Int32Array,
+  interrupt: Uint8Array
+) {
+  const reporter = (done: number, total: number, phase: string): boolean => {
+    if (cancellationRequested(control)) return false;
+    postCountProgress(BigInt(msg.jobId || 0), done, total < 0 ? null : total, phase);
+    return true;
+  };
+  const beginRequestCommit = (): boolean => {
+    return beginCommit(control, interrupt);
+  };
+  const beginExternalWait = (): void => {
+    setExternalWait(control, true, false, interrupt);
+  };
+  // "Does this request own the interpreter" is lane-dependent: a view is the
+  // owner exactly while it is the active view, a job exactly while no view
+  // displaces it. The job-only predicate would read inverted for a view.
+  const ownsInterpreter = (): boolean =>
+    lane === "VIEW" ? activeViewControl === control : activeViewControl == null;
+  const endExternalWait = (): void => {
+    setExternalWait(control, false, ownsInterpreter(), interrupt);
+  };
+  // Called by bridge.call from its first protected bytecodes; grants ownership
+  // (arming the byte if cancellation is already pending) only once the target
+  // frame is provably the one executing. See acquireInterpreter.
+  const enterProtectedFrame = (): void => {
+    setInterpreterOwnership(control, ownsInterpreter(), interrupt);
+  };
+  return { reporter, beginRequestCommit, beginExternalWait, endExternalWait, enterProtectedFrame };
+}
+
+// The typed cancelled envelope, produced worker-side for a request whose
+// cancellation is already decided before (or instead of) Python answering: a
+// cancel that won while the request was queued, or a KeyboardInterrupt that was
+// consumed outside bridge.call's protected frames.
+function bridgeCancelledResult(): WorkerReplyPayload {
+  const result = toBinary(
+    BridgeResultSchema,
+    create(BridgeResultSchema, {
+      result: { case: "cancelled", value: create(CancelledSchema) },
+    })
+  );
+  const resultBuffer = result.buffer as ArrayBuffer;
+  return { result: resultBuffer, transfer: [resultBuffer] };
+}
+
+// True when an error thrown by a bridge.call invocation is this request's own
+// cancellation surfacing outside the protected frames (Pyodide raises it as a
+// PythonError whose `type` names the Python exception class). Gated on the
+// control word so an unrelated Python failure that merely mentions
+// KeyboardInterrupt can never be misread as a cancellation.
+function isEscapedCancellation(control: Int32Array, error: unknown): boolean {
+  if (!cancellationRequested(control)) return false;
+  const type = (error as { type?: unknown } | null)?.type;
+  return type === "KeyboardInterrupt";
 }
 
 function responseContentLength(response: Response): number {
@@ -286,7 +499,7 @@ const BOOT_MODULE_ESTIMATE = 700;
 
 // Called from Python as modules come in (see bootstrap.import_bridge).
 function bootModuleProgress(count: number) {
-  prog(
+  reportBootProgress(
     progressFraction(0.92, 0.96, count, BOOT_MODULE_ESTIMATE),
     count >= BOOT_MODULE_ESTIMATE ? "Importing pyrocko…" : `Importing pyrocko… (${count} modules)`
   );
@@ -416,12 +629,12 @@ async function startPyodidePrefetch(): Promise<{
 
 // The generated proto modules + bridge.py, staged into the Pyodide FS once Python
 // is up. They are plain static files with no dependency on the runtime, so fetch
-// them in parallel with it rather than one at a time after it (11 serial requests
-// on the critical path cost 11 round trips on a real connection).
+// them in parallel with it rather than one at a time after it.
 async function fetchBridgeSources(): Promise<Array<[string, string]>> {
   const protoDir = "proto/snuffler/bridge/v1";
   const files = [
     ...[
+      "activity_pb2.py",
       "common_pb2.py",
       "scene_pb2.py",
       "view_pb2.py",
@@ -473,7 +686,7 @@ async function mlDevice(): Promise<MlDevice> {
   return (await mlDeviceInfo()).device;
 }
 
-function float32Copy(value: any): Float32Array {
+function copyFloat32Array(value: any): Float32Array {
   if (value instanceof Float32Array) {
     const out = new Float32Array(value.length);
     out.set(value);
@@ -512,7 +725,7 @@ function float32Copy(value: any): Float32Array {
   throw new Error("expected Float32Array-compatible ORT input");
 }
 
-function intArray(value: any): number[] {
+function copyIntegerArray(value: any): number[] {
   if (Array.isArray(value)) return value.map((x) => Number(x));
   if (value && typeof value.toJs === "function") return Array.from(value.toJs(), (x) => Number(x));
   return Array.from(value || [], (x) => Number(x));
@@ -607,7 +820,7 @@ function armOrtTimeout(client: OrtClient, id: number, timeoutMs: number) {
   }, timeoutMs);
 }
 
-function clearOrtTimers(slot: OrtPending) {
+function clearOrtTimers(slot: PendingOrtRequest) {
   if (slot.timer != null) {
     clearTimeout(slot.timer);
     slot.timer = null;
@@ -615,7 +828,7 @@ function clearOrtTimers(slot: OrtPending) {
   stopOrtSetupHeartbeat(slot);
 }
 
-function stopOrtSetupHeartbeat(slot: OrtPending) {
+function stopOrtSetupHeartbeat(slot: PendingOrtRequest) {
   if (slot.heartbeatTimer != null) {
     clearInterval(slot.heartbeatTimer);
     slot.heartbeatTimer = null;
@@ -731,55 +944,65 @@ async function inferWithFallback(
 }
 
 async function snufflerOrtInfer(modelUrl: string, input: any, dims: any, label?: string) {
-  const inputData = float32Copy(input);
-  const inputDims = intArray(dims);
+  const inputData = copyFloat32Array(input);
+  const inputDims = copyIntegerArray(dims);
   return await inferWithFallback(modelUrl, inputData, inputDims, progressLabel(label));
 }
 
 (globalThis as any).__snufflerOrtInfer = snufflerOrtInfer;
+(globalThis as any).__snufflerYieldToMacrotask = (() => {
+  const channel = new MessageChannel();
+  const pending: Array<() => void> = [];
+  channel.port1.onmessage = () => pending.shift()?.();
+  return () =>
+    new Promise<void>((resolve) => {
+      pending.push(resolve);
+      channel.port2.postMessage(0);
+    });
+})();
 (globalThis as any).__snufflerSeisbenchProgress = (frac: number, label: string) => {
   postSeisbenchProgress(frac, label);
 };
-
 async function fetchOk(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`fetch ${url}: ${r.status} ${r.statusText}`);
   return r;
 }
 
-function prog(frac, label) {
-  bootFraction = Math.max(bootFraction, frac);
+function reportBootProgress(fraction, label) {
+  bootFraction = Math.max(bootFraction, fraction);
   bootPhase = label;
   postBootProgress(bootFraction, label);
 }
 
-function destroyMaybe(value) {
+function destroyPyProxy(value) {
   if (value && typeof value.destroy === "function") value.destroy();
 }
 
 // Copy a Python list of strings into JS and release the proxy behind it.
-function pyList(value): string[] {
+function takePythonStringList(value): string[] {
   try {
     return value.toJs() as string[];
   } finally {
-    destroyMaybe(value);
+    destroyPyProxy(value);
   }
 }
 
-function ownedBytes(value) {
+function copyBytes(value) {
   const src = value instanceof Uint8Array ? value : new Uint8Array(value.buffer || value);
   const out = new Uint8Array(src.byteLength);
   out.set(src);
   return out;
 }
 
-function pyBytes(value) {
+// Copies bytes into JS-owned memory and destroys any Python proxy wrapper.
+function takePythonBytes(value) {
   try {
-    if (value instanceof Uint8Array) return ownedBytes(value);
-    if (value && typeof value.toJs === "function") return ownedBytes(value.toJs());
-    return ownedBytes(value);
+    if (value instanceof Uint8Array) return copyBytes(value);
+    if (value && typeof value.toJs === "function") return copyBytes(value.toJs());
+    return copyBytes(value);
   } finally {
-    destroyMaybe(value);
+    destroyPyProxy(value);
   }
 }
 
@@ -826,7 +1049,7 @@ async function boot() {
       for (const pkg of installed) {
         await py.loadPackage(pkg.name);
         installDone += pkg.bytes;
-        prog(
+        reportBootProgress(
           progressFraction(0.84, 0.92, installDone, installTotal),
           "Installing Python packages…"
         );
@@ -834,7 +1057,7 @@ async function boot() {
       prefetchedResponses.clear();
       const tPackages = performance.now();
 
-      prog(0.92, "Importing pyrocko…");
+      reportBootProgress(0.92, "Importing pyrocko…");
       for (const dir of ["/snuffler", "/snuffler/bridge", "/snuffler/bridge/v1"]) {
         try {
           py.FS.mkdir(dir);
@@ -847,7 +1070,7 @@ async function boot() {
       // uses inside functions, then imports the bridge while counting modules so the
       // longest phase of the boot has a moving bar instead of a frozen one.
       py.runPython('import sys; sys.path.insert(0, "/"); import bootstrap');
-      const deferred = pyList(py.runPython("bootstrap.defer()"));
+      const deferred = takePythonStringList(py.runPython("bootstrap.defer()"));
       const importBridge = py.runPython("bootstrap.import_bridge");
       try {
         bridge = importBridge(bootModuleProgress);
@@ -872,18 +1095,7 @@ async function boot() {
       // pthreads is read back from the live interpreter to confirm threading
       // really came up on our py-mt build (the badge then reads "wasm+openmp+simd").
       try {
-        self.postMessage({
-          type: "runtime",
-          threaded: true,
-          simd: true,
-          pthreads: py.runPython(
-            "import sys; bool(getattr(sys._emscripten_info, 'pthreads', False))"
-          ),
-          python: py.runPython("import sys; sys.version.split()[0]"),
-          numpy: py.runPython("import numpy; numpy.__version__"),
-          pyrocko: py.runPython("import pyrocko; getattr(pyrocko, '__version__', 'unknown')"),
-          cores: (self.navigator && self.navigator.hardwareConcurrency) || 0,
-        });
+        postRuntimeInfo();
       } catch (_e) {
         // Non-fatal: the badge just won't show.
       }
@@ -893,7 +1105,7 @@ async function boot() {
         postMlDevice(MlDevice.WASM);
       }
 
-      prog(0.97, "Almost ready…");
+      reportBootProgress(0.97, "Almost ready…");
       return py;
     } catch (e) {
       console.error("[bridge-worker] boot failed:", e);
@@ -907,61 +1119,59 @@ async function boot() {
 // bridge.call() returns into the worker's postMessage payload. The result bytes
 // (the proto envelope — success variant OR BridgeError) always flow through;
 // the zero-copy ys buffer is transferred only when present (getView).
-function bridgeResult(res, perf: BridgePerf | null = null) {
+function bridgeResult(res, timings: BridgeTimings | null = null): WorkerReplyPayload {
   try {
     const shapeT0 = performance.now();
     const resultT0 = performance.now();
-    const result = pyBytes(res.get("result")); // pyBytes owns + destroys the inner proxy
-    if (perf) {
-      perf.result_copy_ms = performance.now() - resultT0;
-      perf.result_bytes = result.byteLength;
+    const result = takePythonBytes(res.get("result"));
+    if (timings) {
+      timings.result_copy_ms = performance.now() - resultT0;
+      timings.result_bytes = result.byteLength;
     }
-    const out: Record<string, any> = { result: result.buffer, transfer: [result.buffer] };
+    const resultBuffer = result.buffer as ArrayBuffer;
+    const out: WorkerReplyPayload = { result: resultBuffer, transfer: [resultBuffer] };
     if (res.has("buffer")) {
       const ysProxy = res.get("buffer");
       let buf: any = null;
       try {
         const viewT0 = performance.now();
         buf = ysProxy.getBuffer();
-        if (perf) perf.buffer_view_ms = performance.now() - viewT0;
+        if (timings) timings.buffer_view_ms = performance.now() - viewT0;
         const d = buf.data;
         const copyT0 = performance.now();
-        const ys = ownedBytes(
+        const ys = copyBytes(
           d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength)
         );
-        if (perf) {
-          perf.ys_copy_ms = performance.now() - copyT0;
-          perf.ys_bytes = ys.byteLength;
+        if (timings) {
+          timings.ys_copy_ms = performance.now() - copyT0;
+          timings.ys_bytes = ys.byteLength;
         }
         out.ys = ys.buffer;
         out.transfer.push(ys.buffer);
       } finally {
         if (buf) buf.release();
-        destroyMaybe(ysProxy);
+        destroyPyProxy(ysProxy);
       }
     }
-    if (perf) {
-      perf.shape_ms = performance.now() - shapeT0;
-      out.perf = perf;
+    if (timings) {
+      timings.shape_ms = performance.now() - shapeT0;
+      out.perf = timings;
     }
     return out;
   } finally {
-    destroyMaybe(res);
+    destroyPyProxy(res);
   }
 }
 
-// Extract the string from a bridge.call_text() {"text", "error"} reply. The
-// error variant is surfaced as a plain JS Error; bridge.py returns the message as
-// a field (rather than raising) so it crosses as data, and the TextDecoder shim
-// above now also covers Python strings/exceptions decoded off the shared heap.
-function callText(res) {
-  try {
-    const error = res.get("error");
-    if (error) throw new Error(error);
-    return res.get("text") || "";
-  } finally {
-    destroyMaybe(res);
-  }
+function bridgeTextResult(value: string): WorkerReplyPayload {
+  const result = toBinary(
+    BridgeResultSchema,
+    create(BridgeResultSchema, {
+      result: { case: "text", value: create(StringValueSchema, { value }) },
+    })
+  );
+  const resultBuffer = result.buffer as ArrayBuffer;
+  return { result: resultBuffer, transfer: [resultBuffer] };
 }
 
 // The worker is a DUMB RELAY: it forwards the generated method id + request bytes
@@ -970,35 +1180,84 @@ function callText(res) {
 // envelope (plus the zero-copy ys buffer for getView). It spells no
 // method names of its own, so nothing here can drift from the .proto.
 //
-// The ONE exception is mounting a live directory handle for a GF store: that is a
-// DOM object that can't ride a proto, so the worker mounts it into the Pyodide FS
-// and then relays GfStoreLabel for the registered store's label.
-async function handleRequest(msg, workerRecvMs: number) {
+// MountGfStore is a typed rpc, but its registered directory handle rides beside
+// the protobuf request because browser handles cannot be serialized into it.
+async function handleRequest(
+  msg: WorkerRequest,
+  workerRecvMs: number
+): Promise<WorkerReplyPayload> {
   await boot();
-  const tracePerf: BridgePerf | null =
-    BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
-      ? {
-          worker_recv_ms: workerRecvMs,
-          request_bytes: msg.request ? msg.request.byteLength || 0 : 0,
-          data_bytes: msg.data ? msg.data.byteLength || 0 : 0,
-        }
-      : null;
-  if (msg.method === WORKER_RELOAD_SNUFFLINGS) {
-    // Re-fetch bridge.py (the snuffling logic) and importlib.reload it, preserving
-    // the loaded pile + catalog/station/command state across the reload so the
-    // session is not lost (snuffler's Shift+R reloads code, not data).
-    // The list of what survives lives in bridge.py itself (`_RELOAD_KEEP` behind
-    // `_reload_snapshot`/`_reload_restore`) — a TypeScript copy of Python global
-    // names went stale once and silently dropped session state.
-    // The hasattr guard only bridges a dev session whose in-memory module
-    // predates the snapshot functions.
-    for (const mod of ["seisbench_infer.py"]) {
-      const modSrc = await (await fetchOk(resolveUrl(mod))).text();
-      py.FS.writeFile(`/${mod}`, modSrc);
+  if (!pyodideInterrupt) {
+    pyodideInterrupt = new Uint8Array(msg.interrupt as SharedArrayBuffer);
+    py.setInterruptBuffer(pyodideInterrupt);
+  }
+  const interrupt = pyodideInterrupt;
+  if (!interrupt) throw new Error("Pyodide interrupt buffer is unavailable");
+  const control = executionControl(msg.control as SharedArrayBuffer);
+  const lane = acquireInterpreter(msg, control, interrupt);
+  const jobId = BigInt(msg.jobId || 0);
+  if (msg.method === BridgeMethod.runSnuffling) activeSeisbenchJobId = jobId;
+  postOperationStarted(jobId);
+  const { reporter, beginRequestCommit, beginExternalWait, endExternalWait, enterProtectedFrame } =
+    operationCallbacks(msg, lane, control, interrupt);
+  // The single seam into bridge.py for this request. Both dispatch paths (the
+  // GF-store mount and the plain rpc) must pass the same callback set and share
+  // the escaped-cancellation backstop, so the call is spelled exactly once.
+  const callPython = async (
+    data: Uint8Array | string | null,
+    timings: BridgeTimings | null = null
+  ): Promise<WorkerReplyPayload> => {
+    let res;
+    const pyCallT0 = performance.now();
+    try {
+      res = await bridge.call(
+        msg.method,
+        msg.request,
+        data,
+        reporter,
+        beginRequestCommit,
+        beginExternalWait,
+        endExternalWait,
+        enterProtectedFrame
+      );
+    } catch (error) {
+      if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
+      throw error;
     }
-    const src = await (await fetchOk(resolveUrl("bridge.py"))).text();
-    py.FS.writeFile("/bridge.py", src);
-    py.runPython(`
+    if (timings) timings.py_call_ms = performance.now() - pyCallT0;
+    return bridgeResult(res, timings);
+  };
+  try {
+    // A request cancelled while it was queued never reaches Python: dispatching
+    // it would need SIGINT armed before its first protected frame, where the
+    // interrupt could land in coroutine-scheduling plumbing instead.
+    if (cancellationRequested(control)) {
+      return bridgeCancelledResult();
+    }
+    const requestTimings: BridgeTimings | null =
+      BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
+        ? {
+            worker_recv_ms: workerRecvMs,
+            request_bytes: msg.request ? msg.request.byteLength || 0 : 0,
+            data_bytes: msg.data ? msg.data.byteLength || 0 : 0,
+          }
+        : null;
+    if (msg.method === WORKER_RELOAD_SNUFFLINGS) {
+      // Re-fetch bridge.py (the snuffling logic) and importlib.reload it, preserving
+      // the loaded pile + catalog/station/command state across the reload so the
+      // session is not lost (snuffler's Shift+R reloads code, not data).
+      // The list of what survives lives in bridge.py itself (`_RELOAD_KEEP` behind
+      // `_reload_snapshot`/`_reload_restore`) — a TypeScript copy of Python global
+      // names went stale once and silently dropped session state.
+      // The hasattr guard only bridges a dev session whose in-memory module
+      // predates the snapshot functions.
+      for (const mod of ["seisbench_infer.py"]) {
+        const modSrc = await (await fetchOk(resolveUrl(mod))).text();
+        py.FS.writeFile(`/${mod}`, modSrc);
+      }
+      const src = await (await fetchOk(resolveUrl("bridge.py"))).text();
+      py.FS.writeFile("/bridge.py", src);
+      py.runPython(`
 import importlib, bridge
 for _m in ('seisbench_infer',):
     if _m in importlib.sys.modules:
@@ -1013,37 +1272,27 @@ finally:
     if hasattr(bridge, '_reload_restore'):
         bridge._reload_restore(_saved)
 `);
-    return { text: "ok" };
-  }
-  if (msg.method === WORKER_WARM_DEFERRED) {
-    // Python is single-threaded here, so this cannot run *inside* another rpc —
-    // it takes the interpreter for the duration and the next rpc queues behind
-    // it, which is why it is sent only once the first scene is already painted.
-    const t0 = performance.now();
-    const warmed = pyList(py.runPython("bootstrap.warm()"));
-    console.log(
-      `[bridge-worker] warmed ${warmed.join(",") || "nothing"} in ${Math.round(
-        performance.now() - t0
-      )} ms`
-    );
-    return { text: "ok" };
-  }
-  if (msg.method === WORKER_MOUNT_GF_STORE) {
-    gfStoreCounter += 1;
-    const mount = "/gfstores/" + gfStoreCounter;
-    try {
-      py.FS.mkdir("/gfstores");
-    } catch (_e) {
-      // Already exists.
+      return bridgeTextResult("ok");
     }
-    py.FS.mkdir(mount);
-    await py.mountNativeFS(mount, msg.handle);
-    return { text: callText(await bridge.call_text(rpc("gfStoreLabel"), null, mount)) };
+    if (msg.method === BridgeMethod.mountGfStore) {
+      if (!msg.handle) {
+        throw new Error("mounting a GF store requires a directory handle");
+      }
+      gfStoreCounter += 1;
+      const mount = "/gfstores/" + gfStoreCounter;
+      try {
+        py.FS.mkdir("/gfstores");
+      } catch (_e) {
+        // Already exists.
+      }
+      py.FS.mkdir(mount);
+      await py.mountNativeFS(mount, msg.handle);
+      return await callPython(mount);
+    }
+    return await callPython(msg.data ?? null, requestTimings);
+  } finally {
+    releaseInterpreter(lane, control, interrupt);
   }
-  const pyCallT0 = performance.now();
-  const res = await bridge.call(msg.method, msg.request, msg.data ?? null);
-  if (tracePerf) tracePerf.py_call_ms = performance.now() - pyCallT0;
-  return bridgeResult(res, tracePerf);
 }
 
 // Booting Python is this worker's whole purpose and takes seconds, so start it on
@@ -1051,23 +1300,45 @@ finally:
 // while the app wasm is still downloading (see index.html), and that head start is
 // the entire Pyodide download. handleRequest awaits the same memoized promise, so
 // a request that arrives mid-boot still queues behind it and surfaces its failure.
-void boot().catch(() => {});
+void boot().catch(postRuntimeFailure);
 
-self.onmessage = (event) => {
+self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const workerRecvMs = performance.now();
   const msg = event.data || {};
+  if (msg.epoch !== RUNTIME_EPOCH) {
+    const response: WorkerFailureMessage = {
+      epoch: RUNTIME_EPOCH,
+      id: msg.id,
+      ok: false,
+      error: `runtime epoch mismatch: worker=${RUNTIME_EPOCH} request=${String(msg.epoch)}`,
+    };
+    self.postMessage(response);
+    return;
+  }
+  const jobId = typeof msg.jobId === "bigint" ? msg.jobId : BigInt(msg.jobId || 0);
   handleRequest(msg, workerRecvMs)
-    .then((result: any) => {
+    .then((result) => {
       const transfer = result.transfer || [];
       const { transfer: _transfer, ...payload } = result;
       if (payload.perf) payload.perf.worker_post_epoch_ms = Date.now();
-      self.postMessage({ id: msg.id, ok: true, ...payload }, transfer);
+      const response: WorkerSuccessMessage = {
+        epoch: RUNTIME_EPOCH,
+        id: msg.id,
+        ok: true,
+        ...payload,
+      };
+      self.postMessage(response, transfer);
     })
     .catch((e) => {
-      self.postMessage({
+      const response: WorkerFailureMessage = {
+        epoch: RUNTIME_EPOCH,
         id: msg.id,
         ok: false,
         error: e && e.message ? e.message : String(e),
-      });
+      };
+      self.postMessage(response);
+    })
+    .finally(() => {
+      if (activeSeisbenchJobId === jobId) activeSeisbenchJobId = 0n;
     });
 };

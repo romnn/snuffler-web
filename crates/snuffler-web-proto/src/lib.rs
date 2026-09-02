@@ -17,6 +17,7 @@ pub mod bridge {
         reason = "prost generates this API from the protobuf schema"
     )]
     pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/bridge-activity.rs"));
         include!(concat!(env!("OUT_DIR"), "/snuffler.bridge.v1.rs"));
     }
 }

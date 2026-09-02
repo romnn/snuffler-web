@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package snuffler.bridge.v1;
+
+import "google/protobuf/descriptor.proto";
+
+enum ActivityLane {
+  ACTIVITY_LANE_UNSPECIFIED = 0;
+  ACTIVITY_LANE_JOB = 1;
+  ACTIVITY_LANE_VIEW = 2;
+}
+
+enum ActivityPolicy {
+  // There is deliberately no EXCLUSIVE: the job lane holds one permit, so
+  // exclusion is what QUEUE already gives, and cross-lane exclusion is a
+  // separate flag the ledger consumes.
+  ACTIVITY_POLICY_UNSPECIFIED = 0;
+  ACTIVITY_POLICY_QUEUE = 1;
+  ACTIVITY_POLICY_DEDUP = 2;
+  ACTIVITY_POLICY_LATEST_WINS = 3;
+}
+
+enum SessionAccess {
+  SESSION_ACCESS_UNSPECIFIED = 0;
+  // The method reads session state without creating a transactional workspace.
+  SESSION_ACCESS_READ_ONLY = 1;
+  // The method runs in a transactional workspace and commits atomically.
+  SESSION_ACCESS_MUTATING = 2;
+}
+
+enum CancellationSupport {
+  // Cancellation support is one capability, not a cooperative/interrupt pair.
+  // Every supported RPC gets the same ladder: queued removal, safe-point checks,
+  // interpreter interrupt, and restart escalation.
+  // The dispatcher's rollback makes the interrupt safe for all of them.
+  CANCELLATION_SUPPORT_UNSPECIFIED = 0;
+  CANCELLATION_SUPPORT_NOT_SUPPORTED = 1;
+  CANCELLATION_SUPPORT_SUPPORTED = 2;
+}
+
+message Activity {
+  string label = 1;
+  ActivityLane lane = 2;
+  ActivityPolicy policy = 3;
+  SessionAccess session_access = 4;
+  // Lower-priority feedback that yields the navbar readout to foreground work.
+  bool secondary_feedback = 5;
+  CancellationSupport cancellation = 6;
+  // An accepted submission cancels active work before it starts.
+  bool supersedes = 7;
+  // The operation may replace markers when it commits.
+  bool may_update_markers = 8;
+}
+
+extend google.protobuf.MethodOptions {
+  Activity activity = 51000;
+}

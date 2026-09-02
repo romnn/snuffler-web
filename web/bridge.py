@@ -13,13 +13,18 @@ pyrocko itself is left completely unmodified; we only call its public API
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import heapq
 import io
 import math
 import os
 import re
+import shutil
 import time
 import traceback
 from collections import OrderedDict
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from importlib import import_module
 from typing import (
@@ -34,6 +39,7 @@ from typing import (
     Optional,
     Protocol,
     Tuple,
+    TypeVar,
     cast,
 )
 from urllib.parse import quote
@@ -54,6 +60,20 @@ from snuffler.bridge.v1 import (
 
 NslcId = Tuple[str, str, str, str]
 TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
+OperationReporter = Callable[[int, int, str], bool]
+CommitGate = Callable[[], bool]
+ExternalWaitCallback = Callable[[], None]
+_MarkerResultT = TypeVar("_MarkerResultT", snuffling_pb2.SnufflingResult, data_pb2.SnufMarkerList)
+_MarkerBudget = Optional[snuffling_pb2.MarkerBudget]
+_OPERATION_REPORTER: ContextVar[Optional[OperationReporter]] = ContextVar(
+    "operation_reporter", default=None
+)
+_BEGIN_EXTERNAL_WAIT: ContextVar[Optional[ExternalWaitCallback]] = ContextVar(
+    "begin_external_wait", default=None
+)
+_END_EXTERNAL_WAIT: ContextVar[Optional[ExternalWaitCallback]] = ContextVar(
+    "end_external_wait", default=None
+)
 
 
 class AutoScalerLike(Protocol):
@@ -150,6 +170,12 @@ def _clear_view_cache() -> None:
     _PILE_GEN = None
 
 
+def _invalidate_interrupted_view() -> None:
+    _clear_view_cache()
+    _VIEW_NOTICES.clear()
+    _OLD_DATA_RANGES.clear()
+
+
 def _mark_traces_changed() -> None:
     global _DATA_GEN
     _DATA_GEN += 1
@@ -190,6 +216,9 @@ _RELOAD_KEEP = (
     "_PLATES",
     "_SEISBENCH_MODEL_URLS",
     "_STAGE_COUNTER",
+    # The session store carries the generation Rust fences view replies with; a
+    # reload that reset it to zero would leave every later view stale-rejected.
+    "_SESSION_STORE",
 )
 
 
@@ -414,6 +443,36 @@ _ACTIVE_MT: Any = None
 _EVENT_REGISTRY: "OrderedDict[str, Any]" = OrderedDict()
 
 
+def _register_event(event_hash: str, event: Any) -> bool:
+    if event_hash not in _EVENT_REGISTRY and len(_EVENT_REGISTRY) >= MAX_MARKER_BUDGET:
+        removable = next((key for key in _EVENT_REGISTRY if key != _ACTIVE_HASH), None)
+        if removable is None:
+            return False
+        _EVENT_REGISTRY.pop(removable, None)
+    _EVENT_REGISTRY[event_hash] = event
+    _EVENT_REGISTRY.move_to_end(event_hash)
+    return True
+
+
+def _known_event_hash(event: Any) -> Optional[str]:
+    values = (
+        float(event.time),
+        float(event.lat),
+        float(event.lon),
+        float(event.depth or 0.0),
+    )
+    for event_hash, known in _EVENT_REGISTRY.items():
+        known_values = (
+            float(known.time),
+            float(known.lat),
+            float(known.lon),
+            float(known.depth or 0.0),
+        )
+        if all(abs(left - right) <= 1e-6 for left, right in zip(values, known_values, strict=True)):
+            return event_hash
+    return None
+
+
 def _activate_event(event_hash: Optional[str]) -> None:
     """Set every active-event projection from one registry entry, or clear all."""
     global _ACTIVE_EVENT, _ACTIVE_HASH, _ACTIVE_MT
@@ -476,7 +535,7 @@ def _fdsn_base(name: str, default: str = "geofon") -> str:
     return _FDSN.get(name, _FDSN[default])
 
 
-_STAGE_DIR = "/staged"
+_STAGE_DIR = "/tmp/snuffler-staged"
 _STAGE_COUNTER = 0
 
 
@@ -507,10 +566,10 @@ async def _fetch_bytes(url: str) -> bytes:
     from Python inside the worker — so network rpcs need no JS orchestration."""
     from pyodide.http import pyfetch
 
-    resp = await pyfetch(url)
+    resp = await _await_external_operation(pyfetch(url))
     if not resp.ok:
         raise RuntimeError("fetch %s: HTTP %s" % (url, resp.status))
-    return bytes(await resp.bytes())
+    return bytes(await _await_external_operation(resp.bytes()))
 
 
 async def _fetch_text_or_empty(url: str) -> str:
@@ -518,8 +577,8 @@ async def _fetch_text_or_empty(url: str) -> str:
     empty result rather than an error."""
     from pyodide.http import pyfetch
 
-    resp = await pyfetch(url)
-    return str(await resp.string()) if resp.ok else ""
+    resp = await _await_external_operation(pyfetch(url))
+    return str(await _await_external_operation(resp.string())) if resp.ok else ""
 
 
 def _local_cors_proxy_url(url: str) -> str:
@@ -550,22 +609,51 @@ def _seisbench_progress(frac: float, label: str) -> None:
         pass
 
 
+def _operation_progress(done: int, total: Optional[int], phase: str) -> None:
+    reporter = _OPERATION_REPORTER.get()
+    if reporter is not None and not reporter(done, -1 if total is None else total, phase):
+        raise KeyboardInterrupt
+
+
+async def _await_external_operation(awaitable: Any) -> Any:
+    """Await JavaScript while keeping SIGINT out of Pyodide's Future resolver."""
+    begin_wait = _BEGIN_EXTERNAL_WAIT.get()
+    end_wait = _END_EXTERNAL_WAIT.get()
+    if begin_wait is not None:
+        begin_wait()
+    try:
+        return await awaitable
+    finally:
+        if end_wait is not None:
+            end_wait()
+
+
+async def _operation_safe_point(done: int, total: Optional[int], phase: str) -> None:
+    _operation_progress(done, total, phase)
+    try:
+        import js
+
+        await _await_external_operation(js.__snufflerYieldToMacrotask())
+    except ImportError:
+        await _await_external_operation(asyncio.sleep(0))
+
+
 async def _pyfetch_fdsn(url: str) -> Any:
     from pyodide.http import pyfetch
 
     proxied = _local_fdsn_proxy_url(url)
     try:
-        resp = await pyfetch(proxied)
+        resp = await _await_external_operation(pyfetch(proxied))
     except Exception:
         if proxied != url:
-            return await pyfetch(url)
+            return await _await_external_operation(pyfetch(url))
         raise
     # The local proxy 403s any host off its allowlist — the normal outcome for
     # a custom base URL on localhost, and not an exception. Retry such a host
     # directly: if it sends CORS headers the query still works, and if not the
     # failure surfaces as the network error it is.
     if resp.status == 403 and proxied != url:
-        return await pyfetch(url)
+        return await _await_external_operation(pyfetch(url))
     return resp
 
 
@@ -578,29 +666,21 @@ async def _fetch_fdsn_text_or_empty(url: str) -> str:
     than being reported as "0 loaded"."""
     resp = await _pyfetch_fdsn(url)
     if resp.ok:
-        return str(await resp.string())
+        return str(await _await_external_operation(resp.string()))
     if resp.status in (204, 404):
         return ""
     raise RuntimeError("HTTP %s from %s" % (resp.status, url))
 
 
-def _trace_meta(msg: scene_pb2.TraceMeta, tr: ptrace.Trace) -> None:
-    net, sta, loc, cha = tr.nslc_id
-    msg.net, msg.sta, msg.loc, msg.cha = net, sta, loc, cha
-    msg.label = ".".join(tr.nslc_id)
-    msg.tmin = float(tr.tmin)
-    msg.tmax = float(tr.tmax)
-    msg.deltat = float(tr.deltat)
-    msg.nsamples = int(tr.data_len())
-
-
 def _scene_meta() -> scene_pb2.SceneMeta:
-    msg = scene_pb2.SceneMeta()
-    for tr in _visible_traces():
-        _trace_meta(msg.tracks.add(), tr)
-    msg.tmin = min((t.tmin for t in msg.tracks), default=0.0)
-    msg.tmax = max((t.tmax for t in msg.tracks), default=1.0)
-    return msg
+    traces = list(_visible_traces())
+    return scene_pb2.SceneMeta(
+        tmin=min((float(tr.tmin) for tr in traces), default=0.0),
+        tmax=max((float(tr.tmax) for tr in traces), default=1.0),
+        track_count=len(traces),
+        deltat_min=min((float(tr.deltat) for tr in traces), default=0.0),
+        deltat_max=max((float(tr.deltat) for tr in traces), default=0.0),
+    )
 
 
 def _make_example_scene() -> scene_pb2.SceneMeta:
@@ -1955,7 +2035,12 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     )
     perf_prepare = time.monotonic()
 
-    meta = view_pb2.ViewMeta(view_tmin=tmin, view_tmax=tmax)
+    meta = view_pb2.ViewMeta(
+        view_tmin=tmin,
+        view_tmax=tmax,
+        session_generation=_SESSION_STORE.generation,
+        view_sequence=req.view_sequence,
+    )
     meta.color_keys.extend(_pile_color_keys(subsort))
     ys_parts: List[np.ndarray] = []
     range_traces: List[ptrace.Trace] = []
@@ -2310,8 +2395,7 @@ def _render_figure_png(
         except _FigureEmpty as exc:
             return figure_pb2.FigureResult(error=str(exc))
         fig.savefig(buf, format="png", dpi=dpi, facecolor=fig.get_facecolor())
-    width, height = fig.canvas.get_width_height()
-    return figure_pb2.FigureResult(png=buf.getvalue(), width=int(width), height=int(height))
+    return figure_pb2.FigureResult(png=buf.getvalue())
 
 
 def _inview_work_traces(view: view_pb2.ViewParams) -> List[ptrace.Trace]:
@@ -3079,21 +3163,39 @@ async def _load_gf_store_url(base_url: str) -> bridge_pb2.StringValue:
     from pyodide.http import pyfetch
 
     base = base_url.rstrip("/")
-    manifest = await pyfetch(base + "/.manifest")
+    manifest = await _await_external_operation(pyfetch(base + "/.manifest"))
     if not manifest.ok:
         raise RuntimeError("no .manifest at %s (HTTP %s)" % (base, manifest.status))
-    files = [line.strip() for line in (await manifest.string()).splitlines() if line.strip()]
-    root = "/gfstores/store%d" % len(_GF_STORES)
-    os.makedirs(root, exist_ok=True)
-    for rel in files:
-        resp = await pyfetch(base + "/" + rel)
-        if not resp.ok:
-            raise RuntimeError("fetch %s: HTTP %s" % (rel, resp.status))
-        dest = "%s/%s" % (root, rel)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as handle:
-            handle.write(bytes(await resp.bytes()))
-    return bridge_pb2.StringValue(value=_gf_store_info_result(root).label)
+    files = [
+        line.strip()
+        for line in (await _await_external_operation(manifest.string())).splitlines()
+        if line.strip()
+    ]
+    # Download into a per-attempt staging tree and move it into place only once
+    # every file landed: the session transaction rolls back _GF_STORES on
+    # failure or cancellation, but not the filesystem, and a later attempt
+    # reuses this root — stale files from a half-downloaded manifest must not
+    # shadow the new store's contents.
+    global _STAGE_COUNTER
+    _STAGE_COUNTER += 1
+    staging = "/gfstores/.staging%d" % _STAGE_COUNTER
+    os.makedirs(staging, exist_ok=True)
+    try:
+        for rel in files:
+            resp = await _await_external_operation(pyfetch(base + "/" + rel))
+            if not resp.ok:
+                raise RuntimeError("fetch %s: HTTP %s" % (rel, resp.status))
+            dest = "%s/%s" % (staging, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as handle:
+                handle.write(bytes(await _await_external_operation(resp.bytes())))
+        root = "/gfstores/store%d" % len(_GF_STORES)
+        shutil.rmtree(root, ignore_errors=True)
+        os.replace(staging, root)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return bridge_pb2.StringValue(value=gf_store_label(root))
 
 
 def _ensure_real_gf() -> Any:
@@ -3344,6 +3446,7 @@ def _seismosizer_result(
             tr.set_ydata(tr.ydata * 1e9)
 
     result = snuffling_pb2.SnufflingResult(show_window=True, origin="seismosizer")
+    markers = _MarkerAccumulator(req.marker_budget)
     # Qt adds `EventMarker(source.pyrocko_event())` (seismosizer.py:143): the
     # synthetic event carries its full origin and mechanism, not just a label.
     ev = source.pyrocko_event()
@@ -3357,7 +3460,7 @@ def _seismosizer_result(
         src_type,
         " (M%.1f)" % float(ev.magnitude) if ev.magnitude is not None else "",
     )
-    marker = result.markers.add()
+    marker = snuffling_pb2.SnufMarker()
     marker.t = float(source.time)
     marker.is_event = True
     marker.event_name = str(ev.name) if ev.name else "synthetic %s" % src_type
@@ -3376,6 +3479,7 @@ def _seismosizer_result(
         marker.moment_tensor.mnd = mnd
         marker.moment_tensor.med = med
     marker.event_hash = ev_hash
+    markers.add(marker, strength=float(ev.magnitude or 0.0))
     # Commit only now, with every fallible step behind us: event conversion or
     # marker construction throwing above must leave the cleaned state, never a
     # scene holding new synthetics without their marker.
@@ -3387,7 +3491,7 @@ def _seismosizer_result(
     _replace_derived("seismosizer", traces)
     result.scene.CopyFrom(_scene_meta())
     result.event_state.CopyFrom(_event_state())
-    return result
+    return markers.finish(result)
 
 
 # Resolved SeisBench ONNX model URLs, keyed by "Model/weights/base". The actual
@@ -3580,6 +3684,7 @@ async def _seisbench_pick_result(
     filter_pad = 2.0 / view_highpass if view_highpass is not None else 0.0
     tpad = model_pad + filter_pad
     result = snuffling_pb2.SnufflingResult(show_window=True, origin="seisbench")
+    markers = _MarkerAccumulator(req.marker_budget)
     n_p = n_s = 0
     annotation_traces: List[ptrace.Trace] = []
     # The bar's total comes from span arithmetic alone, so no pre-pass over
@@ -3689,13 +3794,13 @@ async def _seisbench_pick_result(
                     # neighbouring batches.
                     if not wmin <= t_pick < wmax:
                         continue
-                    marker = result.markers.add()
+                    marker = snuffling_pb2.SnufMarker()
                     marker.t = t_pick
                     marker.kind = kind
                     marker.phase = phase
                     marker.automatic = True
                     marker.incidence_angle = float(val)
-                    marker.nslc_ids.add().CopyFrom(_nslc_pb(list(nslc)))
+                    markers.add(marker, [nslc], float(val))
                     n_p, n_s = (n_p + 1, n_s) if phase == "P" else (n_p, n_s + 1)
         completed_windows += 1
     if not stations_picked:
@@ -3711,7 +3816,7 @@ async def _seisbench_pick_result(
     _replace_derived("seisbench", annotation_traces)
     result.scene.CopyFrom(_scene_meta())
     _seisbench_progress(1.0, "%s · complete" % progress_prefix)
-    return result
+    return markers.finish(result)
 
 
 def _snuffling_spans(
@@ -3799,7 +3904,7 @@ def _chopper_selected_traces(
         )
 
 
-def _run_snuffling_result(
+async def _run_snuffling_result(
     name: str, req: snuffling_pb2.SnufflingRequestParams
 ) -> snuffling_pb2.SnufflingResult:
     """Run a built-in snuffling over the current window."""
@@ -3847,13 +3952,12 @@ def _run_snuffling_result(
             "[-1/ratio,1] clipped to [0,1]": 3,
         }.get(scaling_name, 1)
         result = snuffling_pb2.SnufflingResult(show_window=False, origin="stalta")
+        markers = _MarkerAccumulator(req.marker_budget)
         lwin = tshort * ratio
         derived: List[ptrace.Trace] = []
-        # Cleanup precedes the chopper and every filter operation, matching Qt's
-        # ticket lifecycle even when a later batch fails.
-        _replace_derived("stalta", [])
         deltat_min = min((tr.deltat for tr in _TRACES if tr.deltat > 0.0), default=0.01)
         tinc = max(lwin * 2.0, 500_000.0 * deltat_min)
+        batches_done = 0
         for batch in _chopper_selected_traces(
             req,
             mode="visible",
@@ -3863,6 +3967,8 @@ def _run_snuffling_result(
             tpad=lwin,
             want_incomplete=False,
         ):
+            batches_done += 1
+            await _operation_safe_point(batches_done, None, "STA/LTA windows")
             sumtrace = None
             isum = 0
             for tr in batch.traces:
@@ -3883,9 +3989,9 @@ def _run_snuffling_result(
                 if not apply_to_sum:
                     tpeaks, _apeaks = tr.peaks(level, tshort)
                     for tp in tpeaks:
-                        marker = result.markers.add()
+                        marker = snuffling_pb2.SnufMarker()
                         marker.t = float(tp)
-                        marker.nslc_ids.add().CopyFrom(_nslc_pb(list(original_nslc)))
+                        markers.add(marker, [original_nslc])
                 # Qt renames the level trace into location `cg` keeping the
                 # channel (stalta.py:189) and tags it tabu.
                 tr.set_codes(location="cg")
@@ -3915,20 +4021,20 @@ def _run_snuffling_result(
                 if apply_to_sum:
                     tpeaks, _apeaks = sumtrace.peaks(level, tshort)
                     for tp in tpeaks:
-                        marker = result.markers.add()
+                        marker = snuffling_pb2.SnufMarker()
                         marker.t = float(tp)
-                        marker.nslc_ids.add().CopyFrom(_nslc_pb(["*", "*", "*", "*"]))
+                        markers.add(marker, [("*", "*", "*", "*")])
                 if show_level_traces:
                     derived.append(sumtrace)
         _replace_derived("stalta", derived if show_level_traces else [])
         result.scene.CopyFrom(_scene_meta())
         result.text = "STA/LTA: %d detection(s) (short=%.3gs, ratio=%g, level=%g)" % (
-            len(result.markers),
+            markers.total,
             tshort,
             ratio,
             level,
         )
-        return result
+        return markers.finish(result)
 
     if name == "polarization":
         # Covariance-eigenvalue polarization analysis (Jurkevics, 1988) per
@@ -4097,14 +4203,14 @@ def _append_mseed_scene(
     """Append live MiniSEED records and merge adjacent segments by NSLC/time."""
     global _TRACES
     del source
-    if reset:
-        # The common replacement path retires file provenance, derived data,
-        # dataset metadata, and the boot-example flag as one invariant.
-        _set_traces([])
     if not raw:
         return _scene_meta()
 
     traces = list(pio.load(_stage_bytes("live.mseed", raw), format="mseed"))
+    if reset:
+        # Parsing has succeeded, so replacement and insertion now belong to the
+        # same dispatcher transaction. Malformed batch zero leaves the old scene.
+        _set_traces([])
     if start_time > 0.0:
         traces = _trim_live_traces(traces, start_time)
     if not traces:
@@ -4174,7 +4280,7 @@ def _ftime(s: str) -> float:
         return 0.0
 
 
-def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
+def _parse_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb2.SnufflingResult:
     """Parse FDSN event 'text' format into event markers; set the active event
     (largest magnitude) for distance/azimuth sorting.
 
@@ -4187,9 +4293,8 @@ def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
     from pyrocko import orthodrome as od
 
     result = snuffling_pb2.SnufflingResult(show_window=True)
-    lines = []
-    entries = []
-    best = None
+    markers = _MarkerAccumulator(budget)
+    lines: List[str] = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -4219,8 +4324,7 @@ def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
             catalog=catalog or None,
         )
         h = event_id or str(ev.get_hash())
-        _EVENT_REGISTRY[h] = ev
-        marker = result.markers.add()
+        marker = snuffling_pb2.SnufMarker()
         marker.t = t
         marker.is_event = True
         marker.event_hash = h
@@ -4234,29 +4338,44 @@ def _parse_events_result(text: str) -> snuffling_pb2.SnufflingResult:
         marker.lat = lat
         marker.lon = lon
         marker.depth = depth
-        lines.append("M%.1f  %s  %s" % (mag, when, region))
-        entries.append((marker, lat, lon))
-        if best is None or mag > best[0]:
-            best = (mag, lat, lon, depth, t, marker)
+        if len(lines) < 30:
+            lines.append("M%.1f  %s  %s" % (mag, when, region))
+        markers.add(marker, strength=mag, payload=ev)
+    retained = markers.retained_candidates()
+    best = max(
+        retained,
+        key=lambda item: float(item[0].magnitude) if item[0].HasField("magnitude") else 0.0,
+        default=None,
+    )
+    for marker, event in retained:
+        _register_event(marker.event_hash, event)
     if best is not None:
-        _activate_event(best[5].event_hash)
-        best[5].active = True
-        for marker, lat, lon in entries:
+        best_marker = best[0]
+        _activate_event(best_marker.event_hash)
+        best_marker.active = True
+        for marker, _event in retained:
             marker.dist_active_km = (
-                float(od.distance_accurate50m(lat, lon, best[1], best[2])) / 1000.0
+                float(
+                    od.distance_accurate50m(
+                        float(marker.lat),
+                        float(marker.lon),
+                        float(best_marker.lat),
+                        float(best_marker.lon),
+                    )
+                )
+                / 1000.0
             )
         header = (
             "%d event(s) found; active event M%.1f (distance sort enabled).\n"
             "Jumped the view to the events — load waveforms for this time to "
-            "see them on data." % (len(result.markers), best[0])
+            "see them on data." % (markers.total, float(best_marker.magnitude))
         )
     else:
         _activate_event(None)
         header = "No events found in this time window."
-    body = "\n".join(lines[:30])
+    body = "\n".join(lines)
     result.text = header + ("\n\n" + body if body else "")
-    result.event_state.CopyFrom(_event_state())
-    return result
+    return _finalize_event_markers(result, markers)
 
 
 def _short_event_name(name: Optional[str]) -> str:
@@ -4270,7 +4389,7 @@ def _short_event_name(name: Optional[str]) -> str:
     return s.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
 
 
-def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
+def _parse_events_quakeml(text: str, budget: _MarkerBudget = None) -> snuffling_pb2.SnufflingResult:
     """Parse an FDSN QuakeML event response into event markers carrying moment
     tensors, and precompute the Kagan angle of every MT event to the active
     (largest-magnitude) event. Reuses pyrocko's own QuakeML reader + MomentTensor
@@ -4286,6 +4405,7 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
     from pyrocko.io import quakeml
 
     result = snuffling_pb2.SnufflingResult(show_window=True)
+    markers = _MarkerAccumulator(budget)
     qml = quakeml.QuakeML.load_xml(string=text)
     events = qml.get_pyrocko_events()
 
@@ -4300,21 +4420,19 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
         if best is None or mag > best[1]:
             best = (ev, mag, lat, lon, depth)
 
-    for event, _mag, _lat, _lon, _depth in entries:
-        event_hash = str(event.name) if event.name else str(event.get_hash())
-        _EVENT_REGISTRY[event_hash] = event
     if best is not None:
         best_event = best[0]
         best_hash = str(best_event.name) if best_event.name else str(best_event.get_hash())
+        _register_event(best_hash, best_event)
         _activate_event(best_hash)
     else:
         _activate_event(None)
 
-    lines = []
+    lines: List[str] = []
     for ev, mag, _lat, _lon, _depth in entries:
         event_hash = str(ev.name) if ev.name else str(ev.get_hash())
         short = _short_event_name(ev.name)
-        marker = result.markers.add()
+        marker = snuffling_pb2.SnufMarker()
         marker.t = float(ev.time)
         marker.is_event = True
         marker.event_hash = event_hash
@@ -4351,20 +4469,34 @@ def _parse_events_quakeml(text: str) -> snuffling_pb2.SnufflingResult:
             if _ACTIVE_MT is not None:
                 marker.kagan_deg = float(mtm.kagan_angle(_ACTIVE_MT, mt))
         when = util.time_to_str(ev.time)[:19]
-        lines.append("M%.1f  %s  %s%s" % (mag, when, short, "  [MT]" if mt is not None else ""))
+        if len(lines) < 30:
+            lines.append("M%.1f  %s  %s%s" % (mag, when, short, "  [MT]" if mt is not None else ""))
+        markers.add(marker, strength=mag, payload=ev)
 
     n_mt = sum(1 for e, *_ in entries if e.moment_tensor is not None)
+    retained = markers.retained_candidates()
+    for marker, event in retained:
+        _register_event(marker.event_hash, event)
+    retained_best = max(
+        retained,
+        key=lambda item: float(item[0].magnitude) if item[0].HasField("magnitude") else 0.0,
+        default=None,
+    )
+    if retained_best is not None:
+        retained_best[0].active = True
+        _activate_event(retained_best[0].event_hash)
+    else:
+        _activate_event(None)
     if best is not None:
         header = (
             "%d event(s) found, %d with moment tensors; active event M%.1f "
-            "(distance sort + Kagan enabled)." % (len(result.markers), n_mt, best[1])
+            "(distance sort + Kagan enabled)." % (markers.total, n_mt, best[1])
         )
     else:
         header = "No events found in this time window."
-    body = "\n".join(lines[:30])
+    body = "\n".join(lines)
     result.text = header + ("\n\n" + body if body else "")
-    result.event_state.CopyFrom(_event_state())
-    return result
+    return _finalize_event_markers(result, markers)
 
 
 def _moment_tensor_message(moment_tensor: Any) -> Optional[common_pb2.MomentTensor]:
@@ -4394,7 +4526,7 @@ def _event_snapshot(event_hash: str, event: Any) -> common_pb2.EventSnapshot:
     return snapshot
 
 
-def _event_state() -> common_pb2.ActiveEventResult:
+def _event_state(limit: Optional[int] = None) -> common_pb2.ActiveEventResult:
     """Project the authoritative event registry and its active-event metrics."""
     from pyrocko import moment_tensor as mtm
     from pyrocko import orthodrome as od
@@ -4404,7 +4536,17 @@ def _event_state() -> common_pb2.ActiveEventResult:
     result = common_pb2.ActiveEventResult(has_event=active is not None)
     if active is not None:
         result.active_hash = _ACTIVE_HASH
-    for event_hash, event in _EVENT_REGISTRY.items():
+    bounded = max(1, min(limit or DEFAULT_MARKER_BUDGET, MAX_MARKER_BUDGET))
+    items = list(_EVENT_REGISTRY.items())
+    selected = items[-bounded:]
+    if _ACTIVE_HASH and all(event_hash != _ACTIVE_HASH for event_hash, _event in selected):
+        active_item = next(
+            (item for item in items if item[0] == _ACTIVE_HASH),
+            None,
+        )
+        if active_item is not None:
+            selected = [active_item, *selected[-(bounded - 1) :]] if bounded > 1 else [active_item]
+    for event_hash, event in selected:
         result.events.add().CopyFrom(_event_snapshot(event_hash, event))
         metric = result.kagan.add()
         metric.event_hash = event_hash
@@ -4452,7 +4594,7 @@ def _set_active_event(req: data_pb2.SetActiveEventRequest) -> common_pb2.ActiveE
             lat, lon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
         ev = model.Event(time=float(req.t), lat=lat, lon=lon, depth=0.0)
         if req.event_hash:
-            _EVENT_REGISTRY[req.event_hash] = ev
+            _register_event(req.event_hash, ev)
 
     _activate_event(req.event_hash or None)
 
@@ -4488,7 +4630,7 @@ def _update_event(snapshot: common_pb2.EventSnapshot) -> common_pb2.ActiveEventR
         catalog=(snapshot.catalog if snapshot.HasField("catalog") else None),
         moment_tensor=moment_tensor,
     )
-    _EVENT_REGISTRY[snapshot.event_hash] = event
+    _register_event(snapshot.event_hash, event)
     if snapshot.event_hash == _ACTIVE_HASH:
         _activate_event(snapshot.event_hash)
     return _event_state()
@@ -4644,7 +4786,7 @@ def _station_distances_result() -> data_pb2.StationDistanceList:
     return result
 
 
-def _load_events_result(text: str) -> snuffling_pb2.SnufflingResult:
+def _load_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb2.SnufflingResult:
     """Parse a local pyrocko event file into event markers and set the active
     event (largest magnitude, for distance/azimuth sorting), via pyrocko's own
     ``model.load_events``. Mirrors the FDSN catalog path."""
@@ -4675,8 +4817,7 @@ def _load_events_result(text: str) -> snuffling_pb2.SnufflingResult:
     from pyrocko import orthodrome as od
 
     result = snuffling_pb2.SnufflingResult(show_window=True)
-    entries = []
-    best: Optional[Tuple[float, float, float, float, float, Any]] = None
+    markers = _MarkerAccumulator(budget)
     for ev in events:
         lat = float(ev.lat)
         lon = float(ev.lon)
@@ -4686,8 +4827,7 @@ def _load_events_result(text: str) -> snuffling_pb2.SnufflingResult:
         # the registry, so activating it later uses the real origin instead of
         # a rebuilt zero-depth stand-in.
         h = str(ev.name) if ev.name else str(ev.get_hash())
-        _EVENT_REGISTRY[h] = ev
-        marker = result.markers.add()
+        marker = snuffling_pb2.SnufMarker()
         marker.t = float(ev.time)
         marker.is_event = True
         marker.event_hash = h
@@ -4701,26 +4841,40 @@ def _load_events_result(text: str) -> snuffling_pb2.SnufflingResult:
         marker.lat = lat
         marker.lon = lon
         marker.depth = depth
-        entries.append((marker, lat, lon))
-        if best is None or mag > best[0]:
-            best = (mag, lat, lon, depth, float(ev.time), marker)
+        markers.add(marker, strength=mag, payload=ev)
+    retained = markers.retained_candidates()
+    best = max(
+        retained,
+        key=lambda item: float(item[0].magnitude) if item[0].HasField("magnitude") else 0.0,
+        default=None,
+    )
+    for marker, event in retained:
+        _register_event(marker.event_hash, event)
     if best is not None:
-        _activate_event(best[5].event_hash)
+        best_marker = best[0]
+        _activate_event(best_marker.event_hash)
         # Auto-activation stays, made visible on the marker itself.
-        best[5].active = True
-        for marker, lat, lon in entries:
+        best_marker.active = True
+        for marker, _event in retained:
             marker.dist_active_km = (
-                float(od.distance_accurate50m(lat, lon, best[1], best[2])) / 1000.0
+                float(
+                    od.distance_accurate50m(
+                        float(marker.lat),
+                        float(marker.lon),
+                        float(best_marker.lat),
+                        float(best_marker.lon),
+                    )
+                )
+                / 1000.0
             )
         result.text = "%d event(s) loaded; active event M%.1f (distance sort enabled)." % (
-            len(result.markers),
-            best[0],
+            markers.total,
+            float(best_marker.magnitude),
         )
     else:
         _activate_event(None)
         result.text = "No events in file."
-    result.event_state.CopyFrom(_event_state())
-    return result
+    return _finalize_event_markers(result, markers)
 
 
 def _response_url(req: data_pb2.StationRequest) -> str:
@@ -4824,6 +4978,228 @@ class _DatasetState(NamedTuple):
     event_registry: "OrderedDict[str, Any]"
     stationxmls: List[Any]
     warned_no_response: "set[NslcId]"
+    hidden: List[str]
+    reduce: Optional[List[str]]
+    scaling_hooks: "OrderedDict[str, Tuple[Optional[float], Optional[float]]]"
+    response_gen: int
+    gf_stores: Dict[str, str]
+
+
+class SessionSnapshot(NamedTuple):
+    generation: int
+    state: _DatasetState
+
+
+class SessionUpdate(NamedTuple):
+    state: _DatasetState
+
+
+class StaleSessionCommit(NamedTuple):
+    """A rejected commit: the store moved past the transaction's generation."""
+
+    expected_generation: int
+    actual_generation: int
+
+
+def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
+    trace_copies: Dict[int, ptrace.Trace] = {}
+    # One memo across every event-object-carrying field: _replace_derived_events
+    # retires registry entries by object identity, and _ACTIVE_MT aliases the
+    # registered event's moment tensor. Independent deepcopy calls would give
+    # the workspace two distinct copies of the same event, so retirement would
+    # silently stop matching and superseded derived events would leak in the
+    # registry forever. (_ACTIVE_EVENT needs no copy: it is an immutable float
+    # tuple snapshot, not a reference into the registry.)
+    event_memo: Dict[int, Any] = {}
+
+    def clone_trace(trace: ptrace.Trace) -> ptrace.Trace:
+        cloned = trace_copies.get(id(trace))
+        if cloned is None:
+            cloned = trace.copy(data=True)
+            trace_copies[id(trace)] = cloned
+        return cloned
+
+    def clone_traces(traces: Iterable[ptrace.Trace]) -> List[ptrace.Trace]:
+        return [clone_trace(trace) for trace in traces]
+
+    return _DatasetState(
+        traces=clone_traces(state.traces),
+        source_traces=OrderedDict(
+            (source_id, clone_traces(traces)) for source_id, traces in state.source_traces.items()
+        ),
+        source_digests=dict(state.source_digests),
+        suppressed_source_traces={
+            source_id: clone_traces(traces)
+            for source_id, traces in state.suppressed_source_traces.items()
+        },
+        digest_owners={digest: set(owners) for digest, owners in state.digest_owners.items()},
+        derived_traces={
+            origin: clone_traces(traces) for origin, traces in state.derived_traces.items()
+        },
+        derived_events=copy.deepcopy(state.derived_events, event_memo),
+        pile_is_example=state.pile_is_example,
+        stations=dict(state.stations),
+        active_event=state.active_event,
+        active_hash=state.active_hash,
+        active_mt=copy.deepcopy(state.active_mt, event_memo),
+        event_registry=copy.deepcopy(state.event_registry, event_memo),
+        stationxmls=copy.deepcopy(state.stationxmls),
+        warned_no_response=set(state.warned_no_response),
+        hidden=list(state.hidden),
+        reduce=None if state.reduce is None else list(state.reduce),
+        scaling_hooks=OrderedDict(state.scaling_hooks),
+        response_gen=state.response_gen,
+        gf_stores=dict(state.gf_stores),
+    )
+
+
+class _ViewLaneCaches(NamedTuple):
+    data_gen: int
+    cutout_vec: Optional[Tuple[Any, ...]]
+    cutout_traces: Optional[List[ptrace.Trace]]
+    cutout_notices: List[str]
+    tf_cache: Dict[Tuple[Any, ...], np.ndarray]
+    pile: Optional[Any]
+    pile_gen: Optional[int]
+    box_styles: Dict[Tuple[Any, ...], int]
+    box_styles_gen: Optional[int]
+
+
+def _capture_view_caches() -> _ViewLaneCaches:
+    return _ViewLaneCaches(
+        data_gen=_DATA_GEN,
+        cutout_vec=_CUTOUT_VEC,
+        cutout_traces=_CUTOUT_TRACES,
+        cutout_notices=list(_CUTOUT_NOTICES),
+        tf_cache=dict(_TF_CACHE),
+        pile=_PILE,
+        pile_gen=_PILE_GEN,
+        box_styles=dict(_BOX_STYLES),
+        box_styles_gen=_BOX_STYLES_GEN,
+    )
+
+
+def _install_view_caches(caches: _ViewLaneCaches) -> None:
+    global _CUTOUT_VEC, _CUTOUT_TRACES, _DATA_GEN, _PILE, _PILE_GEN, _BOX_STYLES_GEN
+    _DATA_GEN = caches.data_gen
+    _CUTOUT_VEC = caches.cutout_vec
+    _CUTOUT_TRACES = caches.cutout_traces
+    _CUTOUT_NOTICES[:] = caches.cutout_notices
+    _TF_CACHE.clear()
+    _TF_CACHE.update(caches.tf_cache)
+    _PILE = caches.pile
+    _PILE_GEN = caches.pile_gen
+    _BOX_STYLES.clear()
+    _BOX_STYLES.update(caches.box_styles)
+    _BOX_STYLES_GEN = caches.box_styles_gen
+
+
+class SessionStore:
+    # Clone economy: begin_transaction() pays the transaction's single deep
+    # clone, containing the only objects a handler can mutate.
+    # snapshot() and capture_update() capture shallow state: fresh containers
+    # over objects the respective install path never lets the other side mutate.
+    # An interleaved view and the commit therefore cost container copies, not a
+    # full copy of every trace's samples.
+    #
+    # The view projection is owned by the store (not by call()'s locals), the
+    # workspace reference survives until reinstalled, and the cache stash is
+    # gated on a completed projection — so a partial enter_view/exit_view
+    # self-heals on the next cycle instead of orphaning the workspace or
+    # letting job caches masquerade as committed-view caches. This is healing,
+    # not atomicity: interrupts cannot reach the view lane today (GetView is
+    # NOT_CANCELLABLE and the ownership handoff clears the byte), and that
+    # gate is what a cancellable view rpc would have to replace. View-lane
+    # caches swap together with the dataset state: the view keeps caches built
+    # against the committed snapshot across interleaves, and the job never
+    # sees them.
+    def __init__(self) -> None:
+        self._generation = 0
+        self._transaction_snapshot: Optional[SessionSnapshot] = None
+        self._suspended_job_update: Optional[SessionUpdate] = None
+        self._view_caches: Optional[_ViewLaneCaches] = None
+        self._job_caches: Optional[_ViewLaneCaches] = None
+        self._view_projected = False
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def snapshot(self) -> SessionSnapshot:
+        return SessionSnapshot(self._generation, _dataset_state())
+
+    def begin_transaction(self, snapshot: SessionSnapshot) -> None:
+        self._transaction_snapshot = snapshot
+        _install_dataset_state(_clone_dataset_state(snapshot.state))
+
+    def capture_update(self) -> SessionUpdate:
+        return SessionUpdate(_dataset_state())
+
+    def restore_snapshot(self, snapshot: SessionSnapshot) -> None:
+        _install_dataset_state(snapshot.state)
+
+    def rollback(self, snapshot: SessionSnapshot) -> None:
+        self.restore_snapshot(snapshot)
+        self._transaction_snapshot = None
+        # The rollback reinstalled the state the view caches were built
+        # against, so the now-direct view lane keeps them instead of
+        # rebuilding the pile and cutout from scratch.
+        if self._view_caches is not None:
+            _install_view_caches(self._view_caches)
+        self._drop_view_projection()
+
+    def enter_view(self) -> None:
+        if self._transaction_snapshot is None:
+            return
+        if self._suspended_job_update is None:
+            self._suspended_job_update = SessionUpdate(_dataset_state())
+            self._job_caches = _capture_view_caches()
+        self._view_projected = False
+        _install_dataset_state(self._transaction_snapshot.state)
+        if self._view_caches is not None:
+            _install_view_caches(self._view_caches)
+        self._view_projected = True
+
+    def exit_view(self) -> None:
+        # The workspace reference is dropped only after the reinstall: an
+        # interrupt landing mid-way then leaves it captured, and the next
+        # enter_view/exit_view cycle re-projects and re-installs the same
+        # workspace instead of orphaning the job's state. The caches are
+        # stashed only when the projection completed — an interrupt inside
+        # enter_view would otherwise let job-era caches masquerade as
+        # committed-view caches on the next interleave.
+        job_update = self._suspended_job_update
+        if job_update is None:
+            return
+        if self._view_projected:
+            self._view_caches = _capture_view_caches()
+        self._view_projected = False
+        _install_dataset_state(job_update.state)
+        if self._job_caches is not None:
+            _install_view_caches(self._job_caches)
+        self._job_caches = None
+        self._suspended_job_update = None
+
+    def commit(self, expected: int, update: SessionUpdate) -> Optional[StaleSessionCommit]:
+        actual = self._generation
+        if expected != actual:
+            # Defensive: the job lane is serialized, so a mismatch means a
+            # protocol fault upstream; kept as a typed guard because a wrong
+            # commit is a one-way door.
+            self._transaction_snapshot = None
+            self._drop_view_projection()
+            return StaleSessionCommit(expected, actual)
+        _install_dataset_state(update.state)
+        self._generation += 1
+        self._transaction_snapshot = None
+        self._drop_view_projection()
+        return None
+
+    def _drop_view_projection(self) -> None:
+        self._suspended_job_update = None
+        self._view_caches = None
+        self._job_caches = None
+        self._view_projected = False
 
 
 def _dataset_state() -> _DatasetState:
@@ -4847,6 +5223,11 @@ def _dataset_state() -> _DatasetState:
         event_registry=OrderedDict(_EVENT_REGISTRY),
         stationxmls=list(_STATIONXMLS),
         warned_no_response=set(_WARNED_NO_RESPONSE),
+        hidden=list(_HIDDEN),
+        reduce=None if _REDUCE is None else list(_REDUCE),
+        scaling_hooks=OrderedDict(_SCALING_HOOKS),
+        response_gen=_RESPONSE_GEN,
+        gf_stores=dict(_GF_STORES),
     )
 
 
@@ -4856,6 +5237,7 @@ def _install_dataset_state(state: _DatasetState) -> None:
     global _SOURCE_DIGESTS, _SOURCE_TRACES
     global _SUPPRESSED_SOURCE_TRACES
     global _EVENT_REGISTRY, _STATIONS, _STATIONXMLS, _WARNED_NO_RESPONSE
+    global _GF_STORES, _HIDDEN, _REDUCE, _RESPONSE_GEN, _SCALING_HOOKS
     _TRACES = list(state.traces)
     _SOURCE_TRACES = OrderedDict(
         (source_id, list(traces)) for source_id, traces in state.source_traces.items()
@@ -4875,7 +5257,15 @@ def _install_dataset_state(state: _DatasetState) -> None:
     _EVENT_REGISTRY = OrderedDict(state.event_registry)
     _STATIONXMLS = list(state.stationxmls)
     _WARNED_NO_RESPONSE = set(state.warned_no_response)
+    _HIDDEN = list(state.hidden)
+    _REDUCE = None if state.reduce is None else list(state.reduce)
+    _SCALING_HOOKS = OrderedDict(state.scaling_hooks)
+    _RESPONSE_GEN = state.response_gen
+    _GF_STORES = dict(state.gf_stores)
     _mark_traces_changed()
+
+
+_SESSION_STORE = SessionStore()
 
 
 def _empty_dataset_state(traces: List[ptrace.Trace]) -> _DatasetState:
@@ -4895,6 +5285,11 @@ def _empty_dataset_state(traces: List[ptrace.Trace]) -> _DatasetState:
         event_registry=OrderedDict(),
         stationxmls=[],
         warned_no_response=set(),
+        hidden=[],
+        reduce=None,
+        scaling_hooks=OrderedDict(),
+        response_gen=0,
+        gf_stores={},
     )
 
 
@@ -4963,7 +5358,9 @@ def _bundle_about(manifest: Dict[str, Any]) -> Optional[data_pb2.BundleAbout]:
     )
 
 
-def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
+def _load_bundle_result(
+    raw: bytes, label: str, budget: _MarkerBudget = None
+) -> data_pb2.BundleResult:
     """Load every data file in one archive, in the order the loaders depend on.
 
     Waveforms first, since they define the scene and replace whatever was loaded
@@ -5013,8 +5410,9 @@ def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
     _install_dataset_state(_empty_dataset_state(traces))
     try:
         scene = _scene_meta()
-        loaded = ["%d trace(s) from %d file(s)" % (len(scene.tracks), len(waveforms))]
+        loaded = ["%d trace(s) from %d file(s)" % (scene.track_count, len(waveforms))]
         info = snuffling_pb2.SnufflingResult(show_window=True, origin="bundle")
+        bundle_markers = _MarkerAccumulator(budget)
         responses = [
             payload.decode("utf-8", "replace") for _name, payload in groups.get("stationxml", [])
         ]
@@ -5026,13 +5424,28 @@ def _load_bundle_result(raw: bytes, label: str) -> data_pb2.BundleResult:
                 raise ValueError("%s: %s" % (name, stations.text))
             loaded.append(stations.text)
         for name, payload in groups.get("events", []):
-            events = _load_events_result(payload.decode("utf-8", "replace"))
+            events = _load_events_result(payload.decode("utf-8", "replace"), budget)
             if events.text.startswith(("could not parse", "empty")):
                 raise ValueError("%s: %s" % (name, events.text))
-            info.markers.extend(events.markers)
+            for marker in events.markers:
+                nslcs = [
+                    (
+                        events.nslc_table[index].net,
+                        events.nslc_table[index].sta,
+                        events.nslc_table[index].loc,
+                        events.nslc_table[index].cha,
+                    )
+                    for index in marker.nslc_indexes
+                    if index < len(events.nslc_table)
+                ]
+                copy_marker = snuffling_pb2.SnufMarker()
+                copy_marker.CopyFrom(marker)
+                bundle_markers.add(copy_marker, nslcs)
+            bundle_markers.total += int(events.markers_dropped)
             loaded.append(events.text)
         info.text = ("%s\n\n%s" % (title, "\n".join(loaded))).strip()
-        info.event_state.CopyFrom(_event_state())
+        bundle_markers.finish(info)
+        info.event_state.CopyFrom(_event_state(bundle_markers.limit))
         # A described dataset opens one window, and it is the description: the counts
         # are already in the status line, and burying the prose under them was how the
         # same three lines about instrument responses ended up in front of every reader
@@ -5249,16 +5662,10 @@ def _gf_modules() -> Tuple[Any, Any]:
     return _gf_store_mod, _gf_meta_mod
 
 
-class GfStoreInfo(NamedTuple):
-    id: str
-    label: str
-    sample_rate: float
-    has_earthmodel: bool
-
-
-def _gf_store_info_result(store_dir: str) -> GfStoreInfo:
-    """Read a mounted GF store's config (no ``store_ext`` / network needed) and
-    register it so its embedded 1D earth model is selectable in Cake Phase.
+def gf_store_label(store_dir: str) -> str:
+    """Read a mounted GF store's config (no ``store_ext`` / network needed),
+    register it so its embedded 1D earth model is selectable in Cake Phase, and
+    return its dropdown label.
 
     Raises on failure; the ``call()`` failsafe turns that into a BridgeError.
     """
@@ -5266,16 +5673,7 @@ def _gf_store_info_result(store_dir: str) -> GfStoreInfo:
     cfg = gfstore.Store(store_dir).config
     sid = str(cfg.id)
     _GF_STORES[sid] = store_dir
-    return GfStoreInfo(
-        id=sid,
-        label=GF_STORE_PREFIX + sid,
-        sample_rate=float(getattr(cfg, "sample_rate", 0.0) or 0.0),
-        has_earthmodel=getattr(cfg, "earthmodel_1d", None) is not None,
-    )
-
-
-def gf_store_label(store_dir: str) -> str:
-    return _gf_store_info_result(store_dir).label
+    return GF_STORE_PREFIX + sid
 
 
 def _time_fractional_digits() -> int:
@@ -5405,7 +5803,7 @@ def _markers_to_text(req: data_pb2.MarkerFile) -> str:
         return f.read()
 
 
-def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
+def _markers_from_text(text: str, budget: _MarkerBudget = None) -> data_pb2.SnufMarkerList:
     """Parse a pyrocko marker file into the SnufMarker messages the egui side adds.
 
     Re-links phase picks to their events (``associate_phases_to_events``, which
@@ -5415,6 +5813,7 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
     from pyrocko import orthodrome as od
 
     result = data_pb2.SnufMarkerList()
+    markers = _MarkerAccumulator(budget)
     path = "/tmp/markers_in.txt"
     with open(path, "w") as f:
         f.write(text)
@@ -5428,6 +5827,15 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
         # defensively and skip only the one that fails.
         try:
             ids = mk.get_nslc_ids()
+            nslcs = [
+                (
+                    str(nslc_id[0]) if len(nslc_id) > 0 else "",
+                    str(nslc_id[1]) if len(nslc_id) > 1 else "",
+                    str(nslc_id[2]) if len(nslc_id) > 2 else "",
+                    str(nslc_id[3]) if len(nslc_id) > 3 else "",
+                )
+                for nslc_id in ids
+            ]
             # Built off-list and appended at the end so a half-parsed marker is
             # dropped whole rather than kept truncated.
             marker = snuffling_pb2.SnufMarker()
@@ -5438,10 +5846,10 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
             # modulo already does.
             marker.kind = int(mk.kind or 0) % 256
             marker.is_event = isinstance(mk, pm.EventMarker)
-            for nslc_id in ids:
-                marker.nslc_ids.add().CopyFrom(_nslc_pb(list(nslc_id)))
+            event = None
             if isinstance(mk, pm.EventMarker):
                 ev = mk.get_event()
+                event = ev
                 if ev is not None:
                     if ev.name:
                         marker.event_name = str(ev.name)[:96]
@@ -5467,12 +5875,9 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
                     ehash = mk.get_event_hash()
                 except Exception:
                     ehash = None
-                if ehash:
-                    marker.event_hash = str(ehash)
-                    # Registered so activating the loaded event uses its real
-                    # origin (`_set_active_event` looks the hash up here).
-                    if ev is not None:
-                        _EVENT_REGISTRY[str(ehash)] = ev
+                known_hash = _known_event_hash(ev) if ev is not None else None
+                if known_hash or ehash:
+                    marker.event_hash = known_hash or str(ehash)
                 if ev is not None and _ACTIVE_EVENT is not None:
                     marker.dist_active_km = (
                         float(
@@ -5527,11 +5932,13 @@ def _markers_from_text(text: str) -> data_pb2.SnufMarkerList:
                     etime = None
                 if etime is not None:
                     marker.event_time = float(etime)
-            result.markers.add().CopyFrom(marker)
+            markers.add(marker, nslcs, payload=event)
         except Exception:
             continue
-    result.event_state.CopyFrom(_event_state())
-    return result
+    for marker, event in markers.retained_candidates():
+        if event is not None and marker.event_hash:
+            _register_event(marker.event_hash, event)
+    return _finalize_event_markers(result, markers)
 
 
 # Directory holding the cake earth models (tiny .nd text files shipped as build
@@ -5703,6 +6110,7 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
     wanted, errors = _cake_wanted_phases(cake, phase_names)
 
     result = snuffling_pb2.SnufflingResult(show_window=True, origin="cake")
+    markers = _MarkerAccumulator(req.marker_budget)
     lines = ["%-14s %-8s %12s %8s %8s" % ("station", "phase", "t-rel[s]", "inc[deg]", "tko[deg]")]
     nstations = 0
     for net, sta, dist_deg, depth in _cake_stations():
@@ -5724,7 +6132,7 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
             tt = float(ray.t) + tshift
             inc = float(ray.incidence_angle())
             tko = float(ray.takeoff_angle())
-            marker = result.markers.add()
+            marker = snuffling_pb2.SnufMarker()
             marker.t = etime + tt
             marker.tmax = etime + tt
             # Qt's Cake Phase conventions (cake_phase.py:163): a fixed kind 2,
@@ -5735,21 +6143,27 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
             marker.phase = name
             marker.incidence_angle = inc
             marker.takeoff_angle = tko
-            marker.nslc_ids.add().CopyFrom(_nslc_pb([net, sta, "*", "*"]))
             if _ACTIVE_HASH:
                 marker.event_hash = _ACTIVE_HASH
             if _ACTIVE_EVENT is not None:
                 marker.event_time = _ACTIVE_EVENT[3]
-            lines.append(
-                "%-14s %-8s %12.3f %8.1f %8.1f" % ("%s.%s" % (net, sta), name, tt, inc, tko)
-            )
+            # The table row rides as the accumulator payload so the text stays
+            # bounded by — and in agreement with — the retained picks instead of
+            # growing with the total detection count.
+            markers.add(marker, [(net, sta, "*", "*")], inc, payload=(net, sta, name, tt, inc, tko))
 
-    npicks = len(result.markers)
+    for _marker, payload in markers.retained_candidates():
+        net, sta, name, tt, inc, tko = payload
+        lines.append("%-14s %-8s %12.3f %8.1f %8.1f" % ("%s.%s" % (net, sta), name, tt, inc, tko))
+    npicks = markers.total
+    dropped = npicks - (len(lines) - 1)
+    if dropped > 0:
+        lines.append("… %d more arrival(s) beyond the marker budget not shown" % dropped)
     header = "Cake arrivals (%s): %d pick(s) at %d station(s)." % (model, npicks, nstations)
     if errors:
         header += "\nSkipped phases: " + ", ".join(errors)
     result.text = header + "\n\n" + "\n".join(lines) if npicks else header
-    return result
+    return markers.finish(result)
 
 
 def _command_glob(scope: Optional[str], pattern: str) -> str:
@@ -5991,7 +6405,7 @@ def _command_result(request: data_pb2.CommandRequest) -> data_pb2.CommandResult:
             return _command_error("No such command: %s" % cmd)
 
 
-def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
+async def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta:
     """Blockwise root-mean-square derived traces (pyrocko's RMS snuffling).
 
     For each visible trace, RMS is computed over fixed-length blocks across the
@@ -6006,9 +6420,6 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
     group = bool(rms.rms_group)
     logrms = bool(rms.rms_log)
 
-    # Cleanup precedes the chopper and filters so a failed rerun cannot leave
-    # the previous derived traces installed.
-    _replace_derived("rms", [])
     if block <= 0.0:
         return _scene_meta()
 
@@ -6029,6 +6440,7 @@ def _rms_scene(req: snuffling_pb2.SnufflingRequestParams) -> scene_pb2.SceneMeta
         tpad=tpad,
         want_incomplete=False,
     ):
+        await _operation_safe_point(len(completed) + len(targets), None, "RMS windows")
         tcur = float(batch.tmin) + 0.5 * block
         rms_by_key: Dict[Tuple[str, str, str, str], List[float]] = {}
         for tr in batch.traces:
@@ -6086,14 +6498,155 @@ def _raw_bytes(value: Any) -> bytes:
     return bytes(value)
 
 
-def _nslc_pb(value: Any) -> common_pb2.Nslc:
-    msg = common_pb2.Nslc()
-    if value:
-        msg.net = str(value[0] if len(value) > 0 else "")
-        msg.sta = str(value[1] if len(value) > 1 else "")
-        msg.loc = str(value[2] if len(value) > 2 else "")
-        msg.cha = str(value[3] if len(value) > 3 else "")
-    return msg
+def _nslc_pb(value: NslcId) -> common_pb2.Nslc:
+    net, sta, loc, cha = value
+    return common_pb2.Nslc(net=net, sta=sta, loc=loc, cha=cha)
+
+
+DEFAULT_MARKER_BUDGET = 20_000
+MAX_MARKER_BUDGET = 100_000
+
+
+def _marker_limit(budget: _MarkerBudget) -> int:
+    requested = int(budget.max_markers if budget is not None else 0) or DEFAULT_MARKER_BUDGET
+    return max(1, min(requested, MAX_MARKER_BUDGET))
+
+
+def _replace_marker_rows(
+    result: _MarkerResultT,
+    rows: Iterable[Tuple[snuffling_pb2.SnufMarker, Iterable[NslcId]]],
+) -> None:
+    del result.markers[:]
+    del result.nslc_table[:]
+    nslc_table: Dict[NslcId, int] = {}
+    for marker, nslcs in rows:
+        target = result.markers.add()
+        target.CopyFrom(marker)
+        del target.nslc_indexes[:]
+        for nslc in nslcs:
+            table_index = nslc_table.get(nslc)
+            if table_index is None:
+                table_index = len(result.nslc_table)
+                result.nslc_table.add().CopyFrom(_nslc_pb(nslc))
+                nslc_table[nslc] = table_index
+            target.nslc_indexes.append(table_index)
+
+
+def _marker_retention_rank(
+    marker: snuffling_pb2.SnufMarker, index: int, strength: Optional[float] = None
+) -> Tuple[int, int, float, float, int]:
+    """One marker's claim to survive a budget cut; higher tuples are kept.
+
+    Retention tiers before raw strength: event markers carry no incidence angle
+    and would otherwise score 0.0, so a mixed over-budget set would keep only
+    phase picks and drop every event those picks reference. The active marker
+    outranks everything. Shared by ``_MarkerAccumulator`` and
+    ``_truncate_marker_result`` so the two bounds cannot drift apart.
+    """
+    if strength is None and marker.HasField("incidence_angle"):
+        strength = float(marker.incidence_angle)
+    score = float(strength or 0.0)
+    if not math.isfinite(score):
+        score = 0.0
+    return (
+        int(marker.active),
+        int(marker.is_event),
+        score,
+        -float(marker.t),
+        -index,
+    )
+
+
+class _MarkerAccumulator:
+    """Keeps only the strongest marker candidates while counting every result."""
+
+    def __init__(self, budget: _MarkerBudget) -> None:
+        self.limit = _marker_limit(budget)
+        self.total = 0
+        self._heap: List[
+            Tuple[
+                Tuple[int, int, float, float, int],
+                int,
+                snuffling_pb2.SnufMarker,
+                Tuple[NslcId, ...],
+                Any,
+            ]
+        ] = []
+
+    def add(
+        self,
+        marker: snuffling_pb2.SnufMarker,
+        nslcs: Iterable[NslcId] = (),
+        strength: Optional[float] = None,
+        payload: Any = None,
+    ) -> None:
+        index = self.total
+        self.total += 1
+        quality = _marker_retention_rank(marker, index, strength)
+        entry = (quality, index, marker, tuple(nslcs), payload)
+        if len(self._heap) < self.limit:
+            heapq.heappush(self._heap, entry)
+        elif quality > self._heap[0][0]:
+            heapq.heapreplace(self._heap, entry)
+
+    def finish(self, result: _MarkerResultT) -> _MarkerResultT:
+        _replace_marker_rows(
+            result,
+            (
+                (marker, nslcs)
+                for _quality, _index, marker, nslcs, _payload in sorted(
+                    self._heap, key=lambda entry: entry[1]
+                )
+            ),
+        )
+        result.markers_dropped += self.total - len(self._heap)
+        result.marker_budget = self.limit
+        return result
+
+    def retained_candidates(self) -> List[Tuple[snuffling_pb2.SnufMarker, Any]]:
+        return [
+            (marker, payload)
+            for _quality, _index, marker, _nslcs, payload in sorted(
+                self._heap, key=lambda entry: entry[1]
+            )
+        ]
+
+
+def _finalize_event_markers(result: _MarkerResultT, markers: _MarkerAccumulator) -> _MarkerResultT:
+    result.event_state.CopyFrom(_event_state(markers.limit))
+    return markers.finish(result)
+
+
+def _truncate_marker_result(result: _MarkerResultT, budget: _MarkerBudget) -> _MarkerResultT:
+    limit = _marker_limit(budget)
+    count = len(result.markers)
+    result.marker_budget = limit
+    if count <= limit:
+        return result
+    ranked = sorted(
+        enumerate(result.markers),
+        key=lambda item: _marker_retention_rank(item[1], item[0]),
+        reverse=True,
+    )[:limit]
+    ranked.sort(key=lambda item: item[0])
+    kept: List[Tuple[snuffling_pb2.SnufMarker, List[NslcId]]] = []
+    for _, marker in ranked:
+        copy_marker = snuffling_pb2.SnufMarker()
+        copy_marker.CopyFrom(marker)
+        nslcs = [
+            (
+                result.nslc_table[index].net,
+                result.nslc_table[index].sta,
+                result.nslc_table[index].loc,
+                result.nslc_table[index].cha,
+            )
+            for index in marker.nslc_indexes
+            if index < len(result.nslc_table)
+        ]
+        kept.append((copy_marker, nslcs))
+    _replace_marker_rows(result, kept)
+    result.markers_dropped += count - limit
+    return result
 
 
 class _BridgeServicer:
@@ -6197,7 +6750,7 @@ class _BridgeServicer:
                     "the download was truncated, or the index is stale"
                     % (label, request.sha256[:12], digest[:12])
                 )
-        result = _load_bundle_result(raw, label)
+        result = _load_bundle_result(raw, label, request.marker_budget)
         # A checksummed bundle came from the examples index (user files carry
         # no checksum): it is boot/demo data, replaced by the first real load.
         if request.sha256:
@@ -6213,13 +6766,17 @@ class _BridgeServicer:
     async def render_figure(
         self, request: figure_pb2.FigureRequest, data: Any
     ) -> figure_pb2.FigureResult:
+        _operation_progress(0, 3, "Preparing figure")
         # Cake figures need the earth-model data files staged first (same as the
         # cake 'Run' snuffling); other figures compute from loaded traces.
         if request.kind in ("cake_model", "cake_rays"):
             model = request.params.snufflings.cake.cake_model or ""
             if not model.startswith(GF_STORE_PREFIX):
                 await _ensure_earth_models()
-        return _render_figure(request)
+        _operation_progress(1, 3, "Rendering figure")
+        result = _render_figure(request)
+        _operation_progress(3, 3, "Encoding figure")
+        return result
 
     async def run_snuffling(
         self, request: snuffling_pb2.NamedSnufflingRequest, data: Any
@@ -6230,46 +6787,26 @@ class _BridgeServicer:
             "seisbench_picker": "seisbench",
             "seismosizer": "seismosizer",
         }.get(request.name, "")
-        # Snuffling errors (e.g. cake) surface in the result text — which the UI
-        # shows — rather than as a BridgeError, so the user sees the traceback.
-        try:
-            if request.name == "cake":
-                model = request.params.snufflings.cake.cake_model or ""
-                if not model.startswith(GF_STORE_PREFIX):
-                    await _ensure_earth_models()
-            if request.name == "seisbench_picker":
-                result = await _seisbench_pick_result(request.params)
-            else:
-                result = _run_snuffling_result(request.name, request.params)
-            if origin and not result.origin:
-                result.origin = origin
-            return result
-        except Exception as exc:  # noqa: BLE001 — surface, don't raise
-            failure = snuffling_pb2.SnufflingResult(
-                show_window=True,
-                text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-                origin=origin,
-            )
-            if origin in ("seisbench", "stalta"):
-                failure.scene.CopyFrom(_scene_meta())
-            return failure
+        if request.name == "cake":
+            model = request.params.snufflings.cake.cake_model or ""
+            if not model.startswith(GF_STORE_PREFIX):
+                await _ensure_earth_models()
+        if request.name == "seisbench_picker":
+            result = await _seisbench_pick_result(request.params)
+        else:
+            result = await _run_snuffling_result(request.name, request.params)
+        if origin and not result.origin:
+            result.origin = origin
+        return _truncate_marker_result(result, request.params.marker_budget)
 
-    def rms_traces(
+    async def rms_traces(
         self, request: snuffling_pb2.SnufflingRequestParams, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        try:
-            return snuffling_pb2.SnufflingResult(
-                show_window=False,
-                origin="rms",
-                scene=_rms_scene(request),
-            )
-        except Exception as exc:  # noqa: BLE001 — return the cleaned scene with the failure
-            return snuffling_pb2.SnufflingResult(
-                show_window=True,
-                text=f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-                origin="rms",
-                scene=_scene_meta(),
-            )
+        return snuffling_pb2.SnufflingResult(
+            show_window=False,
+            origin="rms",
+            scene=await _rms_scene(request),
+        )
 
     def run_command(self, request: data_pb2.CommandRequest, data: Any) -> data_pb2.CommandResult:
         return _command_result(request)
@@ -6308,7 +6845,7 @@ class _BridgeServicer:
     def load_markers(
         self, request: data_pb2.LoadMarkersRequest, data: Any
     ) -> data_pb2.SnufMarkerList:
-        return _markers_from_text(request.text)
+        return _markers_from_text(request.text, request.marker_budget)
 
     def load_station_xml(
         self, request: data_pb2.LoadStationXmlRequest, data: Any
@@ -6326,7 +6863,7 @@ class _BridgeServicer:
     def load_events(
         self, request: data_pb2.LoadEventsRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        return _load_events_result(request.text)
+        return _load_events_result(request.text, request.marker_budget)
 
     def add_cake_model(
         self, request: data_pb2.AddCakeModelRequest, data: Any
@@ -6341,25 +6878,37 @@ class _BridgeServicer:
     async def download_waveforms(
         self, request: data_pb2.WaveformDownloadRequest, data: Any
     ) -> scene_pb2.SceneMeta:
+        _operation_progress(0, None, "Downloading waveforms")
         resp = await _pyfetch_fdsn(_dataselect_url(request))
         if resp.status == 204:
             return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
         if not resp.ok:
             raise RuntimeError("dataselect: HTTP %s" % resp.status)
-        raw = bytes(await resp.bytes())
+        raw = bytes(await _await_external_operation(resp.bytes()))
         if not raw:
             return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
+        _operation_progress(len(raw), len(raw), "Parsing waveforms")
         return _load_waveform_path_scene(_stage_bytes("fdsn.mseed", raw))
 
     def ingest_mini_seed(
         self, request: data_pb2.IngestMiniSeedRequest, data: Any
-    ) -> scene_pb2.SceneMeta:
-        return _append_mseed_scene(
-            request.source,
-            bytes(request.content),
-            request.start_time,
-            request.reset,
-            request.retain_seconds,
+    ) -> data_pb2.IngestMiniSeedResult:
+        if request.batch_seq_last < request.batch_seq_first:
+            raise ValueError("SeedLink batch sequence range is reversed")
+        if request.reset and request.batch_seq_first != 0:
+            raise ValueError("SeedLink reset must be batch zero")
+        return data_pb2.IngestMiniSeedResult(
+            scene=_append_mseed_scene(
+                request.source,
+                bytes(request.content),
+                request.start_time,
+                request.reset,
+                request.retain_seconds,
+            ),
+            stream_id=request.stream_id,
+            session_epoch=request.session_epoch,
+            ack_seq_first=request.batch_seq_first,
+            ack_seq_last=request.batch_seq_last,
         )
 
     async def catalog_search(
@@ -6367,8 +6916,8 @@ class _BridgeServicer:
     ) -> snuffling_pb2.SnufflingResult:
         text = await _fetch_fdsn_text_or_empty(_event_url(request))
         if request.with_mt and text.lstrip().startswith("<"):
-            return _parse_events_quakeml(text)
-        return _parse_events_result(text)
+            return _parse_events_quakeml(text, request.marker_budget)
+        return _parse_events_result(text, request.marker_budget)
 
     def export_waveforms(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.FileBlob:
         """Qt's download Save trigger, waveform half (download.py:147): every
@@ -6425,31 +6974,149 @@ class _BridgeServicer:
     ) -> snuffling_pb2.SnufflingResult:
         return _load_responses_result([await _fetch_fdsn_text_or_empty(_response_url(request))])
 
-    def gf_store_label(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
-        return bridge_pb2.StringValue(value=gf_store_label(data or ""))
+    def prepare_scientific_tools(
+        self, request: bridge_pb2.Empty, data: Any
+    ) -> bridge_pb2.StringValue:
+        import bootstrap
+
+        warmed = bootstrap.warm()
+        return bridge_pb2.StringValue(value=",".join(warmed))
+
+    def mount_gf_store(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
+        if not data:
+            raise ValueError("mounting a GF store requires a mounted directory path")
+        return bridge_pb2.StringValue(value=gf_store_label(str(data)))
 
 
 _SERVICER = _BridgeServicer()
 
 
-async def call(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
+async def call(
+    method: str,
+    request: Any = b"",
+    data: Any = None,
+    reporter: Any = None,
+    begin_commit: Any = None,
+    begin_external_wait: Any = None,
+    end_external_wait: Any = None,
+    enter_protected_frame: Any = None,
+) -> Dict[str, Any]:
     """Dispatch a bridge method through the generated typed servicer; always
     return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Async because some
     rpcs do network I/O (pyfetch); never raises — any exception becomes a
     BridgeError (the request is decoded off a JS proxy here, before dispatch)."""
-    return await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+    token = _OPERATION_REPORTER.set(cast(Optional[OperationReporter], reporter))
+    begin_wait_token = _BEGIN_EXTERNAL_WAIT.set(
+        cast(Optional[ExternalWaitCallback], begin_external_wait)
+    )
+    end_wait_token = _END_EXTERNAL_WAIT.set(cast(Optional[ExternalWaitCallback], end_external_wait))
+    commit_gate = cast(Optional[CommitGate], begin_commit)
 
+    sealed: Optional[bool] = None
 
-async def call_text(method: str, request: Any = b"", data: Any = None) -> Dict[str, Any]:
-    """For the worker's GF-store mount, which needs the gfStoreLabel string back:
-    dispatch, then unwrap the StringValue (or the error). Never raises — see
-    AGENTS.md."""
-    env = await call(method, request, data)
-    result = bridge_pb2.BridgeResult()
-    result.ParseFromString(env["result"])
-    which = result.WhichOneof("result")
-    if which == "error":
-        return {"text": "", "error": f"{result.error.kind}: {result.error.message}"}
-    if which == "text":
-        return {"text": result.text.value, "error": ""}
-    return {"text": "", "error": f"unexpected bridge result variant: {which}"}
+    def seal_execution() -> bool:
+        """Linearize this exit against cancellation. The gate CAS disarms the
+        interrupt byte and moves the control word somewhere no later
+        `requestCancellation` can arm it, so rollback and reply marshalling can
+        never receive a stray SIGINT. Returns False when cancellation won.
+
+        Memoized: the gate is a one-shot CAS, so a second invocation — a commit
+        that failed after sealing, unwinding into the BaseException arm — would
+        read False and mislabel the failure as a cancellation nobody asked for.
+        """
+        nonlocal sealed
+        if sealed is None:
+            sealed = commit_gate is None or commit_gate()
+        return sealed
+
+    def finish_call_result(
+        result: Dict[str, Any], snapshot: Optional[SessionSnapshot]
+    ) -> Dict[str, Any]:
+        if not seal_execution():
+            if snapshot is not None:
+                _SESSION_STORE.rollback(snapshot)
+            return bridge_dispatch.cancelled_result()
+        if snapshot is not None:
+            _SESSION_STORE.rollback(snapshot)
+        return result
+
+    snapshot: Optional[SessionSnapshot] = None
+    in_view_lane = False
+    try:
+        # Interpreter ownership is granted HERE, from the first protected
+        # bytecodes, never by the worker before the call: until this callback
+        # runs the control word stays ...WithoutInterpreter, where cancellation
+        # cannot arm SIGINT, so Pyodide's coroutine-scheduling plumbing between
+        # the JS invocation and this frame can never consume an interrupt. If
+        # cancellation is already pending, the callback arms the byte and the
+        # very next bytecode raises the typed cancellation inside this try.
+        if enter_protected_frame is not None:
+            enter_protected_frame()
+        # The activity lookup runs inside the protecting try: a cancellation
+        # interrupt landing in these first bytecodes — or a method id the
+        # generated table does not know — must surface as a typed envelope, not
+        # escape to JS as a transport error.
+        activity = bridge_dispatch.ACTIVITY_BY_METHOD[method]
+        if activity.lane == "VIEW":
+            in_view_lane = True
+            _SESSION_STORE.enter_view()
+            result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+            envelope = bridge_pb2.BridgeResult.FromString(result["result"])
+            if envelope.WhichOneof("result") == "cancelled":
+                _invalidate_interrupted_view()
+                result = await bridge_dispatch.dispatch(
+                    _SERVICER, method, _raw_bytes(request), data
+                )
+            return finish_call_result(result, None)
+        # Transaction setup runs inside the protecting try too: a cancellation
+        # interrupt during the workspace clone must surface as the typed
+        # cancelled envelope, not escape as a transport error with
+        # _transaction_snapshot left installed.
+        if activity.session_access == "MUTATING":
+            snapshot = _SESSION_STORE.snapshot()
+            _SESSION_STORE.begin_transaction(snapshot)
+        result = await bridge_dispatch.dispatch(_SERVICER, method, _raw_bytes(request), data)
+        if snapshot is None:
+            return finish_call_result(result, None)
+        envelope = bridge_pb2.BridgeResult.FromString(result["result"])
+        if envelope.WhichOneof("result") in ("error", "cancelled", "stale"):
+            return finish_call_result(result, snapshot)
+        if not seal_execution():
+            _SESSION_STORE.rollback(snapshot)
+            return bridge_dispatch.cancelled_result()
+        update = _SESSION_STORE.capture_update()
+        _SESSION_STORE.restore_snapshot(snapshot)
+        stale_commit = _SESSION_STORE.commit(snapshot.generation, update)
+        if stale_commit is None:
+            return result
+        stale = bridge_pb2.BridgeResult()
+        stale.stale.expected_generation = stale_commit.expected_generation
+        stale.stale.actual_generation = stale_commit.actual_generation
+        return {"result": stale.SerializeToString()}
+    except KeyboardInterrupt:
+        # On the view lane this is defensive only: no interrupt can reach it
+        # today — GetView is the sole VIEW rpc and is NOT_CANCELLABLE, and the
+        # ownership handoff clears the byte before a view runs. If a cancellable
+        # view rpc is ever added, revisit enter_view/exit_view first: they
+        # self-heal from a partial projection (retained workspace, gated cache
+        # stash) but are not fully atomic. The typed envelope keeps the reply
+        # structured so Rust retries the view.
+        seal_execution()
+        if snapshot is not None:
+            _SESSION_STORE.rollback(snapshot)
+        return bridge_dispatch.cancelled_result()
+    except BaseException as exc:
+        cancellation_won = not seal_execution()
+        if snapshot is not None:
+            _SESSION_STORE.rollback(snapshot)
+        # Cancellation-won takes precedence over the failure, matching the
+        # error-envelope path in finish_call_result.
+        if cancellation_won:
+            return bridge_dispatch.cancelled_result()
+        return bridge_dispatch.failure_result(exc)
+    finally:
+        if in_view_lane:
+            _SESSION_STORE.exit_view()
+        _OPERATION_REPORTER.reset(token)
+        _BEGIN_EXTERNAL_WAIT.reset(begin_wait_token)
+        _END_EXTERNAL_WAIT.reset(end_wait_token)

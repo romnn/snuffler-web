@@ -4,12 +4,20 @@
 // (and the worker) can reject anything that is not a real rpc id at compile time.
 // Callers may equivalently pass BridgeMethod.loadBytes or the literal id directly.
 import {
+  BridgeActivity,
   BridgeMethod,
+  type ActivityMeta,
   type BridgeMethodId,
   type BridgeMethodName,
 } from "./proto/snuffler/bridge/v1/bridge_methods.js";
 
-export { BridgeMethod, type BridgeMethodId, type BridgeMethodName };
+export {
+  BridgeActivity,
+  BridgeMethod,
+  type ActivityMeta,
+  type BridgeMethodId,
+  type BridgeMethodName,
+};
 
 export function rpc(name: BridgeMethodName): BridgeMethodId {
   return BridgeMethod[name];

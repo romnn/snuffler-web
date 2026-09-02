@@ -5,6 +5,7 @@ use egui::Color32;
 use snuffler_web_core::bridge::{
     Bridge, EventSnapshot, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
 };
+use snuffler_web_core::marker_store::MarkerId;
 use snuffler_web_core::markers::{MARKER_COLORS, Marker, MarkerColumn};
 use snuffler_web_core::state::AppState;
 
@@ -12,7 +13,10 @@ use snuffler_web_core::state::AppState;
 pub struct MarkerTable {
     sort: MarkerColumn,
     sort_ascending: bool,
-    edit: Option<(MarkerColumn, usize, String)>,
+    edit: Option<(MarkerColumn, MarkerId, String)>,
+    order: Vec<MarkerId>,
+    order_key: Option<(u64, MarkerColumn, bool)>,
+    station_distances_requested: Option<(u64, u64)>,
 }
 
 impl Default for MarkerTable {
@@ -21,6 +25,9 @@ impl Default for MarkerTable {
             sort: MarkerColumn::Time,
             sort_ascending: true,
             edit: None,
+            order: Vec::new(),
+            order_key: None,
+            station_distances_requested: None,
         }
     }
 }
@@ -37,22 +44,42 @@ impl MarkerTable {
             return None;
         }
 
-        bridge.ensure_station_distances(bridge.snuffling_gen());
+        let distance_key = (bridge.snuffling_gen(), bridge.active_event_gen());
+        if self.station_distances_requested != Some(distance_key) {
+            let _submission = bridge.ensure_station_distances(distance_key.0);
+            self.station_distances_requested = Some(distance_key);
+        }
+        if self
+            .edit
+            .as_ref()
+            .is_some_and(|(_, id, _)| state.markers.by_id(*id).is_none())
+        {
+            self.edit = None;
+        }
         let mut open = true;
         let mut output = TableOutput::default();
+        let marker_update_active = bridge.marker_update_active();
         egui::Window::new("Markers")
             .open(&mut open)
             .default_size([560.0, 320.0])
             .show(ctx, |ui| {
-                marker_toolbar(ui, state);
+                marker_toolbar(ui, state, marker_update_active);
                 ui.separator();
-                self.table(ui, state, bridge, &mut output);
+                self.table(ui, state, &mut output);
             });
         state.show_marker_editor = open;
 
         if let Some(row) = output.replace_selection {
-            for (i, marker) in state.markers.iter_mut().enumerate() {
-                marker.selected = i == row;
+            let ids: Vec<MarkerId> = state.markers.iter_with_ids().map(|(id, _)| id).collect();
+            for id in ids {
+                let selected = id == row;
+                if state
+                    .markers
+                    .by_id(id)
+                    .is_some_and(|marker| marker.selected != selected)
+                {
+                    let _ = state.markers.edit(id, |marker| marker.selected = selected);
+                }
             }
         }
         if let Some(time) = output.center_time {
@@ -61,77 +88,98 @@ impl MarkerTable {
             state.tmax = time + window / 2.0;
         }
         for event in output.event_updates {
-            bridge.update_event(event);
+            let _submission = bridge.update_event(event);
         }
         output.beachball
     }
 
-    fn table(
-        &mut self,
-        ui: &mut egui::Ui,
-        state: &mut AppState,
-        bridge: &Bridge,
-        output: &mut TableOutput,
-    ) {
-        // Sort through an index permutation so marker identity and insertion order remain stable.
-        let order = self.row_order(state, bridge);
+    fn table(&mut self, ui: &mut egui::Ui, state: &mut AppState, output: &mut TableOutput) {
+        self.ensure_order(state);
         let (mut sort, mut ascending) = (self.sort, self.sort_ascending);
         let mut edit = self.edit.take();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("marker_table")
-                .striped(true)
-                .num_columns(16)
-                .spacing([10.0, 3.0])
-                .show(ui, |ui| {
-                    marker_headers(ui, &mut sort, &mut ascending);
-                    for &row in &order {
-                        let Some(marker) = state.markers.get_mut(row) else {
-                            continue;
-                        };
-                        marker_row(ui, row, marker, &mut edit, output);
-                    }
-                });
-        });
+        let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        egui::ScrollArea::vertical().show_rows(
+            ui,
+            row_height,
+            self.order.len().saturating_add(1),
+            |ui, rows| {
+                egui::Grid::new("marker_table")
+                    .striped(true)
+                    .num_columns(16)
+                    .spacing([10.0, 3.0])
+                    .show(ui, |ui| {
+                        for visible_row in rows {
+                            if visible_row == 0 {
+                                marker_headers(ui, &mut sort, &mut ascending);
+                                continue;
+                            }
+                            let Some(&id) = self.order.get(visible_row - 1) else {
+                                continue;
+                            };
+                            state.markers.edit_with_change_flag(id, |marker| {
+                                marker_row(ui, id, marker, &mut edit, output)
+                            });
+                        }
+                    });
+            },
+        );
+        if self.sort != sort || self.sort_ascending != ascending {
+            self.order_key = None;
+        }
         self.sort = sort;
         self.sort_ascending = ascending;
         self.edit = edit;
     }
 
-    /// A permutation of marker indices sorted by the current marker-table column
-    /// (numeric, like Qt's sort role; a time tiebreak keeps it deterministic). The
-    /// underlying `Vec` order is never reordered so per-row actions map correctly.
-    fn row_order(&self, state: &AppState, bridge: &Bridge) -> Vec<usize> {
+    /// Refreshes the stable marker identities sorted by the current table column.
+    ///
+    /// The insertion order is never reordered, and the permutation remains valid until the marker
+    /// store or sort selection changes.
+    fn ensure_order(&mut self, state: &AppState) {
+        let key = (state.markers.generation(), self.sort, self.sort_ascending);
+        if self.order_key == Some(key) {
+            return;
+        }
         let ms = &state.markers;
-        let mut order: Vec<usize> = (0..ms.len()).collect();
+        let mut order: Vec<MarkerId> = ms.iter_with_ids().map(|(id, _)| id).collect();
         let (col, asc) = (self.sort, self.sort_ascending);
-        let _ = bridge;
+        let text_keys: std::collections::HashMap<MarkerId, String> = match col {
+            MarkerColumn::Phase => ms
+                .iter_with_ids()
+                .map(|(id, marker)| {
+                    let key = if marker.is_event {
+                        marker.event_label()
+                    } else {
+                        marker.phase.clone().unwrap_or_default()
+                    };
+                    (id, key)
+                })
+                .collect(),
+            MarkerColumn::Channel => ms
+                .iter_with_ids()
+                .map(|(id, marker)| (id, nslc_key(marker)))
+                .collect(),
+            _ => std::collections::HashMap::new(),
+        };
         // Qt's Dist [km]: this *event* to the active event (marker_editor.py:502),
         // precomputed in Python; rows without one sort last.
         let dist_of = |m: &Marker| -> f64 { m.dist_active_km.unwrap_or(f64::INFINITY) };
         order.sort_by(|&a, &b| {
-            let (Some(ma), Some(mb)) = (ms.get(a), ms.get(b)) else {
+            let (Some(ma), Some(mb)) = (ms.by_id(a), ms.by_id(b)) else {
                 return std::cmp::Ordering::Equal;
             };
             let ord = match col {
                 MarkerColumn::Type => ma.is_event.cmp(&mb.is_event),
                 MarkerColumn::Time => ma.tmin.total_cmp(&mb.tmin),
                 MarkerColumn::Span => (ma.tmax - ma.tmin).total_cmp(&(mb.tmax - mb.tmin)),
-                MarkerColumn::Phase => {
-                    let label = |marker: &Marker| {
-                        if marker.is_event {
-                            marker.event_label()
-                        } else {
-                            marker.phase.clone().unwrap_or_default()
-                        }
-                    };
-                    label(ma).cmp(&label(mb))
+                MarkerColumn::Phase | MarkerColumn::Channel => {
+                    text_keys.get(&a).cmp(&text_keys.get(&b))
                 }
                 MarkerColumn::Pol => ma
                     .polarity
                     .unwrap_or(i8::MIN)
                     .cmp(&mb.polarity.unwrap_or(i8::MIN)),
                 MarkerColumn::Kind => (ma.kind & 7).cmp(&(mb.kind & 7)),
-                MarkerColumn::Channel => nslc_key(ma).cmp(&nslc_key(mb)),
                 MarkerColumn::Dist => dist_of(ma).total_cmp(&dist_of(mb)),
                 MarkerColumn::Uncert => ma
                     .uncertainty
@@ -166,7 +214,8 @@ impl MarkerTable {
             let ord = ord.then_with(|| ma.tmin.total_cmp(&mb.tmin));
             if asc { ord } else { ord.reverse() }
         });
-        order
+        self.order = order;
+        self.order_key = Some(key);
     }
 }
 
@@ -176,16 +225,17 @@ struct TableOutput {
     beachball: Option<[f64; 6]>,
     /// A plain row click replaces the whole selection with this row (Qt table
     /// semantics); applied after the draw pass because it touches every marker.
-    replace_selection: Option<usize>,
+    replace_selection: Option<MarkerId>,
     event_updates: Vec<EventSnapshot>,
 }
 
-fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState) {
-    let selected = state
-        .markers
-        .iter()
-        .filter(|marker| marker.selected)
-        .count();
+fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState, marker_update_active: bool) {
+    // While an analysis that emits markers is queued or running, destructive
+    // edits are disabled: its commit replaces the origin's markers, so a
+    // deletion issued now would appear to be silently undone moments later.
+    const MARKER_UPDATE_HOVER: &str =
+        "disabled while an analysis is producing markers — its result would replace this edit";
+    let selected = state.markers.summary().selected;
     ui.horizontal(|ui| {
         ui.label(format!(
             "{} markers · {selected} selected",
@@ -201,7 +251,11 @@ fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 marker.selected = false;
             }
         }
-        if ui.button("Delete selected").clicked() {
+        if ui
+            .add_enabled(!marker_update_active, egui::Button::new("Delete selected"))
+            .on_disabled_hover_text(MARKER_UPDATE_HOVER)
+            .clicked()
+        {
             state.remove_selected_markers();
         }
         // Destroying every marker deserves a second look: the first click arms
@@ -213,7 +267,9 @@ fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState) {
         } else {
             "Clear all"
         };
-        let resp = ui.button(label);
+        let resp = ui
+            .add_enabled(!marker_update_active, egui::Button::new(label))
+            .on_disabled_hover_text(MARKER_UPDATE_HOVER);
         if resp.clicked() {
             if armed {
                 state.clear_markers();
@@ -271,13 +327,17 @@ fn marker_headers(ui: &mut egui::Ui, sort: &mut MarkerColumn, ascending: &mut bo
     ui.end_row();
 }
 
+/// Draws one marker row and reports whether it mutated the marker, so the
+/// store bumps its generation only for real edits instead of paying a
+/// clone-and-compare per visible row per frame.
 fn marker_row(
     ui: &mut egui::Ui,
-    row: usize,
+    row: MarkerId,
     marker: &mut Marker,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
     output: &mut TableOutput,
-) {
+) -> bool {
+    let mut changed = false;
     let event_before = event_snapshot(marker);
     let color = MARKER_COLORS
         .get((marker.kind & 7) as usize)
@@ -303,6 +363,7 @@ fn marker_row(
         let additive = ui.input(|i| i.modifiers.ctrl || i.modifiers.command || i.modifiers.shift);
         if additive {
             marker.selected = !marker.selected;
+            changed = true;
         } else {
             output.replace_selection = Some(row);
         }
@@ -317,7 +378,7 @@ fn marker_row(
     // Editing still targets only the raw name, which is Qt's rename path.
     if marker.is_event {
         let shown = marker.event_label();
-        edit_text_cell_with_display(
+        changed |= edit_text_cell_with_display(
             ui,
             edit,
             row,
@@ -327,10 +388,10 @@ fn marker_row(
             shown,
         );
     } else {
-        edit_text_cell(ui, edit, row, MarkerColumn::Phase, &mut marker.phase, true);
+        changed |= edit_text_cell(ui, edit, row, MarkerColumn::Phase, &mut marker.phase, true);
     }
-    marker_identity_cells(ui, row, marker, edit);
-    marker_geometry_cells(ui, row, marker, edit);
+    changed |= marker_identity_cells(ui, row, marker, edit);
+    changed |= marker_geometry_cells(ui, row, marker, edit);
     ui.label(marker.event_hash.as_deref().map_or_else(
         || "—".to_owned(),
         |h| {
@@ -349,6 +410,7 @@ fn marker_row(
         output.event_updates.push(event_after);
     }
     ui.end_row();
+    changed
 }
 
 fn event_snapshot(marker: &Marker) -> Option<EventSnapshot> {
@@ -378,10 +440,11 @@ fn event_snapshot(marker: &Marker) -> Option<EventSnapshot> {
 
 fn marker_identity_cells(
     ui: &mut egui::Ui,
-    row: usize,
+    row: MarkerId,
     marker: &mut Marker,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-) {
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+) -> bool {
+    let mut changed = false;
     let polarity = match marker.polarity {
         Some(1) => "+",
         Some(-1) => "-",
@@ -399,11 +462,12 @@ fn marker_identity_cells(
             Some(-1) => Some(0),
             _ => None,
         };
+        changed = true;
     }
     // Uncertainty [s], backed by the same field the shift-drag writes; only a
     // phase pick carries one, as in Qt.
     let editable = marker.phase.is_some();
-    edit_num_cell(
+    changed |= edit_num_cell(
         ui,
         edit,
         row,
@@ -418,16 +482,18 @@ fn marker_identity_cells(
         .clicked()
     {
         marker.kind = (marker.kind + 1) & 7;
+        changed = true;
     }
     ui.label(nslc_key(marker));
+    changed
 }
 
 fn marker_geometry_cells(
     ui: &mut egui::Ui,
-    row: usize,
+    row: MarkerId,
     marker: &mut Marker,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-) {
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+) -> bool {
     // Qt's Dist [km] (marker_editor.py:502): this *event* to the active event,
     // '%.5g' of kilometres, blank for anything that is not an event marker.
     ui.label(marker.dist_active_km.map_or_else(|| "—".to_owned(), fmt_g5));
@@ -437,14 +503,16 @@ fn marker_geometry_cells(
             .map_or_else(|| "—".to_owned(), |value| format!("{value:.1}")),
     );
     let editable = marker.is_event;
+    let mut changed = false;
     for (column, value, precision) in [
         (MarkerColumn::Mag, &mut marker.magnitude, 1),
         (MarkerColumn::Depth, &mut marker.depth_km, 1),
         (MarkerColumn::Lat, &mut marker.lat, 2),
         (MarkerColumn::Lon, &mut marker.lon, 2),
     ] {
-        edit_num_cell(ui, edit, row, column, value, precision, editable);
+        changed |= edit_num_cell(ui, edit, row, column, value, precision, editable);
     }
+    changed
 }
 
 fn marker_actions(ui: &mut egui::Ui, marker: &Marker, output: &mut TableOutput) {
@@ -586,31 +654,33 @@ pub fn sort_header(
 /// A marker-table numeric cell that becomes an inline text editor on click and
 /// commits a valid parse on Enter/blur; an invalid parse is discarded (Qt's
 /// toFloat validity check). Non-editable cells render as a plain label.
+/// Returns whether a commit wrote the value this frame.
 pub fn edit_num_cell(
     ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-    row: usize,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+    row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<f64>,
     prec: usize,
     editable: bool,
-) {
+) -> bool {
     let shown = value.map_or_else(|| "—".to_string(), |v| format!("{v:.prec$}"));
     if !editable {
         ui.label(shown);
-        return;
+        return false;
     }
     if matches!(edit, Some((c, r, _)) if *c == col && *r == row) {
         if let Some((_, _, buf)) = edit {
             let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(56.0));
             if resp.lost_focus() {
-                if let Ok(v) = buf.trim().parse::<f64>() {
+                let committed = buf.trim().parse::<f64>();
+                if let Ok(v) = committed {
                     *value = Some(v);
                 }
                 *edit = None;
-            } else {
-                resp.request_focus();
+                return committed.is_ok();
             }
+            resp.request_focus();
         }
     } else if ui
         .add(egui::Label::new(shown).sense(egui::Sense::click()))
@@ -623,34 +693,36 @@ pub fn edit_num_cell(
             value.map_or(String::new(), |v| format!("{v:.prec$}")),
         ));
     }
+    false
 }
 
 /// A marker-table string cell (the phase name) with the same click-to-edit,
-/// commit-on-blur behaviour; empty commits clear the value.
+/// commit-on-blur behaviour; empty commits clear the value. Returns whether a
+/// commit wrote the value this frame.
 pub fn edit_text_cell(
     ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-    row: usize,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+    row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<String>,
     editable: bool,
-) {
+) -> bool {
     let shown = value.clone().unwrap_or_default();
-    edit_text_cell_with_display(ui, edit, row, col, value, editable, shown);
+    edit_text_cell_with_display(ui, edit, row, col, value, editable, shown)
 }
 
 fn edit_text_cell_with_display(
     ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, usize, String)>,
-    row: usize,
+    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
+    row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<String>,
     editable: bool,
     shown: String,
-) {
+) -> bool {
     if !editable {
         ui.label(shown);
-        return;
+        return false;
     }
     if matches!(edit, Some((c, r, _)) if *c == col && *r == row) {
         if let Some((_, _, buf)) = edit {
@@ -663,9 +735,9 @@ fn edit_text_cell_with_display(
                     Some(trimmed.to_owned())
                 };
                 *edit = None;
-            } else {
-                resp.request_focus();
+                return true;
             }
+            resp.request_focus();
         }
     } else if ui
         .add(egui::Label::new(shown).sense(egui::Sense::click()))
@@ -674,4 +746,5 @@ fn edit_text_cell_with_display(
     {
         *edit = Some((col, row, value.clone().unwrap_or_default()));
     }
+    false
 }

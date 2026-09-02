@@ -8,12 +8,16 @@
 )]
 
 use crate::bridge::{
-    ActiveEventResult, Bridge, Nslc, Repaint, SnufflingRequestParams, SnufflingSpan, ViewParams,
+    ActiveEventResult, Bridge, Nslc, Repaint, SnufMarker, SnufflingRequestParams, SnufflingSpan,
+    ViewParams,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::bridge::{
     CommandOutcome, CommandRequest, RemoveEventsRequest, SeedlinkParams, SetActiveEventRequest,
 };
+use crate::marker_store::MarkerBudget;
+#[cfg(target_arch = "wasm32")]
+use crate::marker_store::{MarkerCommitOutcome, StagedMarkers};
 use crate::markers::Marker;
 #[cfg(target_arch = "wasm32")]
 use crate::markers::{MarkersCommand, parse_markers_command};
@@ -30,7 +34,7 @@ pub struct Session {
     pub snufflings: SnufflingConfigs,
     last_scene_gen: u64,
     last_scene_bounds: Option<(f64, f64)>,
-    last_watch_poll: f64,
+    last_watched_file_check_s: f64,
     last_active_event_gen: u64,
     last_snuffling_gen: u64,
     /// The window follow mode last wrote; any other value means the user (or a
@@ -42,11 +46,61 @@ pub struct Session {
     /// first packet already snapped the track scroll, so later packets leave
     /// the user's scrolling alone.
     live_scroll_snapped_for: Option<u64>,
+    annotation_cache_reset_pending: bool,
 }
 
 /// How long an interactive range change suspends live following, snuffler's
 /// `interactive_range_change_delay_time` (`pile_viewer.py:1253`).
 const FOLLOW_SUSPEND_S: f64 = 10.0;
+
+fn marker_from_snuffling(marker: &SnufMarker, nslc_table: &[Nslc], origin: &str) -> Marker {
+    let mut mapped = Marker::new(
+        marker.t,
+        marker.tmax.unwrap_or(marker.t),
+        u8::try_from(marker.kind).unwrap_or(0),
+    );
+    mapped.phase.clone_from(&marker.phase);
+    mapped.is_event = marker.is_event;
+    mapped.nslc_ids = marker
+        .nslc_indexes
+        .iter()
+        .filter_map(|index| {
+            let nslc = nslc_table.get(usize::try_from(*index).ok()?)?;
+            Some((
+                nslc.net.clone(),
+                nslc.sta.clone(),
+                nslc.loc.clone(),
+                nslc.cha.clone(),
+            ))
+        })
+        .collect();
+    mapped.polarity = marker.polarity.and_then(|value| i8::try_from(value).ok());
+    mapped.moment_tensor = marker.moment_tensor.as_ref().map(|tensor| {
+        [
+            tensor.mnn, tensor.mee, tensor.mdd, tensor.mne, tensor.mnd, tensor.med,
+        ]
+    });
+    mapped.kagan_deg = marker.kagan_deg;
+    mapped.uncertainty = marker.uncertainty;
+    mapped.event_hash.clone_from(&marker.event_hash);
+    mapped.magnitude = marker.magnitude;
+    mapped.depth_km = marker.depth.map(|depth| depth / 1000.0);
+    mapped.lat = marker.lat;
+    mapped.lon = marker.lon;
+    mapped.automatic = marker.automatic;
+    mapped.incidence_angle = marker.incidence_angle;
+    mapped.takeoff_angle = marker.takeoff_angle;
+    mapped.event_name.clone_from(&marker.event_name);
+    mapped.region.clone_from(&marker.region);
+    mapped.catalog.clone_from(&marker.catalog);
+    mapped.event_time = marker.event_time;
+    mapped.dist_active_km = marker.dist_active_km;
+    mapped.active = marker.active;
+    if !origin.is_empty() {
+        mapped.origin = Some(origin.to_owned());
+    }
+    mapped
+}
 
 impl Session {
     /// Creates an empty viewer session and installs its frontend repaint scheduler.
@@ -58,12 +112,13 @@ impl Session {
             snufflings: SnufflingConfigs::default(),
             last_scene_gen: 0,
             last_scene_bounds: None,
-            last_watch_poll: 0.0,
+            last_watched_file_check_s: 0.0,
             last_active_event_gen: 0,
             last_snuffling_gen: 0,
             follow_window: None,
             follow_interrupted_at: None,
             live_scroll_snapped_for: None,
+            annotation_cache_reset_pending: false,
         }
     }
 
@@ -84,11 +139,13 @@ impl Session {
                 self.state.command.resolve(None);
             }
             Some(MarkersCommand::NoChange) => self.state.command.resolve(None),
-            None => self.bridge.run_command(CommandRequest {
-                line,
-                visible_tmin: self.state.tmin,
-                visible_tmax: self.state.tmax,
-            }),
+            None => {
+                let _submission = self.bridge.run_command(CommandRequest {
+                    line,
+                    visible_tmin: self.state.tmin,
+                    visible_tmax: self.state.tmax,
+                });
+            }
         }
     }
 
@@ -118,13 +175,7 @@ impl Session {
     /// [`good_looking_time_range`] turns into a 1 s minimum window).
     #[must_use]
     pub fn scene_deltatmin(&self) -> f64 {
-        self.bridge.scene().map_or(0.0, |scene| {
-            scene
-                .tracks
-                .iter()
-                .map(|track| track.deltat)
-                .fold(f64::INFINITY, f64::min)
-        })
+        self.bridge.scene().map_or(0.0, |scene| scene.deltat_min)
     }
 
     /// The loaded pile's sampling-interval band with snuffler's fallbacks
@@ -133,15 +184,10 @@ impl Session {
     /// controls' corner range exactly as Qt's `adjust_controls` does.
     #[must_use]
     pub fn scene_deltat_range(&self) -> (f64, f64) {
-        let (mut dtmin, mut dtmax) = self.bridge.scene().map_or((0.0, 0.0), |scene| {
-            scene
-                .tracks
-                .iter()
-                .map(|track| track.deltat)
-                .fold((f64::INFINITY, 0.0_f64), |(lo, hi), dt| {
-                    (lo.min(dt), hi.max(dt))
-                })
-        });
+        let (mut dtmin, mut dtmax) = self
+            .bridge
+            .scene()
+            .map_or((0.0, 0.0), |scene| (scene.deltat_min, scene.deltat_max));
         if !dtmin.is_finite() || dtmin == 0.0 {
             dtmin = 0.001;
         }
@@ -154,7 +200,6 @@ impl Session {
     /// Replaces the current source with live `SeedLink` acquisition.
     #[cfg(target_arch = "wasm32")]
     pub fn start_seedlink(&mut self, params: SeedlinkParams) {
-        self.clear_annotations();
         self.bridge.start_seedlink(params);
     }
 
@@ -162,8 +207,7 @@ impl Session {
     /// it, back to the blank viewer Qt boots into with no arguments.
     #[cfg(target_arch = "wasm32")]
     pub fn close_all(&mut self) {
-        self.clear_annotations();
-        self.bridge.empty_scene();
+        let _submission = self.bridge.empty_scene();
     }
 
     fn clear_annotations(&mut self) {
@@ -174,9 +218,17 @@ impl Session {
         self.state.remove_event_hashes.clear();
         self.state.picking = None;
         self.state.uncertainty_drag_last_y = None;
+        self.annotation_cache_reset_pending = true;
+    }
+
+    /// Takes the pending request to clear frontend-owned annotation caches.
+    #[cfg(target_arch = "wasm32")]
+    pub fn take_annotation_cache_reset(&mut self) -> bool {
+        std::mem::take(&mut self.annotation_cache_reset_pending)
     }
 
     fn consume_empty_scene(&mut self, scene_gen: u64) {
+        self.clear_annotations();
         self.state.track_scroll = 0.0;
         self.state.track_offset = 0;
         self.last_scene_bounds = None;
@@ -192,7 +244,6 @@ impl Session {
     #[cfg(target_arch = "wasm32")]
     pub fn sync(&mut self, now_s: f64) {
         self.fit_new_scene(now_s);
-        self.bridge.refresh_seisbench_progress(now_s);
         self.apply_snuffling_result();
 
         if let Some((time, length)) = self.bridge.take_goto() {
@@ -206,23 +257,23 @@ impl Session {
         }
 
         if std::mem::take(&mut self.state.reload_requested) {
-            self.bridge.reload_files();
+            let _submission = self.bridge.reload_files();
         }
         if std::mem::take(&mut self.state.reload_snufflings_requested) {
-            self.bridge.reload_snufflings();
+            let _submission = self.bridge.reload_snufflings();
         }
         if self.state.watch_files {
             // 1000 ms, matching snuffler's watch timer (pile_viewer.py:1225).
-            if now_s - self.last_watch_poll > 1.0 {
-                self.last_watch_poll = now_s;
-                self.bridge.watch_poll();
+            if now_s - self.last_watched_file_check_s > 1.0 {
+                self.last_watched_file_check_s = now_s;
+                let _submission = self.bridge.poll_watched_files();
             }
             self.bridge
                 .request_repaint_after(std::time::Duration::from_secs(1));
         }
 
         if let Some(request) = self.state.set_active_event_request.take() {
-            self.bridge.set_active_event(SetActiveEventRequest {
+            let _submission = self.bridge.set_active_event(SetActiveEventRequest {
                 deactivate: request.deactivate,
                 event_hash: request.event_hash,
                 t: request.t,
@@ -232,7 +283,7 @@ impl Session {
             });
         }
         if !self.state.remove_event_hashes.is_empty() {
-            self.bridge.remove_events(RemoveEventsRequest {
+            let _submission = self.bridge.remove_events(RemoveEventsRequest {
                 event_hashes: std::mem::take(&mut self.state.remove_event_hashes),
             });
         }
@@ -241,7 +292,7 @@ impl Session {
         if active_event_gen != self.last_active_event_gen {
             self.last_active_event_gen = active_event_gen;
             if let Some(event_state) = self.bridge.event_state() {
-                Self::apply_event_state(&mut self.state.markers, &event_state);
+                Self::apply_event_state(self.state.markers.as_mut_slice(), &event_state);
             }
         }
     }
@@ -309,7 +360,7 @@ impl Session {
     /// may never come in a reactive frontend that only repaints on input.
     #[cfg(target_arch = "wasm32")]
     pub fn request_view(&self, visible_bins: u32) {
-        self.bridge.ensure_view(self.view_params(visible_bins));
+        let _submission = self.bridge.ensure_view(self.view_params(visible_bins));
     }
 
     /// Builds the bridge view request for the current state and render budget.
@@ -362,6 +413,7 @@ impl Session {
             visible_length: state.visible_length.samples(),
             adaptive_visible_length: state.visible_length.is_adaptive(),
             liberal_fetch: state.liberal_fetch,
+            view_sequence: 0,
         }
     }
 
@@ -394,6 +446,7 @@ impl Session {
                         .collect(),
                 })
                 .collect(),
+            marker_budget: Some(MarkerBudget::standard().into()),
         }
     }
 
@@ -404,81 +457,64 @@ impl Session {
             return;
         }
         self.last_snuffling_gen = generation;
-        let Some(result) = self.bridge.snuffling() else {
+        let Some(result) = self.bridge.take_snuffling() else {
             return;
         };
 
-        // Qt's `cleanup()` contract: a re-run replaces what the previous run
-        // of the same snuffling added, instead of stacking duplicates.
-        if !result.origin.is_empty() {
-            self.state
-                .markers
-                .retain(|m| m.origin.as_deref() != Some(result.origin.as_str()));
-        }
         let (mut event_min, mut event_max, mut has_event) =
             (f64::INFINITY, f64::NEG_INFINITY, false);
+        let mut staged_markers = Vec::with_capacity(result.markers.len());
+        let mut activates_event = false;
         for marker in &result.markers {
-            let mut mapped = Marker::new(
-                marker.t,
-                marker.tmax.unwrap_or(marker.t),
-                u8::try_from(marker.kind).unwrap_or(0),
-            );
-            mapped.phase.clone_from(&marker.phase);
-            mapped.is_event = marker.is_event;
-            mapped.nslc_ids = marker
-                .nslc_ids
-                .iter()
-                .map(|nslc| {
-                    (
-                        nslc.net.clone(),
-                        nslc.sta.clone(),
-                        nslc.loc.clone(),
-                        nslc.cha.clone(),
-                    )
-                })
-                .collect();
-            mapped.polarity = marker.polarity.and_then(|value| i8::try_from(value).ok());
-            mapped.moment_tensor = marker.moment_tensor.as_ref().map(|tensor| {
-                [
-                    tensor.mnn, tensor.mee, tensor.mdd, tensor.mne, tensor.mnd, tensor.med,
-                ]
-            });
-            mapped.kagan_deg = marker.kagan_deg;
-            mapped.uncertainty = marker.uncertainty;
-            mapped.event_hash.clone_from(&marker.event_hash);
-            mapped.magnitude = marker.magnitude;
-            mapped.depth_km = marker.depth.map(|depth| depth / 1000.0);
-            mapped.lat = marker.lat;
-            mapped.lon = marker.lon;
-            mapped.automatic = marker.automatic;
-            mapped.incidence_angle = marker.incidence_angle;
-            mapped.takeoff_angle = marker.takeoff_angle;
-            mapped.event_name.clone_from(&marker.event_name);
-            mapped.region.clone_from(&marker.region);
-            mapped.catalog.clone_from(&marker.catalog);
-            mapped.event_time = marker.event_time;
-            mapped.dist_active_km = marker.dist_active_km;
             // Python-side auto-activation (largest catalog magnitude) arrives on
             // the marker so the canvas and table *show* the active event rather
             // than silently measuring distances from an invisible one.
             if marker.active {
-                for existing in &mut self.state.markers {
-                    existing.active = false;
-                }
-                mapped.active = true;
-            }
-            if !result.origin.is_empty() {
-                mapped.origin = Some(result.origin.clone());
+                activates_event = true;
             }
             if marker.is_event {
                 has_event = true;
                 event_min = event_min.min(marker.t);
                 event_max = event_max.max(marker.t);
             }
-            self.state.markers.push(mapped);
+            staged_markers.push(marker_from_snuffling(
+                marker,
+                &result.nslc_table,
+                &result.origin,
+            ));
         }
+        if activates_event {
+            for existing in &mut self.state.markers {
+                existing.active = false;
+            }
+        }
+        let budget = MarkerBudget::from_wire(result.marker_budget);
+        let outcome = self.state.markers.commit(StagedMarkers {
+            markers: staged_markers,
+            origin: (!result.origin.is_empty()).then(|| result.origin.clone()),
+            dropped: result.markers_dropped,
+            budget,
+        });
+        let truncation = match outcome {
+            MarkerCommitOutcome::Committed { .. } => None,
+            MarkerCommitOutcome::Truncated {
+                added,
+                dropped,
+                budget,
+            } => Some(format!(
+                "Showing the {added} strongest markers; {dropped} detections were omitted at the {} marker budget.",
+                budget.get()
+            )),
+        };
         self.state.snuffling_text = result.text;
-        self.state.show_snuffling = result.show_window && !self.state.snuffling_text.is_empty();
+        if let Some(truncation) = truncation {
+            if !self.state.snuffling_text.is_empty() {
+                self.state.snuffling_text.push_str("\n\n");
+            }
+            self.state.snuffling_text.push_str(&truncation);
+        }
+        self.state.show_snuffling = (result.show_window || result.markers_dropped > 0)
+            && !self.state.snuffling_text.is_empty();
 
         if has_event
             && event_max >= event_min
@@ -500,7 +536,7 @@ impl Session {
             return;
         };
         let live_session = self.bridge.live_seedlink_session();
-        if scene.tracks.is_empty() && live_session.is_none() {
+        if scene.track_count == 0 && live_session.is_none() {
             self.consume_empty_scene(scene_gen);
             return;
         }
@@ -510,6 +546,7 @@ impl Session {
             // scroll once (Qt's `follow` zeroes the interrupt clock,
             // pile_viewer.py:4257); later packets leave scrolling alone.
             if self.live_scroll_snapped_for != Some(live.started_at.to_bits()) {
+                self.clear_annotations();
                 self.live_scroll_snapped_for = Some(live.started_at.to_bits());
                 self.state.track_scroll = 0.0;
                 self.state.track_offset = 0;
@@ -530,11 +567,9 @@ impl Session {
                 .follow_interrupted_at
                 .is_some_and(|at| now_s - at < FOLLOW_SUSPEND_S);
             if !suspended {
-                let latest = scene
-                    .tracks
-                    .iter()
-                    .map(|track| track.tmax)
-                    .fold(scene.tmax, f64::max);
+                // The bridge computes scene.tmax as the maximum trace tmax, so
+                // it IS the newest sample's time.
+                let latest = scene.tmax;
                 let window = live.follow_seconds.max(1.0);
                 if latest.is_finite() && latest > live.started_at {
                     self.state.tmax = latest;

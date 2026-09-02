@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package snuffler.bridge.v1;
 
+import "snuffler/bridge/v1/activity.proto";
 import "snuffler/bridge/v1/common.proto";
 import "snuffler/bridge/v1/data.proto";
 import "snuffler/bridge/v1/figure.proto";
@@ -17,27 +18,6 @@ message BridgeError {
   string kind = 1; // exception class name
   string message = 2; // str(exc)
   string traceback = 3; // traceback.format_exc(), for debugging
-}
-
-// One changed file that could not be read or loaded during a reload batch.
-message ReloadFailure {
-  string source_id = 1;
-  string name = 2;
-  oneof reason {
-    BridgeError remote = 3;
-    string browser_read = 4;
-    string transport = 5;
-    string protocol = 6;
-  }
-}
-
-// The latest successful reload projection plus every independently failed source.
-message ReloadBatchResult {
-  oneof outcome {
-    LoadBytesResult waveform = 1;
-    BundleResult bundle = 2;
-  }
-  repeated ReloadFailure failures = 3;
 }
 
 message StringValue {
@@ -56,9 +36,27 @@ message BootProgress {
   string label = 2;
 }
 
-message SeisbenchProgress {
-  double fraction = 1;
-  string label = 2;
+message OperationStarted {}
+
+message OperationCountProgress {
+  uint64 done = 1;
+  optional uint64 total = 2;
+}
+
+message OperationProgress {
+  string phase = 1;
+  oneof progress {
+    OperationCountProgress count = 2;
+    double fraction = 3;
+  }
+}
+
+message OperationEvent {
+  uint64 job_id = 1;
+  oneof event {
+    OperationStarted started = 2;
+    OperationProgress progress = 3;
+  }
 }
 
 enum MlDevice {
@@ -71,17 +69,57 @@ message MlDeviceStatus {
   MlDevice device = 1;
 }
 
+message RuntimeFailure {
+  string kind = 1;
+  string message = 2;
+}
+
+message RuntimeInfo {
+  bool threaded = 1;
+  string python = 2;
+  string numpy = 3;
+  string pyrocko = 4;
+  uint32 cores = 5;
+}
+
 message WorkerEvent {
   oneof event {
     BootProgress boot = 1;
-    SeisbenchProgress seisbench = 2;
-    MlDeviceStatus ml_device = 3;
+    MlDeviceStatus ml_device = 2;
+    OperationEvent operation = 3;
+    RuntimeFailure runtime_failure = 5;
+    RuntimeInfo runtime_info = 6;
   }
+  uint32 runtime_epoch = 4;
 }
 
 // Request for methods whose input is carried entirely out-of-band (a staged
 // file, fetched FDSN text) or that take no parameters at all.
 message Empty {}
+
+message Cancelled {}
+
+message Stale {
+  uint64 expected_generation = 1;
+  uint64 actual_generation = 2;
+}
+
+message CancelJobRequest {
+  uint64 job_id = 1;
+}
+
+enum CancelDisposition {
+  CANCEL_DISPOSITION_UNSPECIFIED = 0;
+  CANCEL_DISPOSITION_QUEUED = 1;
+  CANCEL_DISPOSITION_CANCELLING = 2;
+  CANCEL_DISPOSITION_TOO_LATE = 3;
+  CANCEL_DISPOSITION_NOT_FOUND = 4;
+  CANCEL_DISPOSITION_NOT_CANCELLABLE = 5;
+}
+
+message CancelJobReply {
+  CancelDisposition disposition = 1;
+}
 
 // The envelope every bridge response is wrapped in: exactly one of `error` or a
 // concrete success payload. bridge.py's single `call()` failsafe always returns
@@ -96,7 +134,7 @@ message BridgeResult {
     MapData map_data = 7; // mapData
     CommandResult command = 8; // runCommand
     SnufMarkerList markers = 9; // loadMarkers
-    StringValue text = 10; // gfStoreLabel, markersToText, addCakeModel
+    StringValue text = 10; // markersToText, addCakeModel
     FigureResult figure = 11; // renderFigure (a real pyrocko/matplotlib figure as PNG)
     StationDistanceList station_distances = 12; // stationDistances
     ActiveEventResult active_event = 13; // setActiveEvent
@@ -104,6 +142,9 @@ message BridgeResult {
     BundleResult bundle = 15; // loadBundle (a scene plus the metadata that came with it)
     FileBlob blob = 16; // exportWaveforms, exportStations
     LoadBytesResult load_bytes = 17; // loadBytes (scene plus duplicate verdict)
+    Cancelled cancelled = 18;
+    Stale stale = 19;
+    IngestMiniSeedResult ingest = 20;
   }
 }
 
@@ -114,50 +155,315 @@ message BridgeResult {
 // in BridgeResult (the matching oneof variant, or BridgeError); the generated
 // glue unwraps that.
 //
-// The Pyodide worker is a DUMB RELAY: it forwards (method id, request bytes) to
-// bridge.py and ships the result back; it spells no method names of its own. Even
-// the network rpcs (DownloadWaveforms/CatalogSearch/FetchStations/FetchResponses,
-// LoadUrl) do their own HTTP in Python via pyodide-http's pyfetch — the browser's
-// fetch reachable from Python — so there are no hand-written worker orchestrations
-// left to drift. The one thing the worker still does itself is mount a live
-// directory handle for a GF store (a DOM object that can't ride a proto), then
-// relay GfStoreLabel.
+// The Pyodide worker relays every ordinary method to bridge.py. Network rpcs do
+// their own HTTP in Python via pyodide-http's pyfetch. MountGfStore is the one
+// typed rpc with worker-side setup: the picked browser directory handle rides
+// beside the protobuf request (it cannot be serialized into it), the worker
+// mounts it, and Python labels the mounted store.
 //
 // Two transport details ride ALONGSIDE these messages, never inside the oneof:
 // the zero-copy float32 `ys` buffer returned with GetView, and (for
-// GfStoreLabel) the mounted store's FS path passed as out-of-band `data`.
+// MountGfStore) the mounted store's FS path passed as out-of-band `data`.
 service BridgeService {
-  rpc MakeExample(Empty) returns (SceneMeta);
-  rpc EmptyScene(Empty) returns (SceneMeta);
-  rpc LoadBytes(LoadBytesRequest) returns (LoadBytesResult);
-  rpc LoadUrl(LoadUrlRequest) returns (SceneMeta);
-  rpc ListExamples(Empty) returns (ExampleList);
-  rpc LoadBundle(LoadBundleRequest) returns (BundleResult);
-  rpc IngestMiniSeed(IngestMiniSeedRequest) returns (SceneMeta);
-  rpc GetView(ViewParams) returns (ViewMeta); // + out-of-band ys buffer
-  rpc RenderFigure(FigureRequest) returns (FigureResult); // a real pyrocko/matplotlib figure, PNG
-  rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult);
-  rpc RmsTraces(SnufflingRequestParams) returns (SnufflingResult);
-  rpc RunCommand(CommandRequest) returns (CommandResult);
-  rpc MapData(MapRequest) returns (snuffler.bridge.v1.MapData);
-  rpc StationDistances(Empty) returns (StationDistanceList);
-  rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult);
-  rpc UpdateEvent(EventSnapshot) returns (ActiveEventResult);
-  rpc RemoveEvents(RemoveEventsRequest) returns (ActiveEventResult);
-  rpc LoadGfStoreUrl(StringRequest) returns (StringValue);
-  rpc MarkersToText(MarkerFile) returns (StringValue);
-  rpc LoadMarkers(LoadMarkersRequest) returns (SnufMarkerList);
-  rpc LoadStationXml(LoadStationXmlRequest) returns (SnufflingResult);
-  rpc LoadStations(LoadStationsRequest) returns (SnufflingResult);
-  rpc LoadEvents(LoadEventsRequest) returns (SnufflingResult);
-  rpc AddCakeModel(AddCakeModelRequest) returns (StringValue);
-  rpc DownloadWaveforms(WaveformDownloadRequest) returns (SceneMeta);
-  rpc CatalogSearch(CatalogRequest) returns (SnufflingResult);
-  rpc FetchStations(StationRequest) returns (SnufflingResult);
+  rpc MakeExample(Empty) returns (SceneMeta) {
+    option (activity) = {
+      label: "Loading example"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      supersedes: true
+    };
+  }
+  rpc EmptyScene(Empty) returns (SceneMeta) {
+    option (activity) = {
+      label: "Clearing scene"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      supersedes: true
+    };
+  }
+  rpc LoadBytes(LoadBytesRequest) returns (LoadBytesResult) {
+    option (activity) = {
+      label: "Loading waveforms"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc LoadUrl(LoadUrlRequest) returns (SceneMeta) {
+    option (activity) = {
+      label: "Loading URL"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+      supersedes: true
+    };
+  }
+  rpc ListExamples(Empty) returns (ExampleList) {
+    option (activity) = {
+      label: "Loading examples"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_DEDUP
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      secondary_feedback: true
+    };
+  }
+  rpc LoadBundle(LoadBundleRequest) returns (BundleResult) {
+    option (activity) = {
+      label: "Loading dataset"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+      supersedes: true
+    };
+  }
+  rpc IngestMiniSeed(IngestMiniSeedRequest) returns (IngestMiniSeedResult) {
+    option (activity) = {
+      label: "Ingesting live data"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc GetView(ViewParams) returns (ViewMeta) {
+    option (activity) = {
+      label: "Updating view"
+      lane: ACTIVITY_LANE_VIEW
+      policy: ACTIVITY_POLICY_LATEST_WINS
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      secondary_feedback: true
+    };
+  }
+  rpc RenderFigure(FigureRequest) returns (FigureResult) {
+    option (activity) = {
+      label: "Rendering figure"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_DEDUP
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc RunSnuffling(NamedSnufflingRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Running analysis"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_DEDUP
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+      may_update_markers: true
+    };
+  }
+  rpc RmsTraces(SnufflingRequestParams) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Computing RMS"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_DEDUP
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc RunCommand(CommandRequest) returns (CommandResult) {
+    option (activity) = {
+      label: "Running command"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc MapData(MapRequest) returns (snuffler.bridge.v1.MapData) {
+    option (activity) = {
+      label: "Loading map data"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_LATEST_WINS
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc StationDistances(Empty) returns (StationDistanceList) {
+    option (activity) = {
+      label: "Computing station distances"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_DEDUP
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult) {
+    option (activity) = {
+      label: "Selecting event"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc UpdateEvent(EventSnapshot) returns (ActiveEventResult) {
+    option (activity) = {
+      label: "Updating event"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc RemoveEvents(RemoveEventsRequest) returns (ActiveEventResult) {
+    option (activity) = {
+      label: "Removing events"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc LoadGfStoreUrl(StringRequest) returns (StringValue) {
+    option (activity) = {
+      label: "Loading GF store"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc MarkersToText(MarkerFile) returns (StringValue) {
+    option (activity) = {
+      label: "Serializing markers"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc LoadMarkers(LoadMarkersRequest) returns (SnufMarkerList) {
+    option (activity) = {
+      label: "Loading markers"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      may_update_markers: true
+    };
+  }
+  rpc LoadStationXml(LoadStationXmlRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Loading responses"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc LoadStations(LoadStationsRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Loading stations"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc LoadEvents(LoadEventsRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Loading events"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      may_update_markers: true
+    };
+  }
+  rpc AddCakeModel(AddCakeModelRequest) returns (StringValue) {
+    option (activity) = {
+      label: "Adding earth model"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc DownloadWaveforms(WaveformDownloadRequest) returns (SceneMeta) {
+    option (activity) = {
+      label: "Downloading waveforms"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc CatalogSearch(CatalogRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Searching catalog"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+      may_update_markers: true
+    };
+  }
+  rpc FetchStations(StationRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Fetching stations"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
   // Qt's download Save trigger (download.py:147): the loaded waveforms as
   // MiniSEED plus the station table as a pyrocko station file.
-  rpc ExportWaveforms(Empty) returns (FileBlob);
-  rpc ExportStations(Empty) returns (FileBlob);
-  rpc FetchResponses(StationRequest) returns (SnufflingResult);
-  rpc GfStoreLabel(Empty) returns (StringValue);
+  rpc ExportWaveforms(Empty) returns (FileBlob) {
+    option (activity) = {
+      label: "Exporting waveforms"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc ExportStations(Empty) returns (FileBlob) {
+    option (activity) = {
+      label: "Exporting stations"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
+  rpc FetchResponses(StationRequest) returns (SnufflingResult) {
+    option (activity) = {
+      label: "Fetching responses"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+  rpc PrepareScientificTools(Empty) returns (StringValue) {
+    option (activity) = {
+      label: "Preparing scientific tools"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_DEDUP
+      session_access: SESSION_ACCESS_READ_ONLY
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+      secondary_feedback: true
+    };
+  }
+  rpc MountGfStore(Empty) returns (StringValue) {
+    option (activity) = {
+      label: "Mounting GF store"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_QUEUE
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
+    };
+  }
 }

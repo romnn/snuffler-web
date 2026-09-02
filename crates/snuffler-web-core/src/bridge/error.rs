@@ -5,12 +5,11 @@
 //! They read alike once formatted, but callers must act on them differently.
 //!
 //! Deliberately free of `JsValue`: the error crosses into the egui frontend and
-//! is stored in [`crate::bridge::Status`] or [`crate::bridge::Bridge::diagnostic`].
-//! Both consumers build on the host.
+//! is stored in a job outcome or [`crate::bridge::Bridge::diagnostic`]. Both
+//! consumers build on the host.
 
 use std::fmt;
 
-use snuffler_web_proto::bridge::v1 as pb;
 use snuffler_web_proto::{CallError, RemoteError};
 
 /// Why one source in a file-reload batch failed.
@@ -50,27 +49,6 @@ pub struct ReloadSourceError {
     /// Layer that rejected this source.
     #[source]
     pub reason: ReloadFailureReason,
-}
-
-impl From<pb::ReloadFailure> for ReloadSourceError {
-    fn from(failure: pb::ReloadFailure) -> Self {
-        use pb::reload_failure::Reason;
-
-        let reason = match failure.reason {
-            Some(Reason::Remote(error)) => ReloadFailureReason::Remote(error.into()),
-            Some(Reason::BrowserRead(detail)) => ReloadFailureReason::BrowserRead { detail },
-            Some(Reason::Transport(detail)) => ReloadFailureReason::Transport { detail },
-            Some(Reason::Protocol(detail)) => ReloadFailureReason::Protocol { detail },
-            None => ReloadFailureReason::Protocol {
-                detail: "the reload failure carried no reason".to_owned(),
-            },
-        };
-        Self {
-            source_id: failure.source_id,
-            name: failure.name,
-            reason,
-        }
-    }
 }
 
 /// Independently failed sources from one otherwise usable reload batch.
@@ -193,6 +171,10 @@ pub enum MarshalError {
 /// Live `SeedLink` acquisition could not be set up or driven.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SeedlinkError {
+    /// Packet framing exceeded the bounded incomplete-record buffer.
+    #[error(transparent)]
+    Frame(#[from] crate::seedlink::FrameError),
+
     /// The port box holds something that is not a TCP port.
     #[error("SeedLink port {port:?} is not a number between 1 and 65535")]
     Port {
@@ -232,57 +214,29 @@ pub enum SeedlinkError {
 #[cfg(test)]
 mod tests {
     use super::{BridgeError, ReloadError, ReloadFailureReason, ReloadSourceError};
-    use snuffler_web_proto::bridge::v1 as pb;
+    use snuffler_web_proto::RemoteError;
 
     #[test]
-    fn reload_failures_preserve_layer_and_remote_traceback() {
-        let remote = ReloadSourceError::from(pb::ReloadFailure {
-            source_id: "source-a".to_owned(),
-            name: "a.mseed".to_owned(),
-            reason: Some(pb::reload_failure::Reason::Remote(pb::BridgeError {
-                kind: "ValueError".to_owned(),
-                message: "bad samples".to_owned(),
-                traceback: "python traceback".to_owned(),
-            })),
-        });
-        let browser = ReloadSourceError::from(pb::ReloadFailure {
-            source_id: "source-b".to_owned(),
-            name: "b.mseed".to_owned(),
-            reason: Some(pb::reload_failure::Reason::BrowserRead(
-                "permission revoked".to_owned(),
-            )),
-        });
-        let protocol = ReloadSourceError::from(pb::ReloadFailure {
-            source_id: "source-c".to_owned(),
-            name: "c.mseed".to_owned(),
-            reason: Some(pb::reload_failure::Reason::Protocol(
-                "unexpected payload".to_owned(),
-            )),
-        });
-        let transport = ReloadSourceError::from(pb::ReloadFailure {
-            source_id: "source-d".to_owned(),
-            name: "d.mseed".to_owned(),
-            reason: Some(pb::reload_failure::Reason::Transport(
-                "worker stopped".to_owned(),
-            )),
-        });
-
-        assert!(matches!(&remote.reason, ReloadFailureReason::Remote(_)));
-        assert!(matches!(
-            &browser.reason,
-            ReloadFailureReason::BrowserRead { .. }
-        ));
-        assert!(matches!(
-            &protocol.reason,
-            ReloadFailureReason::Protocol { .. }
-        ));
-        assert!(matches!(
-            &transport.reason,
-            ReloadFailureReason::Transport { .. }
-        ));
-
+    fn reload_errors_surface_the_first_remote_traceback() {
         let error = BridgeError::from(ReloadError {
-            failures: vec![remote, browser, protocol, transport],
+            failures: vec![
+                ReloadSourceError {
+                    source_id: "source-a".to_owned(),
+                    name: "a.mseed".to_owned(),
+                    reason: ReloadFailureReason::BrowserRead {
+                        detail: "permission revoked".to_owned(),
+                    },
+                },
+                ReloadSourceError {
+                    source_id: "source-b".to_owned(),
+                    name: "b.mseed".to_owned(),
+                    reason: ReloadFailureReason::Remote(RemoteError {
+                        kind: "ValueError".to_owned(),
+                        message: "bad samples".to_owned(),
+                        traceback: "python traceback".to_owned(),
+                    }),
+                },
+            ],
         });
         assert_eq!(error.traceback(), Some("python traceback"));
     }

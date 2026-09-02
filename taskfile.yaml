@@ -183,6 +183,7 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - buf generate
+      - uv run python tests/codegen_missing_activity.py
       - uv run mypy {{.CLI_ARGS}}
 
   check:ts:
@@ -194,6 +195,9 @@ tasks:
       # Separate project: the tests need node globals the browser-side bridge
       # code must not see (and they run at full strictness).
       - bunx tsc --noEmit -p tests/tsconfig.json
+      # Pure and synchronous, so the cancellation state machine's transition
+      # table is pinned on every check rather than only in browser suites.
+      - bun tests/execution_control_validate.ts
 
   check:fc:
     desc: "check cargo workspace for all combinations of features"
@@ -261,7 +265,7 @@ tasks:
   format:js:
     desc: "format JavaScript bridge code"
     cmds:
-      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.ts web/bridge_worker.ts web/ort_worker.ts scripts/patch-trunk-loader.mjs tests/seisbench_browser_validate.ts tests/a11y_browser_validate.ts tests/parity/inventory_web.ts tests/parity/scenario_web.ts tests/parity/parity_browser.ts tests/parity/parity_keys.ts package.json {{.CLI_ARGS}}
+      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.ts web/bridge_worker.ts web/execution_control.ts web/worker_protocol.ts web/ort_worker.ts scripts/patch-trunk-loader.mjs tests/seisbench_browser_validate.ts tests/a11y_browser_validate.ts tests/parity/inventory_web.ts tests/parity/scenario_web.ts tests/parity/parity_browser.ts tests/parity/parity_keys.ts package.json {{.CLI_ARGS}}
 
   format:proto:
     desc: "format protobuf schemas"
