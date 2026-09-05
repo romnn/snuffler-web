@@ -138,3 +138,6 @@ dispatched. Divergences from snuffler are registered in `tests/parity/known_gaps
 (`color-traces-theming`, `marker-palette-theming`). The palettes are fitted numerically, so
 they are regenerable rather than hand-maintained — but the *look* is still judged by eye,
 on screenshots, in both canvases.
+
+The [theme screenshot sweep](../tests/parity/README.md#theme-screenshots) reuses the
+parity browser helpers and writes its visual matrix into the existing ignored artifacts.

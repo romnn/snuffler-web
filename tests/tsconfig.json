@@ -1,7 +1,7 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    // The tests run under bun and drive a browser through playwright, so they
+    // The tests and screenshot tool run under bun and drive Playwright, so they
     // get node globals (`process`, `node:fs`) — which the browser-side bridge
     // code checked by the root tsconfig must not see.
     "types": ["node"],
@@ -9,5 +9,5 @@
     // plumbing; the tests have no such layer and are held to full strictness.
     "noImplicitAny": true
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "../scripts/screenshot-themes.ts"]
 }

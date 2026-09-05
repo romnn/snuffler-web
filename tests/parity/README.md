@@ -340,3 +340,19 @@ run_scenarios.py    tier 3
 parity_keys.ts      one key notation, shared by both web drivers
 known_gaps.toml     every accounted-for difference
 ```
+
+## Theme screenshots
+
+The standalone theme sweep uses the same browser launcher, readiness, menu handling and
+full-page screenshot helper as these tiers:
+
+```bash
+bun scripts/screenshot-themes.ts --help
+bun scripts/screenshot-themes.ts --examples tohoku-2011-03-11-m9.1-clipping --grouping grouped
+```
+
+Without filters it captures every served example × theme × supported light/dark mode ×
+boxes on/off × coloured traces on/off × grouped/separate locations × fitted/zoomed view.
+Results are gitignored under `tests/parity/.artifacts/screenshots/themes/<theme-name>/`;
+each PNG has a flat name containing the other dimensions. A root `captures.jsonl` records
+the verified settings and URLs. Snuffler Qt contributes only its supported light canvas.
