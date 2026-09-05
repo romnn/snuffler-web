@@ -12,13 +12,14 @@ use ecolor::Color32;
 use emath::{Align2, Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 use snuffler_web_core::marker_store::{MarkerCandidates, MarkerId};
-use snuffler_web_core::markers::{MARKER_COLORS, Marker};
-use snuffler_web_core::state::{AppState, Subsort, WiggleTheme};
+use snuffler_web_core::markers::Marker;
+use snuffler_web_core::state::{AppState, Subsort};
+use snuffler_web_core::theme::WiggleTheme;
 use snuffler_web_core::timeaxis;
 
 use crate::draw::DrawTarget;
 use crate::layout::Layout;
-use crate::palette::{Palette, Theme};
+use crate::palette::Palette;
 
 /// Track labels and time-axis labels, a shade larger than the chrome's text and
 /// bold like snuffler's: Qt paints these with the application's default font at
@@ -81,135 +82,6 @@ fn label_fallback_active(pile_keys: &[String]) -> bool {
         .all(|key| key.is_empty() || key.as_str() == "*")
 }
 
-/// Whether a theme reproduces snuffler's own colouring rather than this frontend's.
-const fn colors_exactly_like_qt(theme: WiggleTheme) -> bool {
-    matches!(theme, WiggleTheme::SnufflerQt)
-}
-
-/// The Snuffler Web stroke ramp: seven hues, each at the lightness its canvas needs.
-///
-/// Built in `OKLab` and fitted rather than picked by eye, against four measurements at
-/// once: how far apart the colours are, how far apart they stay for a colour-blind
-/// reader, how each reads as ink on its canvas, and how each reads crossing somebody
-/// else's row band.
-///
-/// The hues are evenly spaced from a common origin, so index for index the two modes
-/// are the same hue and only lightness moves — a coloring key keeps its identity when
-/// the canvas flips. Within each mode the lightness **alternates** between two rungs,
-/// and that zig-zag is the part a hand-picked ramp tends to miss: protanopia and
-/// deuteranopia collapse the red-green axis, so a palette separating only by hue
-/// separates by almost nothing. Neighbouring hues at different lightness stay apart on
-/// an axis no dichromacy removes. Worst-case pairwise distance under simulated
-/// protanopia, deuteranopia and tritanopia comes out at **3.9 light and 6.3 dark**,
-/// against 1.8 and 2.5 for the ramp this replaces, where 0 means two traces are the
-/// same colour.
-///
-/// Two judgement calls are worth naming. Chroma sits at 86% of what the gamut allows
-/// rather than at the edge: the last 14% buys about half a point of separation and
-/// costs the electric, buzzing colours that make a stack unpleasant to sit in front
-/// of. And the contrast floor is 3:1, WCAG's standard for *graphical objects*, not the
-/// 4.5:1 for body text — applying the text figure to a one-pixel line was what forced
-/// an earlier version of this ramp down into browns and olives to satisfy a rule that
-/// was never about lines. Strokes land at 3.90-6.47 against the light canvas and
-/// 5.71-10.33 against the dark one, and the worst stroke-over-any-band pairing — any
-/// stroke, any band, since bands key on station and strokes on location — holds at
-/// 3.38 and 4.41.
-///
-/// The *order* is fitted too, and it matters more than it looks: keys are numbered in
-/// sorted order, so a three-location dataset only ever sees the first three entries.
-/// Ordering by hue put an olive there. These are ordered greedily by worst-case
-/// separation instead — blue, crimson, orange leads at 10.4 against 5.2 for the
-/// hue order, and the one genuinely weak colour, the olive a yellow becomes when a
-/// white canvas forces it dark, is demoted to seventh where most data never reaches it.
-const fn web_stroke_palette(theme: Theme) -> [(u8, u8, u8); 7] {
-    match theme {
-        Theme::Light => [
-            (0x38, 0x71, 0xED),
-            (0xAD, 0x26, 0x54),
-            (0xAE, 0x66, 0x26),
-            (0x2D, 0x8E, 0x63),
-            (0x8E, 0x28, 0xB4),
-            (0x22, 0x6E, 0x7C),
-            (0x68, 0x67, 0x1E),
-        ],
-        Theme::Dark => [
-            (0xA1, 0xBE, 0xF6),
-            (0xF3, 0x5B, 0x86),
-            (0xF7, 0xAA, 0x70),
-            (0x4A, 0xDC, 0x9B),
-            (0xC8, 0x66, 0xF1),
-            (0x39, 0xA9, 0xBC),
-            (0x9F, 0x9E, 0x33),
-        ],
-    }
-}
-
-/// How much of a station's colour survives into the band behind its rows.
-///
-/// Dark takes a larger share because the same step buys less contrast against a dark
-/// canvas. Both stay a whisper against their canvas where snuffler's boxes run
-/// 1.10-3.30, and both are low enough that a stroke crossing *any* band — not only
-/// its own, since the band is keyed on station and the stroke on location — holds at
-/// 3.38 and 4.41. Snuffler's own worst case there is 1.01: a butter stroke on a plum
-/// box, invisible.
-const fn web_band_share(theme: Theme) -> f32 {
-    match theme {
-        Theme::Light => 0.09,
-        Theme::Dark => 0.13,
-    }
-}
-
-/// Band colour per station, for the rows behind a stack of traces.
-///
-/// Keyed on `net.sta` rather than on the stroke's own coloring key, which is the
-/// mistake the first version of this made: under a location-grouped subsort every
-/// row's first trace is location `00`, so every band came out the same red and the
-/// whole canvas took a wash that said nothing.
-///
-/// A station is the right key because it is what the rows *are* grouped into. Sorted
-/// by distance, a stack runs station by station, three channels at a time; banding on
-/// station makes those blocks visible at a glance and gives the eye something to
-/// track when scrolling. The stroke keeps the finer key — location, or whatever the
-/// subsort colours by — so background and line encode two different things and
-/// neither is redundant.
-fn station_band_colors(
-    visible: &[ViewTrack],
-    pal: &Palette,
-    theme: Theme,
-) -> HashMap<String, Color32> {
-    let mut keys: Vec<String> = visible
-        .iter()
-        .map(|track| format!("{}.{}", track.net, track.sta))
-        .collect();
-    keys.sort();
-    keys.dedup();
-    let ramp = web_stroke_palette(theme);
-    let share = web_band_share(theme);
-    keys.into_iter()
-        .enumerate()
-        .map(|(index, key)| {
-            let (red, green, blue) = ramp
-                .get(index % ramp.len())
-                .copied()
-                .unwrap_or((0x88, 0x88, 0x88));
-            let band = web_toward_canvas(Color32::from_rgb(red, green, blue), pal, share);
-            (key, band)
-        })
-        .collect()
-}
-
-/// The stroke's hue, pulled `keep` of the way back to the canvas.
-fn web_toward_canvas(stroke: Color32, pal: &Palette, keep: f32) -> Color32 {
-    let mix = |ink: u8, ground: u8| {
-        (f32::from(ink) * keep + f32::from(ground) * (1.0 - keep)).round() as u8
-    };
-    Color32::from_rgb(
-        mix(stroke.r(), pal.bg.r()),
-        mix(stroke.g(), pal.bg.g()),
-        mix(stroke.b(), pal.bg.b()),
-    )
-}
-
 /// The coloring keys one row contributes to the palette numbering: one per
 /// painted span, since a row can carry traces with different keys, or the row's
 /// own identity's when it has no spans — so the numbering does not shift when a
@@ -233,6 +105,21 @@ fn track_color_keys(
     }
 }
 
+/// The pile box style covering `start`, for a stroke standing in for a hidden box.
+///
+/// A row carries one box per contiguous run, and adjacent runs alternate style, so
+/// the span is matched to the run it starts inside rather than to the row.
+/// A span outside every run (the pile's coverage and the fetched samples disagreeing
+/// at a boundary) takes the row's first style, which is the one it is drawn beside.
+fn span_box_style(track: &ViewTrack, start: f64) -> Option<u32> {
+    track
+        .boxes
+        .iter()
+        .find(|tbox| start >= tbox.tmin && start <= tbox.tmax)
+        .or_else(|| track.boxes.first())
+        .map(|tbox| tbox.style)
+}
+
 /// Stroke color per coloring key, assigned the way snuffler assigns its colors:
 /// the distinct keys sorted, then numbered into the palette in that order
 /// (`color_lookup` over the sorted `pile.gather_keys`).
@@ -243,30 +130,20 @@ fn track_color_keys(
 /// none (an empty pile, or a unit test exercising the assignment alone), the
 /// painted tracks' own keys stand in.
 ///
-/// The Snuffler Qt theme takes snuffler's own `graph_colors` (`plot/__init__.py:95`)
-/// and, past the seventh key, snuffler's own black — `pyrocko.plot.color` indexes
-/// that list and returns `(0, 0, 0)` for anything beyond it rather than wrapping.
-/// That theme only ever renders on white (`WiggleTheme::forces_light`), which is the
-/// canvas `graph_colors` was picked for. Snuffler Web brings its own ramp, chosen for
-/// whichever canvas is up.
+/// The colours are the palette's ramp.
+/// Under the Snuffler Qt theme that ramp is snuffler's own `graph_colors`
+/// (`plot/__init__.py:95`) and, past the seventh key, snuffler's own black —
+/// `pyrocko.plot.color` indexes that list and returns `(0, 0, 0)` for anything
+/// beyond it rather than wrapping.
+/// The web themes wrap their ramps instead.
 fn stroke_color_map(
     pile_keys: &[String],
     tracks: &[ViewTrack],
     subsort: Subsort,
     wiggle: WiggleTheme,
-    theme: Theme,
+    pal: &Palette,
 ) -> HashMap<String, Color32> {
-    // scarletred2, skyblue3, chameleon3, orange2, plum2, chocolate2, butter2.
-    const QT_GRAPH_COLORS: [(u8, u8, u8); 7] = [
-        (204, 0, 0),
-        (32, 74, 135),
-        (78, 154, 6),
-        (245, 121, 0),
-        (117, 80, 123),
-        (193, 125, 17),
-        (237, 212, 0),
-    ];
-    let exact = colors_exactly_like_qt(wiggle);
+    let exact = wiggle.mirrors_qt_coloring();
     let fallback = label_fallback_active(pile_keys);
     let mut keys: Vec<String> = if pile_keys.is_empty() {
         tracks
@@ -311,54 +188,14 @@ fn stroke_color_map(
     keys.into_iter()
         .enumerate()
         .map(|(index, key)| {
-            let (red, green, blue) = if exact {
-                QT_GRAPH_COLORS.get(index).copied().unwrap_or((0, 0, 0))
+            let color = if exact {
+                pal.strokes.get(index).copied().unwrap_or(Color32::BLACK)
             } else {
-                let ramp = web_stroke_palette(theme);
-                // With the modulo the palette fetch cannot miss; the grey is a
-                // defensive fallback, not a code path.
-                ramp.get(index % ramp.len())
-                    .copied()
-                    .unwrap_or((0x88, 0x88, 0x88))
+                pal.stroke(index)
             };
-            (key, Color32::from_rgb(red, green, blue))
+            (key, color)
         })
         .collect()
-}
-
-/// Snuffler's box styles: the light Tango '1' fill at `box_alpha = 100`, outlined in
-/// the matching '3' (`box_styles`, `pile_viewer.py:198`).
-///
-/// Snuffler only ever draws these on white and the pairing is built for it — a pale
-/// wash under a dark outline. There is no upstream dark mode to copy, so the dark
-/// variant keeps snuffler's palette and changes only what the canvas forces it to.
-/// Scaling all three channels by one factor leaves hue and saturation untouched
-/// (`S = (max - min) / max` is invariant under it) and moves only value, so these are
-/// the same seven Tango colours, dimmed until they sit on black the way the originals
-/// sit on white. The outline swaps to the light '1' member of the same hue, which
-/// reads against dark as the dark '3' reads against white.
-///
-/// Light is the parity claim and is exact; dark is this adaptation, recorded in
-/// `qt-theme-residual-chrome` in `known_gaps.toml`.
-fn qt_box_style(index: usize) -> (Color32, Color32) {
-    type Rgb = (u8, u8, u8);
-    const STYLES: [(Rgb, Rgb); 7] = [
-        ((252, 175, 62), (206, 92, 0)),
-        ((114, 159, 207), (32, 74, 135)),
-        ((252, 233, 79), (196, 160, 0)),
-        ((138, 226, 52), (78, 154, 6)),
-        ((233, 185, 110), (143, 89, 2)),
-        ((173, 127, 168), (92, 53, 102)),
-        ((239, 41, 41), (164, 0, 0)),
-    ];
-    let (fill, frame) = STYLES
-        .get(index % STYLES.len())
-        .copied()
-        .unwrap_or(((128, 128, 128), (64, 64, 64)));
-    (
-        Color32::from_rgba_unmultiplied(fill.0, fill.1, fill.2, 100),
-        Color32::from_rgb(frame.0, frame.1, frame.2),
-    )
 }
 
 /// C's `%g` at its default precision, plus snuffler's `num_to_html` rewrite of
@@ -428,7 +265,6 @@ struct TickDraw {
 /// on-screen and SVG export backends drive identical geometry through it.
 #[expect(
     clippy::too_many_lines,
-    clippy::too_many_arguments,
     reason = "cohesive draw routine against one projection context; splitting would \
               obscure the layered draw order"
 )]
@@ -438,7 +274,6 @@ pub fn paint(
     view: &ViewData,
     pal: &Palette,
     lay: &Layout<'_>,
-    theme: Theme,
     waterfall: bool,
     export: bool,
 ) {
@@ -464,14 +299,31 @@ pub fn paint(
 
     // Stroke colors by coloring key; the row tints and the colored strokes both
     // look their key up here.
-    let qt_colors = colors_exactly_like_qt(state.wiggle_theme);
-    let stroke_colors = if state.color_traces() {
+    let qt_colors = state.wiggle_theme.mirrors_qt_coloring();
+    let boxes_visible = state.boxes_visible(pal.theme);
+    // The boxes and the strokes carry two different classes: a box is the pile's
+    // box style, a stroke its coloring key.
+    // Hiding the boxes takes one of those off the screen entirely, so on the web
+    // themes the strokes take it over and a wiggle is drawn in the colour its box
+    // would have had.
+    // Without this, hiding the boxes on data with a single location code leaves
+    // every trace one colour.
+    //
+    // A location-grouped row is the exception, and keeps colouring by the coloring
+    // key: there several traces share one row, the key is what tells them apart,
+    // and a row's box style cannot — the box style steps per contiguous run, so
+    // every trace of the row would land on the run its window starts in and the
+    // row would go back to being one colour.
+    // Snuffler Qt keeps colouring by the coloring key throughout, boxes or no
+    // boxes, because upstream's two toggles are independent.
+    let strokes_carry_box_style = !boxes_visible && !qt_colors && !subsort.groups_locations();
+    let stroke_colors = if state.color_traces_for(subsort, pal.theme) {
         stroke_color_map(
             &view.meta.color_keys,
             &view.meta.tracks,
             subsort,
             state.wiggle_theme,
-            theme,
+            pal,
         )
     } else {
         HashMap::new()
@@ -479,7 +331,10 @@ pub fn paint(
 
     target.fill_rect(rect, 0.0, pal.bg);
 
-    if state.show_boxes && !waterfall && state.wiggle_theme == WiggleTheme::SnufflerQt {
+    // Snuffler's trace boxes, under every theme: one per contiguous run of a
+    // channel's data, in the style the pile's `determine_box_styles` numbered it
+    // with, so a box's colour means the same thing whatever the palette.
+    if boxes_visible && !waterfall {
         target.push_clip(track_area);
         for (k, t) in visible.iter().enumerate() {
             let top = top0 + k as f32 * row_h + row_h * 0.05;
@@ -492,6 +347,9 @@ pub fn paint(
             // so a channel `min_deltat_allow` declined to fetch still shows where
             // its data lies — without this, a view zoomed far beyond the data
             // goes blank with nothing left to navigate back to.
+            // Past 500 traces in the window the bridge hands each row merged
+            // per-style runs whose gaps close — but that is `draw_trace_boxes`'
+            // own batching, so Qt's boxes close them identically.
             for tbox in &t.boxes {
                 if tbox.tmax < view_tmin || tbox.tmin > view_tmax {
                     continue;
@@ -503,55 +361,15 @@ pub fn paint(
                 let x1 = x_of(tbox.tmax)
                     .clamp(track_area.left(), track_area.right())
                     .max(x0 + 1.0);
-                let (fill, frame) = qt_box_style(usize::try_from(tbox.style).unwrap_or(0));
+                let style = pal.box_style(usize::try_from(tbox.style).unwrap_or(0));
                 let r = Rect::from_min_max(pos2(x0, top), pos2(x1, bot));
-                target.fill_rect(r, 0.0, fill);
-                target.line(r.left_top(), r.right_top(), 1.0, frame);
-                target.line(r.right_top(), r.right_bottom(), 1.0, frame);
-                target.line(r.right_bottom(), r.left_bottom(), 1.0, frame);
-                target.line(r.left_bottom(), r.left_top(), 1.0, frame);
-            }
-        }
-        target.pop_clip();
-    } else if state.show_boxes && !waterfall {
-        // Snuffler Web's answer to the trace box: one band per row, in its station's
-        // colour, drawn across the extent its traces actually cover. Opaque, so
-        // co-located traces sharing a row cannot stack it into a slab the way
-        // snuffler's translucent boxes do — the failure that made every later decision
-        // about keeping the wiggle visible through its own background.
-        //
-        // Drawn per pile box rather than across the full width, which is what makes
-        // it a *box* and not a stripe: a gap in the data is a gap in the band, as it
-        // is in Qt.
-        // Past 500 traces in the window the bridge hands each row merged per-style
-        // runs whose gaps close — but that is `draw_trace_boxes`' own batching, so
-        // Qt's boxes close them identically.
-        // On continuous data the boxes meet and it reads as one clean row.
-        // Pile-backed like the Qt theme's boxes, so the band outlives the zooms
-        // where `min_deltat_allow` declines to fetch the channel itself.
-        target.push_clip(track_area);
-        // Numbered over the whole track universe, not the scroll slice, so a
-        // station keeps its band colour as the stack scrolls — the same
-        // stability rule the stroke palette follows.
-        let bands = station_band_colors(&view.meta.tracks, pal, theme);
-        for (k, t) in visible.iter().enumerate() {
-            let top = top0 + k as f32 * row_h;
-            let Some(band) = bands.get(&format!("{}.{}", t.net, t.sta)) else {
-                continue;
-            };
-            for tbox in &t.boxes {
-                if tbox.tmax < view_tmin || tbox.tmin > view_tmax {
-                    continue;
+                target.fill_rect(r, 0.0, style.fill);
+                if let Some(frame) = style.frame {
+                    target.line(r.left_top(), r.right_top(), 1.0, frame);
+                    target.line(r.right_top(), r.right_bottom(), 1.0, frame);
+                    target.line(r.right_bottom(), r.left_bottom(), 1.0, frame);
+                    target.line(r.left_bottom(), r.left_top(), 1.0, frame);
                 }
-                let x0 = x_of(tbox.tmin).clamp(track_area.left(), track_area.right());
-                let x1 = x_of(tbox.tmax)
-                    .clamp(track_area.left(), track_area.right())
-                    .max(x0 + 1.0);
-                target.fill_rect(
-                    Rect::from_min_max(pos2(x0, top), pos2(x1, top + row_h)),
-                    0.0,
-                    *band,
-                );
             }
         }
         target.pop_clip();
@@ -761,7 +579,7 @@ pub fn paint(
 
         // The waterfall has no wiggle to carry the row's identity, so it keeps an
         // outlined cell whichever theme is on.
-        if state.show_boxes && waterfall {
+        if boxes_visible && waterfall {
             let r = Rect::from_min_max(
                 pos2(rect.left() + 0.5, top + 1.0),
                 pos2(rect.right() - 0.5, bot - 1.0),
@@ -838,18 +656,23 @@ pub fn paint(
                 Vec::new()
             };
 
-            let colored_strokes = state.color_traces();
+            let colored_strokes = state.color_traces_for(subsort, pal.theme);
+            let box_style_stroke = |start: f64| {
+                span_box_style(t, start).map_or(pal.trace, |style| {
+                    pal.stroke(usize::try_from(style).unwrap_or(0))
+                })
+            };
             // One polyline per span, never one across them: the segments of a
             // gapped channel share a row but must not be joined by a line drawn
             // through data that is not there.
             for span in &t.spans {
-                let trace_col = if colored_strokes {
-                    stroke_colors
+                let trace_col = match (colored_strokes, strokes_carry_box_style) {
+                    (false, _) => pal.trace,
+                    (true, true) => box_style_stroke(data_tmin + span.t0_rel),
+                    (true, false) => stroke_colors
                         .get(&color_key(t, &span.loc, subsort, qt_colors, label_fallback))
                         .copied()
-                        .unwrap_or(pal.trace)
-                } else {
-                    pal.trace
+                        .unwrap_or(pal.trace),
                 };
                 // Uniform samples only: the bridge chops exactly as snuffler does
                 // and drops anything shorter than two samples (pile_viewer.py:3905),
@@ -897,6 +720,7 @@ pub fn paint(
                             draw_marker_snippets(
                                 target,
                                 state,
+                                pal,
                                 MarkerSnippet {
                                     marker_ids: &marker_ids,
                                     track: t,
@@ -976,7 +800,7 @@ pub fn paint(
                         // Ranges: min bottom-right, max top-right, `%g` numbers,
                         // with the little bracket when boxes are off
                         // (pile_viewer.py:3396).
-                        if !state.show_boxes {
+                        if !boxes_visible {
                             let x0 = track_area.right() - 20.0 - uoff;
                             let x1 = track_area.right() - 10.0 - uoff;
                             target.line(pos2(x0, bot), pos2(x1, bot), 1.0, col);
@@ -1047,6 +871,7 @@ pub fn paint(
     draw_markers(
         target,
         state,
+        pal,
         track_area,
         top0,
         visible,
@@ -1065,10 +890,7 @@ pub fn paint(
     if let Some(pk) = &state.picking {
         let x0 = x_of(pk.tmin);
         if x0 >= track_area.left() - 2.0 && x0 <= track_area.right() + 2.0 {
-            let col = MARKER_COLORS
-                .get((pk.kind & 7) as usize)
-                .copied()
-                .unwrap_or(Color32::from_rgb(204, 0, 0));
+            let col = pal.markers.kind(pk.kind, true);
             if pk.tmax > pk.tmin {
                 let x1 = x_of(pk.tmax);
                 let r =
@@ -1216,6 +1038,7 @@ struct MarkerSnippet<'a> {
 fn draw_marker_snippets(
     target: &mut dyn DrawTarget,
     state: &AppState,
+    pal: &Palette,
     snippet: MarkerSnippet<'_>,
     px: &impl Fn(f64, f64) -> Option<emath::Pos2>,
 ) {
@@ -1265,7 +1088,7 @@ fn draw_marker_snippets(
         {
             continue;
         }
-        let col = m.color_for(state.hovered_marker == Some(id));
+        let col = m.color_in(&pal.markers, state.hovered_marker == Some(id));
         if m.is_span() {
             let Some((i0, i1)) = chop(m) else {
                 continue;
@@ -1333,20 +1156,17 @@ fn dashed_line(
     }
 }
 
-/// The white plate Qt's `draw_label` always paints under a marker label
-/// (`QColor(255, 255, 255)`, gui/util.py:293) so it stays readable over any
-/// wiggle, whatever the theme.
-const MARKER_LABEL_BG: Color32 = Color32::WHITE;
-
 /// Draws a marker label the way `gui_util.draw_label` does: text in the
-/// marker's colour on the white plate, and — for the active event or its picks
-/// — the plate widened by 2 px each side and outlined instead of merely filled.
+/// marker's colour on a plate (`Palette::marker_label_bg`, Qt's white under the Qt
+/// theme), and — for the active event or its picks — the plate widened by 2 px
+/// each side and outlined instead of merely filled.
 fn draw_marker_label(
     target: &mut dyn DrawTarget,
     pos: emath::Pos2,
     align: Align2,
     text: &str,
     col: Color32,
+    plate_bg: Color32,
     outline: bool,
 ) {
     let size = target.measure(text, LABEL_PT);
@@ -1368,13 +1188,13 @@ fn draw_marker_label(
             pos2(plate.left() - 2.0, plate.top()),
             pos2(plate.right() + 2.0, plate.bottom()),
         );
-        target.fill_rect(plate, 0.0, MARKER_LABEL_BG);
+        target.fill_rect(plate, 0.0, plate_bg);
         target.line(plate.left_top(), plate.right_top(), 1.0, col);
         target.line(plate.right_top(), plate.right_bottom(), 1.0, col);
         target.line(plate.right_bottom(), plate.left_bottom(), 1.0, col);
         target.line(plate.left_bottom(), plate.left_top(), 1.0, col);
     } else {
-        target.fill_rect(plate, 0.0, MARKER_LABEL_BG);
+        target.fill_rect(plate, 0.0, plate_bg);
     }
     target.text(pos, align, text, LABEL_PT, col);
 }
@@ -1428,6 +1248,7 @@ fn markers_overloaded(state: &AppState) -> bool {
 fn draw_markers(
     target: &mut dyn DrawTarget,
     state: &AppState,
+    pal: &Palette,
     area: Rect,
     top0: f32,
     visible: &[ViewTrack],
@@ -1475,6 +1296,7 @@ fn draw_markers(
             Align2::LEFT_BOTTOM,
             &format!("{n_all} Markers{suffix}"),
             fg,
+            pal.marker_label_bg,
             false,
         );
         return;
@@ -1498,7 +1320,7 @@ fn draw_markers(
             continue;
         }
         let hovered = state.hovered_marker == Some(id);
-        let col = m.color_for(hovered);
+        let col = m.color_in(&pal.markers, hovered);
         let u_min = x_of(m.tmin);
         let u_max = x_of(m.tmax);
         let label = marker_label(m);
@@ -1549,6 +1371,7 @@ fn draw_markers(
                     Align2::RIGHT_TOP,
                     &label,
                     col,
+                    pal.marker_label_bg,
                     outlined,
                 );
             }
@@ -1564,7 +1387,7 @@ fn draw_markers(
             continue;
         }
         let hovered = state.hovered_marker == Some(id);
-        let col = m.color_for(hovered);
+        let col = m.color_in(&pal.markers, hovered);
         let u_min = x_of(m.tmin);
         let u_max = x_of(m.tmax);
         // The short span line every marker gets at the top of the track area
@@ -1624,6 +1447,7 @@ fn draw_markers(
                 Align2::CENTER_BOTTOM,
                 &m.event_label(),
                 col,
+                pal.marker_label_bg,
                 m.active,
             );
         }
@@ -1636,15 +1460,16 @@ mod tests {
 
     use emath::{Rect, Vec2, pos2};
     use snuffler_web_core::bridge::{ViewData, ViewMeta, ViewSpan, ViewTrack};
-    use snuffler_web_core::state::{AppState, WiggleTheme};
+    use snuffler_web_core::state::AppState;
+    use snuffler_web_core::theme::WiggleTheme;
 
     use crate::draw::SvgTarget;
     use crate::layout::compute_layout;
-    use crate::palette::{Theme, palette};
+    use crate::palette::{Palette, Theme, palette};
 
     use super::{
         MarkerSnippet, color_key, draw_marker_snippets, marker_matches_track, paint,
-        stroke_color_map, web_band_share, web_stroke_palette, web_toward_canvas,
+        stroke_color_map,
     };
     use ecolor::Color32;
     use snuffler_web_core::state::Subsort;
@@ -1675,7 +1500,7 @@ mod tests {
             tracks.as_slice(),
             subsort,
             WiggleTheme::SnufflerWeb,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerWeb),
         );
         tracks
             .iter()
@@ -1695,119 +1520,6 @@ mod tests {
     // `determine_box_styles` over the pile instead of re-deriving styles from
     // the fetched spans.
 
-    /// WCAG relative luminance, for the contrast asserts below.
-    fn relative_luminance(c: Color32) -> f32 {
-        let channel = |v: u8| {
-            let v = f32::from(v) / 255.0;
-            if v <= 0.04045 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
-    }
-
-    fn contrast(a: Color32, b: Color32) -> f32 {
-        let (x, y) = (relative_luminance(a), relative_luminance(b));
-        (x.max(y) + 0.05) / (x.min(y) + 0.05)
-    }
-
-    #[test]
-    fn web_theme_keeps_the_wiggle_legible_over_every_band_in_both_modes() {
-        // The constraint the first dark theme failed. It is not enough for a stroke to
-        // clear its *own* band: rows are read together, and any stroke can end up over
-        // any band. Snuffler's own worst case is 1.01 — a butter stroke on a plum band,
-        // invisible — which it survives only because its bands are nearly white.
-        for theme in [Theme::Light, Theme::Dark] {
-            let pal = palette(theme, WiggleTheme::SnufflerWeb);
-            let strokes: Vec<Color32> = web_stroke_palette(theme)
-                .iter()
-                .map(|&(r, g, b)| Color32::from_rgb(r, g, b))
-                .collect();
-            let bands: Vec<Color32> = strokes
-                .iter()
-                .map(|stroke| web_toward_canvas(*stroke, &pal, web_band_share(theme)))
-                .collect();
-
-            for stroke in &strokes {
-                // 3:1 is WCAG's floor for graphical objects. The 4.5:1 body-text
-                // figure is the wrong rule for a one-pixel line, and holding this
-                // ramp to it forced it into browns to satisfy it.
-                let ink = contrast(*stroke, pal.bg);
-                assert!(
-                    ink >= 3.0,
-                    "{theme:?}: stroke {stroke:?} is {ink:.2} on the canvas"
-                );
-                for band in &bands {
-                    let over = contrast(*stroke, *band);
-                    assert!(
-                        over >= 3.0,
-                        "{theme:?}: stroke {stroke:?} is {over:.2} on a band"
-                    );
-                }
-            }
-            for band in &bands {
-                let shout = contrast(*band, pal.bg);
-                assert!(
-                    shout < 1.6,
-                    "{theme:?}: band {band:?} is {shout:.2}, not a whisper"
-                );
-            }
-        }
-    }
-
-    /// Hue angle in `OKLab`, in degrees. Channel ordering is not a usable proxy: an
-    /// olive sits exactly where red and green cross, so two shades of the same hue
-    /// can order their channels differently.
-    fn oklab_hue(color: Color32) -> f32 {
-        let linear = |value: u8| {
-            let value = f32::from(value) / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        let (red, green, blue) = (linear(color.r()), linear(color.g()), linear(color.b()));
-        let long = (0.412_221_5 * red + 0.536_332_55 * green + 0.051_445_995 * blue).cbrt();
-        let medium = (0.211_903_5 * red + 0.680_699_5 * green + 0.107_396_96 * blue).cbrt();
-        let short = (0.088_302_46 * red + 0.281_718_85 * green + 0.629_978_7 * blue).cbrt();
-        let axis_a = 1.977_998_5 * long - 2.428_592_2 * medium + 0.450_593_7 * short;
-        let axis_b = 0.025_904_037 * long + 0.782_771_77 * medium - 0.808_675_77 * short;
-        axis_b.atan2(axis_a).to_degrees().rem_euclid(360.0)
-    }
-
-    #[test]
-    fn web_theme_is_one_design_at_two_levels() {
-        // Same hue per index in both modes, so a coloring key keeps its identity
-        // across a theme switch: only lightness moves, and it moves in opposite
-        // directions — ink is darker than its canvas in light, lighter in dark.
-        let light = web_stroke_palette(Theme::Light);
-        let dark = web_stroke_palette(Theme::Dark);
-        let bg_light = palette(Theme::Light, WiggleTheme::SnufflerWeb).bg;
-        let bg_dark = palette(Theme::Dark, WiggleTheme::SnufflerWeb).bg;
-        for (index, (l, d)) in light.iter().zip(dark.iter()).enumerate() {
-            let l = Color32::from_rgb(l.0, l.1, l.2);
-            let d = Color32::from_rgb(d.0, d.1, d.2);
-            let drift = (oklab_hue(l) - oklab_hue(d))
-                .abs()
-                .min(360.0 - (oklab_hue(l) - oklab_hue(d)).abs());
-            assert!(
-                drift < 15.0,
-                "hue {index} drifted {drift:.1} deg between modes"
-            );
-            assert!(
-                relative_luminance(l) < relative_luminance(bg_light),
-                "light stroke {index} is not ink"
-            );
-            assert!(
-                relative_luminance(d) > relative_luminance(bg_dark),
-                "dark stroke {index} is not ink"
-            );
-        }
-    }
-
     #[test]
     fn qt_theme_takes_snufflers_palette_and_blacks_out_past_it() {
         // `pyrocko.plot.color` indexes a seven-entry list and returns (0, 0, 0) for
@@ -1822,7 +1534,7 @@ mod tests {
             &tracks,
             Subsort::Nslc,
             WiggleTheme::SnufflerQt,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerQt),
         );
         assert_eq!(map.get("00").copied(), Some(Color32::from_rgb(204, 0, 0)));
         assert_eq!(map.get("60").copied(), Some(Color32::from_rgb(237, 212, 0)));
@@ -1843,14 +1555,14 @@ mod tests {
             &tracks,
             Subsort::Nslc,
             WiggleTheme::SnufflerQt,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerQt),
         );
         let web = stroke_color_map(
             &[],
             &tracks,
             Subsort::Nslc,
             WiggleTheme::SnufflerWeb,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerWeb),
         );
         assert_eq!(qt.len(), 1, "snuffler paints them alike");
         assert_eq!(web.len(), 2, "this frontend's own themes vary them");
@@ -1922,7 +1634,7 @@ mod tests {
             &tracks,
             Subsort::NscGroupL,
             WiggleTheme::SnufflerWeb,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerWeb),
         );
         let [grouped, _] = &tracks;
         // Two locations across the stack, so exactly two keys get numbered.
@@ -1960,14 +1672,14 @@ mod tests {
             &[occupied.clone(), empty],
             Subsort::NscGroupL,
             WiggleTheme::SnufflerWeb,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerWeb),
         );
         let alone = stroke_color_map(
             &pile_keys,
             &[occupied],
             Subsort::NscGroupL,
             WiggleTheme::SnufflerWeb,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerWeb),
         );
         assert_eq!(with_empty, alone);
 
@@ -1980,7 +1692,7 @@ mod tests {
             &[single_occupied, single_empty.clone()],
             Subsort::NscGroupL,
             WiggleTheme::SnufflerWeb,
-            Theme::Light,
+            &palette(Theme::Light, WiggleTheme::SnufflerWeb),
         );
         assert!(labels.contains_key(&single_empty.label));
     }
@@ -2076,16 +1788,7 @@ mod tests {
         let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
-        paint(
-            &mut target,
-            &state,
-            &view,
-            &colors,
-            &layout,
-            theme,
-            false,
-            false,
-        );
+        paint(&mut target, &state, &view, &colors, &layout, false, false);
         let svg = target.finish();
         // The readout takes Qt's exact wording, with the selected count.
         assert!(svg.contains("2001 Markers (5 selected)"));
@@ -2128,16 +1831,7 @@ mod tests {
         let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
-        paint(
-            &mut target,
-            &state,
-            &view,
-            &colors,
-            &layout,
-            theme,
-            false,
-            false,
-        );
+        paint(&mut target, &state, &view, &colors, &layout, false, false);
         target.finish()
     }
 
@@ -2198,6 +1892,7 @@ mod tests {
             draw_marker_snippets(
                 &mut target,
                 &state,
+                &palette(Theme::Light, WiggleTheme::SnufflerQt),
                 MarkerSnippet {
                     marker_ids: &marker_ids,
                     track: &row,
@@ -2255,16 +1950,7 @@ mod tests {
         let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
-        paint(
-            &mut target,
-            &state,
-            &view,
-            &colors,
-            &layout,
-            theme,
-            false,
-            false,
-        );
+        paint(&mut target, &state, &view, &colors, &layout, false, false);
         let svg = target.finish();
         // Style 0's frame is snuffler's Tango orange3, stroked at full alpha, so
         // its hex survives `Color32`'s premultiplied storage exactly (the
@@ -2296,20 +1982,171 @@ mod tests {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
 
-        paint(
-            &mut target,
-            &state,
-            &view,
-            &colors,
-            &layout,
-            theme,
-            false,
-            false,
-        );
+        paint(&mut target, &state, &view, &colors, &layout, false, false);
         let svg = target.finish();
         assert!(svg.contains("<svg"));
         assert!(svg.contains("<line"));
         assert!(svg.contains("<text"));
+    }
+
+    /// Builds one track carrying a single span and a box of the given style.
+    fn styled_track(sta: &str, style: u32, tmin: f64, tmax: f64) -> ViewTrack {
+        let mut t = track("XX", sta, "", "HHZ", &format!("XX.{sta}..HHZ"));
+        t.spans = vec![ViewSpan {
+            t0_rel: 0.0,
+            dt: 1.0,
+            count: 6,
+            offset: 0,
+            ymin: -1.0,
+            ymax: 1.0,
+            yscale: 1.0,
+            ..ViewSpan::default()
+        }];
+        t.boxes = vec![snuffler_web_core::bridge::TraceBox { tmin, tmax, style }];
+        t
+    }
+
+    /// Every `stroke` colour a paint pass drew a wiggle in, in document order.
+    fn wiggle_strokes(state: &AppState, view: &ViewData, pal: &Palette) -> Vec<String> {
+        let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0));
+        let layout = compute_layout(state, view, rect);
+        let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
+            Vec2::new(text.len() as f32 * size * 0.5, size)
+        });
+        paint(&mut target, state, view, pal, &layout, false, false);
+        target
+            .finish()
+            .split("<polyline ")
+            .skip(1)
+            .filter_map(|tag| tag.split("stroke=\"").nth(1)?.split('"').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_grouped_row_colours_its_traces_by_location_even_with_the_boxes_hidden() {
+        // A location-grouped subsort puts every location of a channel on one row, and
+        // the coloring key is the only thing telling those traces apart.
+        // The box style cannot do it: it steps per contiguous run, so every trace of
+        // the row starts inside the same run and keying the strokes on it painted the
+        // whole row a single colour — which is what hiding the boxes used to do.
+        let (tmin, tmax) = (1_700_000_000.0, 1_700_000_010.0);
+        let mut row = track("IU", "MAJO", "*", "BH1", "IU MAJO BH1");
+        row.spans = ["00", "10"]
+            .into_iter()
+            .map(|loc| ViewSpan {
+                t0_rel: 0.0,
+                dt: 1.0,
+                count: 6,
+                offset: 0,
+                ymin: -1.0,
+                ymax: 1.0,
+                yscale: 1.0,
+                loc: loc.to_owned(),
+                ..ViewSpan::default()
+            })
+            .collect();
+        row.boxes = vec![snuffler_web_core::bridge::TraceBox {
+            tmin,
+            tmax,
+            style: 0,
+        }];
+        let state = AppState {
+            tmin,
+            tmax,
+            subsort: Subsort::NscGroupL,
+            wiggle_theme: WiggleTheme::SnufflerWeb5,
+            show_boxes: Some(false),
+            ..AppState::default()
+        };
+        let view = ViewData {
+            meta: ViewMeta {
+                view_tmin: tmin,
+                view_tmax: tmax,
+                tracks: vec![row],
+                color_keys: vec!["00".to_owned(), "10".to_owned(), "20".to_owned()],
+                subsort: "nsc_l".to_owned(),
+                ..ViewMeta::default()
+            },
+            ys: vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5],
+        };
+        let pal = palette(Theme::Dark, WiggleTheme::SnufflerWeb5);
+
+        // Both traces are drawn, and in the two colours their locations number to.
+        let strokes = wiggle_strokes(&state, &view, &pal);
+        let hex = |c: Color32| format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+        assert_eq!(
+            strokes,
+            vec![hex(pal.stroke(0)), hex(pal.stroke(1))],
+            "a grouped row must colour its traces by location"
+        );
+        assert_ne!(strokes.first(), strokes.get(1));
+    }
+
+    #[test]
+    fn hiding_the_boxes_moves_their_class_onto_the_wiggles() {
+        // The boxes carry the pile's box style and the strokes carry the coloring
+        // key, which are two different classes.
+        // On data with one location code — the common case — every trace shares a
+        // coloring key, so colouring by it once the boxes are hidden would leave
+        // twelve identical wiggles and no way to tell the rows apart.
+        // The strokes take the box style over instead, and a wiggle is drawn in the
+        // colour its box would have had.
+        let (tmin, tmax) = (1_700_000_000.0, 1_700_000_010.0);
+        let scene = |wiggle, boxes| AppState {
+            tmin,
+            tmax,
+            wiggle_theme: wiggle,
+            show_boxes: Some(boxes),
+            ..AppState::default()
+        };
+        let view = ViewData {
+            meta: ViewMeta {
+                view_tmin: tmin,
+                view_tmax: tmax,
+                tracks: vec![
+                    styled_track("AAA", 0, tmin, tmax),
+                    styled_track("BBB", 3, tmin, tmax),
+                ],
+                ..ViewMeta::default()
+            },
+            ys: vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5],
+        };
+        let pal = palette(Theme::Dark, WiggleTheme::SnufflerWeb1);
+        let hidden = scene(WiggleTheme::SnufflerWeb1, false);
+
+        // Both rows share the empty location, so the coloring key cannot separate
+        // them; the two box styles can, and that is what is drawn.
+        let strokes = wiggle_strokes(&hidden, &view, &pal);
+        let expected = |style: usize| {
+            let c = pal.stroke(style);
+            format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+        };
+        assert_eq!(strokes, vec![expected(0), expected(3)]);
+        assert_ne!(expected(0), expected(3));
+
+        // With the boxes back the boxes carry the class again, so the mood theme
+        // returns to snuffler's single ink for the wiggles.
+        let shown = scene(WiggleTheme::SnufflerWeb1, true);
+        let inked = format!(
+            "#{:02x}{:02x}{:02x}",
+            pal.trace.r(),
+            pal.trace.g(),
+            pal.trace.b()
+        );
+        assert_eq!(wiggle_strokes(&shown, &view, &pal), vec![inked.clone(); 2]);
+
+        // Snuffler Qt keeps its grey wiggle with the boxes hidden, because
+        // upstream's Show Boxes and Color Traces are independent toggles.
+        let qt = scene(WiggleTheme::SnufflerQt, false);
+        let qt_pal = palette(Theme::Light, WiggleTheme::SnufflerQt);
+        let qt_ink = format!(
+            "#{:02x}{:02x}{:02x}",
+            qt_pal.trace.r(),
+            qt_pal.trace.g(),
+            qt_pal.trace.b()
+        );
+        assert_eq!(wiggle_strokes(&qt, &view, &qt_pal), vec![qt_ink; 2]);
     }
 
     #[test]
@@ -2351,16 +2188,7 @@ mod tests {
         let mut target = SvgTarget::new(640.0, 360.0, HashMap::new(), |text, size| {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
-        paint(
-            &mut target,
-            &state,
-            &view,
-            &colors,
-            &layout,
-            Theme::Light,
-            false,
-            false,
-        );
+        paint(&mut target, &state, &view, &colors, &layout, false, false);
         let svg = target.finish();
         let xs: Vec<f32> = svg
             .split("<polyline points=\"")
@@ -2424,16 +2252,7 @@ mod tests {
             Vec2::new(text.len() as f32 * size * 0.5, size)
         });
 
-        paint(
-            &mut target,
-            &state,
-            &view,
-            &colors,
-            &layout,
-            Theme::Dark,
-            false,
-            true,
-        );
+        paint(&mut target, &state, &view, &colors, &layout, false, true);
         let svg = target.finish();
         // The annotated label appears whole; the unannotated one carries no
         // decoration — in particular no "no coords" placeholder, which snuffler

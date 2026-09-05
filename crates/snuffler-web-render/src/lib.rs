@@ -5,4 +5,8 @@ pub mod layout;
 pub mod map;
 pub mod paint;
 pub mod palette;
+pub mod themes;
 pub mod waterfall;
+
+#[cfg(test)]
+mod test_color;

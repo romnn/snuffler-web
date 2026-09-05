@@ -16,7 +16,8 @@
 //! kept here rather than in eframe's own storage, alongside everything else the
 //! reload restores.
 
-use snuffler_web_core::state::{AppState, ScalingBase, ScalingGroup, VisibleLength, WiggleTheme};
+use snuffler_web_core::state::{AppState, ScalingBase, ScalingGroup, VisibleLength};
+use snuffler_web_core::theme::WiggleTheme;
 
 /// One key per setting under this prefix, like a `.pf` line per setting.
 const PREFIX: &str = "snuffler.settings.";
@@ -25,7 +26,8 @@ const PREFIX: &str = "snuffler.settings.";
 pub struct Restored {
     /// The light/dark preference to apply, which is the user's own choice and not
     /// necessarily what egui ends up holding: a canvas-pinning wiggle theme
-    /// overrides it for as long as it is selected (see `WiggleTheme::forces_light`).
+    /// overrides it for as long as it is selected (see
+    /// `WiggleTheme::pinned_polarity`).
     pub theme_preference: egui::ThemePreference,
 }
 
@@ -35,7 +37,7 @@ pub struct Snapshot {
     demean: bool,
     show_scale_ranges: bool,
     show_scale_axes: bool,
-    show_boxes: bool,
+    show_boxes: Option<bool>,
     clip_traces: bool,
     scaling_group: &'static str,
     scaling_base: &'static str,
@@ -91,6 +93,16 @@ fn read(storage: &web_sys::Storage, key: &str) -> Option<String> {
     storage.get_item(&format!("{PREFIX}{key}")).ok().flatten()
 }
 
+/// Restores a setting that carries "no choice made" as a third state, leaving it
+/// alone when the store has nothing to say.
+fn read_opt_bool(storage: &web_sys::Storage, key: &str, value: &mut Option<bool>) {
+    match read(storage, key).as_deref() {
+        Some("true") => *value = Some(true),
+        Some("false") => *value = Some(false),
+        _ => {}
+    }
+}
+
 fn read_bool(storage: &web_sys::Storage, key: &str, value: &mut bool) {
     match read(storage, key).as_deref() {
         Some("true") => *value = true,
@@ -115,7 +127,7 @@ pub fn restore(state: &mut AppState) -> Restored {
     read_bool(&storage, "demean", &mut state.demean);
     read_bool(&storage, "show_scale_ranges", &mut state.show_scale_ranges);
     read_bool(&storage, "show_scale_axes", &mut state.show_scale_axes);
-    read_bool(&storage, "show_boxes", &mut state.show_boxes);
+    read_opt_bool(&storage, "show_boxes", &mut state.show_boxes);
     read_bool(&storage, "clip_traces", &mut state.clip_traces);
     if let Some(group) = read(&storage, "scaling_group")
         .as_deref()
@@ -174,13 +186,26 @@ pub fn save_if_changed(
         ("demean", snapshot.demean),
         ("show_scale_ranges", snapshot.show_scale_ranges),
         ("show_scale_axes", snapshot.show_scale_axes),
-        ("show_boxes", snapshot.show_boxes),
         ("clip_traces", snapshot.clip_traces),
     ] {
         let _ = storage.set_item(
             &format!("{PREFIX}{key}"),
             if value { "true" } else { "false" },
         );
+    }
+    // A setting the user has not touched is stored as absent rather than as its
+    // current value, so it keeps following the canvas default instead of freezing
+    // at whatever the canvas happened to be the first time the settings were saved.
+    match snapshot.show_boxes {
+        Some(value) => {
+            let _ = storage.set_item(
+                &format!("{PREFIX}show_boxes"),
+                if value { "true" } else { "false" },
+            );
+        }
+        None => {
+            let _ = storage.remove_item(&format!("{PREFIX}show_boxes"));
+        }
     }
     for (key, value) in [
         ("scaling_group", snapshot.scaling_group),

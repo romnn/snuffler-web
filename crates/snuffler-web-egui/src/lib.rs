@@ -10,6 +10,9 @@
 mod a11y;
 #[cfg(target_arch = "wasm32")]
 mod app;
+// The frontend's own light and dark chrome colours.
+#[cfg(target_arch = "wasm32")]
+mod chrome;
 // `?example=<slug>` links: read one on boot, publish one after a load.
 #[cfg(target_arch = "wasm32")]
 mod deep_link;

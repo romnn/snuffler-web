@@ -17,8 +17,9 @@ use snuffler_web_core::bridge::{ExampleDataset, Repaint};
 use snuffler_web_core::markers::Marker;
 use snuffler_web_core::session::Session;
 use snuffler_web_core::state::{
-    ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength, WiggleTheme,
+    ScalingBase, ScalingGroup, SortMode, Subsort, ViewMode, VisibleLength,
 };
+use snuffler_web_core::theme::WiggleTheme;
 
 /// The dataset the app opens on when the URL asks for nothing in particular.
 const BOOT_EXAMPLE: &str = "sumatra-2004-12-26-m9.1-surface-waves";
@@ -156,18 +157,23 @@ pub struct App {
 /// Apply a wiggle theme's claim on the frontend's light/dark preference, and
 /// return the user's own preference to hold on to for as long as it is overruled.
 ///
-/// Snuffler Qt takes the *whole* frontend light, not just the waveform: a white
-/// canvas inside dark chrome is neither theme, it just looks broken. The choice
-/// it overrules is not discarded — it comes back the moment a theme that has a
-/// dark variant is selected, and it is what gets persisted meanwhile.
+/// A single-canvas theme takes the *whole* frontend with it, not just the
+/// waveform: a white canvas inside dark chrome is neither theme, it just looks
+/// broken.
+/// The choice it overrules is not discarded — it comes back the moment a theme with
+/// both canvases is selected, and it is what gets persisted meanwhile.
 fn pin_theme(
     ctx: &egui::Context,
     theme: WiggleTheme,
     chosen: egui::ThemePreference,
 ) -> Option<egui::ThemePreference> {
-    if theme.forces_light() {
-        ctx.set_theme(egui::ThemePreference::Light);
-        (chosen != egui::ThemePreference::Light).then_some(chosen)
+    if let Some(polarity) = theme.pinned_polarity() {
+        let pinned = match polarity {
+            snuffler_web_core::theme::Theme::Light => egui::ThemePreference::Light,
+            snuffler_web_core::theme::Theme::Dark => egui::ThemePreference::Dark,
+        };
+        ctx.set_theme(pinned);
+        (chosen != pinned).then_some(chosen)
     } else {
         ctx.set_theme(chosen);
         None
@@ -235,6 +241,7 @@ fn configure_look(ctx: &egui::Context) {
         ],
     );
     ctx.set_fonts(fonts);
+    crate::chrome::install(ctx);
 
     // Both styles, not the active one: egui keeps a `Style` per theme, and
     // `set_global_style` writes only whichever is current — so the sizes below
@@ -890,6 +897,62 @@ impl App {
         self.complete_marker_serialization(job, file);
     }
 
+    /// The View menu's drawing toggles.
+    ///
+    /// Three of them are backed by an `Option` rather than a `bool`: Show boxes,
+    /// Color traces and Show track separators each follow the canvas or the theme
+    /// until the user clicks them, so the checkbox shows what is actually being
+    /// drawn and the click records a choice that outlives a theme switch.
+    fn drawing_options(&mut self, ui: &mut egui::Ui, waterfall: bool) {
+        let canvas = snuffler_web_render::palette::canvas_theme(
+            snuffler_web_core::theme::Theme::from_dark(ui.ctx().theme() == egui::Theme::Dark),
+            self.session.state.wiggle_theme,
+        );
+        ui.add_enabled(
+            !waterfall,
+            egui::Checkbox::new(&mut self.session.state.clip_traces, "Clip traces"),
+        );
+        let mut boxes = self.session.state.boxes_visible(canvas);
+        if ui.checkbox(&mut boxes, "Show boxes").changed() {
+            self.session.state.show_boxes = Some(boxes);
+        }
+        let mut colored = self.session.state.color_traces(canvas);
+        if ui
+            .add_enabled(
+                !waterfall,
+                egui::Checkbox::new(&mut colored, "Color traces"),
+            )
+            .changed()
+        {
+            self.session.state.show_color_traces = Some(colored);
+        }
+        ui.checkbox(&mut self.session.state.antialiasing, "Antialiasing");
+        ui.separator();
+        ui.add_enabled(
+            !waterfall,
+            egui::Checkbox::new(
+                &mut self.session.state.show_scale_ranges,
+                "Show scale ranges",
+            ),
+        );
+        ui.add_enabled(
+            !waterfall,
+            egui::Checkbox::new(&mut self.session.state.show_scale_axes, "Show scale axes"),
+        );
+        ui.add_enabled(
+            !waterfall,
+            egui::Checkbox::new(&mut self.session.state.show_zero_lines, "Show zero lines"),
+        );
+        ui.checkbox(&mut self.session.state.show_time_grid, "Show time grid");
+        let mut separators = self.session.state.track_separators();
+        if ui
+            .checkbox(&mut separators, "Show track separators")
+            .changed()
+        {
+            self.session.state.show_track_separators = Some(separators);
+        }
+    }
+
     fn view_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("View", |ui| {
             self.theme_menu_items(ui);
@@ -939,6 +1002,7 @@ impl App {
                 let previous = self.session.state.wiggle_theme;
                 if ui
                     .selectable_value(&mut self.session.state.wiggle_theme, theme, theme.label())
+                    .on_hover_text(theme.description())
                     .clicked()
                     && theme != previous
                 {
@@ -947,51 +1011,7 @@ impl App {
             }
             ui.separator();
 
-            ui.add_enabled(
-                !waterfall,
-                egui::Checkbox::new(&mut self.session.state.clip_traces, "Clip traces"),
-            );
-            ui.checkbox(&mut self.session.state.show_boxes, "Show boxes");
-            // Backed by an Option like the separators below: the checkbox shows what
-            // the theme is actually doing, and clicking it records a choice that
-            // outlives a theme switch.
-            let mut colored = self.session.state.color_traces();
-            if ui
-                .add_enabled(
-                    !waterfall,
-                    egui::Checkbox::new(&mut colored, "Color traces"),
-                )
-                .changed()
-            {
-                self.session.state.show_color_traces = Some(colored);
-            }
-            ui.checkbox(&mut self.session.state.antialiasing, "Antialiasing");
-            ui.separator();
-            ui.add_enabled(
-                !waterfall,
-                egui::Checkbox::new(
-                    &mut self.session.state.show_scale_ranges,
-                    "Show scale ranges",
-                ),
-            );
-            ui.add_enabled(
-                !waterfall,
-                egui::Checkbox::new(&mut self.session.state.show_scale_axes, "Show scale axes"),
-            );
-            ui.add_enabled(
-                !waterfall,
-                egui::Checkbox::new(&mut self.session.state.show_zero_lines, "Show zero lines"),
-            );
-            ui.checkbox(&mut self.session.state.show_time_grid, "Show time grid");
-            // Backed by an Option: the checkbox shows what the theme is actually
-            // doing, and clicking it records a choice that outlives a theme switch.
-            let mut separators = self.session.state.track_separators();
-            if ui
-                .checkbox(&mut separators, "Show track separators")
-                .changed()
-            {
-                self.session.state.show_track_separators = Some(separators);
-            }
+            self.drawing_options(ui, waterfall);
             ui.separator();
             // The Main Controls and Markers togglers live in the Snufflings
             // menu, where Qt files all of its panel togglers.
@@ -1008,16 +1028,21 @@ impl App {
 
     fn theme_menu_items(&mut self, ui: &mut egui::Ui) {
         ui.label("Theme");
-        // Snuffler Qt owns its canvas: snuffler is white-only, so a dark variant
-        // of that theme would be a different theme wearing the name.
+        // A single-canvas theme owns its polarity (see `WiggleTheme::pinned_polarity`).
         // The control stays visible and says why rather than vanishing under some themes.
-        let pinned = self.session.state.wiggle_theme.forces_light();
-        ui.add_enabled_ui(!pinned, egui::global_theme_preference_buttons)
+        let wiggle = self.session.state.wiggle_theme;
+        let pinned = wiggle.pinned_polarity();
+        let canvas = match pinned {
+            Some(snuffler_web_core::theme::Theme::Dark) => "dark",
+            _ => "light",
+        };
+        ui.add_enabled_ui(pinned.is_none(), egui::global_theme_preference_buttons)
             .response
-            .on_disabled_hover_text(
-                "Only the Snuffler Web theme has light and dark. Snuffler itself \
-                 draws on white, so the Snuffler Qt theme stays there.",
-            );
+            .on_disabled_hover_text(format!(
+                "{} was designed for a {canvas} canvas only. Pick a wiggle theme that \
+                 has both light and dark to choose.",
+                wiggle.label()
+            ));
     }
 
     fn options_menu(&mut self, ui: &mut egui::Ui) {

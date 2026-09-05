@@ -6,33 +6,133 @@
 
 use ecolor::Color32;
 
-/// Snuffler's marker palette (`g_color_b`, marker.py:53), split by state: the
-/// shade *is* how a selected or hovered marker reads as selected there —
-/// `colorlist[kind*3 + 1]` (the Tango "2" shades) when selected or alerted,
-/// `colorlist[kind*3 + 2]` (the darker "3" shades) otherwise.
-pub const MARKER_COLORS: [Color32; 8] = [
-    Color32::from_rgb(204, 0, 0),     // 0 scarletred2
-    Color32::from_rgb(115, 210, 22),  // 1 chameleon2
-    Color32::from_rgb(52, 101, 164),  // 2 skyblue2
-    Color32::from_rgb(245, 121, 0),   // 3 orange2
-    Color32::from_rgb(117, 80, 123),  // 4 plum2
-    Color32::from_rgb(193, 125, 17),  // 5 chocolate2
-    Color32::from_rgb(237, 212, 0),   // 6 butter2
-    Color32::from_rgb(136, 138, 133), // 7 aluminium4
-];
+/// The colours a theme gives the eight marker kinds.
+///
+/// Snuffler colours a marker by its `kind` alone, and a marker reads as selected
+/// or hovered by changing *shade* within its kind's hue, never by changing hue
+/// (`select_color`, marker.py:306).
+/// Every palette keeps that contract: index `kind` is the same colour family on
+/// every theme (0 red, 1 green, 2 blue, 3 orange, 4 purple, 5 brown, 6 yellow,
+/// 7 grey), so a kind-2 pick is blue whatever the canvas, and only the shades
+/// move to suit it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MarkerPalette {
+    /// What a marker wears when it is neither selected nor hovered.
+    pub idle: [Color32; 8],
+    /// The shade a selected or hovered marker lifts to.
+    pub lit: [Color32; 8],
+}
 
-/// The idle shades (`colorlist[kind*3 + 2]`): what a marker wears when it is
-/// neither selected nor hovered.
-pub const MARKER_COLORS_IDLE: [Color32; 8] = [
-    Color32::from_rgb(164, 0, 0),   // 0 scarletred3
-    Color32::from_rgb(78, 154, 6),  // 1 chameleon3
-    Color32::from_rgb(32, 74, 135), // 2 skyblue3
-    Color32::from_rgb(206, 92, 0),  // 3 orange3
-    Color32::from_rgb(92, 53, 102), // 4 plum3
-    Color32::from_rgb(143, 89, 2),  // 5 chocolate3
-    Color32::from_rgb(196, 160, 0), // 6 butter3
-    Color32::from_rgb(85, 87, 83),  // 7 aluminium5
-];
+impl MarkerPalette {
+    /// Snuffler's own palette (`g_color_b`, marker.py:53): the Tango "3" shades
+    /// idle (`colorlist[kind*3 + 2]`) and the "2" shades lit
+    /// (`colorlist[kind*3 + 1]`).
+    ///
+    /// Built for snuffler's white canvas and only coherent on it: skyblue3 and
+    /// plum3 sit below 2:1 against a dark one.
+    pub const SNUFFLER_QT: Self = Self {
+        idle: [
+            Color32::from_rgb(164, 0, 0),   // 0 scarletred3
+            Color32::from_rgb(78, 154, 6),  // 1 chameleon3
+            Color32::from_rgb(32, 74, 135), // 2 skyblue3
+            Color32::from_rgb(206, 92, 0),  // 3 orange3
+            Color32::from_rgb(92, 53, 102), // 4 plum3
+            Color32::from_rgb(143, 89, 2),  // 5 chocolate3
+            Color32::from_rgb(196, 160, 0), // 6 butter3
+            Color32::from_rgb(85, 87, 83),  // 7 aluminium5
+        ],
+        lit: [
+            Color32::from_rgb(204, 0, 0),     // 0 scarletred2
+            Color32::from_rgb(115, 210, 22),  // 1 chameleon2
+            Color32::from_rgb(52, 101, 164),  // 2 skyblue2
+            Color32::from_rgb(245, 121, 0),   // 3 orange2
+            Color32::from_rgb(117, 80, 123),  // 4 plum2
+            Color32::from_rgb(193, 125, 17),  // 5 chocolate2
+            Color32::from_rgb(237, 212, 0),   // 6 butter2
+            Color32::from_rgb(136, 138, 133), // 7 aluminium4
+        ],
+    };
+
+    /// The Snuffler Web palette for its light canvas.
+    ///
+    /// Each kind is fitted in `OKLab` at the hue angle of its Tango family, so a
+    /// kind keeps the colour it has in snuffler; its lightness and chroma are what
+    /// the fit chooses.
+    /// What the fit maximises is the closest of the 28 pairs, because that is what
+    /// decides whether a kind can be read off its colour at all: it holds 14.4 here,
+    /// where snuffler's own shades manage 10.7 and the palette this replaced had
+    /// fallen to 4.2 — orange and chocolate had become one colour.
+    /// Idle shades hold 3.1-11.3:1 against the paper and lit ones 2.3-7.3:1.
+    /// A lit shade may sit lower than the idle one it replaces because on white
+    /// lighter *is* less contrast; selection reads as a brightening of 1.35-1.57
+    /// against the kind's own idle shade, which is the signal snuffler gives too
+    /// (its butter2 sits at 1.5 against the paper).
+    pub const SNUFFLER_WEB_LIGHT: Self = Self {
+        idle: [
+            Color32::from_rgb(0xD3, 0x3E, 0x31), // 0 red
+            Color32::from_rgb(0x2D, 0x5A, 0x0B), // 1 green
+            Color32::from_rgb(0x27, 0x66, 0xBE), // 2 blue
+            Color32::from_rgb(0x64, 0x29, 0x00), // 3 orange
+            Color32::from_rgb(0xBB, 0x65, 0xD1), // 4 purple
+            Color32::from_rgb(0xCD, 0x81, 0x00), // 5 brown
+            Color32::from_rgb(0x85, 0x6B, 0x00), // 6 yellow
+            Color32::from_rgb(0x8B, 0x8B, 0x8B), // 7 grey
+        ],
+        lit: [
+            Color32::from_rgb(0xFA, 0x4F, 0x3F),
+            Color32::from_rgb(0x37, 0x72, 0x00),
+            Color32::from_rgb(0x48, 0x87, 0xE3),
+            Color32::from_rgb(0x91, 0x3E, 0x00),
+            Color32::from_rgb(0xD9, 0x7A, 0xF1),
+            Color32::from_rgb(0xEF, 0x97, 0x00),
+            Color32::from_rgb(0x9E, 0x80, 0x00),
+            Color32::from_rgb(0xA1, 0xA4, 0x9E),
+        ],
+    };
+
+    /// The Snuffler Web palette for its dark canvas: the same families, lifted.
+    ///
+    /// Idle shades hold 4.3-12.5:1 against the dark canvas and lit ones 5.9-15.4:1,
+    /// and the closest of the 28 pairs is 16.2.
+    /// Selection brightens by 1.22-1.49: on a dark ground "lighter" soon runs into
+    /// white, where every kind ends up the same pale tint, so the lit shades lift
+    /// less than on paper and keep their chroma instead.
+    pub const SNUFFLER_WEB_DARK: Self = Self {
+        idle: [
+            Color32::from_rgb(0xFF, 0x84, 0x74), // 0 red
+            Color32::from_rgb(0x88, 0xDC, 0x53), // 1 green
+            Color32::from_rgb(0x61, 0x96, 0xE6), // 2 blue
+            Color32::from_rgb(0xC8, 0x59, 0x00), // 3 orange
+            Color32::from_rgb(0xE3, 0x9E, 0xF5), // 4 purple
+            Color32::from_rgb(0xFF, 0xCB, 0x91), // 5 brown
+            Color32::from_rgb(0xC1, 0x9E, 0x00), // 6 yellow
+            Color32::from_rgb(0x79, 0x7C, 0x77), // 7 grey
+        ],
+        lit: [
+            Color32::from_rgb(0xFF, 0xA1, 0x92),
+            Color32::from_rgb(0xB0, 0xF6, 0x8A),
+            Color32::from_rgb(0x7D, 0xB1, 0xFF),
+            Color32::from_rgb(0xE5, 0x6F, 0x24),
+            Color32::from_rgb(0xF2, 0xBE, 0xFF),
+            Color32::from_rgb(0xFF, 0xE6, 0xCA),
+            Color32::from_rgb(0xE4, 0xBA, 0x00),
+            Color32::from_rgb(0x97, 0x9A, 0x95),
+        ],
+    };
+
+    /// The colour of a marker kind, idle or lit.
+    ///
+    /// `kind & 7` always lands inside the palette, so every kind has a colour and
+    /// the fallback is unreachable.
+    #[must_use]
+    pub fn kind(&self, kind: u8, lit: bool) -> Color32 {
+        let table = if lit { &self.lit } else { &self.idle };
+        table
+            .get(usize::from(kind & 7))
+            .copied()
+            .unwrap_or(Color32::from_rgb(204, 0, 0))
+    }
+}
 
 /// Phase names bound to F1..=F9: snuffler's `default_phase_key_mapping`
 /// (config.py:33) with its own `Undefined` fall-through for the unmapped keys.
@@ -257,20 +357,11 @@ impl Marker {
     }
 
     /// The marker's colour in snuffler's state semantics (`select_color`,
-    /// marker.py:306): the brighter "selected" shade when selected or hovered,
-    /// the darker idle shade otherwise. `kind & 7` is always in 0..=7, matching
-    /// the palettes' length; the fallback is unreachable.
+    /// marker.py:306): the palette's lit shade when selected or hovered, its idle
+    /// shade otherwise.
     #[must_use]
-    pub fn color_for(&self, hovered: bool) -> Color32 {
-        let table = if self.selected || hovered {
-            &MARKER_COLORS
-        } else {
-            &MARKER_COLORS_IDLE
-        };
-        table
-            .get((self.kind & 7) as usize)
-            .copied()
-            .unwrap_or(Color32::from_rgb(204, 0, 0))
+    pub fn color_in(&self, palette: &MarkerPalette, hovered: bool) -> Color32 {
+        palette.kind(self.kind, self.selected || hovered)
     }
 
     /// True if this marker spans a time range (vs. a single instant).
@@ -375,14 +466,14 @@ mod tests {
         (85, 87, 83),
     ];
 
-    // This pins the fixed half of `marker-palette-and-labels`
-    // (tests/parity/known_gaps.toml): the two palettes are exactly Qt's
-    // `select_color` arithmetic — `kind*3 + 1` when selected or hovered,
-    // `kind*3 + 2` otherwise — including the chocolate2 entry an earlier
-    // transcription had slipped to chocolate3.
+    // The Snuffler Qt palette is exactly Qt's `select_color` arithmetic over
+    // `g_color_b` — `kind*3 + 1` when selected or hovered, `kind*3 + 2`
+    // otherwise — including the chocolate2 entry an earlier transcription had
+    // slipped to chocolate3.
     #[test]
-    fn the_marker_palettes_are_select_color_over_g_color_b() {
-        for (kind, (sel, idle)) in MARKER_COLORS.iter().zip(&MARKER_COLORS_IDLE).enumerate() {
+    fn the_qt_marker_palette_is_select_color_over_g_color_b() {
+        let palette = MarkerPalette::SNUFFLER_QT;
+        for (kind, (sel, idle)) in palette.lit.iter().zip(&palette.idle).enumerate() {
             assert_eq!(
                 G_COLOR_B.get(kind * 3 + 1).copied(),
                 Some((sel.r(), sel.g(), sel.b())),
@@ -397,15 +488,16 @@ mod tests {
     }
 
     #[test]
-    fn color_for_reads_marker_state_the_way_select_color_does() {
+    fn color_in_reads_marker_state_the_way_select_color_does() {
+        let palette = MarkerPalette::SNUFFLER_QT;
         let mut m = Marker::new(0.0, 0.0, 3);
         // Idle markers wear the darker "3" shade; hovering (Qt's `alerted`) or
         // selecting brightens to the "2" shade — the shade change is how a
         // selected marker reads as selected.
-        assert_eq!(m.color_for(false), Color32::from_rgb(206, 92, 0));
-        assert_eq!(m.color_for(true), Color32::from_rgb(245, 121, 0));
+        assert_eq!(m.color_in(&palette, false), Color32::from_rgb(206, 92, 0));
+        assert_eq!(m.color_in(&palette, true), Color32::from_rgb(245, 121, 0));
         m.selected = true;
-        assert_eq!(m.color_for(false), Color32::from_rgb(245, 121, 0));
+        assert_eq!(m.color_in(&palette, false), Color32::from_rgb(245, 121, 0));
     }
 
     // The F1..=F9 phase names are snuffler's `default_phase_key_mapping`

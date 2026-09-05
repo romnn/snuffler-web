@@ -220,7 +220,7 @@ pub fn render_svg(
         })
     });
     target.set_margin(margin);
-    paint(&mut target, state, view, &pal, &lay, theme, waterfall, true);
+    paint(&mut target, state, view, &pal, &lay, waterfall, true);
     target.finish()
 }
 
@@ -321,16 +321,7 @@ pub fn show(
     let lay = compute_layout(state, view, wave_rect);
     let mut target = EguiTarget::new(painter.clone(), &wf.textures);
     let paint_t0 = js_sys::Date::now();
-    paint(
-        &mut target,
-        state,
-        view,
-        &pal,
-        &lay,
-        theme,
-        waterfall,
-        false,
-    );
+    paint(&mut target, state, view, &pal, &lay, waterfall, false);
     maybe_log_paint_perf(
         waterfall,
         js_sys::Date::now() - paint_t0,

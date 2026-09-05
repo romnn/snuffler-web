@@ -366,10 +366,11 @@ pub fn show(
         // snuffler are always kind 0. `marker_kind` only remembers the last
         // applied choice for the highlight.
         ui.label("Marker:");
+        // The digits wear each kind's lit shade, the one a selected marker wears on
+        // the canvas, so the button and the marker it recolours match.
+        let markers = crate::view::palette_for(ui.ctx().theme(), state.wiggle_theme).markers;
         for k in 0u8..8 {
-            let Some(&col) = snuffler_web_core::markers::MARKER_COLORS.get(usize::from(k)) else {
-                continue;
-            };
+            let col = markers.kind(k, true);
             let selected = state.marker_kind == k;
             let txt = egui::RichText::new(format!("{k}")).color(col).strong();
             if ui

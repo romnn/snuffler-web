@@ -1,28 +1,33 @@
-//! Waveform color palettes independent of any frontend toolkit.
+//! The colours one waveform paint pass draws with, and the theme that picks them.
 
 use ecolor::Color32;
-use snuffler_web_core::state::WiggleTheme;
+use snuffler_web_core::markers::MarkerPalette;
+pub use snuffler_web_core::theme::Theme;
+use snuffler_web_core::theme::WiggleTheme;
 
-/// Frontend color-scheme polarity needed by the renderer.
+use crate::themes;
+
+/// One of snuffler's seven trace-box styles: the fill behind a channel's data and,
+/// for the Qt theme, the outline around it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Theme {
-    /// Dark surfaces and light foregrounds.
-    Dark,
-    /// Light surfaces and dark foregrounds.
-    Light,
-}
-
-impl Theme {
-    /// Maps a frontend-specific dark-mode flag into renderer vocabulary.
-    #[must_use]
-    pub const fn from_dark(dark: bool) -> Self {
-        if dark { Self::Dark } else { Self::Light }
-    }
+pub struct BoxStyle {
+    /// The fill: translucent under the Qt theme (Tango "1" at alpha 100 over white)
+    /// and opaque under the web themes, whose fills are fitted against their canvas.
+    pub fill: Color32,
+    /// The one-pixel outline, or `None`.
+    /// Only snuffler's own boxes carry one; the web themes are bare fills, since a
+    /// border on every row is more line than the wiggle it frames.
+    pub frame: Option<Color32>,
 }
 
 /// Colors used by one waveform paint pass.
+///
+/// A theme is this data and nothing else: the painter reads the palette and never
+/// asks which theme produced it, so every theme is drawn by the same code.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
+    /// The canvas polarity this palette was fitted for.
+    pub theme: Theme,
     /// Canvas background.
     pub bg: Color32,
     /// Default waveform stroke.
@@ -47,75 +52,76 @@ pub struct Palette {
     pub label_rounding: f32,
     /// Pointer crosshair.
     pub cursor: Color32,
+    /// The ramp Color Traces numbers the sorted coloring keys into.
+    pub strokes: [Color32; 7],
+    /// The trace-box styles, indexed by the pile's box style
+    /// (`determine_box_styles`, `pile_viewer.py:2947`): one per contiguous run of a
+    /// channel's data, stepping at every channel change and gap.
+    pub boxes: [BoxStyle; 7],
+    /// The marker kinds' colours.
+    pub markers: MarkerPalette,
+    /// The plate under a marker label.
+    ///
+    /// Qt paints it white whatever lies beneath (`draw_label`, gui/util.py:293), so
+    /// a label stays readable over any wiggle.
+    /// The web themes paint it in their canvas colour instead: their marker shades
+    /// are chosen against that canvas, and a white plate would erase a light
+    /// marker on a dark one.
+    pub marker_label_bg: Color32,
+}
+
+impl Palette {
+    /// The box style for a pile style index, wrapping past the seventh the way
+    /// snuffler's `box_styles[istyle % len(box_styles)]` does.
+    #[must_use]
+    pub fn box_style(&self, style: usize) -> BoxStyle {
+        // The modulo keeps the fetch inside the array; the fallback is unreachable.
+        self.boxes
+            .get(style % self.boxes.len())
+            .copied()
+            .unwrap_or(BoxStyle {
+                fill: self.bg,
+                frame: None,
+            })
+    }
+
+    /// The stroke for a numbered coloring key, wrapping past the seventh.
+    ///
+    /// The Qt theme does not wrap — `pyrocko.plot.color` goes black past its list —
+    /// which the painter handles from [`WiggleTheme::mirrors_qt_coloring`].
+    #[must_use]
+    pub fn stroke(&self, index: usize) -> Color32 {
+        self.strokes
+            .get(index % self.strokes.len())
+            .copied()
+            .unwrap_or(self.trace)
+    }
 }
 
 /// The canvas polarity a wiggle theme actually renders on.
 ///
-/// Usually the app's own light/dark preference, but a theme may pin it: Snuffler Qt
-/// is white-canvas because snuffler is, and the frontend disables the light/dark
-/// control while it is selected rather than letting the two disagree.
+/// Usually the app's own light/dark preference, but a theme may pin it (see
+/// [`WiggleTheme::pinned_polarity`]), and the frontend disables the light/dark
+/// control while such a theme is selected rather than letting the two disagree.
 #[must_use]
 pub fn canvas_theme(preference: Theme, wiggle: WiggleTheme) -> Theme {
-    if wiggle.forces_light() {
-        Theme::Light
-    } else {
-        preference
-    }
+    wiggle.pinned_polarity().unwrap_or(preference)
 }
 
-/// Selects the waveform palette for the frontend color scheme and user theme.
+/// Selects the waveform palette for the frontend color scheme and wiggle theme.
 ///
-/// The Snuffler Qt theme is snuffler's own surface, and only exists on white — the
-/// dark arm is unreachable through the UI (`WiggleTheme::forces_light`) and returns
-/// the same white palette rather than inventing one.
-///
-/// Snuffler Web is one design at two luminance levels, not two designs. Both arms
-/// share a slightly blue-cool neutral ramp; each picks the step that puts the same
-/// contrast between canvas, chrome and ink. The canvases are held just off the
-/// extremes (250 rather than 255, 20 rather than 0) because a waveform against pure
-/// white or pure black is harsher than it needs to be for hours of reading.
+/// A pinned theme returns its one palette whatever `theme` says, so a caller that
+/// has not gone through [`canvas_theme`] still gets the canvas the theme owns.
 #[must_use]
 pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
-    match (theme, wiggle) {
-        (_, WiggleTheme::SnufflerQt) => Palette {
-            bg: Color32::from_rgb(255, 255, 255),
-            trace: Color32::from_rgb(85, 87, 83),
-            // The zero line is a data reference and the grid is decoration, so
-            // the zero line always carries at least the grid's contrast. Under
-            // this theme it is snuffler's own: Qt draws the zero line with the
-            // current trace pen (pile_viewer.py:3431), aluminium5 by default.
-            grid: Color32::from_rgb(236, 236, 236),
-            zero: Color32::from_rgb(85, 87, 83),
-            axis_text: Color32::from_rgb(85, 87, 83),
-            sep: Color32::from_rgb(214, 214, 214),
-            label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
-            label_pad: 0.0,
-            label_rounding: 0.0,
-            cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
-        },
-        (Theme::Light, WiggleTheme::SnufflerWeb) => Palette {
-            bg: Color32::from_rgb(250, 250, 251),
-            trace: Color32::from_rgb(38, 42, 51),
-            grid: Color32::from_rgb(235, 237, 241),
-            zero: Color32::from_rgb(226, 228, 233),
-            axis_text: Color32::from_rgb(90, 96, 108),
-            sep: Color32::from_rgb(223, 226, 232),
-            label_bg: Color32::from_rgba_unmultiplied(250, 250, 251, 214),
-            label_pad: 3.0,
-            label_rounding: 3.0,
-            cursor: Color32::from_rgba_unmultiplied(38, 42, 51, 46),
-        },
-        (Theme::Dark, WiggleTheme::SnufflerWeb) => Palette {
-            bg: Color32::from_rgb(20, 22, 28),
-            trace: Color32::from_rgb(226, 229, 236),
-            grid: Color32::from_rgb(38, 42, 51),
-            zero: Color32::from_rgb(46, 50, 60),
-            axis_text: Color32::from_rgb(150, 157, 172),
-            sep: Color32::from_rgb(45, 49, 59),
-            label_bg: Color32::from_rgba_unmultiplied(20, 22, 28, 214),
-            label_pad: 3.0,
-            label_rounding: 3.0,
-            cursor: Color32::from_rgba_unmultiplied(226, 229, 236, 52),
-        },
+    let theme = canvas_theme(theme, wiggle);
+    match wiggle {
+        WiggleTheme::SnufflerQt => themes::snuffler_qt::palette(),
+        WiggleTheme::SnufflerWeb => themes::house::palette(theme),
+        WiggleTheme::SnufflerWeb1 => themes::earthy::palette(theme),
+        WiggleTheme::SnufflerWeb2 => themes::cool::palette(theme),
+        WiggleTheme::SnufflerWeb3 => themes::sky::palette(theme),
+        WiggleTheme::SnufflerWeb4 => themes::forest::palette(theme),
+        WiggleTheme::SnufflerWeb5 => themes::sunset::palette(theme),
     }
 }

@@ -64,16 +64,7 @@ fn render_scenario(input_root: &Path, output_root: &Path, scenario: &Path) -> ey
     let rect = Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, HEIGHT));
     let layout = compute_layout(&state, &view, rect);
     let mut target = SvgTarget::new(WIDTH, HEIGHT, HashMap::new(), approximate_text_size);
-    paint(
-        &mut target,
-        &state,
-        &view,
-        &colors,
-        &layout,
-        theme,
-        false,
-        true,
-    );
+    paint(&mut target, &state, &view, &colors, &layout, false, true);
 
     let destination = output_root.join(scenario);
     fs::create_dir_all(&destination)

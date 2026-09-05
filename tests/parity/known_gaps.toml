@@ -517,24 +517,89 @@ so a key keeps its colour as the view scrolls or pages, exactly as in Qt. The ol
 behaviour numbered over the on-screen slice and recoloured the same station on every
 scroll, which snuffler cannot do; that is gone on every theme.
 
-Two deliberate departures remain, both belonging to **Snuffler Web**, this frontend's
-own theme, and both signed off. It keeps a palette of its own — seven hues at the
-lightness its canvas needs, since a colour legible on near-white is not legible on
-near-black — and wraps it rather than going black past the seventh key. And it falls
+Two deliberate departures remain, both belonging to the **Snuffler Web** themes, this
+frontend's own, and both signed off. Each keeps a palette of its own — seven hues at
+the lightness its canvas needs, since a colour legible on near-white is not legible on
+near-black, and fitted for the widest worst pair of the 21, since a coloring key that
+lands on a neighbour's colour is a wrong statement about the data — and wraps it
+rather than going black past the seventh key. And they fall
 back to the per-track label when the coloring key is empty, so single-location data
-stays varied where snuffler would paint every trace alike. It does not claim to be
+stays varied where snuffler would paint every trace alike. They do not claim to be
 snuffler; the Qt theme is where fidelity lives, and it is light-only for the reason
-`qt-theme-residual-chrome` gives.
+`qt-theme-residual-chrome` gives. The trace *boxes* are not a departure under any
+theme: every palette colours a box by the pile's `determine_box_styles` index, exactly
+as Qt's `box_styles[istyle % 7]` does, and only the seven colours differ.
 
-The *default* follows the same split, and used to be a divergence in its own right
-(`color-traces-default`, removed with the entry that excused it). Qt adds the menu
-item without a `setChecked` (`pile_viewer.py:1076`), so upstream boots monochrome
-strokes over colored trace boxes; the port booted colored under every theme, which
-made the theme claiming fidelity the one place the difference showed. `Color Traces`
-is now backed by an `Option<bool>` that follows the theme until the user sets it:
-off under Snuffler Qt, on under Snuffler Web, honoured under both once chosen. Tier
-3 reads the boot checkbox and now sees the two agree — which is why nothing excuses
-this any more.
+The *default* follows the theme's `StrokePolicy`, and used to be a divergence in its
+own right (`color-traces-default`, removed with the entry that excused it). Qt adds
+the menu item without a `setChecked` (`pile_viewer.py:1076`), so upstream boots
+monochrome strokes over colored trace boxes; the port booted colored under every
+theme, which made the theme claiming fidelity the one place the difference showed.
+`Color Traces` is now backed by an `Option<bool>` that follows the theme until the
+user sets it: off under Snuffler Qt, on under the web themes built around coloured
+strokes, and, for the mood themes that keep snuffler's grey wiggle, on exactly where
+the trace boxes stop separating the traces — with the boxes hidden, or under a
+location-grouped subsort where one box colour covers a whole row. Once the user
+clicks it, their choice is honoured under every theme. The boxes-hidden half has no
+counterpart upstream, because Qt's two toggles are independent there; it belongs to
+the mood themes alone, which carry their palette in the boxes and so have nothing
+left to carry it when the boxes go. Snuffler Qt keeps its grey wiggle with the boxes
+off, as upstream does.
+
+A location-grouped subsort is the exception to that: there several traces share one
+row, the coloring key is the only thing telling them apart, and the box style cannot
+stand in for it — the style steps per contiguous run, so every trace of the row starts
+inside the same run and keying the strokes on it painted the whole row one colour.
+Grouped rows therefore keep colouring by the key whether the boxes are drawn or not,
+which is what Qt does with Color Traces on.
+
+With the boxes hidden a web theme's coloured strokes also change *which* key they
+are numbered by: the box style rather than the coloring key. The two carry different
+classes — a box is `determine_box_styles`, a stroke is `gather_keys(color)` — and on
+the single-location data most people open, every trace shares one coloring key, so
+colouring by it would draw twelve identical wiggles and lose the row distinction the
+boxes had been carrying. Taking the box style hands that exact class to the wiggle
+instead, in the ink cut from the same hue as the box, so hiding the boxes restyles
+the view without changing what it says. Snuffler has no counterpart because it never
+recolours on Show Boxes. Pinned by paint.rs.
+
+Show Boxes itself now follows the canvas until the user clicks it: on the light canvas
+the boxes are drawn, on the dark one they are not. Snuffler has no dark canvas and
+always draws them, so this is web-only by construction and cannot diverge on the
+canvas snuffler owns. The reason is the same coupling the ink has: a tinted block on
+white is a wash the wiggle reads straight through, while on near-black it must be dark
+enough to stay behind the data, and a screen of them reads as banding. The user's own
+click outranks it under either canvas and is what gets persisted — an untouched setting
+is stored as absent rather than as its current value, so it keeps following the canvas
+instead of freezing at whichever one happened to be showing when the settings were
+first saved.
+
+Tier 3 reads the boot checkbox and now sees the two agree — which is why nothing
+excuses this any more.
+"""
+
+[[manual]]
+key = "marker-palette-theming"
+bucket = "soft"
+title = "Marker kinds: Tango under the Qt theme, the same families in the web theme's own shades"
+enforce = "nothing — no tier compares rendering; the family-per-kind, contrast and lit-is-lighter halves are pinned by paint.rs unit tests, and the Qt palette's `select_color` arithmetic by markers.rs"
+why = """
+Qt colours a marker by kind from `g_color_b` (marker.py:53): the Tango "3" shade
+idle, the "2" shade when selected or alerted (`select_color`, marker.py:306). Under
+the **Snuffler Qt** theme the web uses exactly those, on Qt's white label plate.
+
+The **Snuffler Web** themes keep the contract and change the shades. Kind N is the
+same colour
+family on every theme — 0 red, 1 green, 2 blue, 3 orange, 4 purple, 5 brown,
+6 yellow, 7 grey — fitted in OKLab at the Tango family's own hue angle, and a
+selected marker still reads as selected by lifting to a lighter shade of its kind.
+What moves is lightness: the Tango shades were built for white, and on the dark
+canvas skyblue3 and plum3 sit below 2:1, while on the light canvas the lit
+chameleon2 and butter2 sit below 2:1. The web shades hold 4.8:1 and up idle on
+light and 6.3:1 and up idle on dark, and the label plate is the canvas colour rather
+than white, so a light marker's label survives the dark canvas. The kind buttons in
+the control strip and the table's symbol column take the same palette, so a kind
+looks the same wherever it is named.
 """
 
 [[manual]]
@@ -580,14 +645,14 @@ never been held against snuffler at all.
 
 **Scope: light only, and that is now structural.** This entry used to carry a second
 half about a dark variant of this theme. There is no such thing any more.
-`WiggleTheme::forces_light` pins the Snuffler Qt canvas to white and the frontend
+`WiggleTheme::pinned_polarity` pins the Snuffler Qt canvas to white and the frontend
 disables the light/dark control while it is selected, saying why on hover. Snuffler is
 white-canvas by construction — `aluminium5` traces on `QPalette.Base`, light Tango box
 fills at alpha 100, a white-at-alpha-100 label brush that is invisible on white — and a
 dark rendering of those numbers was never snuffler with the lights off, it was a
-different theme wearing the name. Dark belongs to Snuffler Web, which was designed for
-both. So every parity claim about this theme is a claim about light, and no scenario
-can accidentally assert one about dark.
+different theme wearing the name. Dark belongs to the web themes that were designed
+for both canvases. So every parity claim about this theme is a claim about light, and
+no scenario can accidentally assert one about dark.
 
 The rest of the theme is matched and pinned elsewhere: the canvas white, the
 `aluminium5` traces and axis, the white-at-100 label brush, the seven Tango box styles

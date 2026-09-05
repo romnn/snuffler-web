@@ -1,12 +1,10 @@
 //! Marker-table serialization, sorting, and inline-cell widgets.
 
-use egui::Color32;
-
 use snuffler_web_core::bridge::{
     Bridge, EventSnapshot, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
 };
 use snuffler_web_core::marker_store::MarkerId;
-use snuffler_web_core::markers::{MARKER_COLORS, Marker, MarkerColumn};
+use snuffler_web_core::markers::{Marker, MarkerColumn, MarkerPalette};
 use snuffler_web_core::state::AppState;
 
 /// Frontend-local marker-table sorting and inline editing state.
@@ -97,6 +95,7 @@ impl MarkerTable {
         self.ensure_order(state);
         let (mut sort, mut ascending) = (self.sort, self.sort_ascending);
         let mut edit = self.edit.take();
+        let markers = crate::view::palette_for(ui.ctx().theme(), state.wiggle_theme).markers;
         let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
         egui::ScrollArea::vertical().show_rows(
             ui,
@@ -117,7 +116,7 @@ impl MarkerTable {
                                 continue;
                             };
                             state.markers.edit_with_change_flag(id, |marker| {
-                                marker_row(ui, id, marker, &mut edit, output)
+                                marker_row(ui, id, marker, &markers, &mut edit, output)
                             });
                         }
                     });
@@ -334,15 +333,13 @@ fn marker_row(
     ui: &mut egui::Ui,
     row: MarkerId,
     marker: &mut Marker,
+    markers: &MarkerPalette,
     edit: &mut Option<(MarkerColumn, MarkerId, String)>,
     output: &mut TableOutput,
 ) -> bool {
     let mut changed = false;
     let event_before = event_snapshot(marker);
-    let color = MARKER_COLORS
-        .get((marker.kind & 7) as usize)
-        .copied()
-        .unwrap_or(Color32::from_rgb(204, 0, 0));
+    let color = markers.kind(marker.kind, true);
     let symbol = egui::RichText::new(if marker.is_event { "▲" } else { "●" }).color(color);
     // Both cells select the row, and both say so: without this the only place
     // selection surfaces is the table's "N markers · M selected" summary, which

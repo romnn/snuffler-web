@@ -5,6 +5,7 @@
 
 use crate::command::CommandLine;
 use crate::marker_store::{MarkerId, MarkerStore};
+use crate::theme::{Theme, WiggleTheme};
 
 /// Number of tracks the auto-fit track height targets on first load, and the
 /// reset target for the "=" key.
@@ -148,72 +149,6 @@ impl ViewMode {
     }
 }
 
-/// Visual treatment applied to time-domain traces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WiggleTheme {
-    /// Snuffler's own look, reproduced: white canvas, Tango trace boxes, its
-    /// `graph_colors` strokes. Light only — see [`Self::forces_light`].
-    SnufflerQt,
-    /// This frontend's own, designed for both light and dark.
-    SnufflerWeb,
-}
-
-impl WiggleTheme {
-    /// Returns the frontend label for this theme.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            WiggleTheme::SnufflerQt => "Snuffler Qt",
-            WiggleTheme::SnufflerWeb => "Snuffler Web",
-        }
-    }
-
-    /// Whether this theme draws a rule between rows, absent an explicit choice from
-    /// the user. Snuffler draws none, boxes or no boxes.
-    #[must_use]
-    pub const fn default_track_separators(self) -> bool {
-        matches!(self, WiggleTheme::SnufflerWeb)
-    }
-
-    /// Whether this theme colors the trace strokes by their coloring key, absent an
-    /// explicit choice from the user.
-    ///
-    /// Snuffler adds `Color Traces` to its View menu without a `setChecked`
-    /// (`pile_viewer.py:1076`), so upstream boots monochrome over colored trace
-    /// boxes. [`Self::SnufflerQt`] is the theme that claims fidelity, so it boots
-    /// the same way. [`Self::SnufflerWeb`] is built the other way round — colored
-    /// strokes are how it tells the members of a location-grouped row apart — and
-    /// booting it monochrome would hide that until the user found a checkbox.
-    #[must_use]
-    pub const fn default_color_traces(self) -> bool {
-        matches!(self, WiggleTheme::SnufflerWeb)
-    }
-
-    /// Whether this theme pins the canvas to light regardless of the app's
-    /// light/dark preference.
-    ///
-    /// Snuffler has no dark mode: its canvas is `QPalette.Base`, its traces
-    /// `aluminium5`, its boxes the light Tango fills at alpha 100 — a palette built
-    /// for white and only coherent on it. A dark variant of this theme would not be
-    /// snuffler rendered differently, it would be a different theme wearing the
-    /// name. So the theme owns the canvas, and the light/dark control belongs to
-    /// [`Self::SnufflerWeb`], which was designed for both.
-    #[must_use]
-    pub const fn forces_light(self) -> bool {
-        matches!(self, WiggleTheme::SnufflerQt)
-    }
-
-    /// The inverse of [`WiggleTheme::label`], for a theme restored from the
-    /// persisted settings.
-    #[must_use]
-    pub fn from_wire(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|theme| theme.label() == value)
-    }
-
-    /// Themes in menu order.
-    pub const ALL: [WiggleTheme; 2] = [WiggleTheme::SnufflerQt, WiggleTheme::SnufflerWeb];
-}
-
 /// Station sort order (snuffler's "Sorting" station radio group,
 /// pile_viewer.py:986-1013). Distance/azimuth variants need station coordinates
 /// and an active event; without them the bridge falls back to name order.
@@ -323,6 +258,13 @@ impl Subsort {
             Subsort::NscGroupL => "Network, Station, Channel (by Location)",
             Subsort::SncGroupL => "Station, Network, Channel (by Location)",
         }
+    }
+
+    /// Whether this subsort gathers a channel's locations onto one row, so a row can
+    /// carry several traces that only colour tells apart.
+    #[must_use]
+    pub const fn groups_locations(self) -> bool {
+        matches!(self, Subsort::NscGroupL | Subsort::SncGroupL)
     }
 
     /// The inverse of [`Subsort::as_str`]. See [`SortMode::from_wire`].
@@ -665,16 +607,18 @@ pub struct AppState {
     pub wiggle_theme: WiggleTheme,
     /// The per-trace sample budget the visible-length control asks the bridge for.
     pub visible_length: VisibleLength,
-    /// Whether trace extents have visible boxes.
-    pub show_boxes: bool,
+    /// Whether trace extents have visible boxes: the user's choice if they made
+    /// one, otherwise what the canvas defaults to.
+    /// Read it through [`AppState::boxes_visible`], never directly.
+    pub show_boxes: Option<bool>,
     /// Whether traces are clipped to their own rows.
     pub clip_traces: bool,
     /// Whether traces use NSLC-derived colors.
     ///
-    /// `None` follows the theme, which is what keeps the Snuffler Qt theme booting
-    /// the way snuffler boots (see [`WiggleTheme::default_color_traces`]); `Some` is
-    /// the user overriding that, honoured under both themes. Read it through
-    /// [`AppState::color_traces`], never directly.
+    /// `None` follows the theme's [`crate::theme::StrokePolicy`], which is what keeps
+    /// the Snuffler Qt theme booting the way snuffler boots; `Some` is the user
+    /// overriding that, honoured under every theme.
+    /// Read it through [`AppState::color_traces`], never directly.
     pub show_color_traces: Option<bool>,
     /// Whether line tessellation uses feathered antialiasing.
     pub antialiasing: bool,
@@ -918,7 +862,7 @@ impl Default for AppState {
             view_mode: ViewMode::Wiggle,
             wiggle_theme: WiggleTheme::SnufflerQt,
             visible_length: VisibleLength::Adaptive,
-            show_boxes: true,
+            show_boxes: None,
             clip_traces: true,
             // snuffler users expect colour-coded traces; default on.
             show_color_traces: None,
@@ -1068,12 +1012,41 @@ impl AppState {
             .unwrap_or_else(|| self.wiggle_theme.default_track_separators())
     }
 
-    /// Whether trace strokes are colored: the user's choice if they made one,
-    /// otherwise whatever the current theme does by default.
+    /// Whether trace strokes are colored under the live subsort: the user's choice
+    /// if they made one, otherwise what the current theme's
+    /// [`crate::theme::StrokePolicy`] says.
     #[must_use]
-    pub fn color_traces(&self) -> bool {
-        self.show_color_traces
-            .unwrap_or_else(|| self.wiggle_theme.default_color_traces())
+    pub fn color_traces(&self, theme: Theme) -> bool {
+        self.color_traces_for(self.subsort, theme)
+    }
+
+    /// [`Self::color_traces`] for a given subsort.
+    ///
+    /// The painter asks about the subsort a reply was produced under rather than the
+    /// live one, so a grouped policy cannot flip the strokes mid round trip.
+    /// The boxes are read live, since the ones a policy reasons about are the ones
+    /// this frame draws.
+    #[must_use]
+    pub fn color_traces_for(&self, subsort: Subsort, theme: Theme) -> bool {
+        self.show_color_traces.unwrap_or_else(|| {
+            self.wiggle_theme
+                .stroke_policy()
+                .colors(subsort, self.boxes_visible(theme))
+        })
+    }
+
+    /// Whether the trace boxes are drawn: the user's choice if they made one,
+    /// otherwise what the canvas defaults to.
+    ///
+    /// Paper gets them and a dark canvas does not.
+    /// A tinted block on white is a wash the wiggle reads straight through, but the
+    /// same block on near-black has to be dark enough to stay behind the data, and a
+    /// screen of them reads as banding rather than as information.
+    /// Snuffler has no dark canvas and so no such default; the user's own click
+    /// outranks this under either.
+    #[must_use]
+    pub fn boxes_visible(&self, theme: Theme) -> bool {
+        self.show_boxes.unwrap_or(theme == Theme::Light)
     }
 
     /// Whether markers of this kind are currently drawn/selectable (the
