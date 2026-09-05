@@ -19,16 +19,18 @@
 //! The web themes draw no box outlines: the fill is the box, and a border on every
 //! row is more line than the wiggle it frames.
 //!
-//! The web colours are fitted in `OKLab` rather than picked by eye.
-//! A theme seeds seven hues and their chroma relationships from a palette designed
-//! as a family, then the fit places the seven on the lightness axis for the widest
-//! *worst* pair — over all 21 pairs, since the eye finds the collision rather than
-//! the average — under the contrast floors below.
-//! Chroma stays near what it was seeded at: it is what makes a muted blue read as
-//! part of an earthy set instead of a cyan, so the separation has to come from
-//! lightness and hue.
+//! The web colours are designed as pigment families and fitted in `OKLab` by
+//! `scripts/fit-wiggle-themes.py`, then reviewed in the running viewer.
+//! Candidates bound lightness, chroma and contrast before the fit, keeping a
+//! coloured ink from collapsing towards black or becoming a luminous neon.
+//! Every measurement uses rounded sRGB bytes, including all 21 pairs.
+//! Separation targets saturate; beyond them, the fit favours the family's intended
+//! chroma relationships and a quiet, consistent ink weight.
+//! Light fills stay below 1.9:1 against white and dark fills below 2.2:1,
+//! preserving the monochrome ink above every block.
+//! Dark coloured strokes stay below 12.5:1 to avoid luminous accents.
 //!
-//! The stroke ramps are then *ordered* as well as fitted, because data has two or
+//! The stroke ramps are *ordered* as well as fitted, because data has two or
 //! three coloring keys far more often than seven and the first entries are the ones
 //! a reader compares.
 //! Snuffler's own ramp is built that way — red, blue, green, 30.9 apart over its
@@ -36,7 +38,8 @@
 //! first instead of spreading the seven evenly.
 //! Light and dark are fitted together against whichever separates worse, since a key
 //! keeps one index across a theme switch and so the two canvases share an ordering.
-//! The figures each module quotes come from that fit.
+//! The first three hues are designed as distinct lead pigments, with four supporting
+//! colours completing the family rather than an evenly spaced colour wheel.
 
 pub mod cool;
 pub mod earthy;
@@ -198,9 +201,9 @@ mod tests {
         // The ink and the boxes are coupled, since the wiggle has to read over
         // whatever it crosses, and snuffler resolves that by keeping its boxes pale:
         // 1.10-1.84, with its pen clearing 3.98 over the scarletred one.
-        // The web themes keep their blocks bold instead and spend the difference on
-        // the ink, so the floor here is 3:1, WCAG's for a graphical object, rather
-        // than snuffler's own 3.98.
+        // The 3:1 graphical-object floor leaves room for stronger blocks than
+        // snuffler's own 3.98 permits; a theme may choose softer fills for more
+        // comfortable ink without changing that acceptance floor.
         // The dark canvas has no such coupling — its ink is light on a dark ground
         // and has the whole range to itself — so its blocks reach 2.6.
         for wiggle in WiggleTheme::ALL {
@@ -255,6 +258,11 @@ mod tests {
                 StrokePolicy::Monochrome | StrokePolicy::ColoredWhenBoxesCannotSeparate => 3.0,
             };
             for (index, stroke) in pal.strokes.iter().enumerate() {
+                let chroma = oklab_chroma(*stroke);
+                assert!(
+                    chroma >= 0.06,
+                    "{wiggle:?}/{theme:?}: stroke {index} lost its colour: {chroma:.3}"
+                );
                 let ink = contrast(*stroke, pal.bg);
                 assert!(
                     ink >= 4.5,
@@ -286,10 +294,8 @@ mod tests {
         // The measure is the closest of all 21 pairs, because that is the one a
         // reader trips over; about 2 is the smallest difference the eye catches at
         // all, so these floors sit several times above merely-visible.
-        // The fitted palettes run 6.6-12.9 on boxes and 11.1-14.1 on strokes; the
-        // floors leave the muted themes room, since a wash trades some separation
-        // for its lightness, and still catch the collisions this replaced - the
-        // palettes before it had pairs at 1.0.
+        // The floors leave the muted themes room, since a wash trades some
+        // separation for its lightness, while still catching class collisions.
         // Strokes carry more of the load than fills: they are thin, and under
         // `ColoredWhenBoxesCannotSeparate` they are the only thing left once the
         // boxes are hidden.
@@ -356,7 +362,7 @@ mod tests {
 
     #[test]
     fn a_stroke_index_keeps_its_hue_across_the_canvases() {
-        // Light and dark are fitted separately, but key N stays the same colour
+        // Light and dark have their own ink weights, but key N stays the same colour
         // family in both, so a coloring key keeps its identity across a switch.
         for wiggle in WiggleTheme::ALL {
             if wiggle.pinned_polarity().is_some() {

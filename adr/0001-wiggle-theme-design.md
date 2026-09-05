@@ -36,26 +36,26 @@ trade the look away (that has happened, and it was wrong both times).
 
 ## Enforced floors
 
-All distances are OKLab ΔE × 100, where ~2 is the smallest difference the eye resolves at
-all. Enforced in `crates/snuffler-web-render/src/themes/mod.rs`.
+Colour-separation distances are OKLab ΔE × 100, where ~2 is the smallest difference the
+eye resolves at all. Enforced in `crates/snuffler-web-render/src/themes/mod.rs`.
 
 | Quantity | Floor | Currently |
 | --- | --- | --- |
-| Ink vs canvas | ≥ 7.0 | 7.2 – 15.4 |
-| Block tint vs canvas | 1.08 – 2.6 | 1.18 – 2.50 |
-| Ink over any block | ≥ 3.0 | 3.2 – 6.8 |
-| Stroke vs canvas | ≥ 4.5 | 6.4 – 8.3 |
-| Stroke over any block | ≥ 3.0 (3.5 if always coloured) | 3.1 – 3.7 |
-| Worst of the 21 block pairs | ≥ 6.0 | 6.6 – 12.0 |
-| Worst of the 21 stroke pairs | ≥ 10.0 | 10.5 – 13.5 |
-| **First two coloring keys** | **≥ 22** | 22.9 – 42.4 |
-| **First three coloring keys** | **≥ 18** | 18.8 – 27.0 |
+| Ink vs canvas | ≥ 7.0 | 7.23 – 15.42 |
+| Block tint vs canvas | 1.08 – 2.6 | 1.15 – 2.07 |
+| Ink over any block | ≥ 3.0 | 4.32 – 8.25 |
+| Stroke vs canvas | ≥ 4.5 | 6.31 – 8.07 |
+| Stroke over any block | ≥ 3.0 (3.5 if always coloured) | 3.44 – 4.31 |
+| Worst of the 21 block pairs | ≥ 6.0 | 6.99 – 7.05 |
+| Worst of the 21 stroke pairs | ≥ 10.0 | 10.10 – 10.86 |
+| **First two coloring keys** | **≥ 22** | 23.53 – 27.12 |
+| **First three coloring keys** | **≥ 18** | 18.51 – 22.03 |
 | Worst of the 28 marker pairs, idle and lit | ≥ 11 | 14.3 – 16.2 |
 | Marker idle vs canvas | ≥ 3.0 light, 4.3 dark | 3.1 – 4.3 |
 | Marker lit vs canvas | ≥ 2.2 light, 4.5 dark | 2.3 – 5.9 |
 | Marker lit brighter than its own idle | strict | 1.22 – 1.57× |
 | Chrome: zero line / separator / grid / axis text | 1.3 / 1.2 / 1.1 / 4.5 | held |
-| Stroke chroma | ≥ 0.06 | 0.059 – 0.077 |
+| Stroke chroma | ≥ 0.06 | 0.071 – 0.095 |
 
 ## Optimization goals, in priority order
 
@@ -71,10 +71,30 @@ Each saturates — past the cap, spend the freedom on the next goal down.
 3. **Worst pair over all 21**, never adjacent pairs only. Neighbour-only checking is what
    let index 1 and index 5 land on the same colour.
 4. **Colour-vision deficiency**, soft: maximise the worst pair under Machado protan/deutan/
-   tritan once the above are satisfied. Currently 4.3 – 6.2 on blocks.
+   tritan once the above are satisfied. Currently 1.6 – 2.9 on blocks.
 
 Light and dark are fitted **jointly**, scored on whichever canvas separates worse, because
 a key keeps one index across a theme switch and so the two canvases share one ordering.
+
+## Palette fitting
+
+The six families are Fieldbook (house), Kiln, Fjord, Daybreak, Herbarium and Afterglow.
+`uv run python scripts/fit-wiggle-themes.py` regenerates their plain Rust tables.
+Each starts with three contrasting lead pigments and four supporting tones, with a fixed
+hue per index shared by both canvases. Candidates bound chroma and ink contrast before
+fitting, reject out-of-gamut colours, and measure the rounded sRGB bytes. Both canvases
+are scored together, with each pair owned by whichever canvas separates it less.
+
+Separation targets saturate at 23.5 for the first pair, 19.5 for the first three, 10.8
+for all strokes and 7 for blocks; the tests remain the acceptance floors. Within those
+bounds the fit favours the designed chroma relationships and moderate ink weight, with
+Machado severity-1 protan/deutan/tritan separation as a soft tie-break. The quieter washes
+have less CVD separation than the bolder palettes; this is a softness tradeoff, not a
+claim of colour-blind-safe categorical encoding.
+
+Light fills are capped at 1.9:1 and dark fills at 2.2:1 in the candidate pool, keeping
+both grey and coloured ink readable over every fill. Runtime rendering remains a table
+lookup. Marker families, their shared shades, colour meanings and defaults are unchanged.
 
 ## Defaults
 
@@ -99,7 +119,8 @@ starts in the same run and would collapse to one colour.
 
 - **Ink weight ↔ block weight.** A grey ink at snuffler's 7.3:1 cannot read over a heavy
   block: at Qt's own 3.98 comfort level it caps blocks near 1.87, which is why snuffler's
-  boxes are pastel. We keep blocks bold and hold the 3:1 graphical-object floor instead.
+  boxes are pastel. The 3:1 graphical-object floor permits stronger blocks, while the
+  pigment fitter chooses softer fills for more comfortable ink.
 - **On white, "selected" is lighter and therefore *lower* contrast.** A lit marker may sit
   below its idle shade against the canvas; selection reads as a lift against its own idle
   shade, as snuffler's does (butter2 reaches only 1.5 on paper).

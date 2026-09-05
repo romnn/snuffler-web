@@ -518,9 +518,11 @@ behaviour numbered over the on-screen slice and recoloured the same station on e
 scroll, which snuffler cannot do; that is gone on every theme.
 
 Two deliberate departures remain, both belonging to the **Snuffler Web** themes, this
-frontend's own, and both signed off. Each keeps a palette of its own — seven hues at
+frontend's own, and both signed off. The six palettes are Fieldbook, Kiln, Fjord,
+Daybreak, Herbarium and Afterglow; their pigment fitting and visual review follow
+`adr/0001-wiggle-theme-design.md`. Each keeps a palette of its own — seven hues at
 the lightness its canvas needs, since a colour legible on near-white is not legible on
-near-black, and fitted for the widest worst pair of the 21, since a coloring key that
+near-black, and fitted to keep all 21 pairs distinct, since a coloring key that
 lands on a neighbour's colour is a wrong statement about the data — and wraps it
 rather than going black past the seventh key. And they fall
 back to the per-track label when the coloring key is empty, so single-location data

@@ -94,6 +94,7 @@ include = [
     "qt/make_demo.py",
     "scripts/build-examples.py",
     "scripts/fetch-example.py",
+    "scripts/fit-wiggle-themes.py",
     "tests/parity/**/*.py",
     "tests/codegen_missing_activity.py",
     "tests/seisbench_validate.py",

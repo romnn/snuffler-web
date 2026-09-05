@@ -75,17 +75,20 @@ pub enum WiggleTheme {
     /// `graph_colors` strokes.
     /// Light only, see [`Self::pinned_polarity`].
     SnufflerQt,
-    /// This frontend's own: tinted blocks under strokes coloured by key.
+    /// Fieldbook: mineral blues, brick red and leaf green, balanced by quieter
+    /// supporting inks.
+    /// The one web theme that colours every stroke, see [`Self::stroke_policy`].
     SnufflerWeb,
-    /// Earthy: terracotta and ochre through olive and sage, with an aqua counterpoint.
+    /// Kiln: fired clay and ochre, balanced by indigo, sage and glazed teal.
     SnufflerWeb1,
-    /// Cool: the muted theme, pale blue, teal and mauve washes.
+    /// Fjord: slate blue and sea glass, with dry amber and heather counterpoints.
     SnufflerWeb2,
-    /// Sky: airy blues and violets over pale warms.
+    /// Daybreak: periwinkle and soft gold, with coral, cloud blue and mint.
     SnufflerWeb3,
-    /// Forest: lichen and jade greens with warm bark and a sky counterpoint.
+    /// Herbarium: fern green, berry red and violet, with olive and dried-petal
+    /// accents.
     SnufflerWeb4,
-    /// Sunset: roses and golds against horizon blue and lilac.
+    /// Afterglow: ember red and dusk blue, with rose, honey and muted green.
     SnufflerWeb5,
 }
 
@@ -106,12 +109,12 @@ impl WiggleTheme {
     pub const fn label(self) -> &'static str {
         match self {
             WiggleTheme::SnufflerQt => "Snuffler Qt",
-            WiggleTheme::SnufflerWeb => "Snuffler Web",
-            WiggleTheme::SnufflerWeb1 => "Snuffler Web 1",
-            WiggleTheme::SnufflerWeb2 => "Snuffler Web 2",
-            WiggleTheme::SnufflerWeb3 => "Snuffler Web 3",
-            WiggleTheme::SnufflerWeb4 => "Snuffler Web 4",
-            WiggleTheme::SnufflerWeb5 => "Snuffler Web 5",
+            WiggleTheme::SnufflerWeb => "Fieldbook",
+            WiggleTheme::SnufflerWeb1 => "Kiln",
+            WiggleTheme::SnufflerWeb2 => "Fjord",
+            WiggleTheme::SnufflerWeb3 => "Daybreak",
+            WiggleTheme::SnufflerWeb4 => "Herbarium",
+            WiggleTheme::SnufflerWeb5 => "Afterglow",
         }
     }
 
@@ -124,31 +127,29 @@ impl WiggleTheme {
                 "Snuffler's own: white canvas, Tango boxes, grey wiggles unless Color \
                  traces is on. Light only."
             }
-            WiggleTheme::SnufflerWeb => "Tinted blocks, wiggles coloured by their key.",
+            WiggleTheme::SnufflerWeb => {
+                "Balanced mineral blues, brick red and leaf green, with quieter supporting inks. \
+                 Coloured strokes over quiet blocks."
+            }
             WiggleTheme::SnufflerWeb1 => {
-                "Earthy: terracotta and ochre through olive and sage, with an aqua \
-                 counterpoint; the wiggles take the colour when the boxes are off or \
-                 a row groups several traces."
+                "Fired clay and ochre, balanced by indigo, sage and glazed teal. \
+                 Strokes take colour when boxes are hidden or locations share a row."
             }
             WiggleTheme::SnufflerWeb2 => {
-                "Cool: the muted theme, pale blue, teal and mauve washes; the wiggles \
-                 take the colour when the boxes are off or a row groups several \
-                 traces."
+                "Slate blue and sea glass, with dry amber and heather counterpoints. \
+                 Strokes take colour when boxes are hidden or locations share a row."
             }
             WiggleTheme::SnufflerWeb3 => {
-                "Sky: airy blues and violets over pale warms; the wiggles \
-                 take the colour when the boxes are off or a row groups several \
-                 traces."
+                "Periwinkle and soft gold, with coral, cloud blue and mint. \
+                 Strokes take colour when boxes are hidden or locations share a row."
             }
             WiggleTheme::SnufflerWeb4 => {
-                "Forest: lichen and jade greens with warm bark and a sky counterpoint; the wiggles \
-                 take the colour when the boxes are off or a row groups several \
-                 traces."
+                "Fern green, berry red and violet, with olive and dried-petal accents. \
+                 Strokes take colour when boxes are hidden or locations share a row."
             }
             WiggleTheme::SnufflerWeb5 => {
-                "Sunset: roses and golds against horizon blue and lilac; the wiggles \
-                 take the colour when the boxes are off or a row groups several \
-                 traces."
+                "Ember red and dusk blue, with rose, honey and muted green. \
+                 Strokes take colour when boxes are hidden or locations share a row."
             }
         }
     }
@@ -187,7 +188,7 @@ impl WiggleTheme {
     /// for white and only coherent on it.
     /// A dark variant of that theme would not be snuffler rendered differently, it
     /// would be a different theme wearing the name.
-    /// Every web theme is designed for both canvases, each fitted on its own.
+    /// Every web theme has tones for both canvases, fitted jointly around one hue order.
     /// A pinned theme takes the whole frontend with it, since a white canvas inside
     /// dark chrome is neither theme; the frontend disables the light/dark control
     /// while one is selected rather than letting the two disagree.
@@ -217,7 +218,17 @@ impl WiggleTheme {
     /// persisted settings.
     #[must_use]
     pub fn from_wire(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|theme| theme.label() == value)
+        // Settings persist labels, so retain the numbered spellings on restore.
+        let previous = match value {
+            "Snuffler Web" => Some(Self::SnufflerWeb),
+            "Snuffler Web 1" => Some(Self::SnufflerWeb1),
+            "Snuffler Web 2" => Some(Self::SnufflerWeb2),
+            "Snuffler Web 3" => Some(Self::SnufflerWeb3),
+            "Snuffler Web 4" => Some(Self::SnufflerWeb4),
+            "Snuffler Web 5" => Some(Self::SnufflerWeb5),
+            _ => None,
+        };
+        previous.or_else(|| Self::ALL.into_iter().find(|theme| theme.label() == value))
     }
 }
 
@@ -228,9 +239,19 @@ mod tests {
     #[test]
     fn labels_round_trip_through_the_wire_form() {
         // The label is what the settings store persists, so every theme has to come
-        // back from its own label and only from it.
+        // back from its own label.
         for theme in WiggleTheme::ALL {
             assert_eq!(WiggleTheme::from_wire(theme.label()), Some(theme));
+        }
+        for (old, theme) in [
+            ("Snuffler Web", WiggleTheme::SnufflerWeb),
+            ("Snuffler Web 1", WiggleTheme::SnufflerWeb1),
+            ("Snuffler Web 2", WiggleTheme::SnufflerWeb2),
+            ("Snuffler Web 3", WiggleTheme::SnufflerWeb3),
+            ("Snuffler Web 4", WiggleTheme::SnufflerWeb4),
+            ("Snuffler Web 5", WiggleTheme::SnufflerWeb5),
+        ] {
+            assert_eq!(WiggleTheme::from_wire(old), Some(theme));
         }
         assert_eq!(WiggleTheme::from_wire("Snuffler Web 9"), None);
     }
