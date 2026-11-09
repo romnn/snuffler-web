@@ -272,11 +272,17 @@ tasks:
       - mise upgrade {{.CLI_ARGS}}
       - mise lock
 
+  # Both delegate to the cargo aliases, which own the flag sets; see .cargo/config.toml.
   unused:
-    desc: "check for unused cargo workspace dependencies"
+    desc: "check for unused cargo workspace dependencies by scanning sources (cargo-shear)"
     aliases: [unused-dependencies]
     cmds:
-      - cargo +nightly fc udeps --maximal-features --all-targets {{.CLI_ARGS}}
+      - cargo unused {{.CLI_ARGS}}
+
+  unused:deep:
+    desc: "check for unused cargo workspace dependencies by compiling (cargo-udeps)"
+    cmds:
+      - cargo unused-deep {{.CLI_ARGS}}
 
   audit:
     desc: "audit cargo workspace dependencies"

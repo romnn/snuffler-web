@@ -39,3 +39,20 @@ c = "check"
 l = "clippy --no-deps"
 lint = "clippy --no-deps"
 fixit = "clippy --fix --allow-dirty --allow-staged --no-deps"
+
+# Unused-dependency checks; `task unused` and `task unused:deep` call these.
+#
+# An alias must not be named after the subcommand it wraps: cargo resolves aliases before
+# external subcommands, so `shear = "shear …"` would expand into itself.
+#
+# `unused` scans sources instead of building them, so it is fast, needs no toolchain, and covers
+# every target plus `[dev-dependencies]` in one pass.
+# Do not route it through cargo-fc: shear rejects the per-row `--features` flags cargo-fc passes,
+# and feature combinations mean nothing to a scan that never compiles.
+#
+# `unused-deep` is the compile-based fallback rather than the default because it counts a
+# dependency as used once any crate in the build graph has loaded it, which hides most unused
+# edges on shared `[workspace.dependencies]`.
+# It needs nightly, which rust-toolchain.toml already pins.
+unused = "shear --deny-warnings"
+unused-deep = "fc --maximal-features udeps --all-targets"

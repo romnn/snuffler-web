@@ -5,6 +5,11 @@ edition.workspace = true
 publish = false
 build = "build/main.rs"
 
+[package.metadata.cargo-shear]
+# Only the build script's submodules (build/activity.rs and build/client.rs) use
+# these, and cargo-shear reads build/main.rs without following its `mod` items.
+ignored = ["heck", "quote"]
+
 [lints]
 workspace = true
 

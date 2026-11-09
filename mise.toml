@@ -65,6 +65,7 @@ protoc = "34.1"
 "github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc", minimum_release_age = "0" }  # provides `cargo fc`
 "aqua:rustsec/rustsec/cargo-audit" = "latest"
 "github:est31/cargo-udeps" = "latest"
+"github:Boshen/cargo-shear" = "latest"
 "github:romnn/cargo-watchdoc" = { version = "latest", minimum_release_age = "0" }
 
 # cargo-fc drives cargo-zigbuild for its non-host targets, with zig as the C toolchain
