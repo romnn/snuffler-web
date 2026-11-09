@@ -1,5 +1,7 @@
 //! Allowlisted WebSocket-to-TCP bridge for browser `SeedLink` clients.
 
+use std::fmt;
+use std::num::ParseIntError;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,8 +15,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const TCP_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -53,7 +53,7 @@ impl Proxy {
             }
             Ok(target) => text_response(
                 StatusCode::FORBIDDEN,
-                format!("target is not allowed: {}\n", target.display()),
+                format!("target is not allowed: {target}\n"),
             ),
             Err(err) => text_response(StatusCode::BAD_REQUEST, format!("{err}\n")),
         }
@@ -74,10 +74,53 @@ struct TcpTarget {
     port: u16,
 }
 
-impl TcpTarget {
-    fn display(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+impl fmt::Display for TcpTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
     }
+}
+
+/// Why a requested or configured TCP target was rejected.
+#[derive(Debug, thiserror::Error)]
+pub enum TargetError {
+    /// The request named neither a `target` nor a `host`.
+    #[error("missing host query parameter")]
+    MissingHost,
+    /// The request named a `host` without a `port`.
+    #[error("missing port query parameter")]
+    MissingPort,
+    /// A `host:port` target had no `:` separator.
+    #[error("target must be host:port")]
+    MissingPortSeparator,
+    /// The port is not a number in `0..=65535`.
+    #[error("invalid port {port:?}")]
+    InvalidPort {
+        /// The rejected port text.
+        port: String,
+        /// Why it did not parse.
+        #[source]
+        source: ParseIntError,
+    },
+    /// The host is empty after trimming whitespace and IPv6 brackets.
+    #[error("host must not be empty")]
+    EmptyHost,
+    /// The host contains whitespace.
+    #[error("host must not contain whitespace")]
+    HostContainsWhitespace,
+    /// Port `0` cannot be connected to.
+    #[error("port must be greater than zero")]
+    ZeroPort,
+}
+
+/// Why one direction of an established relay stopped.
+///
+/// Both variants are transparent because the log line already names the direction.
+#[derive(Debug, thiserror::Error)]
+enum RelayError {
+    #[error(transparent)]
+    WebSocket(#[from] axum::Error),
+    #[error(transparent)]
+    Tcp(#[from] std::io::Error),
 }
 
 /// TCP targets accepted by a [`Proxy`].
@@ -136,8 +179,11 @@ impl AllowedTcpTarget {
     ///
     /// # Errors
     ///
-    /// Returns an error for missing hosts, invalid ports, or whitespace in the host.
-    pub fn parse(value: &str) -> Result<Self, BoxError> {
+    /// Returns [`TargetError::MissingPortSeparator`] without a `:`,
+    /// [`TargetError::InvalidPort`] or [`TargetError::ZeroPort`] for an unusable port, and
+    /// [`TargetError::EmptyHost`] or [`TargetError::HostContainsWhitespace`] for an unusable
+    /// host.
+    pub fn parse(value: &str) -> Result<Self, TargetError> {
         let target = parse_tcp_target(value)?;
         Ok(Self::new(target.host, target.port))
     }
@@ -155,7 +201,10 @@ fn default_allowed_targets() -> Vec<AllowedTcpTarget> {
     .into()
 }
 
-fn tcp_target(query: Option<&str>) -> Result<TcpTarget, BoxError> {
+/// Reads the target from a `target=host:port` or a `host=…&port=…` query.
+///
+/// `target` wins when both forms are present.
+fn tcp_target(query: Option<&str>) -> Result<TcpTarget, TargetError> {
     let mut host = None;
     let mut port = None;
     let mut target = None;
@@ -175,46 +224,51 @@ fn tcp_target(query: Option<&str>) -> Result<TcpTarget, BoxError> {
     if let Some(target) = target {
         parse_tcp_target(&target)
     } else {
-        let host = host.ok_or_else(|| "missing host query parameter".to_owned())?;
-        let port = port
-            .ok_or_else(|| "missing port query parameter".to_owned())?
-            .parse::<u16>()?;
-        validate_tcp_target(&host, port)
+        let host = host.ok_or(TargetError::MissingHost)?;
+        let port = port.ok_or(TargetError::MissingPort)?;
+        validate_tcp_target(&host, parse_port(&port)?)
     }
 }
 
-fn parse_tcp_target(target: &str) -> Result<TcpTarget, BoxError> {
-    let Some((host, port)) = target.rsplit_once(':') else {
-        return Err("target must be host:port".into());
-    };
-    validate_tcp_target(host, port.parse::<u16>()?)
+/// Parses `host:port`, splitting at the last `:` so a bracketed IPv6 host stays whole.
+fn parse_tcp_target(target: &str) -> Result<TcpTarget, TargetError> {
+    let (host, port) = target
+        .rsplit_once(':')
+        .ok_or(TargetError::MissingPortSeparator)?;
+    validate_tcp_target(host, parse_port(port)?)
 }
 
-fn validate_tcp_target(host: &str, port: u16) -> Result<TcpTarget, BoxError> {
+fn parse_port(port: &str) -> Result<u16, TargetError> {
+    port.parse().map_err(|source| TargetError::InvalidPort {
+        port: port.to_owned(),
+        source,
+    })
+}
+
+fn validate_tcp_target(host: &str, port: u16) -> Result<TcpTarget, TargetError> {
     let host = host.trim().trim_matches(['[', ']']).to_owned();
     if host.is_empty() {
-        return Err("host must not be empty".into());
+        return Err(TargetError::EmptyHost);
     }
     if host.chars().any(char::is_whitespace) {
-        return Err("host must not contain whitespace".into());
+        return Err(TargetError::HostContainsWhitespace);
     }
     if port == 0 {
-        return Err("port must be greater than zero".into());
+        return Err(TargetError::ZeroPort);
     }
     Ok(TcpTarget { host, port })
 }
 
 async fn bridge_websocket_to_tcp(socket: WebSocket, connect_timeout: Duration, target: TcpTarget) {
-    let label = target.display();
     let connect = TcpStream::connect((target.host.as_str(), target.port));
     let Ok(Ok(tcp)) = timeout(connect_timeout, connect).await else {
-        warn!(target = %label, "failed to connect websocket tcp target");
+        warn!(%target, "failed to connect websocket tcp target");
         return;
     };
     if let Err(err) = tcp.set_nodelay(true) {
-        debug!(target = %label, %err, "failed to disable tcp nodelay");
+        debug!(%target, %err, "failed to disable tcp nodelay");
     }
-    info!(target = %label, "websocket tcp proxy connected");
+    info!(%target, "websocket tcp proxy connected");
 
     let (mut tcp_read, mut tcp_write) = tcp.into_split();
     let (mut ws_send, mut ws_recv) = socket.split();
@@ -228,7 +282,7 @@ async fn bridge_websocket_to_tcp(socket: WebSocket, connect_timeout: Duration, t
             }
         }
         tcp_write.shutdown().await?;
-        Ok::<(), BoxError>(())
+        Ok::<(), RelayError>(())
     };
     let to_ws = async {
         let mut buf = vec![0_u8; TCP_BUFFER_BYTES];
@@ -244,67 +298,87 @@ async fn bridge_websocket_to_tcp(socket: WebSocket, connect_timeout: Duration, t
                 .send(Message::Binary(Bytes::copy_from_slice(chunk)))
                 .await?;
         }
-        let _ = ws_send.send(Message::Close(None)).await;
-        Ok::<(), BoxError>(())
+        // The browser may already have gone away, in which case there is no one to tell.
+        if let Err(err) = ws_send.send(Message::Close(None)).await {
+            debug!(%target, %err, "failed to send websocket close frame");
+        }
+        Ok::<(), RelayError>(())
     };
 
+    // Whichever direction ends first tears down the whole relay
     tokio::select! {
         result = to_tcp => {
             if let Err(err) = result {
-                debug!(target = %label, %err, "websocket-to-tcp leg ended with error");
+                debug!(%target, %err, "websocket-to-tcp leg ended with error");
             }
         }
         result = to_ws => {
             if let Err(err) = result {
-                debug!(target = %label, %err, "tcp-to-websocket leg ended with error");
+                debug!(%target, %err, "tcp-to-websocket leg ended with error");
             }
         }
     }
-    info!(target = %label, "websocket tcp proxy disconnected");
+    info!(%target, "websocket tcp proxy disconnected");
 }
 
 #[cfg(test)]
 mod tests {
+    use color_eyre::eyre;
+
     use super::*;
 
     #[test]
-    fn parses_tcp_target_pair() {
-        let parsed =
-            tcp_target(Some("host=geofon.gfz.de&port=18000")).map(|target| target.display());
-        assert_eq!(parsed.as_deref().ok(), Some("geofon.gfz.de:18000"));
+    fn parses_tcp_target_pair() -> eyre::Result<()> {
+        let target = tcp_target(Some("host=geofon.gfz.de&port=18000"))?;
+        assert_eq!(target.to_string(), "geofon.gfz.de:18000");
+        Ok(())
     }
 
     #[test]
-    fn parses_tcp_target_shorthand() {
-        let parsed = tcp_target(Some("target=rtserve.iris.washington.edu%3A18000"))
-            .map(|target| target.display());
-        assert_eq!(
-            parsed.as_deref().ok(),
-            Some("rtserve.iris.washington.edu:18000")
-        );
+    fn parses_tcp_target_shorthand() -> eyre::Result<()> {
+        let target = tcp_target(Some("target=rtserve.iris.washington.edu%3A18000"))?;
+        assert_eq!(target.to_string(), "rtserve.iris.washington.edu:18000");
+        Ok(())
     }
 
     #[test]
     fn rejects_missing_target() {
-        assert!(tcp_target(None).is_err());
+        assert!(matches!(tcp_target(None), Err(TargetError::MissingHost)));
     }
 
     #[test]
-    fn default_allowlist_accepts_known_seedlink_hosts() -> Result<(), BoxError> {
+    fn rejects_unusable_ports() {
+        // Not a number, out of range, and the unconnectable zero port
+        assert!(matches!(
+            tcp_target(Some("host=geofon.gfz.de&port=seedlink")),
+            Err(TargetError::InvalidPort { .. })
+        ));
+        assert!(matches!(
+            AllowedTcpTarget::parse("geofon.gfz.de:70000"),
+            Err(TargetError::InvalidPort { .. })
+        ));
+        assert!(matches!(
+            AllowedTcpTarget::parse("geofon.gfz.de:0"),
+            Err(TargetError::ZeroPort)
+        ));
+    }
+
+    #[test]
+    fn default_allowlist_accepts_known_seedlink_hosts() -> eyre::Result<()> {
         let target = tcp_target(Some("target=rtserve.iris.washington.edu%3A18000"))?;
         assert!(Allowlist::default().contains(&target));
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_hosts() -> Result<(), BoxError> {
+    fn default_allowlist_rejects_other_hosts() -> eyre::Result<()> {
         let target = tcp_target(Some("target=example.org%3A18000"))?;
         assert!(!Allowlist::default().contains(&target));
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_ports() -> Result<(), BoxError> {
+    fn default_allowlist_rejects_other_ports() -> eyre::Result<()> {
         let target = tcp_target(Some("target=rtserve.iris.washington.edu%3A22"))?;
         assert!(!Allowlist::default().contains(&target));
         Ok(())

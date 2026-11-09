@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { workspace = true, features = ["http2", "ws"] }
 clap = { workspace = true, features = ["derive", "env"] }
+color-eyre = { workspace = true }
 reqwest = { workspace = true, features = [
     "http2",
     "rustls",
@@ -24,6 +25,7 @@ reqwest = { workspace = true, features = [
 ] }
 snuffler-web-cors-proxy = { path = "../snuffler-web-cors-proxy" }
 snuffler-web-tcp-ws-proxy = { path = "../snuffler-web-tcp-ws-proxy" }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "net",

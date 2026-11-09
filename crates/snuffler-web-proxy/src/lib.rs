@@ -15,9 +15,6 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
-/// Result returned by the proxy process entry points.
-pub type Error = Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
 const DEFAULT_BIND: &str = "127.0.0.1:17684";
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 
@@ -62,6 +59,44 @@ pub struct Args {
     pub allow_tcp_targets: Vec<String>,
 }
 
+/// Why the proxy could not start, or stopped serving.
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    /// The upstream HTTP client could not be configured.
+    #[error("failed to build the upstream HTTP client")]
+    HttpClient(#[source] reqwest::Error),
+    /// An `--allow-http-target` value is not a usable rule.
+    #[error("invalid allowed HTTP target {target:?}")]
+    HttpTarget {
+        /// The rejected value.
+        target: String,
+        /// Why it was rejected.
+        #[source]
+        source: snuffler_web_cors_proxy::TargetError,
+    },
+    /// An `--allow-tcp-target` value is not a usable rule.
+    #[error("invalid allowed TCP target {target:?}")]
+    TcpTarget {
+        /// The rejected value.
+        target: String,
+        /// Why it was rejected.
+        #[source]
+        source: snuffler_web_tcp_ws_proxy::TargetError,
+    },
+    /// The listen address could not be bound.
+    #[error("failed to bind {address}")]
+    Bind {
+        /// The `--bind` address.
+        address: SocketAddr,
+        /// Why binding failed.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The server stopped with an I/O error.
+    #[error("proxy server failed")]
+    Serve(#[source] std::io::Error),
+}
+
 #[derive(Clone)]
 struct AppState {
     cors: snuffler_web_cors_proxy::Proxy,
@@ -72,8 +107,8 @@ struct AppState {
 ///
 /// # Errors
 ///
-/// Returns an error when configuration, socket setup, or serving fails.
-pub async fn run_from_env() -> Error {
+/// Fails like [`run`].
+pub async fn run_from_env() -> Result<(), RunError> {
     let args = Args::parse();
     run(args).await
 }
@@ -82,8 +117,9 @@ pub async fn run_from_env() -> Error {
 ///
 /// # Errors
 ///
-/// Returns an error when target parsing, client setup, binding, or serving fails.
-pub async fn run(args: Args) -> Error {
+/// Returns a [`RunError`] variant naming the step that failed: client setup, an allowlist
+/// entry, binding the listen address, or serving.
+pub async fn run(args: Args) -> Result<(), RunError> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -96,17 +132,34 @@ pub async fn run(args: Args) -> Error {
         .connect_timeout(connect_timeout)
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(32)
-        .build()?;
+        .build()
+        .map_err(RunError::HttpClient)?;
+
+    // Extend the built-in allowlists with the configured targets
     let http_allowlist = snuffler_web_cors_proxy::Allowlist::with_default_rules(
         args.allow_http_targets
             .iter()
-            .map(|target| snuffler_web_cors_proxy::AllowedHttpTarget::parse(target))
+            .map(|target| {
+                snuffler_web_cors_proxy::AllowedHttpTarget::parse(target).map_err(|source| {
+                    RunError::HttpTarget {
+                        target: target.clone(),
+                        source,
+                    }
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?,
     );
     let tcp_allowlist = snuffler_web_tcp_ws_proxy::Allowlist::with_default_targets(
         args.allow_tcp_targets
             .iter()
-            .map(|target| snuffler_web_tcp_ws_proxy::AllowedTcpTarget::parse(target))
+            .map(|target| {
+                snuffler_web_tcp_ws_proxy::AllowedTcpTarget::parse(target).map_err(|source| {
+                    RunError::TcpTarget {
+                        target: target.clone(),
+                        source,
+                    }
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?,
     );
 
@@ -124,12 +177,17 @@ pub async fn run(args: Args) -> Error {
         .route("/tcp", get(tcp_ws_proxy))
         .with_state(state);
 
-    let listener = TcpListener::bind(args.bind).await?;
+    let listener = TcpListener::bind(args.bind)
+        .await
+        .map_err(|source| RunError::Bind {
+            address: args.bind,
+            source,
+        })?;
     info!("snuffler proxy listening on http://{}", args.bind);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    Ok(())
+        .await
+        .map_err(RunError::Serve)
 }
 
 async fn health() -> &'static str {

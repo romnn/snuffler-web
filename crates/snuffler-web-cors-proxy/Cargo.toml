@@ -9,10 +9,13 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true }
-futures-util = { workspace = true }
 reqwest = { workspace = true, features = [
     "http2",
     "rustls",
     "stream",
 ] }
+thiserror = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+color-eyre = { workspace = true }

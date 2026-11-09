@@ -11,6 +11,10 @@ workspace = true
 axum = { workspace = true, features = ["ws"] }
 bytes = { workspace = true }
 futures-util = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
 tracing = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+color-eyre = { workspace = true }
