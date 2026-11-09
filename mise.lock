@@ -112,36 +112,24 @@ checksum = "sha256:0ca49f226c268ff3f7d65e82dd471900b962e4dcb3e75793558e5f4287be2
 url = "https://github.com/est31/cargo-udeps/releases/download/v0.1.61/cargo-udeps-v0.1.61-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/est31/cargo-udeps/releases/assets/407800985"
 
-[[tools."github:kbknapp/cargo-outdated"]]
-version = "0.19.0"
-backend = "github:kbknapp/cargo-outdated"
-
-[tools."github:kbknapp/cargo-outdated"."platforms.linux-x64"]
-checksum = "sha256:648021f279e737e11f4be0f5967ae2a01d4d66f7a2e462a0b24ccd6dd5e6b372"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434764"
-
-[tools."github:kbknapp/cargo-outdated"."platforms.macos-arm64"]
-checksum = "sha256:c3a3ca56a748d94fdaa1f208c641685d996ee1c4954cd4fbe358b7c06a2186a5"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434761"
-
 [[tools."github:romnn/bumpversion"]]
-version = "0.0.12"
+version = "0.0.14"
 backend = "github:romnn/bumpversion"
 
 [tools."github:romnn/bumpversion".options]
-matching_regex = "^bumpversion"
+matching = "bumpversion"
 
 [tools."github:romnn/bumpversion"."platforms.linux-x64"]
-checksum = "sha256:7201ff20bbbf448edf215c635d207e3439cb2e21e3a264421fd65c470a793e7e"
-url = "https://github.com/romnn/bumpversion/releases/download/v0.0.12/bumpversion_0.0.12_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/romnn/bumpversion/releases/assets/520989854"
+checksum = "sha256:1b21fe9ed8c0d7c0c417c7e546b6e2a81e51b3222b766caefc7bedfbeb0a5332"
+checksum_source = "mise-versions"
+url = "https://github.com/romnn/bumpversion/releases/download/v0.0.14/bumpversion_0.0.14_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/romnn/bumpversion/releases/assets/620308754"
 
 [tools."github:romnn/bumpversion"."platforms.macos-arm64"]
-checksum = "sha256:056c6747b769a2d0c7e09bb82126127ba6f70ed74b10bd0423485771d8fead7f"
-url = "https://github.com/romnn/bumpversion/releases/download/v0.0.12/bumpversion_0.0.12_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/romnn/bumpversion/releases/assets/520989837"
+checksum = "sha256:43c453484dbb1b270179a209d4896ed20854d3090cc04f0d239d95261be7c116"
+checksum_source = "mise-versions"
+url = "https://github.com/romnn/bumpversion/releases/download/v0.0.14/bumpversion_0.0.14_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/romnn/bumpversion/releases/assets/620308726"
 
 [[tools."github:romnn/cargo-feature-combinations"]]
 version = "0.7.0"
@@ -173,6 +161,22 @@ url_api = "https://api.github.com/repos/romnn/cargo-watchdoc/releases/assets/392
 checksum = "sha256:8e1eb7d6304257b570e105462cb46a035c59f6945dabbaf1748c84e4e6a34a18"
 url = "https://github.com/romnn/cargo-watchdoc/releases/download/v0.3.10/cargo-watchdoc_0.3.10_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/romnn/cargo-watchdoc/releases/assets/392595139"
+
+[[tools."github:romnn/cooldown"]]
+version = "0.0.29"
+backend = "github:romnn/cooldown"
+
+[tools."github:romnn/cooldown"."platforms.linux-x64"]
+checksum = "sha256:b4f20f56ba0aa6059c4c0766e7d01fb712db0cdc912e7a8d600bcfa3c00a6cd2"
+checksum_source = "mise-versions"
+url = "https://github.com/romnn/cooldown/releases/download/v0.0.29/cooldown_0.0.29_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/romnn/cooldown/releases/assets/713606189"
+
+[tools."github:romnn/cooldown"."platforms.macos-arm64"]
+checksum = "sha256:cdb24c8841bf8d53cc9c4b9ddd41c1efab4098c6849e39dcb671079f49392d86"
+checksum_source = "mise-versions"
+url = "https://github.com/romnn/cooldown/releases/download/v0.0.29/cooldown_0.0.29_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/romnn/cooldown/releases/assets/713606253"
 
 [[tools."github:romnn/micromux"]]
 version = "0.1.4"
@@ -255,6 +259,22 @@ provenance = "github-attestations"
 checksum = "sha256:532645be202d3df8510ab318ca5faed92060a694c8327144e14fa81f31af0f6d"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.14.7+20260807-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
+
+[[tools.rg]]
+version = "15.2.0"
+backend = "aqua:BurntSushi/ripgrep"
+
+[tools.rg."platforms.linux-x64"]
+checksum = "sha256:33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478120097"
+
+[tools.rg."platforms.macos-arm64"]
+checksum = "sha256:3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478118851"
 
 [[tools.task]]
 version = "3.53.1"

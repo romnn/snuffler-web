@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
+
 tasks:
   default:
     cmds:
@@ -229,9 +230,47 @@ tasks:
       - cargo watchdoc --all-features {{.CLI_ARGS}}
 
   outdated:
-    desc: "check for outdated cargo workspace dependencies"
+    desc: "list outdated deps (incl. new majors): adoptable now vs still in cooldown"
     cmds:
-      - cargo outdated --workspace --ignore-external-rel --exit-code 1 -v {{.CLI_ARGS}}
+      - "cooldown outdated --sync {{.CLI_ARGS}}"
+
+  outdated:minor:
+    desc: "list outdated deps within the current major only"
+    cmds:
+      - "cooldown outdated --no-major --sync {{.CLI_ARGS}}"
+
+  upgrade:
+    desc: "upgrade all deps incl. cross-major bumps, within the cooldown"
+    aliases: [update]
+    cmds:
+      - "cooldown upgrade --major --sync {{.CLI_ARGS}}"
+
+  upgrade:minor:
+    desc: "upgrade all deps within their current major, within the cooldown"
+    cmds:
+      - "cooldown upgrade --no-major --sync {{.CLI_ARGS}}"
+
+  upgrade:latest:
+    desc: "upgrade ignoring the cooldown window — use deliberately"
+    prompt:
+      - "DANGER: this bypasses the supply-chain cooldown and adopts brand-new (possibly
+        compromised) releases. Prefer 'task upgrade' / 'task upgrade:minor'. Continue?"
+    cmds:
+      - "cooldown upgrade --latest {{.CLI_ARGS}}"
+
+  mise:upgrade:
+    desc: "upgrade mise-managed tools and refresh the lockfile"
+    env:
+      # A fresh release is invisible for up to an hour behind mise's remote-versions cache
+      # (fetch_remote_versions_cache = "1h"); upgrading is exactly when the listing must be live.
+      MISE_FETCH_REMOTE_VERSIONS_CACHE: "0s"
+      # mise resolves `latest` for GitHub tools through its hosted version index, which trails a
+      # fresh release even with that cache off.
+      # Asking GitHub directly lets an upgrade adopt a release the moment it is published.
+      MISE_USE_VERSIONS_HOST: "0"
+    cmds:
+      - mise upgrade {{.CLI_ARGS}}
+      - mise lock
 
   unused:
     desc: "check for unused cargo workspace dependencies"

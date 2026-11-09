@@ -144,7 +144,8 @@ RUN bun install --frozen-lockfile
 # Both local protobuf plugins use the root tooling environment.
 # Sync it before copying application sources so dependency changes, rather than
 # ordinary source edits, determine whether this layer is rebuilt.
-COPY pyproject.toml uv.lock ./
+# uv.toml carries the package cooldown that uv.lock was resolved under.
+COPY pyproject.toml uv.toml uv.lock ./
 RUN uv sync --locked --only-group codegen
 
 # The app's own sources, plus the data it bakes in: the SeisBench weights and the

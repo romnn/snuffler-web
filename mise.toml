@@ -20,6 +20,16 @@
 # wasm app, node/bun/uv for JS + the ruff/mypy tooling) plus buf + protoc — the
 # Rust toolchain itself is pinned by rust-toolchain.toml.
 [tools]
+# Developer tools
+task = "latest"          # The single workflow runner for local development and CI.
+typos = "latest"
+actionlint = "latest"
+rg = "latest"            # `task lint:boundaries` greps the dependency tree
+"github:romnn/cooldown" = { version = "latest", minimum_release_age = "0" }
+"github:romnn/bumpversion" = { version = "latest", matching = "bumpversion", minimum_release_age = "0" }
+"github:romnn/micromux" = { version = "latest", minimum_release_age = "0" }
+
+# Web and Python tooling
 # Host Python for the root uv tooling project.
 # 3.14 matches the wasm
 # interpreter (pyodide-lock's info.python), which docker/pyodide-mt/precompile.sh
@@ -28,40 +38,32 @@
 python = "3.14"
 node = "24"
 bun = "latest"           # bunx prettier (JS/markdown formatting)
-uv = "latest"           # Project environments for Python tooling and the native Qt oracle.
-task = "latest"          # The single workflow runner for local development and CI.
-typos = "latest"
-actionlint = "latest"
-zig = "latest"           # cargo-zigbuild backend for cargo-fc cross-target checks
-buf = "latest"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
-protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
-                         # the runtime on both paths; the proto build script (prost) + buf generate use it
-
+uv = "latest"            # Project environments for Python tooling and the native Qt oracle.
+"github:trunk-rs/trunk" = "0.21.14"
 # binaryen/wasm-opt for the trunk post-build hook (see Trunk.toml). The
 # emsdk-bundled wasm-opt is too old for the post-MVP wasm features modern rustc
 # emits, so we pin a recent binaryen here for a reproducible build.
 "aqua:WebAssembly/binaryen" = "130"
 
+# Protobuf
+buf = "latest"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
+protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
+                         # the runtime on both paths; the proto build script (prost) + buf generate use it
+
 # Cargo plugins
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"
-"github:rust-cross/cargo-zigbuild" = "latest"
+"github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc", minimum_release_age = "0" }  # provides `cargo fc`
 "aqua:rustsec/rustsec/cargo-audit" = "latest"
 "github:est31/cargo-udeps" = "latest"
-"github:kbknapp/cargo-outdated" = "latest"
-"github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc", minimum_release_age = "0" }  # provides `cargo fc`
 "github:romnn/cargo-watchdoc" = { version = "latest", minimum_release_age = "0" }
-"github:trunk-rs/trunk" = "0.21.14"
 
-# Developer tooling
-"github:romnn/micromux" = { version = "latest", minimum_release_age = "0" }
-"github:romnn/bumpversion" = { version = "latest", matching_regex = "^bumpversion", minimum_release_age = "0" }
+# cargo-fc drives cargo-zigbuild for its non-host targets, with zig as the C toolchain
+zig = "latest"
+"github:rust-cross/cargo-zigbuild" = "latest"
 
 [settings]
 lockfile = true
-lockfile_platforms = [
-  "linux-x64",
-  "macos-arm64",
-]
+lockfile_platforms = ["linux-x64", "macos-arm64"]
 
 [env]
 # pyrocko source pin (not vendored — fetched on demand into gitignored sources/).

@@ -15,13 +15,13 @@ codegen = ["mypy-protobuf==5.1.0"]
 
 [tool.uv]
 package = false
-# The 7-day package cooldown that produced uv.lock, carried in the project
-# rather than left to ~/.config/uv/uv.toml. A relative span is recorded in the
-# lock as `exclude-newer-span`, so an environment that does not set one — CI,
-# a container, a fresh clone — reads the setting as *removed*, re-resolves, and
-# then rejects the lock under `--locked`. Stating it here makes the lock
-# verifiable anywhere, and keeps the policy under review with the code.
-exclude-newer = "7 days"
+# The package cooldown that produced uv.lock lives in the committed uv.toml beside
+# this file, which `cooldown --sync` writes from cooldown.toml and uv reads in place
+# of an `exclude-newer` here.
+# It must not be left to ~/.config/uv/uv.toml.
+# A relative span is recorded in the lock as `exclude-newer-span`, so an environment
+# that does not set one — CI, a container, a fresh clone — reads the setting as
+# *removed*, re-resolves, and then rejects the lock under `--locked`.
 
 [tool.mypy]
 # The interpreter bridge.py actually runs on: the wasm CPython in our Pyodide

@@ -22,13 +22,17 @@ parity = [
 [tool.uv]
 package = false
 default-groups = []
-# The 7-day package cooldown that produced uv.lock, carried in the project
+# The package cooldown that produced uv.lock, carried in the project
 # rather than left to ~/.config/uv/uv.toml. A relative span is recorded in the
 # lock as `exclude-newer-span`, so an environment that does not set one — CI,
 # a container, a fresh clone — reads the setting as *removed*, re-resolves, and
 # then rejects the lock under `--locked`. Stating it here makes the lock
 # verifiable anywhere, and keeps the policy under review with the code.
-exclude-newer = "7 days"
+#
+# Keep it equal to `min-age` in the repository's cooldown.toml.
+# `cooldown --sync` writes that window only to the root uv.toml, and uv stops
+# looking for configuration at this project's own pyproject.toml.
+exclude-newer = "14 days"
 
 [tool.uv.sources]
 pyrocko = { path = "../sources/pyrocko", editable = true }
