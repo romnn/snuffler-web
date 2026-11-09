@@ -248,14 +248,18 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # This job only publishes the artifact the build already produced, so past a
-    # few minutes it is the Pages API not answering rather than work in progress.
-    # It holds the same concurrency group, so bounding it matters as much as
-    # bounding the build.
-    timeout-minutes: 15
+    # This job only publishes the artifact the build already produced, but Pages
+    # can sit in `syncing_files` well past deploy-pages' 10-minute default before
+    # the deployment goes live, which failed runs whose artifact was fine.
+    # It holds the same concurrency group, so it stays bounded, just above the
+    # step's own timeout.
+    timeout-minutes: 35
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          # Milliseconds.
+          timeout: 1800000
