@@ -12,6 +12,12 @@
 # restored layers would re-download the whole index.
 #
 #   docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
+#
+# CARGO_PROFILE picks the Cargo profile. Release images use the default; CI builds
+# every untagged commit with `dev`, which compiles much faster and is still enough
+# for the smoke test.
+#
+#   docker build -f docker/proxy/Dockerfile --build-arg CARGO_PROFILE=dev .
 
 ARG RUST_IMAGE=rust:1-trixie
 ARG RUNTIME_IMAGE=debian:trixie-slim
@@ -49,18 +55,29 @@ COPY crates crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM toolchain AS builder
+ARG CARGO_PROFILE=release
 
 # `-p` matters: the recipe describes the whole workspace, including the wasm-only
 # frontend whose native dependency set (eframe, x11) this image has no reason to
 # build.
 COPY .cargo .cargo
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json -p snuffler-web-proxy
+# The cook compiles the workspace crates as placeholder sources that import
+# nothing, so Cargo would report every one of their dependencies as unused; the
+# real build below reports any genuine warning.
+RUN CARGO_BUILD_WARNINGS=allow \
+    cargo chef cook --profile "${CARGO_PROFILE}" --recipe-path recipe.json -p snuffler-web-proxy
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 # No `strip` afterwards: the workspace's release profile already sets strip=true.
-RUN cargo build --release --locked -p snuffler-web-proxy --bin snuffler-web-proxy
+# Cargo writes the `dev` profile to target/debug and every other profile to a
+# directory of its own name, so the binary is staged at a fixed path for the
+# runtime stage.
+RUN cargo build --profile "${CARGO_PROFILE}" --locked -p snuffler-web-proxy --bin snuffler-web-proxy \
+    && profile_dir="${CARGO_PROFILE}" \
+    && if [ "${profile_dir}" = dev ]; then profile_dir=debug; fi \
+    && cp "target/${profile_dir}/snuffler-web-proxy" /usr/local/bin/snuffler-web-proxy
 
 FROM ${RUNTIME_IMAGE} AS runtime
 
@@ -77,7 +94,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin snuffler
 
-COPY --from=builder /src/target/release/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
+COPY --from=builder /usr/local/bin/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
 
 # The binary defaults to 127.0.0.1, which inside a container is reachable by
 # nothing. Everything else keeps its default; the allowlists are extended with

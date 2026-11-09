@@ -4,8 +4,11 @@ name: Docker images
 # GitHub Container Registry: the site (nginx + the wasm frontend + the Pyodide
 # runtime), the FDSN/SeedLink proxy, and the Qt frontend.
 #
-# Pull requests build but do not push, so a Dockerfile change is checked before
-# it can produce an image.
+# Every run builds and smoke-tests each image for amd64, so a broken Dockerfile
+# shows up on the pull request that breaks it. Only a release tag pushes: it
+# builds the optimized multi-platform images and publishes them, while every
+# other run compiles the Rust in the `dev` profile, which is much faster and
+# still proves the image builds and serves.
 #
 #   ghcr.io/<owner>/snuffler-web/web    ghcr.io/<owner>/snuffler-web/proxy
 #   ghcr.io/<owner>/snuffler-web/qt
@@ -38,6 +41,9 @@ jobs:
     # Generous is safe here: the concurrency group above cancels a superseded
     # run, so a wedged job blocks nothing.
     timeout-minutes: 180
+    env:
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/') }}
+      CARGO_PROFILE: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'dev' }}
     strategy:
       fail-fast: false
       matrix:
@@ -125,49 +131,30 @@ jobs:
           echo "SNUFFLER_BUILD_DATE=$(TZ=Europe/Berlin date +'%Y-%m-%d %H:%M (%Z, Europe/Berlin)')" >> "$GITHUB_ENV"
           echo "SNUFFLER_GIT_COMMIT=${GITHUB_SHA::10}" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-qemu-action@v4
-        if: contains(matrix.platforms, 'arm64')
       - uses: docker/setup-buildx-action@v4
 
-      # Read access is enough for the layer cache a pull request reads, so this
-      # runs for forks too; only the push and the cache write below are gated.
+      # Read access is enough for the layer cache every run reads, so this runs
+      # for forks too; only a release tag pushes or writes the cache.
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}/${{ matrix.image }}
-          # `latest` comes from the default flavor and so tracks the newest
-          # semver TAG, not main; main publishes `edge` and `main`. No
-          # major-only tag: at 0.x it would say nothing.
-          tags: |
-            type=edge,branch=main
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=long
-          # Without these, every image would inherit the repository's own title
-          # and description and the three would be indistinguishable in the
-          # registry; the action's defaults are overridden, not appended to.
-          labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.description=${{ matrix.description }}
-
-      - uses: docker/build-push-action@v7
+      # Prove the image serves before it can become anything else. The docker
+      # exporter `load` needs takes no manifest list, so this is a single-platform
+      # build; on a release tag, the multi-platform push at the end reuses its
+      # amd64 layers.
+      - name: Build the amd64 image
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
+          platforms: linux/amd64
+          load: true
+          tags: snuffler-smoke:${{ matrix.image }}
           build-args: |
+            CARGO_PROFILE=${{ env.CARGO_PROFILE }}
             SNUFFLER_BUILD_DATE=${{ env.SNUFFLER_BUILD_DATE }}
             SNUFFLER_GIT_COMMIT=${{ env.SNUFFLER_GIT_COMMIT }}
           # mise resolves the trunk/binaryen/buf/protoc releases through the
@@ -179,33 +166,7 @@ jobs:
           # dependency graph exported with mode=max is gigabytes, and the Actions
           # cache is one 10 GB quota shared with the Pages workflow, whose
           # ~1 h Pyodide artifacts would be the thing evicted to make room.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.image) || '' }}
-          # Attestations need something to attach to, and a pull request
-          # build has no output beyond the cache.
-          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
-          sbom: ${{ github.event_name != 'pull_request' }}
-
-      # Prove the image serves before it becomes anything but a digest. Every
-      # layer was just built above, so this second single-platform build is a
-      # cache hit that only has to materialize the amd64 image locally — which
-      # the multi-platform build above cannot do, as the docker exporter takes
-      # no manifest list. It runs on pull requests too, which is the point:
-      # that is where a broken image should be caught.
-      - name: Load the amd64 image
-        if: matrix.smoke-path != ''
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
-          load: true
-          tags: snuffler-smoke:${{ matrix.image }}
-          build-args: |
-            SNUFFLER_BUILD_DATE=${{ env.SNUFFLER_BUILD_DATE }}
-            SNUFFLER_GIT_COMMIT=${{ env.SNUFFLER_GIT_COMMIT }}
-          secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
+          # Release tags write it; a `dev` build still reuses its toolchain layers.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
           # The docker exporter `load` uses cannot carry attestations.
           provenance: false
@@ -244,3 +205,46 @@ jobs:
       - name: Stop the smoke-test container
         if: always() && matrix.smoke-path != ''
         run: docker rm -f smoke || true
+
+      - uses: docker/setup-qemu-action@v4
+        if: env.PUBLISH == 'true' && contains(matrix.platforms, 'arm64')
+
+      - id: meta
+        if: env.PUBLISH == 'true'
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          # `latest` comes from the default flavor and tracks the newest semver
+          # tag. No major-only tag: at 0.x it would say nothing.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+          # Without these, every image would inherit the repository's own title
+          # and description and the three would be indistinguishable in the
+          # registry; the action's defaults are overridden, not appended to.
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+
+      - name: Publish the release images
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            CARGO_PROFILE=${{ env.CARGO_PROFILE }}
+            SNUFFLER_BUILD_DATE=${{ env.SNUFFLER_BUILD_DATE }}
+            SNUFFLER_GIT_COMMIT=${{ env.SNUFFLER_GIT_COMMIT }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache,mode=max
+          provenance: mode=max
+          sbom: true

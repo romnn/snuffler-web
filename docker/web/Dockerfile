@@ -25,6 +25,13 @@
 # pass over 70 MB rather than a wasm build.
 #
 #   docker build -f docker/web/Dockerfile -t snuffler-web .
+#
+# CARGO_PROFILE picks the Cargo profile of the wasm app. Release images use the
+# default, which is optimized and run through wasm-opt; CI builds every untagged
+# commit with `dev`, which compiles much faster and is still enough for the smoke
+# test.
+#
+#   docker build -f docker/web/Dockerfile --build-arg CARGO_PROFILE=dev .
 
 ARG RUST_IMAGE=rust:1-trixie
 ARG NGINX_IMAGE=nginx:1.29-alpine
@@ -121,6 +128,7 @@ COPY crates crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM toolchain AS builder
+ARG CARGO_PROFILE=release
 
 # Compile the dependency graph — every crate the app pulls in, plus the std
 # rebuild `-Z build-std` forces — against a skeleton workspace. This is by far
@@ -133,7 +141,11 @@ FROM toolchain AS builder
 ENV CARGO_UNSTABLE_BUILD_STD=std,panic_abort
 COPY .cargo .cargo
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json \
+# The cook compiles the workspace crates as placeholder sources that import
+# nothing, so Cargo would report every one of their dependencies as unused; the
+# real build below reports any genuine warning.
+RUN CARGO_BUILD_WARNINGS=allow \
+    cargo chef cook --profile "${CARGO_PROFILE}" --recipe-path recipe.json \
     --target wasm32-unknown-unknown -p snuffler-web-egui --features threads
 
 # The bridge glue is bundled by bun from node_modules, and the trunk post-build
@@ -179,8 +191,12 @@ ARG PUBLIC_URL="/"
 # The hook prints "[py-mt] MISSING" here and skips staging the runtime — that is
 # intended: the runtime is assembled into the image by the `pyodide` stage below.
 ENV TRUNK_BUILD_NO_SRI=true
-RUN trunk build --config crates/snuffler-web-egui/Trunk.toml \
-    --release --features threads --public-url "${PUBLIC_URL}"
+# Trunk has no `--profile`: `--release` selects the release profile and wasm-opt,
+# and leaving it out builds the `dev` profile, which the post-build hook does not
+# optimize.
+RUN if [ "${CARGO_PROFILE}" = release ]; then set -- --release; fi \
+    && trunk build --config crates/snuffler-web-egui/Trunk.toml \
+    "$@" --features threads --public-url "${PUBLIC_URL}"
 
 # Everything nginx will serve is compressed once, here, rather than per request:
 # see docker/web/precompress.sh for what is compressed and why brotli + gzip is
