@@ -529,7 +529,7 @@ mod tests {
             let from_day = (t - day_start(*t)) % inc;
             assert!(from_day.abs() < 1e-6 || (inc - from_day).abs() < 1e-6);
         }
-        assert!(!ticks.is_empty());
+        assert_ne!(ticks, Vec::<f64>::new());
     }
 
     #[test]

@@ -192,7 +192,7 @@ mod tests {
 
         buffer.extend_from_slice(&tail);
         assert_eq!(drain_records(&mut buffer), Ok(vec![7; 512]));
-        assert!(buffer.is_empty());
+        assert_eq!(buffer, Vec::<u8>::new());
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
         assert!(drain_records(&mut buffer).is_ok_and(|records| records.is_empty()));
         buffer.extend_from_slice(&tail);
         assert_eq!(drain_records(&mut buffer), Ok(payload.to_vec()));
-        assert!(buffer.is_empty());
+        assert_eq!(buffer, Vec::<u8>::new());
     }
 
     #[test]

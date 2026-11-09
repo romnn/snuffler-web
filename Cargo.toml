@@ -14,13 +14,17 @@ resolver = "3"
 
 [workspace.metadata.cargo-fc]
 install_missing_targets = true
+dedupe = true
 aggregate_targets = true
-dedup = true
 targets = [
     "x86_64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
     "x86_64-pc-windows-gnu",
+    "aarch64-apple-darwin",
 ]
+
+[workspace.metadata.cargo-fc.subcommands.lint]
+# A warning on any target fails the lint run, while builds and tests keep warnings as warnings.
+pedantic = true
 
 [workspace.metadata.cargo-fc.subcommands.udeps]
 maximal_features = true
@@ -75,10 +79,18 @@ panic = "deny"
 unreachable = "deny"
 unimplemented = "deny"
 todo = "deny"
+dbg_macro = "deny"
 indexing_slicing = "deny"
+missing_errors_doc = "warn"
+await_holding_lock = "deny"
+# A module with submodules lives in foo/mod.rs, never foo.rs beside foo/.
+self_named_module_files = "deny"
 # Every `#[allow(...)]` must carry a `reason = "..."` justifying the escape hatch.
 allow_attributes_without_reason = "deny"
 
+# Allowed
+map_unwrap_or = "allow"
+assigning_clones = "allow"
 struct_excessive_bools = "allow"
 
 [workspace.dependencies]

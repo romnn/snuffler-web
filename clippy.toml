@@ -7,3 +7,11 @@ disallowed-methods = [
     { path = "wasm_bindgen_futures::spawn_local", reason = "mint a ledger job (submit_job / begin_local) and spawn only at the bridge's own composition points" },
     { path = "rayon::spawn", reason = "mint a ledger job (submit_job / begin_local) and spawn only at the bridge's own composition points" },
 ]
+
+# Proper nouns that look like code identifiers but should not be backticked in prose.
+# `..` appends to clippy's built-in list (GitHub, OAuth, …) instead of replacing it.
+doc-valid-idents = [".."]
+
+disallowed-macros = [
+    { path = "std::dbg", reason = "remove before commit" },
+]

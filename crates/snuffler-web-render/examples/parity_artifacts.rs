@@ -80,21 +80,14 @@ fn read(path: &Path) -> eyre::Result<Vec<u8>> {
 }
 
 fn decode_f32(bytes: &[u8]) -> eyre::Result<Vec<f32>> {
-    let mut chunks = bytes.chunks_exact(4);
-    let values = chunks
-        .by_ref()
-        .map(|chunk| {
-            let raw: [u8; 4] = chunk.try_into()?;
-            Ok(f32::from_le_bytes(raw))
-        })
-        .collect::<Result<Vec<_>, std::array::TryFromSliceError>>()?;
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
         bail!(
             "waveform payload length {} is not a multiple of four",
             bytes.len()
         );
     }
-    Ok(values)
+    Ok(chunks.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 fn state_from_params(params: &ViewParams) -> eyre::Result<AppState> {

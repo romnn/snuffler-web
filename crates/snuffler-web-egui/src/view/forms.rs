@@ -143,8 +143,8 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
             start: state.dl_start.clone(),
             end: state.dl_end.clone(),
         }),
-        stations: fetch_stations.then(&station_request),
-        responses: fetch_responses.then(&station_request),
+        stations: fetch_stations.then(station_request),
+        responses: fetch_responses.then(station_request),
         save,
     }
 }

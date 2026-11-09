@@ -2,6 +2,6 @@
 # rust-src, and the wasm target on first build, so the wasm lint/check tasks and
 # `trunk build` use the same compiler.
 [toolchain]
-channel = "nightly-2026-06-22"
+channel = "nightly-2026-10-26"
 targets = ["wasm32-unknown-unknown"]
 components = ["rustfmt", "clippy", "rust-src"]

@@ -443,7 +443,7 @@ tasks:
     cmds:
       # cargo-fc reads per-package targets from Cargo.toml: snuffler-web-egui is wasm
       # only; proxy crates are checked on Linux, macOS, and Windows GNU.
-      - cargo fc clippy --all-targets --no-deps {{.CLI_ARGS}}
+      - cargo fc lint --all-targets {{.CLI_ARGS}}
       - task: lint:boundaries
       # The fc matrix excludes `threads` (it still needs build-std); compile-
       # check that build separately so the real threaded path cannot rot.

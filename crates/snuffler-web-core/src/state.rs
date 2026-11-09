@@ -1095,7 +1095,7 @@ mod tests {
 
         // A duplicate event marker still represents the canonical event.
         assert_eq!(state.markers.len(), 1);
-        assert!(state.remove_event_hashes.is_empty());
+        assert_eq!(state.remove_event_hashes, Vec::<String>::new());
         assert!(state.markers.first().is_some_and(|marker| marker.active));
 
         let Some(marker) = state.markers.first_mut() else {

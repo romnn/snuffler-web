@@ -248,7 +248,8 @@ fn decode_png(figure: &FigureData) -> Option<egui::ColorImage> {
         png::ColorType::Rgba => data.to_vec(),
         png::ColorType::Rgb => {
             let mut out = Vec::with_capacity(width * height * 4);
-            for px in data.chunks_exact(3) {
+            let (pixels, _) = data.as_chunks::<3>();
+            for px in pixels {
                 out.extend_from_slice(px);
                 out.push(255);
             }

@@ -303,7 +303,7 @@ mod tests {
             Some("no event or time matching: nowhere")
         );
         assert_eq!(command.take_focus_request(), Some(FocusRequest::SelectAll));
-        assert!(command.history.is_empty());
+        assert_eq!(command.history, Vec::<String>::new());
     }
 
     #[test]
@@ -392,7 +392,7 @@ mod tests {
 
         assert!(command.submit().is_none());
         assert!(!command.visible);
-        assert!(command.history.is_empty());
+        assert_eq!(command.history, Vec::<String>::new());
     }
 
     #[test]
