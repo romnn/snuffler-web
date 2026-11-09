@@ -39,6 +39,8 @@ concurrency:
 
 env:
   MISE_GITHUB_TOKEN: ${{ github.token }}
+  MISE_AUTO_INSTALL: "0"
+  MISE_HTTP_RETRIES: "12"
 
 jobs:
   build:
@@ -84,8 +86,10 @@ jobs:
       # image (build-all.sh), not via the host emsdk.
       - uses: jdx/mise-action@v4
         with:
+          version: 2026.7.16
           install: false
           cache: true
+          env: false
       - name: Install web build tools
         run: mise install python bun uv task buf protoc aqua:WebAssembly/binaryen github:trunk-rs/trunk
 
@@ -125,7 +129,7 @@ jobs:
       # change correctly busts the cache.
       - name: Restore Pyodide 314 build artifacts
         id: pyodide-out
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             docker/pyodide-mt/.work/pyodide/dist
@@ -151,7 +155,7 @@ jobs:
       # build-all.sh skips the save, so a broken/partial artifact is never cached.
       - name: Save Pyodide 314 build artifacts
         if: steps.pyodide-out.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             docker/pyodide-mt/.work/pyodide/dist

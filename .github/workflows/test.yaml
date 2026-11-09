@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+env:
+  MISE_GITHUB_TOKEN: ${{ github.token }}
+  MISE_AUTO_INSTALL: "0"
+  MISE_HTTP_RETRIES: "12"
+
+jobs:
+  # Linux only: the shipped Rust runs as wasm in the browser and the proxies as a
+  # Linux container, while lint:fc already cross-checks the Windows and macOS builds.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.16
+          install: false
+          cache: true
+          env: false
+      # protoc is for the snuffler-web-proto build script.
+      - run: >-
+          mise install task protoc aqua:nextest-rs/nextest/cargo-nextest
+          github:romnn/cargo-feature-combinations
+      # rust-toolchain.toml pins the channel; rustup installs it on the first cargo call.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Feature-combination tests
+        run: task test:fc
+      - name: Doc-tests
+        run: task test:doc

@@ -1,33 +1,40 @@
-name: CI
-
-on: [push, pull_request, workflow_dispatch]
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+name: lint
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 env:
   MISE_GITHUB_TOKEN: ${{ github.token }}
+  MISE_AUTO_INSTALL: "0"
+  MISE_HTTP_RETRIES: "12"
 
 jobs:
-  check:
+  lint:
     name: fmt + clippy (native & wasm)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
-
-      # egui's native (x11/wayland) backend needs these to build the native bin.
-      - name: System deps (native egui backend)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-
-      # Puts the pinned protoc on PATH — snuffler-web-proto's build.rs (prost-build)
-      # shells out to it to compile the bridge .proto schema during clippy.
       - uses: jdx/mise-action@v4
         with:
+          version: 2026.7.16
           install: false
           cache: true
-      - name: Install lint tools
-        run: mise install task python bun uv zig buf protoc github:rust-cross/cargo-zigbuild github:romnn/cargo-feature-combinations
+          env: false
+      # protoc is for the snuffler-web-proto build script; python and uv for lint:py.
+      - run: >-
+          mise install task python bun uv rg zig buf protoc
+          github:romnn/cargo-feature-combinations github:rust-cross/cargo-zigbuild
+          aqua:rustsec/rustsec/cargo-audit
+      # rust-toolchain.toml pins the channel, the wasm32 target, and the
+      # rustfmt/clippy components; rustup installs them on the first cargo call.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       # The wasm bridge externs read /web/gen/bridge.js at compile time
       # (the wasm-bindgen module in snuffler-web-core/src/bridge.rs). It is
@@ -42,13 +49,12 @@ jobs:
           bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser
           bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser
 
-      # rust-toolchain.toml pins the channel, the wasm32 target, and the
-      # rustfmt/clippy components; rustup installs them on the first cargo call.
-      # The wasm web_sys_unstable_apis cfg comes from .cargo/config.toml.
+      - name: Audit
+        continue-on-error: true
+        run: task audit
       - name: rustfmt
         run: task format:rust -- --check
-
-      - name: clippy (native library + wasm32 app)
+      - name: Lint (all feature combinations × targets)
         run: task lint:fc
 
   # End-to-end type safety across the bridge boundary: tsc on the TS glue +
@@ -57,15 +63,17 @@ jobs:
   # DTOs that clippy/the build don't check. No Rust toolchain needed.
   types:
     name: tsc + mypy + ruff
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
         with:
+          version: 2026.7.16
           install: false
           cache: true
-      - name: Install type-checking tools
-        run: mise install task python bun uv buf protoc
+          env: false
+      - run: mise install task python bun uv buf protoc
 
       # check:ts/check:py run `buf generate` (whose protoc-gen-es is
       # `bunx protoc-gen-es`) and `bunx tsc`; both resolve from node_modules.
@@ -80,3 +88,18 @@ jobs:
         run: task check:py
       - name: Python lint (ruff)
         run: task lint:py
+
+  spellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.16
+          install: false
+          cache: true
+          env: false
+      - run: mise install task typos
+      - name: Spellcheck
+        run: task spellcheck
