@@ -1,11 +1,11 @@
 {
   "dependencies": {
-    "@bufbuild/protobuf": "^2",
+    "@bufbuild/protobuf": "2.16.0",
     "onnxruntime-web": "^1.31.1",
     "pyodide": "0.27.2"
   },
   "devDependencies": {
-    "@bufbuild/protoc-gen-es": "^2",
+    "@bufbuild/protoc-gen-es": "2.16.0",
     "@types/node": "^26.2.0",
     "playwright": "^1.61.1",
     "typescript": "^7.0.2"

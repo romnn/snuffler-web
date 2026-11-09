@@ -46,9 +46,19 @@ uv = "latest"            # Project environments for Python tooling and the nativ
 "aqua:WebAssembly/binaryen" = "130"
 
 # Protobuf
-buf = "latest"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
-protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
-                         # the runtime on both paths; the proto build script (prost) + buf generate use it
+# `buf generate` (trunk pre_build hook): proto -> Rust + Python stubs.
+# Pinned because buf 1.75 hands protoc a descriptor.proto whose edition features
+# protoc 34.1 rejects ("cc_enable_arenas specifies a removal error"); unpin it
+# together with the protoc bump below.
+buf = "1.74.0"
+# libprotoc 34.1 stamps protobuf-python 7.34.1 into the generated code, and the
+# Python runtime refuses gencode newer than itself.
+# 7.34.1 is the protobuf that the pinned pyodide-recipes builds into the browser
+# runtime (docker/pyodide-mt/build-packages.sh), so that recipe sets this version.
+# Bump only once pyodide-recipes ships a newer protobuf, in lockstep with protobuf
+# and types-protobuf in pyproject.toml and protobuf in qt/pyproject.toml.
+# The proto build script (prost) and buf generate both use it.
+protoc = "34.1"
 
 # Cargo plugins
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"

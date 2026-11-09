@@ -66,20 +66,20 @@ url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439292734"
 
 [[tools.buf]]
-version = "1.75.0"
+version = "1.74.0"
 backend = "aqua:bufbuild/buf"
-specifiers = ["latest"]
+specifiers = ["1.74.0"]
 
 [tools.buf."platforms.linux-x64"]
-checksum = "sha256:7168a06e29bd5eb8d1530848f242264f7a86b9b8af3b2e811570fbea0c929a30"
-url = "https://github.com/bufbuild/buf/releases/download/v1.75.0/buf-Linux-x86_64.tar.gz"
-url_api = "https://api.github.com/repos/bufbuild/buf/releases/assets/664187730"
+checksum = "sha256:cc482285b2c388c93f8bed0a972330695c1c8dd121d5ece460d25ceed93f21ac"
+url = "https://github.com/bufbuild/buf/releases/download/v1.74.0/buf-Linux-x86_64.tar.gz"
+url_api = "https://api.github.com/repos/bufbuild/buf/releases/assets/641111222"
 provenance = "minisign"
 
 [tools.buf."platforms.macos-arm64"]
-checksum = "sha256:5478531c4645c5b80866e87d76d73f0e8bf5a35644b12c92cbdcc408e7c8b9d3"
-url = "https://github.com/bufbuild/buf/releases/download/v1.75.0/buf-Darwin-arm64.tar.gz"
-url_api = "https://api.github.com/repos/bufbuild/buf/releases/assets/664187486"
+checksum = "sha256:4bc72e8d823e3b0e27df1715dec2c0c7a1a533bc07b67f98f8fdfbc4007a82ca"
+url = "https://github.com/bufbuild/buf/releases/download/v1.74.0/buf-Darwin-arm64.tar.gz"
+url_api = "https://api.github.com/repos/bufbuild/buf/releases/assets/641110844"
 provenance = "minisign"
 
 [[tools.bun]]
@@ -260,11 +260,13 @@ specifiers = ["34.1"]
 
 [tools.protoc."platforms.linux-x64"]
 checksum = "sha256:af27ea66cd26938fe48587804ca7d4817457a08350021a1c6e23a27ccc8c6904"
+checksum_source = "mise-versions"
 url = "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-linux-x86_64.zip"
 url_api = "https://api.github.com/repos/protocolbuffers/protobuf/releases/assets/377505671"
 
 [tools.protoc."platforms.macos-arm64"]
 checksum = "sha256:2c7e92b8b578916937df132b3032e2e8e6c170862ecf7a8333094a6f3d03650c"
+checksum_source = "mise-versions"
 url = "https://github.com/protocolbuffers/protobuf/releases/download/v34.1/protoc-34.1-osx-aarch_64.zip"
 url_api = "https://api.github.com/repos/protocolbuffers/protobuf/releases/assets/377505672"
 
