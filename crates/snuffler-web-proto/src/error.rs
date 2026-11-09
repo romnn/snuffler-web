@@ -3,7 +3,7 @@
 //! Every `BridgeService` response is a `BridgeResult` envelope carrying either a
 //! payload or a `BridgeError` — pyrocko never raises across the JS boundary (see
 //! `AGENTS.md`). These types are the Rust half of that contract: the generated
-//! client in `build.rs` produces them, and they are the only way a bridge call
+//! client from `build/client.rs` produces them, and they are the only way a bridge call
 //! reports failure.
 
 use std::fmt;

@@ -35,7 +35,7 @@ actionlint = "latest"
 zig = "latest"           # cargo-zigbuild backend for cargo-fc cross-target checks
 buf = "latest"           # `buf generate` (trunk pre_build hook) — proto -> Rust + Python stubs
 protoc = "34.1"          # libprotoc 34.1 -> protobuf-python 7.34.1 gencode, matching
-                         # the runtime on both paths; build.rs (prost) + buf generate use it
+                         # the runtime on both paths; the proto build script (prost) + buf generate use it
 
 # binaryen/wasm-opt for the trunk post-build hook (see Trunk.toml). The
 # emsdk-bundled wasm-opt is too old for the post-MVP wasm features modern rustc

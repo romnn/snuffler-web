@@ -3398,9 +3398,14 @@ name = "snuffler-web-proto"
 version = "0.0.1"
 dependencies = [
  "color-eyre",
+ "heck",
+ "prettyplease",
+ "proc-macro2",
  "prost",
  "prost-build",
  "prost-reflect",
+ "quote",
+ "syn",
  "thiserror 2.0.18",
 ]
 
