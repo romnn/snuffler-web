@@ -26,15 +26,9 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    /// Creates a proxy with the built-in `SeedLink` target allowlist.
+    /// Creates a proxy connecting to the targets in `allowlist`.
     #[must_use]
-    pub fn new(connect_timeout: Duration) -> Self {
-        Self::new_with_allowlist(connect_timeout, Allowlist::default())
-    }
-
-    /// Creates a proxy with an explicit target allowlist.
-    #[must_use]
-    pub fn new_with_allowlist(connect_timeout: Duration, allowlist: Allowlist) -> Self {
+    pub fn new(connect_timeout: Duration, allowlist: Allowlist) -> Self {
         Self {
             connect_timeout,
             allowlist: Arc::new(allowlist),
@@ -130,12 +124,6 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    /// Creates an allowlist containing only `targets`.
-    #[must_use]
-    pub fn new(targets: Vec<AllowedTcpTarget>) -> Self {
-        Self { targets }
-    }
-
     /// Extends the built-in `SeedLink` targets with deployment-specific targets.
     pub fn with_default_targets<I>(extra_targets: I) -> Self
     where
@@ -151,14 +139,6 @@ impl Allowlist {
     }
 }
 
-impl Default for Allowlist {
-    fn default() -> Self {
-        Self {
-            targets: default_allowed_targets(),
-        }
-    }
-}
-
 /// One allowed TCP host and port pair.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllowedTcpTarget {
@@ -167,10 +147,9 @@ pub struct AllowedTcpTarget {
 }
 
 impl AllowedTcpTarget {
-    /// Creates a normalized host and port rule.
-    pub fn new(host: impl Into<String>, port: u16) -> Self {
+    fn new(host: &str, port: u16) -> Self {
         Self {
-            host: host.into().trim().to_ascii_lowercase(),
+            host: host.trim().to_ascii_lowercase(),
             port,
         }
     }
@@ -185,7 +164,7 @@ impl AllowedTcpTarget {
     /// host.
     pub fn parse(value: &str) -> Result<Self, TargetError> {
         let target = parse_tcp_target(value)?;
-        Ok(Self::new(target.host, target.port))
+        Ok(Self::new(&target.host, target.port))
     }
 
     fn matches(&self, target: &TcpTarget) -> bool {
@@ -193,6 +172,7 @@ impl AllowedTcpTarget {
     }
 }
 
+/// The app's default live `SeedLink` server, plus GEOFON's.
 fn default_allowed_targets() -> Vec<AllowedTcpTarget> {
     [
         AllowedTcpTarget::new("rtserve.iris.washington.edu", 18000),
@@ -201,13 +181,10 @@ fn default_allowed_targets() -> Vec<AllowedTcpTarget> {
     .into()
 }
 
-/// Reads the target from a `target=host:port` or a `host=…&port=…` query.
-///
-/// `target` wins when both forms are present.
+/// Reads the target from a `host=…&port=…` query.
 fn tcp_target(query: Option<&str>) -> Result<TcpTarget, TargetError> {
     let mut host = None;
     let mut port = None;
-    let mut target = None;
 
     for (key, value) in query
         .into_iter()
@@ -216,18 +193,13 @@ fn tcp_target(query: Option<&str>) -> Result<TcpTarget, TargetError> {
         match key.as_ref() {
             "host" => host = Some(value.into_owned()),
             "port" => port = Some(value.into_owned()),
-            "target" => target = Some(value.into_owned()),
             _ => {}
         }
     }
 
-    if let Some(target) = target {
-        parse_tcp_target(&target)
-    } else {
-        let host = host.ok_or(TargetError::MissingHost)?;
-        let port = port.ok_or(TargetError::MissingPort)?;
-        validate_tcp_target(&host, parse_port(&port)?)
-    }
+    let host = host.ok_or(TargetError::MissingHost)?;
+    let port = port.ok_or(TargetError::MissingPort)?;
+    validate_tcp_target(&host, parse_port(&port)?)
 }
 
 /// Parses `host:port`, splitting at the last `:` so a bracketed IPv6 host stays whole.
@@ -335,13 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_tcp_target_shorthand() -> eyre::Result<()> {
-        let target = tcp_target(Some("target=rtserve.iris.washington.edu%3A18000"))?;
-        assert_eq!(target.to_string(), "rtserve.iris.washington.edu:18000");
-        Ok(())
-    }
-
-    #[test]
     fn rejects_missing_target() {
         assert!(matches!(tcp_target(None), Err(TargetError::MissingHost)));
     }
@@ -365,22 +330,22 @@ mod tests {
 
     #[test]
     fn default_allowlist_accepts_known_seedlink_hosts() -> eyre::Result<()> {
-        let target = tcp_target(Some("target=rtserve.iris.washington.edu%3A18000"))?;
-        assert!(Allowlist::default().contains(&target));
+        let target = tcp_target(Some("host=rtserve.iris.washington.edu&port=18000"))?;
+        assert!(Allowlist::with_default_targets([]).contains(&target));
         Ok(())
     }
 
     #[test]
     fn default_allowlist_rejects_other_hosts() -> eyre::Result<()> {
-        let target = tcp_target(Some("target=example.org%3A18000"))?;
-        assert!(!Allowlist::default().contains(&target));
+        let target = tcp_target(Some("host=example.org&port=18000"))?;
+        assert!(!Allowlist::with_default_targets([]).contains(&target));
         Ok(())
     }
 
     #[test]
     fn default_allowlist_rejects_other_ports() -> eyre::Result<()> {
-        let target = tcp_target(Some("target=rtserve.iris.washington.edu%3A22"))?;
-        assert!(!Allowlist::default().contains(&target));
+        let target = tcp_target(Some("host=rtserve.iris.washington.edu&port=22"))?;
+        assert!(!Allowlist::with_default_targets([]).contains(&target));
         Ok(())
     }
 }

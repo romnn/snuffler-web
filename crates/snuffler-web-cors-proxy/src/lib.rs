@@ -20,15 +20,9 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    /// Creates a proxy with the built-in FDSN target allowlist.
+    /// Creates a proxy forwarding to the targets in `allowlist`.
     #[must_use]
-    pub fn new(http: reqwest::Client) -> Self {
-        Self::new_with_allowlist(http, Allowlist::default())
-    }
-
-    /// Creates a proxy with an explicit target allowlist.
-    #[must_use]
-    pub fn new_with_allowlist(http: reqwest::Client, allowlist: Allowlist) -> Self {
+    pub fn new(http: reqwest::Client, allowlist: Allowlist) -> Self {
         Self {
             http,
             allowlist: Arc::new(allowlist),
@@ -54,7 +48,7 @@ impl Proxy {
     }
 
     async fn proxy(&self, mut req: Request<Body>) -> Result<Response<Body>, ProxyError> {
-        let target = target_url(req.uri().query(), req.headers())?;
+        let target = target_url(req.uri().query())?;
         self.allowlist.check(&target)?;
 
         // Forward the request, minus hop-by-hop headers and browser credentials
@@ -176,12 +170,6 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    /// Creates an allowlist containing only `rules`.
-    #[must_use]
-    pub fn new(rules: Vec<AllowedHttpTarget>) -> Self {
-        Self { rules }
-    }
-
     /// Extends the built-in FDSN targets with deployment-specific rules.
     pub fn with_default_rules<I>(extra_rules: I) -> Self
     where
@@ -207,14 +195,6 @@ impl Allowlist {
     }
 }
 
-impl Default for Allowlist {
-    fn default() -> Self {
-        Self {
-            rules: default_allowed_targets(),
-        }
-    }
-}
-
 /// One allowed scheme, host, port, and exact path tuple.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AllowedHttpTarget {
@@ -225,34 +205,12 @@ pub struct AllowedHttpTarget {
 }
 
 impl AllowedHttpTarget {
-    /// Creates a rule using the scheme's default port.
-    pub fn new(
-        scheme: impl Into<String>,
-        host: impl Into<String>,
-        path: impl Into<String>,
-    ) -> Self {
-        let scheme = scheme.into().to_ascii_lowercase();
-        let port = default_port(&scheme).unwrap_or(443);
+    fn new(scheme: &str, host: &str, port: u16, path: &str) -> Self {
         Self {
-            scheme,
-            host: host.into().to_ascii_lowercase(),
+            scheme: scheme.to_ascii_lowercase(),
+            host: host.to_ascii_lowercase(),
             port,
-            path: path.into(),
-        }
-    }
-
-    /// Creates a rule with an explicit port.
-    pub fn new_with_port(
-        scheme: impl Into<String>,
-        host: impl Into<String>,
-        port: u16,
-        path: impl Into<String>,
-    ) -> Self {
-        Self {
-            scheme: scheme.into().to_ascii_lowercase(),
-            host: host.into().to_ascii_lowercase(),
-            port,
-            path: path.into(),
+            path: path.to_owned(),
         }
     }
 
@@ -269,7 +227,7 @@ impl AllowedHttpTarget {
         let port = url
             .port_or_known_default()
             .ok_or(TargetError::UnknownPort)?;
-        Ok(Self::new_with_port(url.scheme(), host, port, url.path()))
+        Ok(Self::new(url.scheme(), host, port, url.path()))
     }
 
     fn matches(&self, url: &Url) -> bool {
@@ -280,14 +238,7 @@ impl AllowedHttpTarget {
     }
 }
 
-fn default_port(scheme: &str) -> Option<u16> {
-    match scheme {
-        "http" => Some(80),
-        "https" => Some(443),
-        _ => None,
-    }
-}
-
+/// The FDSN query endpoints of the data centers `web/bridge.py` knows by name.
 fn default_allowed_targets() -> Vec<AllowedHttpTarget> {
     const HOSTS: &[&str] = &[
         "geofon.gfz.de",
@@ -309,24 +260,17 @@ fn default_allowed_targets() -> Vec<AllowedHttpTarget> {
         .flat_map(|host| {
             PATHS
                 .iter()
-                .map(move |path| AllowedHttpTarget::new("https", *host, *path))
+                .map(move |path| AllowedHttpTarget::new("https", host, 443, path))
         })
         .collect()
 }
 
-/// Reads the target from the `url` query parameter, or else the `x-snuffler-proxy-url`
-/// header, and accepts only HTTP(S).
-fn target_url(query: Option<&str>, headers: &HeaderMap) -> Result<Url, ProxyError> {
+/// Reads the target from the `url` query parameter and accepts only HTTP(S).
+fn target_url(query: Option<&str>) -> Result<Url, ProxyError> {
     let target = query
         .into_iter()
         .flat_map(|query| url::form_urlencoded::parse(query.as_bytes()))
         .find_map(|(key, value)| (key == "url").then_some(value.into_owned()))
-        .or_else(|| {
-            headers
-                .get("x-snuffler-proxy-url")
-                .and_then(|value| value.to_str().ok())
-                .map(ToOwned::to_owned)
-        })
         .ok_or(ProxyError::MissingTargetUrl)?;
     let url = Url::parse(&target).map_err(ProxyError::InvalidTargetUrl)?;
     match url.scheme() {
@@ -383,17 +327,16 @@ mod tests {
     #[test]
     fn rejects_missing_target() {
         assert!(matches!(
-            target_url(None, &HeaderMap::new()),
+            target_url(None),
             Err(ProxyError::MissingTargetUrl)
         ));
     }
 
     #[test]
     fn accepts_http_target() -> eyre::Result<()> {
-        let url = target_url(
-            Some("url=https%3A%2F%2Fgeofon.gfz.de%2Ffdsnws%2Fdataselect%2F1%2Fquery"),
-            &HeaderMap::new(),
-        )?;
+        let url = target_url(Some(
+            "url=https%3A%2F%2Fgeofon.gfz.de%2Ffdsnws%2Fdataselect%2F1%2Fquery",
+        ))?;
         assert_eq!(
             url.as_str(),
             "https://geofon.gfz.de/fdsnws/dataselect/1/query"
@@ -403,13 +346,13 @@ mod tests {
 
     #[test]
     fn rejects_non_http_target() {
-        let result = target_url(Some("url=file%3A%2F%2F%2Fetc%2Fpasswd"), &HeaderMap::new());
+        let result = target_url(Some("url=file%3A%2F%2F%2Fetc%2Fpasswd"));
         assert!(matches!(result, Err(ProxyError::UnsupportedScheme(scheme)) if scheme == "file"));
     }
 
     #[test]
     fn error_body_carries_the_whole_chain() -> eyre::Result<()> {
-        let Err(err) = target_url(Some("url=not%20a%20url"), &HeaderMap::new()) else {
+        let Err(err) = target_url(Some("url=not%20a%20url")) else {
             bail!("a relative URL must be rejected");
         };
 
@@ -441,28 +384,28 @@ mod tests {
     #[test]
     fn default_allowlist_accepts_fdsn_query() -> eyre::Result<()> {
         let url = Url::parse("https://geofon.gfz.de/fdsnws/dataselect/1/query?net=GE")?;
-        assert!(Allowlist::default().check(&url).is_ok());
+        assert!(Allowlist::with_default_rules([]).check(&url).is_ok());
         Ok(())
     }
 
     #[test]
     fn default_allowlist_rejects_other_pages_on_allowed_host() -> eyre::Result<()> {
         let url = Url::parse("https://geofon.gfz.de/index.html")?;
-        assert!(Allowlist::default().check(&url).is_err());
+        assert!(Allowlist::with_default_rules([]).check(&url).is_err());
         Ok(())
     }
 
     #[test]
     fn default_allowlist_rejects_other_ports_on_allowed_host() -> eyre::Result<()> {
         let url = Url::parse("https://geofon.gfz.de:444/fdsnws/dataselect/1/query?net=GE")?;
-        assert!(Allowlist::default().check(&url).is_err());
+        assert!(Allowlist::with_default_rules([]).check(&url).is_err());
         Ok(())
     }
 
     #[test]
     fn default_allowlist_rejects_other_hosts() -> eyre::Result<()> {
         let url = Url::parse("https://example.org/fdsnws/dataselect/1/query")?;
-        assert!(Allowlist::default().check(&url).is_err());
+        assert!(Allowlist::with_default_rules([]).check(&url).is_err());
         Ok(())
     }
 

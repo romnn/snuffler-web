@@ -164,17 +164,13 @@ pub async fn run(args: Args) -> Result<(), RunError> {
     );
 
     let state = Arc::new(AppState {
-        cors: snuffler_web_cors_proxy::Proxy::new_with_allowlist(http, http_allowlist),
-        tcp_ws: snuffler_web_tcp_ws_proxy::Proxy::new_with_allowlist(
-            connect_timeout,
-            tcp_allowlist,
-        ),
+        cors: snuffler_web_cors_proxy::Proxy::new(http, http_allowlist),
+        tcp_ws: snuffler_web_tcp_ws_proxy::Proxy::new(connect_timeout, tcp_allowlist),
     });
     let app = Router::new()
         .route("/health", get(health))
         .route("/cors", any(cors_proxy))
         .route("/seedlink", get(tcp_ws_proxy))
-        .route("/tcp", get(tcp_ws_proxy))
         .with_state(state);
 
     let listener = TcpListener::bind(args.bind)

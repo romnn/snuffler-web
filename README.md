@@ -216,10 +216,10 @@ those stages run under emulation and are slow.
   run `micromux` instead of plain `task serve`. It starts Trunk on
   `127.0.0.1:17683` and `snuffler-web-proxy` on `127.0.0.1:17684`; local FDSN fetches
   use `/cors` through that proxy when available, and the same process exposes
-  `/seedlink` and `/tcp` as WebSocket-to-raw-TCP tunnels.
+  `/seedlink` as a WebSocket-to-raw-TCP tunnel.
 - `snuffler-web-proxy` is not an open proxy: `/cors` only forwards to the known FDSN
   query endpoints used by the app, only permits `GET`/`HEAD`, and strips browser
-  credential headers. `/seedlink`/`/tcp` only connect to known SeedLink/ringserver
+  credential headers. `/seedlink` only connects to known SeedLink/ringserver
   hosts on their allowed ports. A hosted deployment can add exact targets with
   `--allow-http-target` / `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` and
   `--allow-tcp-target` / `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`.
