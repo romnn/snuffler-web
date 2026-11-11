@@ -15,7 +15,7 @@ import {
   type MlDevice,
   type OperationProgress,
   type WorkerEvent,
-} from "./proto/snuffler/bridge/v1/bridge_pb.js";
+} from "./proto/snuffler_web_proto/bridge_pb.js";
 import { type WorkerEventMessage } from "./worker_protocol.js";
 
 // The page starts each worker with `?epoch=N`, and drops every message whose epoch

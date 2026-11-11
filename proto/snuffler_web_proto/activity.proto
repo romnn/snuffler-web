@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package snuffler.bridge.v1;
+package snuffler_web_proto;
 
 import "google/protobuf/descriptor.proto";
 

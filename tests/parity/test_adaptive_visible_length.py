@@ -24,8 +24,8 @@ from typing import Dict, Iterator, List, Tuple
 import numpy as np
 import pytest
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import view_pb2
 from snuffler_bridge import state, view
+from snuffler_web_proto import view_pb2
 
 # Wide enough that a 100 Hz channel is far past every fixed budget, and coarse
 # enough that a 1 Hz one is inside all of them.

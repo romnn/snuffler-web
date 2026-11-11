@@ -18,16 +18,16 @@ use prost_reflect::{DescriptorPool, Kind};
 use quote::{format_ident, quote};
 
 /// Fully qualified name of the response envelope.
-const BRIDGE_RESULT: &str = "snuffler.bridge.v1.BridgeResult";
+const BRIDGE_RESULT: &str = "snuffler_web_proto.BridgeResult";
 
 /// Proto type of requests that carry no data; their client methods take no argument.
-const EMPTY_REQUEST: &str = ".snuffler.bridge.v1.Empty";
+const EMPTY_REQUEST: &str = ".snuffler_web_proto.Empty";
 
 /// Proto type of the one response whose samples travel beside the envelope.
 ///
 /// The worker hands the trace samples back as a separate `Float32Array` instead of encoding
 /// them into the protobuf payload, so these methods call `unary_with_buffer`.
-const BUFFERED_RESPONSE: &str = ".snuffler.bridge.v1.ViewMeta";
+const BUFFERED_RESPONSE: &str = ".snuffler_web_proto.ViewMeta";
 
 /// Maps each response message to the `BridgeResult` oneof variant that carries it.
 ///

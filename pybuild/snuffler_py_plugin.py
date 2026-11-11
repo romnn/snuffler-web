@@ -45,7 +45,7 @@ def lower_camel(name: str) -> str:
 
 
 def activity_options(request: plugin_pb2.CodeGeneratorRequest) -> tuple[object, object]:
-    """The MethodOptions class and the `snuffler.bridge.v1.activity` extension.
+    """The MethodOptions class and the `snuffler_web_proto.activity` extension.
 
     Both come from a pool built from the request's own files, so the extension
     resolves without importing the generated activity module.
@@ -58,7 +58,7 @@ def activity_options(request: plugin_pb2.CodeGeneratorRequest) -> tuple[object, 
         pool.AddSerializedFile(proto.SerializeToString())
     options_descriptor = pool.FindMessageTypeByName("google.protobuf.MethodOptions")
     return message_factory.GetMessageClass(options_descriptor), pool.FindExtensionByName(
-        "snuffler.bridge.v1.activity"
+        "snuffler_web_proto.activity"
     )
 
 

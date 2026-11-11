@@ -35,7 +35,7 @@ interface ExportProbeWindow extends Window {
 
 interface BridgeModule {
   call(
-    method: "/snuffler.bridge.v1.BridgeService/ListExamples",
+    method: "/snuffler_web_proto.BridgeService/ListExamples",
     request: Uint8Array,
     jobId: bigint
   ): Promise<{ result: Uint8Array }>;
@@ -626,7 +626,7 @@ async function checkWorkerRecovery(page: Page): Promise<void> {
     const before = bridge.currentRuntimeEpoch();
     const after = bridge.restartRuntime("browser recovery regression");
     const reply = await bridge.call(
-      "/snuffler.bridge.v1.BridgeService/ListExamples",
+      "/snuffler_web_proto.BridgeService/ListExamples",
       new Uint8Array(),
       999n
     );

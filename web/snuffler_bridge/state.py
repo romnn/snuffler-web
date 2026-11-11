@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tup
 
 import numpy as np
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import data_pb2, scene_pb2
+from snuffler_web_proto import data_pb2, scene_pb2
 
 from . import marker_budget
 from .nslc import NslcId

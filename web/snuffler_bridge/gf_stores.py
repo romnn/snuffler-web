@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from snuffler.bridge.v1 import bridge_pb2
+from snuffler_web_proto import bridge_pb2
 
 from . import operation, pyrocko_modules, state
 

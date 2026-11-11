@@ -6,7 +6,7 @@ from typing import List
 
 import numpy as np
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import snuffling_pb2
+from snuffler_web_proto import snuffling_pb2
 
 from . import marker_budget, operation, snuffling_scope, state
 

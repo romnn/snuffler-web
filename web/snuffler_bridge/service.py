@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple, cast
 
 import numpy as np
-from snuffler.bridge.v1 import (
+from snuffler_web_proto import (
     bridge_dispatch,
     bridge_pb2,
     common_pb2,

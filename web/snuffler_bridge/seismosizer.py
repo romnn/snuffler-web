@@ -7,7 +7,7 @@ import traceback
 from typing import Callable, Dict, Tuple
 
 import numpy as np
-from snuffler.bridge.v1 import snuffling_pb2
+from snuffler_web_proto import snuffling_pb2
 
 from . import events, gf_stores, marker_budget, pyrocko_modules, snuffling_scope, state
 

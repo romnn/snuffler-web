@@ -70,6 +70,6 @@ The RPC reply is the only terminal signal; a dead worker settles its jobs as `Lo
 ## References
 
 - `crates/snuffler-web-core/src/activity/` (`ActivityLedger`, `Outcome`)
-- `proto/snuffler/bridge/v1/activity.proto`, `crates/snuffler-web-proto/build/activity.rs`
+- `proto/snuffler_web_proto/activity.proto`, `crates/snuffler-web-proto/build/activity.rs`
 - `crates/snuffler-web-core/src/markers/store.rs`, `web/execution_control.ts`, `web/snuffler_bridge/service.py`
 - `tests/codegen_missing_activity.py`, `tests/execution_control_validate.ts`

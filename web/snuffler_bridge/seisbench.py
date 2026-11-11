@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import snuffling_pb2
+from snuffler_web_proto import snuffling_pb2
 
 from . import fetch, marker_budget, snuffling_scope, state
 from .nslc import NslcId

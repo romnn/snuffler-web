@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Tuple
 
-from snuffler.bridge.v1 import common_pb2, data_pb2, snuffling_pb2
+from snuffler_web_proto import common_pb2, data_pb2, snuffling_pb2
 
 from . import marker_budget, pyrocko_modules, state
 from .marker_budget import MarkerBudget, MarkerResultT

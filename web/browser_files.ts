@@ -12,7 +12,7 @@ import {
   BrowserSourceAckListSchema,
   type BrowserFile,
   type BrowserReadFailure,
-} from "./proto/snuffler/bridge/v1/data_pb.js";
+} from "./proto/snuffler_web_proto/data_pb.js";
 
 // The File System Access API, which only Chromium ships.
 declare global {

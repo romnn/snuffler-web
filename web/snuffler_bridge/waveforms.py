@@ -8,7 +8,7 @@ from typing import Iterable, List, Optional
 import numpy as np
 from pyrocko import io as pio
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import bridge_pb2, data_pb2, scene_pb2
+from snuffler_web_proto import bridge_pb2, data_pb2, scene_pb2
 
 from . import events, snuffling_scope, staging, state
 

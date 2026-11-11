@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-from snuffler.bridge.v1 import data_pb2
+from snuffler_web_proto import data_pb2
 
 from . import events, state
 

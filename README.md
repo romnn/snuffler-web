@@ -41,7 +41,7 @@ against: `task snuffler`, see [`qt/`](qt/).
 The egui frontend asks the bridge for a *view* (a time window + filters + a
 target pixel width); pyrocko filters and decimates the traces and returns compact
 `float32` arrays + protobuf metadata. The data contract is defined once in
-`proto/snuffler/bridge/v1/*.proto`; `prost` type-checks the Rust
+`proto/snuffler_web_proto/*.proto`; `prost` type-checks the Rust
 side and `buf generate` emits Python code plus mypy stubs for the Pyodide side.
 
 **pyrocko is used unmodified.** We replace only its *build system* for the web:

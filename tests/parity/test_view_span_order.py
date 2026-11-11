@@ -22,8 +22,8 @@ from typing import Iterator, List
 import numpy as np
 import pytest
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import view_pb2
 from snuffler_bridge import state, view
+from snuffler_web_proto import view_pb2
 
 
 def located_trace(loc: str, deltat: float, n: int) -> ptrace.Trace:

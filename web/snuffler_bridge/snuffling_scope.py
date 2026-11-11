@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Iterator, List, Optional, Tuple
 
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import snuffling_pb2, view_pb2
+from snuffler_web_proto import snuffling_pb2, view_pb2
 
 from . import sorting, state
 

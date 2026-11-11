@@ -12,14 +12,14 @@ import {
   MlDeviceStatusSchema,
   WorkerEventSchema,
   type BridgeResult,
-} from "../web/proto/snuffler/bridge/v1/bridge_pb.js";
+} from "../web/proto/snuffler_web_proto/bridge_pb.js";
 import {
   NamedSnufflingRequestSchema,
   SeisbenchSnufflingParamsSchema,
   SnufflingParamsSchema,
   SnufflingRequestParamsSchema,
-} from "../web/proto/snuffler/bridge/v1/snuffling_pb.js";
-import { ViewParamsSchema } from "../web/proto/snuffler/bridge/v1/view_pb.js";
+} from "../web/proto/snuffler_web_proto/snuffling_pb.js";
+import { ViewParamsSchema } from "../web/proto/snuffler_web_proto/view_pb.js";
 
 // The oneof cases of `BridgeResult.result`, and the payload each one carries —
 // derived from the generated protobuf types so a schema change fails the
@@ -85,9 +85,9 @@ const TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_00
 const PICK_THRESHOLD = Number(process.env.SNUFFLER_BROWSER_PICK_THRESHOLD || 0.02);
 
 const METHODS = {
-  makeExample: "/snuffler.bridge.v1.BridgeService/MakeExample",
-  runSnuffling: "/snuffler.bridge.v1.BridgeService/RunSnuffling",
-  getView: "/snuffler.bridge.v1.BridgeService/GetView",
+  makeExample: "/snuffler_web_proto.BridgeService/MakeExample",
+  runSnuffling: "/snuffler_web_proto.BridgeService/RunSnuffling",
+  getView: "/snuffler_web_proto.BridgeService/GetView",
 };
 
 // Bytes as a plain array, the form `page.evaluate` can carry across into the page.

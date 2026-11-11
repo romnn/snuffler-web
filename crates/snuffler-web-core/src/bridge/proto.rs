@@ -1,6 +1,6 @@
 //! The generated protobuf types, and decoding of the messages `bridge.js` returns.
 
-pub use snuffler_web_proto::bridge::v1 as pb;
+pub use snuffler_web_proto as pb;
 
 /// Decodes a protobuf message a DOM adapter returned (a file page, a cancel reply).
 /// `adapter` names it in a typed decode failure.

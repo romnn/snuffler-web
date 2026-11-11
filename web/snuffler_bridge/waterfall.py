@@ -6,7 +6,7 @@ import math
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
-from snuffler.bridge.v1 import view_pb2
+from snuffler_web_proto import view_pb2
 
 
 def row_strips(

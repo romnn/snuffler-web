@@ -40,7 +40,7 @@ impl MarkerBudget {
     }
 }
 
-impl From<MarkerBudget> for snuffler_web_proto::bridge::v1::MarkerBudget {
+impl From<MarkerBudget> for snuffler_web_proto::MarkerBudget {
     fn from(budget: MarkerBudget) -> Self {
         Self {
             max_markers: budget.get(),

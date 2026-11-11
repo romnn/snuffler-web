@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
-from snuffler.bridge.v1 import data_pb2
+from snuffler_web_proto import data_pb2
 
 from . import operation, state
 
 # CORS-enabled FDSN web services (verified to allow cross-origin fetch).
+# The local proxy allows these hosts; keep them in sync with
+# `crates/snuffler-web-proxy/src/defaults.rs`.
 _SERVICE_BASE_URLS = {
     "geofon": "https://geofon.gfz.de",
     "earthscope": "https://service.earthscope.org",

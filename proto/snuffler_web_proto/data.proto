@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package snuffler.bridge.v1;
+package snuffler_web_proto;
 
-import "snuffler/bridge/v1/common.proto";
-import "snuffler/bridge/v1/scene.proto";
-import "snuffler/bridge/v1/snuffling.proto";
+import "snuffler_web_proto/common.proto";
+import "snuffler_web_proto/scene.proto";
+import "snuffler_web_proto/snuffling.proto";
 
 message MapStation {
   string label = 1;

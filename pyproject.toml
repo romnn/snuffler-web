@@ -45,7 +45,7 @@ warn_no_return = true
 # modules so the type check stays green regardless of whether types-protobuf is
 # present (the check:py task installs it; editors/CI may not).
 [[tool.mypy.overrides]]
-module = ["snuffler.bridge.v1.*"]
+module = ["snuffler_web_proto.*"]
 disallow_any_unimported = false
 disallow_subclassing_any = false
 

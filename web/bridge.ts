@@ -18,7 +18,7 @@ import {
   RuntimeInfoSchema,
   WorkerEventSchema,
   type RuntimeInfo,
-} from "./proto/snuffler/bridge/v1/bridge_pb.js";
+} from "./proto/snuffler_web_proto/bridge_pb.js";
 import { copyBytes } from "./bytes.js";
 import {
   ExecutionState,

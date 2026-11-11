@@ -2,7 +2,7 @@
 // dedicated onnxruntime-web worker (web/ort_worker.ts), on WebGPU when the browser
 // has an adapter and on CPU wasm otherwise.
 // Python calls `snufflerOrtInfer` through the `__snufflerOrtInfer` global.
-import { MlDevice } from "./proto/snuffler/bridge/v1/bridge_pb.js";
+import { MlDevice } from "./proto/snuffler_web_proto/bridge_pb.js";
 import { postMlDevice, postSeisbenchProgress } from "./worker_events.js";
 import {
   SESSION_CREATING_FRACTION,

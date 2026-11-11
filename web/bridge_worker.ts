@@ -15,7 +15,7 @@ import {
   CancelledSchema,
   MlDevice,
   StringValueSchema,
-} from "./proto/snuffler/bridge/v1/bridge_pb.js";
+} from "./proto/snuffler_web_proto/bridge_pb.js";
 import {
   beginCommit,
   cancellationRequested,
@@ -422,7 +422,7 @@ const RELOADABLE_PYTHON_SOURCES: Array<[string, string]> = [
 // They are plain static files with no dependency on the runtime, so fetch them in
 // parallel with it rather than one at a time after it.
 async function fetchBridgeSources(): Promise<Array<[string, string]>> {
-  const protoDir = "proto/snuffler/bridge/v1";
+  const protoDir = "proto/snuffler_web_proto";
   return await fetchPythonSources([
     ...[
       "activity_pb2.py",
@@ -436,7 +436,7 @@ async function fetchBridgeSources(): Promise<Array<[string, string]>> {
       // Generated typed servicer Protocol + dispatch (from BridgeService), which
       // the bridge imports, so it must be staged alongside the *_pb2 modules.
       "bridge_dispatch.py",
-    ].map((file): [string, string] => [`/snuffler/bridge/v1/${file}`, `${protoDir}/${file}`]),
+    ].map((file): [string, string] => [`/snuffler_web_proto/${file}`, `${protoDir}/${file}`]),
     // Imported before the bridge: it decides what pyrocko's own imports defer.
     ["/bootstrap.py", "bootstrap.py"],
     ...RELOADABLE_PYTHON_SOURCES,
@@ -519,7 +519,7 @@ async function boot() {
       // uses inside functions, then imports the bridge while counting modules, so
       // the longest phase of the boot has a moving bar instead of a frozen one.
       reportBootProgress(BOOT_SPAN.importStart, "Importing pyrocko…");
-      makeDirectories(["/snuffler", "/snuffler/bridge", "/snuffler/bridge/v1", "/snuffler_bridge"]);
+      makeDirectories(["/snuffler_web_proto", "/snuffler_bridge"]);
       for (const [destination, source] of await sources) {
         pyodide.FS.writeFile(destination, source);
       }

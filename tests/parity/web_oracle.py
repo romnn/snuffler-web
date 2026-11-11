@@ -21,8 +21,8 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 from scenario import CorpusFiles, Scenario
-from snuffler.bridge.v1 import view_pb2
 from snuffler_bridge import events, state, stations, view, waveforms
+from snuffler_web_proto import view_pb2
 
 NslcId = Tuple[str, str, str, str]
 

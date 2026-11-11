@@ -4,7 +4,7 @@
 //! bytes to a Pyodide Web Worker (`CPython` + numpy + scipy + pyrocko, all
 //! compiled to WASM) and returns protobuf metadata plus raw sample buffers.
 //!
-//! `proto/snuffler/bridge/v1/*.proto` is the boundary contract.
+//! `proto/snuffler_web_proto/*.proto` is the boundary contract.
 //! The decoded protobuf messages are the app-facing model; there is no parallel
 //! hand-written layer.
 //!

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import snuffling_pb2
+from snuffler_web_proto import snuffling_pb2
 
 from . import cake, polarization, seismosizer, snuffling_scope, stalta
 

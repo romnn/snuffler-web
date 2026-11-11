@@ -6,7 +6,7 @@ import io
 from typing import Any, Dict, List, Optional, Tuple
 
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import data_pb2, snuffling_pb2
+from snuffler_web_proto import data_pb2, snuffling_pb2
 
 from . import events, fetch, marker_budget, staging, state, stations, waveforms
 from .marker_budget import MarkerBudget

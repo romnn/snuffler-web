@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, List, Tuple
 
-from snuffler.bridge.v1 import snuffling_pb2
+from snuffler_web_proto import snuffling_pb2
 
 from . import fetch, gf_stores, marker_budget, pyrocko_modules, sorting, state
 

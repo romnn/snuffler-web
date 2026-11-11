@@ -14,10 +14,10 @@ use prost_reflect::{
 use quote::{ToTokens, format_ident, quote};
 
 /// Fully qualified name of the bridge service.
-const SERVICE: &str = "snuffler.bridge.v1.BridgeService";
+const SERVICE: &str = "snuffler_web_proto.BridgeService";
 
 /// Fully qualified name of the `activity` method-option extension.
-const ACTIVITY_OPTION: &str = "snuffler.bridge.v1.activity";
+const ACTIVITY_OPTION: &str = "snuffler_web_proto.activity";
 
 /// Executor lane an operation is scheduled on.
 #[derive(Clone, Copy)]

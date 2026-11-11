@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from snuffler.bridge.v1 import common_pb2
+from snuffler_web_proto import common_pb2
 
 # pyrocko's ``nslc_id``: (network, station, location, channel) codes.
 NslcId = Tuple[str, str, str, str]

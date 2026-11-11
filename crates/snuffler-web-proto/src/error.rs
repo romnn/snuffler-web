@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use crate::bridge::v1 as pb;
+use crate as pb;
 
 /// The bridge transport itself failed, before any envelope existed.
 ///
@@ -154,9 +154,7 @@ mod tests {
     use prost::Message as _;
 
     use super::{CallError, TransportError};
-    use crate::bridge::v1::{
-        BridgeResult, BridgeServiceClient, BridgeTransport, MapRequest, bridge_result,
-    };
+    use crate::{BridgeResult, BridgeServiceClient, BridgeTransport, MapRequest, bridge_result};
 
     /// A transport that answers every rpc with one canned envelope, so the
     /// generated client's envelope handling can be exercised without a browser.
@@ -167,7 +165,7 @@ mod tests {
     impl BridgeTransport for CannedTransport {
         fn unary(
             &self,
-            _operation: crate::bridge::v1::Operation,
+            _operation: crate::Operation,
             _method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<Vec<u8>, TransportError>> {
@@ -176,7 +174,7 @@ mod tests {
 
         fn unary_with_buffer(
             &self,
-            _operation: crate::bridge::v1::Operation,
+            _operation: crate::Operation,
             _method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<(Vec<u8>, Vec<f32>), TransportError>> {
@@ -191,7 +189,7 @@ mod tests {
     impl BridgeTransport for DeadTransport {
         fn unary(
             &self,
-            _operation: crate::bridge::v1::Operation,
+            _operation: crate::Operation,
             method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<Vec<u8>, TransportError>> {
@@ -200,7 +198,7 @@ mod tests {
 
         fn unary_with_buffer(
             &self,
-            _operation: crate::bridge::v1::Operation,
+            _operation: crate::Operation,
             method: &'static str,
             _request: Vec<u8>,
         ) -> impl Future<Output = Result<(Vec<u8>, Vec<f32>), TransportError>> {
@@ -229,7 +227,7 @@ mod tests {
     }
 
     /// The wire id the sample rpc is addressed by, which the errors have to name.
-    const MAP_DATA: &str = "/snuffler.bridge.v1.BridgeService/MapData";
+    const MAP_DATA: &str = "/snuffler_web_proto.BridgeService/MapData";
 
     /// Calls `MapData`, the sample RPC throughout, against a canned reply.
     fn call_with_reply(bytes: Vec<u8>) -> eyre::Result<CallError> {
@@ -243,13 +241,11 @@ mod tests {
 
     #[test]
     fn a_python_exception_arrives_with_its_traceback() -> eyre::Result<()> {
-        let error = call_with_reply(envelope(bridge_result::Result::Error(
-            crate::bridge::v1::BridgeError {
-                kind: "ValueError".to_owned(),
-                message: "no traces in that window".to_owned(),
-                traceback: "Traceback (most recent call last):\n  ...".to_owned(),
-            },
-        )))?;
+        let error = call_with_reply(envelope(bridge_result::Result::Error(crate::BridgeError {
+            kind: "ValueError".to_owned(),
+            message: "no traces in that window".to_owned(),
+            traceback: "Traceback (most recent call last):\n  ...".to_owned(),
+        })))?;
 
         let CallError::Remote(remote) = &error else {
             bail!("a BridgeError envelope should be a remote failure, got {error:?}")
@@ -269,13 +265,11 @@ mod tests {
 
     #[test]
     fn an_exception_with_no_message_does_not_trail_a_separator() -> eyre::Result<()> {
-        let error = call_with_reply(envelope(bridge_result::Result::Error(
-            crate::bridge::v1::BridgeError {
-                kind: "KeyboardInterrupt".to_owned(),
-                message: String::new(),
-                traceback: String::new(),
-            },
-        )))?;
+        let error = call_with_reply(envelope(bridge_result::Result::Error(crate::BridgeError {
+            kind: "KeyboardInterrupt".to_owned(),
+            message: String::new(),
+            traceback: String::new(),
+        })))?;
         ensure!(
             error.to_string() == "KeyboardInterrupt",
             "a message-less exception reads as {error:?}"
@@ -306,7 +300,7 @@ mod tests {
         // A SceneMeta where MapData was asked for: the schema and the generated
         // ends have drifted, which is nobody's user error.
         let error = call_with_reply(envelope(bridge_result::Result::Scene(
-            crate::bridge::v1::SceneMeta::default(),
+            crate::SceneMeta::default(),
         )))?;
         let CallError::UnexpectedPayload { method } = error else {
             bail!("the wrong payload should be UnexpectedPayload, got {error:?}")

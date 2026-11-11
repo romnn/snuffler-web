@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package snuffler.bridge.v1.fixture;
+package snuffler_web_proto.fixture;
 
-import "snuffler/bridge/v1/activity.proto";
+import "snuffler_web_proto/activity.proto";
 
 message Empty {}
 

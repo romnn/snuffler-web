@@ -2,7 +2,7 @@
 //!
 //! The build produces three files in `OUT_DIR`, all included by `src/lib.rs`:
 //!
-//! - `snuffler.bridge.v1.rs`: the prost messages, followed by the typed `BridgeServiceClient`
+//! - `snuffler_web_proto.rs`: the prost messages, followed by the typed `BridgeServiceClient`
 //!   that [`client::ClientGenerator`] emits through prost's service-generator hook.
 //! - `bridge-activity.rs`: the `Operation` enum and its scheduling metadata, read from each
 //!   rpc's `activity` method option by [`activity`].
@@ -24,7 +24,7 @@ use prost_reflect::DescriptorPool;
 /// Directory that every `import` in the schema is resolved against.
 const PROTO_ROOT: &str = "../../proto";
 
-/// Schema files of the `snuffler.bridge.v1` package, relative to its directory.
+/// Schema files of the `snuffler_web_proto` package, relative to its directory.
 const PROTO_FILES: [&str; 8] = [
     "common.proto",
     "scene.proto",
@@ -39,7 +39,7 @@ const PROTO_FILES: [&str; 8] = [
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
 
-    let proto_files = PROTO_FILES.map(|file| format!("{PROTO_ROOT}/snuffler/bridge/v1/{file}"));
+    let proto_files = PROTO_FILES.map(|file| format!("{PROTO_ROOT}/snuffler_web_proto/{file}"));
     for file in &proto_files {
         println!("cargo:rerun-if-changed={file}");
     }

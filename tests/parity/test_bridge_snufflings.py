@@ -26,7 +26,6 @@ import numpy as np
 import pytest
 from pyrocko import io as pio
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import bridge_dispatch, bridge_pb2, common_pb2, data_pb2, snuffling_pb2
 from snuffler_bridge import (
     bundles,
     commands,
@@ -48,6 +47,7 @@ from snuffler_bridge import (
     stations,
     waveforms,
 )
+from snuffler_web_proto import bridge_dispatch, bridge_pb2, common_pb2, data_pb2, snuffling_pb2
 
 
 def make_trace(
@@ -645,7 +645,7 @@ def test_failed_stalta_and_rms_calls_preserve_the_committed_scene(
     stalta_request = snuffling_pb2.NamedSnufflingRequest(name="stalta", params=snuffling_request())
     stalta_reply = asyncio.run(
         service.call(
-            "/snuffler.bridge.v1.BridgeService/RunSnuffling",
+            "/snuffler_web_proto.BridgeService/RunSnuffling",
             stalta_request.SerializeToString(),
         )
     )
@@ -657,7 +657,7 @@ def test_failed_stalta_and_rms_calls_preserve_the_committed_scene(
 
     rms_reply = asyncio.run(
         service.call(
-            "/snuffler.bridge.v1.BridgeService/RmsTraces",
+            "/snuffler_web_proto.BridgeService/RmsTraces",
             snuffling_request().SerializeToString(),
         )
     )
@@ -685,7 +685,7 @@ def test_outer_boundary_serializes_every_base_exception(
         raise failure
 
     monkeypatch.setattr(bridge_dispatch, "dispatch", fail_dispatch)
-    reply = asyncio.run(service.call("/snuffler.bridge.v1.BridgeService/EmptyScene"))
+    reply = asyncio.run(service.call("/snuffler_web_proto.BridgeService/EmptyScene"))
     result = bridge_pb2.BridgeResult.FromString(reply["result"])
 
     assert result.WhichOneof("result") == "error"
@@ -700,7 +700,7 @@ def test_cancellation_gate_wins_before_commit_and_preserves_the_scene() -> None:
 
     reply = asyncio.run(
         service.call(
-            "/snuffler.bridge.v1.BridgeService/EmptyScene",
+            "/snuffler_web_proto.BridgeService/EmptyScene",
             begin_commit=lambda: False,
         )
     )
@@ -725,7 +725,7 @@ def test_malformed_seedlink_reset_preserves_the_committed_scene() -> None:
 
     reply = asyncio.run(
         service.call(
-            "/snuffler.bridge.v1.BridgeService/IngestMiniSeed",
+            "/snuffler_web_proto.BridgeService/IngestMiniSeed",
             request.SerializeToString(),
         )
     )

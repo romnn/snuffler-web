@@ -1,14 +1,14 @@
 syntax = "proto3";
 
-package snuffler.bridge.v1;
+package snuffler_web_proto;
 
-import "snuffler/bridge/v1/activity.proto";
-import "snuffler/bridge/v1/common.proto";
-import "snuffler/bridge/v1/data.proto";
-import "snuffler/bridge/v1/figure.proto";
-import "snuffler/bridge/v1/scene.proto";
-import "snuffler/bridge/v1/snuffling.proto";
-import "snuffler/bridge/v1/view.proto";
+import "snuffler_web_proto/activity.proto";
+import "snuffler_web_proto/common.proto";
+import "snuffler_web_proto/data.proto";
+import "snuffler_web_proto/figure.proto";
+import "snuffler_web_proto/scene.proto";
+import "snuffler_web_proto/snuffling.proto";
+import "snuffler_web_proto/view.proto";
 
 // A Python exception, carried as a DTO instead of raised across the JS boundary.
 // A raised exception's traceback cannot be converted to JS on the threaded
@@ -298,7 +298,7 @@ service BridgeService {
       cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
-  rpc MapData(MapRequest) returns (snuffler.bridge.v1.MapData) {
+  rpc MapData(MapRequest) returns (snuffler_web_proto.MapData) {
     option (activity) = {
       label: "Loading map data"
       lane: ACTIVITY_LANE_JOB

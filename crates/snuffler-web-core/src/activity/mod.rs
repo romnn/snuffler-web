@@ -11,9 +11,7 @@ use crate::bridge::BridgeError;
 mod ledger;
 
 pub use ledger::ActivityLedger;
-pub use snuffler_web_proto::bridge::v1::{
-    ActivityMeta, CancellationCapability, Lane, Operation, Policy,
-};
+pub use snuffler_web_proto::{ActivityMeta, CancellationCapability, Lane, Operation, Policy};
 
 /// How long view work stays out of the activity readout, so ordinary panning shows none.
 const VIEW_FEEDBACK_DELAY_S: f64 = 0.5;

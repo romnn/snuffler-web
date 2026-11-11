@@ -15,3 +15,6 @@ lint:
     - RPC_REQUEST_STANDARD_NAME
     - RPC_RESPONSE_STANDARD_NAME
     - RPC_REQUEST_RESPONSE_UNIQUE
+    # The schema ships in lockstep with every consumer in one artifact and is never
+    # versioned (see AGENTS.md), so the package name carries no version suffix.
+    - PACKAGE_VERSION_SUFFIX

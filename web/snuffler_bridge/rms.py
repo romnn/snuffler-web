@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from pyrocko import trace as ptrace
-from snuffler.bridge.v1 import scene_pb2, snuffling_pb2
+from snuffler_web_proto import scene_pb2, snuffling_pb2
 
 from . import operation, snuffling_scope, state
 

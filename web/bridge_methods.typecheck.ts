@@ -3,7 +3,7 @@
 // `task check:ts` (tsc) fails if any @ts-expect-error below stops erroring, that is
 // if the method-id type hole ever reopens.
 import { call } from "./bridge.js";
-import { BridgeMethod } from "./proto/snuffler/bridge/v1/bridge_methods.js";
+import { BridgeMethod } from "./proto/snuffler_web_proto/bridge_methods.js";
 import { rpc, type BridgeMethodId } from "./rpc.js";
 
 // rpc() rejects a name that is not a BridgeService rpc.
@@ -13,12 +13,12 @@ rpc("badMethod");
 // A real name yields a BridgeMethodId; the literal id and the const member all
 // satisfy the same union (so callers may use whichever they prefer).
 const viaRpc: BridgeMethodId = rpc("loadBytes");
-const viaLiteral: BridgeMethodId = "/snuffler.bridge.v1.BridgeService/LoadBytes";
+const viaLiteral: BridgeMethodId = "/snuffler_web_proto.BridgeService/LoadBytes";
 const viaConst: BridgeMethodId = BridgeMethod.loadBytes;
 
 // A bogus literal id is not a member of the union.
 // @ts-expect-error not a real method id
-const bogus: BridgeMethodId = "/snuffler.bridge.v1.BridgeService/Nope";
+const bogus: BridgeMethodId = "/snuffler_web_proto.BridgeService/Nope";
 
 // A value typed as plain string is too wide to be a method id.
 declare const wide: string;
