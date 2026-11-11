@@ -7,7 +7,7 @@ RNG stream, an edited generator) fails loudly instead of quietly moving the
 numbers every parity run is measured against.
 
 Determinism is the whole point. Only the ``demo`` dataset uses an RNG, and only
-because it has to: it is byte-for-byte the dataset ``qt/make_demo.py`` writes and
+because it has to: it is byte-for-byte the dataset
 ``bridge._make_example_scene`` synthesizes, so the corpus really is "the demo both
 frontends already show". Everything else is analytic and stable under any numpy.
 
@@ -48,7 +48,7 @@ MANIFEST = HERE / "manifest.json"
 EXAMPLES = HERE.parents[2] / "examples"
 
 # Every dataset starts here, so no scenario ever needs a wall clock. 2023-11-14
-# 22:13:20 UTC — the same epoch qt/make_demo.py uses.
+# 22:13:20 UTC.
 T0 = 1_700_000_000.0
 
 # StationXML carries a creation timestamp that would otherwise be `time.time()`.
@@ -62,9 +62,8 @@ def _sha256(path: Path) -> str:
 def build_demo(out: Path) -> List[Path]:
     """The synthetic demo: 6 stations x 3 components, 50 Hz, 600 s.
 
-    Kept character-for-character in step with ``qt/make_demo.py`` and
-    ``bridge._make_example_scene`` — this is that dataset, written to a file so
-    both sides can load identical bytes.
+    Kept character-for-character in step with ``bridge._make_example_scene`` —
+    this is that dataset, written to a file so both sides can load identical bytes.
     """
     deltat = 0.02
     n = 30_000

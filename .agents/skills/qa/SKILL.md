@@ -131,6 +131,27 @@ build.
 lands one build later (the watcher does pick it up — just wait for the second
 swap).
 
+## Comparing with upstream snuffler
+
+To check that the web app behaves and draws like the real PyQt5 snuffler, drive
+upstream headless with `qt/driver.py` and take the same steps in both:
+
+```sh
+task snuffler:headless:example EXAMPLE=<slug>   # in the background; ?example=<slug> on the web side
+uv run --project qt python qt/driver.py time-range "2018-07-15 13:16:00" "2018-07-15 13:19:00"
+uv run --project qt python qt/driver.py set "Highpass [Hz]" 0.5
+uv run --project qt python qt/driver.py menu "Sorting/Sort by Distance"
+uv run --project qt python qt/driver.py screenshot qt.png
+uv run --project qt python qt/driver.py state
+uv run --project qt python qt/driver.py quit
+```
+
+Prefer the named commands (`menu`, `set`, `press`, `time-range`, `key`, `type`);
+pixel `click`/`drag` are the last resort.
+`--help` lists them all.
+On a machine where pyrocko never ran, two first-run dialogs open first: answer
+them with `press No` and `press Finish`.
+
 ## Traps
 
 - **Screenshots lie about hover state.** The cursor clock in the top bar only

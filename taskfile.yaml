@@ -119,21 +119,6 @@ tasks:
     cmds:
       - docker compose up
 
-  # The streamed Qt frontend is independent of the egui frontend and has its own
-  # Docker image and port.
-  qt:build:
-    desc: "build the original PyQt5 snuffler and noVNC image"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - docker build -t snuffler-qt qt
-
-  qt:serve:
-    desc: "run snuffler-qt at http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote"
-    dir: "{{.ROOT_DIR}}"
-    interactive: true
-    cmds:
-      - docker run --rm --name snuffler-qt -p 6080:8080 -v "{{.ROOT_DIR}}/qt/make_demo.py:/opt/snuffler/make_demo.py:ro" snuffler-qt
-
   snuffler:
     desc: "run the pinned native PyQt5 snuffler"
     dir: "{{.ROOT_DIR}}"
@@ -156,6 +141,20 @@ tasks:
         msg: "example has no StationXML directory: {{.EXAMPLE}}"
     cmds:
       - uv run --project qt snuffler {{.CLI_ARGS}} --events "examples/{{.EXAMPLE}}/catalog.yaml" --stationxml "examples/{{.EXAMPLE}}/meta/*.xml" "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+
+  # The same as snuffler:example, without a display: qt/driver.py then takes
+  # commands such as `screenshot`, `menu` and `set` until it is told to `quit`.
+  snuffler:headless:example:
+    desc: "run the native snuffler headless on an example, driven by qt/driver.py"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    requires:
+      vars: [EXAMPLE]
+    preconditions:
+      - sh: test -f "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+        msg: "unknown example: {{.EXAMPLE}}"
+    cmds:
+      - uv run --project qt python qt/driver.py serve -- --events "examples/{{.EXAMPLE}}/catalog.yaml" --stationxml "examples/{{.EXAMPLE}}/meta/*.xml" "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
 
   typos:
     desc: "check repository for typos"

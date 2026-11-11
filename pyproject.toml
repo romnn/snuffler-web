@@ -91,7 +91,7 @@ line-length = 100
 include = [
     "pybuild/export_seisbench_models.py",
     "pybuild/setup.py",
-    "qt/make_demo.py",
+    "qt/driver.py",
     "scripts/build-examples.py",
     "scripts/fetch-example.py",
     "scripts/fit-wiggle-themes.py",

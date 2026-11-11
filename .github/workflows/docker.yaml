@@ -1,8 +1,8 @@
 name: Docker images
 
-# Build every service in this repo as a container image and publish it to the
+# Build both services in this repo as container images and publish them to the
 # GitHub Container Registry: the site (nginx + the wasm frontend + the Pyodide
-# runtime), the FDSN/SeedLink proxy, and the Qt frontend.
+# runtime) and the FDSN/SeedLink proxy.
 #
 # Every run builds and smoke-tests each image for amd64, so a broken Dockerfile
 # shows up on the pull request that breaks it. Only a release tag pushes: it
@@ -11,7 +11,6 @@ name: Docker images
 # still proves the image builds and serves.
 #
 #   ghcr.io/<owner>/snuffler-web/web    ghcr.io/<owner>/snuffler-web/proxy
-#   ghcr.io/<owner>/snuffler-web/qt
 on:
   push:
     branches: [main]
@@ -74,16 +73,6 @@ jobs:
             smoke-port: 17684
             smoke-path: /health
             smoke-uid: 10001
-          # amd64 only: this one is an apt/pip install of PyQt5, Xvfb and noVNC,
-          # which under emulation costs far more than the optional second
-          # frontend is worth. Docker Desktop runs it emulated on arm64 anyway.
-          - image: qt
-            context: qt
-            dockerfile: qt/Dockerfile
-            platforms: linux/amd64
-            prebuilt-assets: false
-            title: snuffler-qt
-            description: "The original PyQt5 snuffler, rendered headless and streamed over noVNC"
 
     steps:
       - uses: actions/checkout@v7
@@ -172,7 +161,6 @@ jobs:
           provenance: false
 
       - name: Smoke-test the image
-        if: matrix.smoke-path != ''
         run: |
           docker run -d --name smoke --read-only --tmpfs /tmp \
             -p 18080:${{ matrix.smoke-port }} snuffler-smoke:${{ matrix.image }}
@@ -203,7 +191,7 @@ jobs:
           grep -qi '^content-type: text/javascript' mjs
 
       - name: Stop the smoke-test container
-        if: always() && matrix.smoke-path != ''
+        if: always()
         run: docker rm -f smoke || true
 
       - uses: docker/setup-qemu-action@v4

@@ -14,19 +14,14 @@ We give snuffler a new outfit without touching its brain.
 > recorded datasets on demand — each one a link you can hand out
 > (`?example=<slug>`), see [`examples/`](examples/).
 
-## Two frontends
+## The original Qt snuffler
 
-There are two independent ways to run snuffler in the browser; they coexist with
-separate commands and artifacts:
-
-- **egui — client-side (default).** A Rust/egui UI compiled to wasm that drives real
-  pyrocko via Pyodide, running **entirely in the browser, no server**. This is what
-  the rest of this README covers (`task serve`).
-- **Original Qt — server-streamed (optional).** The *real, unmodified* PyQt5
-  snuffler, rendered headless and streamed to the browser over noVNC — 100%
-  feature-complete, but runs **server-side** (Docker): `task qt:build` /
-  `task qt:serve`, see [`qt/`](qt/). Qt-for-Python has no WebAssembly build, so this one
-  can't be client-side — see [`plan/qt-frontend-feasibility.md`](plan/qt-frontend-feasibility.md).
+The web app is a Rust/egui UI compiled to wasm that drives real pyrocko via Pyodide,
+running **entirely in the browser, no server** (`task serve`).
+The real, unmodified PyQt5 snuffler is not shipped: Qt-for-Python has no WebAssembly
+build (see [`plan/qt-frontend-feasibility.md`](plan/qt-frontend-feasibility.md)).
+It runs natively instead, as the reference the parity tests measure the web app
+against: `task snuffler`, see [`qt/`](qt/).
 
 ## Architecture
 
@@ -122,19 +117,18 @@ emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
 
 ## Docker
 
-Every service in this repo ships as a container image, built and published to the
-GitHub Container Registry on each push to `main` and each tag
-(`.github/workflows/docker.yaml`):
+Both services in this repo ship as container images, published to the GitHub
+Container Registry on each release tag (`.github/workflows/docker.yaml`); every
+other push and pull request only builds and smoke-tests them:
 
 | Image | What |
 |---|---|
 | `ghcr.io/romnn/snuffler-web/web` | the site — egui wasm frontend, Pyodide 314 runtime, example bundles — behind an unprivileged nginx on `:8080` |
 | `ghcr.io/romnn/snuffler-web/proxy` | `snuffler-web-proxy` on `:17684`: the allowlisted `/cors` and `/seedlink` endpoints |
-| `ghcr.io/romnn/snuffler-web/qt` | the original PyQt5 snuffler over noVNC on `:8080` (see [`qt/`](qt/)) |
 
-`latest`, `X.Y.Z` and `X.Y` follow the newest release tag; `edge` and `main`
-follow the default branch; every build is additionally tagged `sha-<commit>`.
-`web` and `proxy` are published for `linux/amd64` and `linux/arm64`.
+`latest`, `X.Y.Z` and `X.Y` follow the newest release tag, and every release is
+additionally tagged `sha-<commit>`.
+Both images are published for `linux/amd64` and `linux/arm64`.
 
 ```sh
 docker compose up            # site on http://127.0.0.1:17683, proxy on :17684

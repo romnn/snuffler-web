@@ -156,7 +156,7 @@ drift is never ignorable.
 
 | dataset | what it is for |
 | --- | --- |
-| `demo` | the synthetic demo `qt/make_demo.py` and `bridge._make_example_scene` both produce, byte for byte |
+| `demo` | the synthetic demo `bridge._make_example_scene` produces, byte for byte |
 | `gaplap` | gaps and overlaps at every size the degap logic branches on, aligned and off-grid |
 | `multi` | 4 stations × 3 components with coordinates, an event and poles-zeros responses |
 | `multiloc` | co-located sensors: two location codes at a site, the second an order of magnitude quieter |

@@ -11,7 +11,6 @@
 #
 #   docker compose up --build        # build both images from this checkout
 #   docker compose up                # run the published images
-#   docker compose --profile qt up   # the original PyQt5 snuffler over noVNC
 
 services:
   web:
@@ -49,15 +48,3 @@ services:
     # environment:
     #   SNUFFLER_PROXY_ALLOW_HTTP_TARGETS: "https://example.org/fdsnws/dataselect/1/query"
     #   SNUFFLER_PROXY_ALLOW_TCP_TARGETS: "geofon.gfz.de:18000"
-
-  # The other frontend: the real, unmodified PyQt5 snuffler rendered headless and
-  # streamed over noVNC (see qt/README.md). Independent of the web app — its own
-  # image, its own port — so it only starts when asked for.
-  qt:
-    image: ghcr.io/romnn/snuffler-web/qt:latest
-    profiles: ["qt"]
-    build:
-      context: qt
-    ports:
-      - "127.0.0.1:6080:8080"
-    restart: unless-stopped

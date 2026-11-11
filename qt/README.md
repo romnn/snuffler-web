@@ -1,10 +1,8 @@
-# Qt frontend track — the original PyQt5 snuffler
+# The original PyQt5 snuffler
 
-This directory owns the real, unmodified PyQt5 snuffler environment.
-It can run natively on the developer's desktop or in a fully independent browser
-frontend that renders on a headless X server and streams the GUI over **noVNC**.
-
-Neither mode touches the egui frontend.
+This directory owns the environment for the real, unmodified PyQt5 snuffler.
+It is the reference the parity tests in `tests/parity/` measure the web app
+against, and it runs natively on the developer's desktop.
 
 ## Run natively
 
@@ -27,48 +25,16 @@ than passing the whole directory as waveform input.
 On macOS, add `-- --no-opengl` to either Snuffler task if Qt's OpenGL paint warning
 causes visible rendering problems.
 
-## Why streaming, not WebAssembly
+Qt-for-Python has no usable WebAssembly build, so this application cannot run in
+the browser; see
+[`../plan/qt-frontend-feasibility.md`](../plan/qt-frontend-feasibility.md).
 
-Qt-for-Python (PySide6/PyQt) **cannot be compiled to WebAssembly** in any usable
-form — see [`../plan/qt-frontend-feasibility.md`](../plan/qt-frontend-feasibility.md)
-for the full, sourced investigation (no official PySide6 wasm, ABI mismatches, a
-2–4 month research-grade port with a ~50–60% feature ceiling). Streaming the real
-desktop app sidesteps all of that and gives **every** snuffler feature, today.
+## Drive it headless
 
-## Run in a browser
-
-Requires Docker.
+`qt/driver.py` runs this snuffler without a display and takes commands, so an
+agent can compare it with the web app step by step; see its `--help`.
 
 ```sh
-task qt:build    # build the image (real PyQt5 snuffler + numpy/scipy/pyrocko + noVNC)
-task qt:serve    # run it
-# open http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=remote
+task snuffler:headless:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
+uv run --project qt python qt/driver.py screenshot snuffler.png
 ```
-
-(6080 is the conventional noVNC port; change the mapping in `taskfile.yaml` if it's taken.)
-
-`task qt:serve` launches snuffler on a synthetic demo dataset (same noise + travelling
-event as the egui example). Load your own MiniSEED/SAC via snuffler's File menu
-inside the streamed GUI.
-
-## How it works
-
-```
- Browser ──HTTP/WebSocket──> websockify+noVNC ──VNC──> x11vnc ──> Xvfb (:99)
-                                                                    └─ openbox
-                                                                    └─ snuffler (real PyQt5)
-                                                                          └─ numpy/scipy/pyrocko
-```
-
-- `Dockerfile` — Ubuntu + system PyQt5/numpy/scipy/matplotlib + pyrocko (PyPI wheel)
-  + Xvfb + x11vnc + noVNC.
-- `entrypoint.sh` — starts Xvfb + openbox, generates demo data, launches snuffler,
-  exposes it via x11vnc, serves noVNC/websockify on :8080 (mapped to host :8090).
-- `make_demo.py` — writes the synthetic demo MiniSEED.
-
-## Trade-offs
-
-- Full fidelity and all features (it's the actual app), but it runs **server-side**:
-  one container per session, server CPU/RAM, and latency over the wire — unlike the
-  egui frontend which runs entirely client-side. Pick egui for a lightweight public
-  page; pick this for full snuffler fidelity.
