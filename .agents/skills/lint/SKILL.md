@@ -17,7 +17,7 @@ the bare tools need. Running the underlying tools by hand gives false results.
 
 | Goal | Command |
 | --- | --- |
-| Lint everything (Rust all-features + ast-grep + Python) | `task lint` |
+| Lint everything (Rust all-features + toolkit boundaries + Python) | `task lint` |
 | Lint across **all feature combinations** (CI-equivalent) + Python | `task lint:fc` |
 | Lint & auto-fix Rust | `task lint:fix` (alias `task fix`) |
 | Lint Python only (ruff) | `task lint:py` |
@@ -29,7 +29,8 @@ the bare tools need. Running the underlying tools by hand gives false results.
 
 The pre-commit gate is **`task lint:fc` + `task check:py` + `task test`** (plus
 `task format` to fix formatting). `task lint:fc` covers both Rust (every feature
-combination of `default` / `gf` / `svg-raster`) and the Python ruff lint.
+combination of `gf` / `embed-data`), the threaded wasm check,
+the toolkit boundaries, and the Python ruff lint.
 
 ## Why not the raw tools (the traps)
 

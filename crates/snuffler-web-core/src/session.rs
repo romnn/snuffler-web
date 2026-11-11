@@ -124,10 +124,10 @@ impl Session {
 
     /// Runs the line in the ':' command line (the frontend's Return binding).
     ///
-    /// A command over Rust-owned markers is answered on the spot; everything else
-    /// goes to pyrocko and the input stays open until [`Session::sync`] picks up
-    /// the answer. The visible time window rides along, because that is what
-    /// snuffler's `goto HH:MM` and `hide empty` read off the viewer.
+    /// A command over Rust-owned markers is answered on the spot; everything else goes to
+    /// pyrocko and the input stays open until [`Session::sync`] picks up the answer.
+    /// The visible time window rides along, because that is what snuffler's `goto HH:MM`
+    /// and `hide empty` read off the viewer.
     #[cfg(target_arch = "wasm32")]
     pub fn submit_command(&mut self) {
         let Some(line) = self.state.command.submit() else {
@@ -152,10 +152,10 @@ impl Session {
     /// Moves the view to `time`, spanning `length` seconds when the command said
     /// how much to show (snuffler's `go_to_time`).
     ///
-    /// A `goto` that names a date opens the window *at* it — `goto 2023-02-06`
-    /// shows that day from midnight, not half of the day before it — with
-    /// snuffler's 10% margin on either side. Without a length the window keeps
-    /// its width and centres on the time instead.
+    /// A `goto` that names a date opens the window *at* it — `goto 2023-02-06` shows that
+    /// day from midnight, not half of the day before it — with snuffler's 10% margin on
+    /// either side.
+    /// Without a length the window keeps its width and centres on the time instead.
     pub fn go_to_time(&mut self, time: f64, length: Option<f64>) {
         let target_tmax = time + length.unwrap_or(0.0);
         let (tmin, tmax) = good_looking_time_range(
@@ -179,9 +179,9 @@ impl Session {
     }
 
     /// The loaded pile's sampling-interval band with snuffler's fallbacks
-    /// (`content_deltat_range`, `pile_viewer.py:2745`): 1 ms when there is no
-    /// finest rate, 1000 s when there is no coarsest. Feeds the filter
-    /// controls' corner range exactly as Qt's `adjust_controls` does.
+    /// (`content_deltat_range`, `pile_viewer.py:2745`): 1 ms when there is no finest
+    /// rate, 1000 s when there is no coarsest.
+    /// Feeds the filter controls' corner range exactly as Qt's `adjust_controls` does.
     #[must_use]
     pub fn scene_deltat_range(&self) -> (f64, f64) {
         let (mut dtmin, mut dtmax) = self
@@ -583,8 +583,8 @@ impl Session {
             self.last_scene_bounds = Some(bounds);
             self.last_scene_gen = scene_gen;
         } else {
-            let range_changed = self.last_scene_bounds.is_none_or(|old| {
-                (old.0 - bounds.0).abs() > 1e-6 || (old.1 - bounds.1).abs() > 1e-6
+            let range_changed = self.last_scene_bounds.is_none_or(|(old_tmin, old_tmax)| {
+                (old_tmin - scene.tmin).abs() > 1e-6 || (old_tmax - scene.tmax).abs() > 1e-6
             });
             if range_changed {
                 self.state.tmin = scene.tmin;
@@ -598,10 +598,10 @@ impl Session {
     }
 }
 
-/// Snuffler's `make_good_looking_time_range` (`pile_viewer.py:2760`): pad a target
-/// span by 10 % on each side, flooring every jump — `goto`, `g`, `G` — at one
-/// trace-visibility length, `deltatmin * visible_length * 0.95`. `view_range` is
-/// the current window, which caps the floor the way Qt caps it; the floor
+/// Snuffler's `make_good_looking_time_range` (`pile_viewer.py:2760`): pad a target span
+/// by 10 % on each side, flooring every jump — `goto`, `g`, `G` — at one trace-visibility
+/// length, `deltatmin * visible_length * 0.95`.
+/// `view_range` is the current window, which caps the floor the way Qt caps it; the floor
 /// becomes one second when nothing is loaded.
 #[must_use]
 pub fn good_looking_time_range(
@@ -684,8 +684,9 @@ mod tests {
     }
 
     // Snuffler's visible_length is a sample-count target the bridge turns into
-    // min_deltat_allow. The boot default asks for no target at all: Adaptive
-    // fetches every channel and lets the bridge decimate to the canvas.
+    // min_deltat_allow.
+    // The boot default asks for no target at all: Adaptive fetches every channel and lets
+    // the bridge decimate to the canvas.
     #[test]
     fn view_request_carries_visible_length_and_liberal_fetch() {
         let mut session = session();

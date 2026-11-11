@@ -4,10 +4,8 @@ version.workspace = true
 authors = ["Roman Dahm <contact@romnn.com>"]
 edition.workspace = true
 description = "Web accessibility for egui: wires an egui app to the accesskit-dom projection"
-# Deliberately independent of eframe: the only web-runner API the layer needs is
-# "hand me each pass's AccessKit update", and that wiring line stays in the app
-# (today against a patched eframe, later against whatever hook lands upstream).
-# Flip `publish` once the crate name and license are settled.
+# Independent of eframe: the app wires the runner's per-pass AccessKit update hook itself.
+# Unpublished until the crate name and license are settled.
 publish = false
 
 [package.metadata.cargo-fc]

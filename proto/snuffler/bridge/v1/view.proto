@@ -34,40 +34,41 @@ message ViewParams {
   optional double visible_tmax = 29;
   optional double scale_tmin = 30;
   optional double scale_tmax = 31;
-  // Waterfall colouring — applied in Python (matplotlib colormap) so the frontend
-  // only blits the RGBA (packed one pixel per ys float32); no hand-ported LUT.
-  // Empty colormap = viridis. These ride ViewParams so a change re-fetches.
+  // Waterfall colouring — applied in Python (matplotlib colormap) so the frontend only
+  // blits the RGBA (packed one pixel per ys float32); no hand-ported LUT.
+  // Empty colormap = viridis.
+  // These ride ViewParams so a change re-fetches.
   string wf_colormap = 32;
   double wf_clip_lo = 33;
   double wf_clip_hi = 34;
   bool wf_symmetry = 35;
   bool wf_reverse = 36;
   // Snuffler's `visible_length`: a target *sample count* per trace, not a time.
-  // It bounds `min_deltat_allow` — channels sampled finer than the window can use
-  // are not fetched at all (prepare_cutout2, pile_viewer.py:3597). Unset means
-  // the upstream default of 20000.
+  // It bounds `min_deltat_allow` — channels sampled finer than the window can use are not
+  // fetched at all (prepare_cutout2, pile_viewer.py:3597).
+  // Unset means the upstream default of 20000.
   optional double visible_length = 37;
   // Snuffler's 'Liberal Fetch Optimization': snap the processing window to an
   // absolute power-of-two grid so panning reuses the cached processed traces.
   // The fetch window is the demean/filter extent, so this changes the numbers —
   // exactly as it does in Qt (pile_viewer.py:3618).
   bool liberal_fetch = 38;
-  // This frontend's own 'Adaptive' visible length, which replaces the budget
-  // rather than raising it: no `min_deltat_allow` floor, so no channel is ever
-  // refused, and what comes back is decimated to `npx` — a min/max envelope per
-  // bin, which is the resolution the canvas can draw anyway. `visible_length` is
-  // ignored while this is set, and is sent unset.
+  // This frontend's own 'Adaptive' visible length, which replaces the budget rather than
+  // raising it: no `min_deltat_allow` floor, so no channel is ever refused, and what
+  // comes back is decimated to `npx` — a min/max envelope per bin, which is the
+  // resolution the canvas can draw anyway.
+  // `visible_length` is ignored while this is set, and is sent unset.
   bool adaptive_visible_length = 39;
   uint64 view_sequence = 40;
 }
 
 // One contiguous run of payload on a track.
 //
-// A channel that arrives in several pieces — anything with a gap — is one track
-// carrying several spans, because snuffler stacks one track per gather key and
-// paints every segment of that channel onto it. Emitting a track per segment
-// instead stacks a gapped channel several times over and scales each piece on its
-// own.
+// A channel that arrives in several pieces — anything with a gap — is one track carrying
+// several spans, because snuffler stacks one track per gather key and paints every
+// segment of that channel onto it.
+// Emitting a track per segment instead stacks a gapped channel several times over and
+// scales each piece on its own.
 message ViewSpan {
   // Start of this run, relative to ViewParams.tmin.
   double t0_rel = 1;
@@ -81,14 +82,14 @@ message ViewSpan {
   // every subsort except the two that group over location — there a row carries
   // several, and this is what tells them apart when colouring.
   string loc = 5;
-  // The y range and scale this run is drawn against. Per span rather than per
-  // track because snuffler projects per (track, scaling key): two sensors sharing
-  // a location-grouped row keep their own amplitude scales, and a waterfall strip
-  // keeps its own colour range.
+  // The y range and scale this run is drawn against.
+  // Per span rather than per track because snuffler projects per (track, scaling key):
+  // two sensors sharing a location-grouped row keep their own amplitude scales, and a
+  // waterfall strip keeps its own colour range.
   //
-  // double, not float: Qt's projection stays float64 end to end, and a track
-  // whose DC offset dwarfs its span would quantize visibly at 24 bits. These are
-  // four scalars per track, not payload.
+  // double, not float: Qt's projection stays float64 end to end, and a track whose DC
+  // offset dwarfs its span would quantize visibly at 24 bits.
+  // These are four scalars per track, not payload.
   double ymin = 6;
   double ymax = 7;
   double ymean = 8;
@@ -110,29 +111,28 @@ message ViewSpan {
 message TraceBox {
   double tmin = 1;
   double tmax = 2;
-  // Box style index (`determine_box_styles`, pile_viewer.py:2947): stepped at
-  // every discontinuity in (nslc, deltat, adjacency) over the full_id-sorted
-  // pile, so adjacent files alternate tints. The painter takes it modulo its
-  // palette length, as Qt does.
+  // Box style index (`determine_box_styles`, pile_viewer.py:2947): stepped at every
+  // discontinuity in (nslc, deltat, adjacency) over the full_id-sorted pile, so adjacent
+  // files alternate tints.
+  // The painter takes it modulo its palette length, as Qt does.
   uint32 style = 3;
 }
 
 message ViewTrack {
   string net = 1;
   string sta = 2;
-  // '*' when the row groups over location — the subsorts snuffler words as
-  // "Grouped by Location" put every location of a channel on one row, so this
-  // holds the wildcard snuffler itself writes into `track_patterns` and the
-  // concrete locations live on the spans. Markers match a row through these four
-  // fields, which is why the merged element is a pattern rather than empty:
-  // empty already means an empty location code.
+  // '*' when the row groups over location — the subsorts snuffler words as "Grouped by
+  // Location" put every location of a channel on one row, so this holds the wildcard
+  // snuffler itself writes into `track_patterns` and the concrete locations live on the
+  // spans.
+  // Markers match a row through these four fields, which is why the merged element is a
+  // pattern rather than empty: empty already means an empty location code.
   string loc = 3;
   string cha = 4;
   string label = 5;
-  // Waterfall frequency bins per column, shared by every span of the track. The
-  // time bins are per span: span.count / nf.
+  // Waterfall frequency bins per column, shared by every span of the track.
+  // The time bins are per span: span.count / nf.
   uint64 nf = 6;
-  double fmax = 7;
   // What the active sort ordered this track by, when that is not evident from
   // the label: the distance in kilometres for a distance sort, or a note that
   // the station has no coordinates and therefore could not be placed.
@@ -151,22 +151,23 @@ message ViewMeta {
   double view_tmin = 1;
   double view_tmax = 2;
   repeated ViewTrack tracks = 3;
-  // Processing failures the view survived — a filter or restitution that threw,
-  // drawn unprocessed. Snuffler lets these exceptions reach the user; a browser
-  // must not die on them, but drawing unfiltered data as if it were filtered
-  // with no signal is worse, so the failure rides the answer it affected.
+  // Processing failures the view survived — a filter or restitution that threw, drawn
+  // unprocessed.
+  // Snuffler lets these exceptions reach the user; a browser must not die on them, but
+  // drawing unfiltered data as if it were filtered with no signal is worse, so the
+  // failure rides the answer it affected.
   repeated string notices = 4;
-  // The distinct coloring keys of the *whole pile* under the current subsort, in
-  // sorted order — snuffler's `color_keys` (`pile.gather_keys(color)`,
-  // pile_viewer.py:1753), which it computes once per pile change and numbers the
-  // trace palette by. Numbering over the visible slice instead renumbers the
-  // palette on every scroll, which snuffler cannot do.
+  // The distinct coloring keys of the *whole pile* under the current subsort, in sorted
+  // order — snuffler's `color_keys` (`pile.gather_keys(color)`, pile_viewer.py:1753),
+  // which it computes once per pile change and numbers the trace palette by.
+  // Numbering over the visible slice instead renumbers the palette on every scroll, which
+  // snuffler cannot do.
   repeated string color_keys = 5;
   uint64 session_generation = 6;
   uint64 view_sequence = 7;
-  // The subsort this reply was produced under. The painter colours from it, not
-  // from the live UI state: after a subsort change, a whole round trip still
-  // paints the OLD reply's tracks and color_keys, and keying them with the NEW
-  // subsort produced a transient palette belonging to neither.
+  // The subsort this reply was produced under.
+  // The painter colours from it, not from the live UI state: after a subsort change, a
+  // whole round trip still paints the OLD reply's tracks and color_keys, and keying them
+  // with the NEW subsort would produce a transient palette belonging to neither.
   string subsort = 8;
 }

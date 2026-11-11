@@ -76,14 +76,16 @@ message SeismosizerSnufflingParams {
   double seis_dip = 9;
   double seis_rake = 10;
   double seis_stf_duration = 11; // source-time-function duration [s]
-  // Qt's four STF choices (seismosizer.py:35): "half sin" (default),
-  // "triangular", "boxcar", "None". Empty = "half sin". A zero duration still
-  // passes a zero-duration STF object, exactly as Qt's `get_stf` does.
+  // Qt's four STF choices (seismosizer.py:35): "half sin" (default), "triangular",
+  // "boxcar", "None".
+  // Empty = "half sin".
+  // A zero duration still passes a zero-duration STF object, exactly as Qt's `get_stf`
+  // does.
   string seis_stf_type = 12;
   // Which of Qt's five Seismosizer source snufflings this run is
-  // (seismosizer.py:280-560): "DCSource" (default when empty), "MTSource",
-  // "SFSource", "RectangularSource", "PseudoDynamicRupture". The fields below
-  // belong to the non-DC sources and are read per type.
+  // (seismosizer.py:280-560): "DCSource" (default when empty), "MTSource", "SFSource",
+  // "RectangularSource", "PseudoDynamicRupture".
+  // The fields below belong to the non-DC sources and are read per type.
   string seis_source_type = 13;
   // MTSource: relative moment-tensor components, normalized then scaled to the
   // magnitude's moment (`get_m6`, seismosizer.py:385).
@@ -136,10 +138,10 @@ message SnufflingParams {
 message SnufflingRequestParams {
   ViewParams view = 1;
   SnufflingParams snufflings = 2;
-  // The selected non-event markers, which are the run scope Qt gives every
-  // snuffling (`chopper_selected_traces`, snuffling.py:1000): each span is a
-  // chop window plus a trace filter from the marker's channel patterns. Empty =
-  // fall back to the visible window.
+  // The selected non-event markers, which are the run scope Qt gives every snuffling
+  // (`chopper_selected_traces`, snuffling.py:1000): each span is a chop window plus a
+  // trace filter from the marker's channel patterns.
+  // Empty = fall back to the visible window.
   repeated SnufflingSpan selected_spans = 3;
   MarkerBudget marker_budget = 4;
 }
@@ -163,20 +165,22 @@ message SnufMarker {
   uint32 kind = 4;
   bool is_event = 5;
   // The channels the marker applies to — a *list*, as pyrocko's `nslc_ids` is
-  // (marker.py:168): a Qt pick binds to every channel gathered onto the clicked
-  // track, and a loaded file legally carries several. Empty = every track.
+  // (marker.py:168): a Qt pick binds to every channel gathered onto the clicked track,
+  // and a loaded file legally carries several.
+  // Empty = every track.
   repeated uint32 nslc_indexes = 6;
   optional int32 polarity = 7;
-  // Focal mechanism for an event marker sourced from a catalog moment tensor,
-  // plus the Kagan angle (degrees) to the active event and the event's catalog
-  // name/hash. Absent for markers without an MT.
+  // Focal mechanism for an event marker sourced from a catalog moment tensor, plus the
+  // Kagan angle (degrees) to the active event and the event's catalog name/hash.
+  // Absent for markers without an MT.
   optional MomentTensor moment_tensor = 8;
   optional double kagan_deg = 9;
   optional string event_hash = 10;
   // Phase-pick time uncertainty (seconds) round-tripped from marker files.
   optional double uncertainty = 11;
-  // Event-origin fields for the marker table's event columns (from the catalog
-  // Event); depth is metres, like model.Event.depth. Absent on non-event markers.
+  // Event-origin fields for the marker table's event columns (from the catalog Event);
+  // depth is metres, like model.Event.depth.
+  // Absent on non-event markers.
   optional double magnitude = 12;
   optional double depth = 13;
   optional double lat = 14;
@@ -197,8 +201,8 @@ message SnufMarker {
   // `associate_phases_to_events` re-links on when the hash is absent.
   optional double event_time = 22;
   // Distance from this *event* to the active event, in km — the marker table's
-  // `Dist [km]` column (marker_editor.py:502), precomputed with pyrocko's
-  // orthodrome. Absent on non-events and while nothing is active.
+  // `Dist [km]` column (marker_editor.py:502), precomputed with pyrocko's orthodrome.
+  // Absent on non-events and while nothing is active.
   optional double dist_active_km = 23;
   // Whether Python auto-activated this event (largest magnitude on catalog
   // load) — the activation must be *visible*, so the marker carries it.
@@ -210,9 +214,10 @@ message SnufflingResult {
   string text = 2;
   repeated SnufMarker markers = 3;
   SceneMeta scene = 4;
-  // Which snuffling produced this result. A re-run first removes the markers
-  // the previous run with the same origin added — Qt's `cleanup()` contract
-  // (snuffling.py:1689), without which Cake/STA-LTA/SeisBench stack duplicates.
+  // Which snuffling produced this result.
+  // A re-run first removes the markers the previous run with the same origin added — Qt's
+  // `cleanup()` contract (snuffling.py:1689), without which Cake/STA-LTA/SeisBench stack
+  // duplicates.
   // Empty = the markers accumulate (marker-file loads, catalog searches).
   string origin = 5;
   ActiveEventResult event_state = 6;

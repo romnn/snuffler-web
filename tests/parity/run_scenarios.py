@@ -1,6 +1,6 @@
 """Tier 3: the same scenario through both GUIs, one normalized snapshot each step.
 
-Thin by design, and built last. Only what genuinely needs a GUI lives here — menu and
+Thin by design. Only what genuinely needs a GUI lives here — menu and
 keyboard toggles, the control strip, marker creation and editing — because anything
 that is really a question about numbers belongs in tier 1, where it runs a thousand
 times faster and cannot flake.
@@ -11,10 +11,9 @@ Two things are deliberately *not* compared:
   not publish them to its accessibility layer, so there is nothing on that side to
   read. Extending the a11y layer to expose them is the natural way to widen tier 3.
 * **Where a pick landed.** A fractional canvas position becomes a different time and a
-  different track under the two layouts, and asserting on layout is exactly what the
-  plan rules out. The marker's *identity* — kind, phase, polarity, selection, and
-  whether it is channel-scoped at all — is compared; its time and channel are
-  recorded for a human.
+  different track under the two layouts, and this suite never asserts on layout.
+  The marker's *identity* — kind, phase, polarity, selection, and whether it is
+  channel-scoped at all — is compared; its time and channel are recorded for a human.
 
     python tests/parity/run_scenarios.py          # needs the app served
 """

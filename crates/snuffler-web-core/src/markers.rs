@@ -1,8 +1,8 @@
 //! Marker model + colors, mirroring pyrocko `gui/snuffler/marker.py`.
 //!
-//! A marker is a time (or time span) annotation, optionally tied to specific
-//! NSLC channels, optionally a named seismic phase. `kind` (0..=7) selects a
-//! color, exactly like snuffler's number-key colouring.
+//! A marker is a time (or time span) annotation, optionally tied to specific NSLC
+//! channels, optionally a named seismic phase.
+//! `kind` (0..=7) selects a color, exactly like snuffler's number-key colouring.
 
 use ecolor::Color32;
 
@@ -60,8 +60,7 @@ impl MarkerPalette {
     /// the fit chooses.
     /// What the fit maximises is the closest of the 28 pairs, because that is what
     /// decides whether a kind can be read off its colour at all: it holds 14.4 here,
-    /// where snuffler's own shades manage 10.7 and the palette this replaced had
-    /// fallen to 4.2 — orange and chocolate had become one colour.
+    /// where snuffler's own shades manage 10.7.
     /// Idle shades hold 3.1-11.3:1 against the paper and lit ones 2.3-7.3:1.
     /// A lit shade may sit lower than the idle one it replaces because on white
     /// lighter *is* less contrast; selection reads as a brightening of 1.35-1.57
@@ -160,10 +159,11 @@ pub struct Marker {
     pub tmax: f64,
     /// Color group 0..=7.
     pub kind: u8,
-    /// The channels the marker applies to — a *list*, as pyrocko's `nslc_ids`
-    /// is (`marker.py:168`): a Qt pick binds to every channel gathered onto the
-    /// clicked track, and a loaded file legally carries several. Empty =
-    /// applies to all tracks. Elements may contain shell wildcards.
+    /// The channels the marker applies to — a *list*, as pyrocko's `nslc_ids` is
+    /// (`marker.py:168`): a Qt pick binds to every channel gathered onto the clicked
+    /// track, and a loaded file legally carries several.
+    /// Empty = applies to all tracks.
+    /// Elements may contain shell wildcards.
     pub nslc_ids: Vec<(String, String, String, String)>,
     /// Named seismic phase (e.g. "P", "S"); `None` for a plain marker.
     pub phase: Option<String>,
@@ -181,15 +181,15 @@ pub struct Marker {
     /// Kagan angle (degrees) between this event's MT and the active event's MT,
     /// precomputed in Python; `None` when either lacks an MT.
     pub kagan_deg: Option<f64>,
-    /// Phase-pick time uncertainty (seconds); drawn as translucent ± brackets
-    /// around the pick. Set by shift-dragging on a selected phase marker (mirrors
-    /// pyrocko `PhaseMarker._uncertainty`); `None`/0 hides the brackets.
+    /// Phase-pick time uncertainty (seconds); drawn as translucent ± brackets around the
+    /// pick.
+    /// Set by shift-dragging on a selected phase marker (mirrors pyrocko
+    /// `PhaseMarker._uncertainty`); `None`/0 hides the brackets.
     pub uncertainty: Option<f64>,
     /// Catalog/loaded event identity (matches the Python event registry), used to
     /// pick this event as the active reference and to key Kagan updates.
     pub event_hash: Option<String>,
-    /// Event-origin fields for the marker table (from the catalog Event); `depth`
-    /// is kilometres. `None` on non-event markers.
+    /// Event magnitude, or `None` on non-event markers.
     pub magnitude: Option<f64>,
     /// Event depth in kilometres, or `None` on non-event markers.
     pub depth_km: Option<f64>,
@@ -197,12 +197,13 @@ pub struct Marker {
     pub lat: Option<f64>,
     /// Event longitude in degrees east, or `None` on non-event markers.
     pub lon: Option<f64>,
-    /// The single active event marker (the distance/Kagan/cake/seismosizer
-    /// reference); exactly one marker is active at a time. Set by 'e', cleared by 'E'.
+    /// The single active event marker (the distance/Kagan/cake/seismosizer reference);
+    /// exactly one marker is active at a time.
+    /// Set by 'e', cleared by 'E'.
     pub active: bool,
-    /// `PhaseMarker._automatic`: machine-made picks carry `Some(true)` and wear
-    /// an `@` in their label; a hand pick saves `False`, never `None`
-    /// (`marker.py:707`). `None` on plain and event markers.
+    /// `PhaseMarker._automatic`: machine-made picks carry `Some(true)` and wear an `@` in
+    /// their label; a hand pick saves `False`, never `None` (`marker.py:707`).
+    /// `None` on plain and event markers.
     pub automatic: Option<bool>,
     /// Phase incidence angle (degrees); the `SeisBench` picker rides the pick
     /// probability here, exactly as Qt's does (`seisbench_picker.py:341`).
@@ -216,17 +217,19 @@ pub struct Marker {
     pub region: Option<String>,
     /// The event's `catalog` field (e.g. the FDSN datacenter).
     pub catalog: Option<String>,
-    /// The associated event's origin time — pyrocko's association fallback when
-    /// the hash is absent (`associate_phases_to_events`). On phase picks only.
+    /// The associated event's origin time — pyrocko's association fallback when the hash
+    /// is absent (`associate_phases_to_events`).
+    /// On phase picks only.
     pub event_time: Option<f64>,
-    /// Distance from this *event* to the active event, in km — the marker
-    /// table's `Dist [km]` (`marker_editor.py:502`), precomputed in Python with
-    /// pyrocko's orthodrome. `None` on non-events and while nothing is active.
+    /// Distance from this *event* to the active event, in km — the marker table's
+    /// `Dist [km]` (`marker_editor.py:502`), precomputed in Python with pyrocko's
+    /// orthodrome.
+    /// `None` on non-events and while nothing is active.
     pub dist_active_km: Option<f64>,
-    /// The snuffling that produced this marker, when one did — a re-run of the
-    /// same snuffling replaces its previous markers, Qt's `cleanup()` contract
-    /// (snuffling.py:1689). `None` on user picks and loaded files, which
-    /// accumulate.
+    /// The snuffling that produced this marker, when one did — a re-run of the same
+    /// snuffling replaces its previous markers, Qt's `cleanup()` contract
+    /// (snuffling.py:1689).
+    /// `None` on user picks and loaded files, which accumulate.
     pub origin: Option<String>,
 }
 
@@ -273,10 +276,10 @@ pub enum MarkersCommand {
     NoChange,
 }
 
-/// Parse a `:markers ...` command, mirroring snuffler `pile_viewer.py`'s `markers`
-/// arm: `markers all` shows kinds 0..=7; `markers <digits>` shows exactly the
-/// digit-kinds in the single token; bare `markers` hides all; anything else is a
-/// no-op. Returns `None` when the line is not a `markers` command.
+/// Parse a `:markers ...` command, mirroring snuffler `pile_viewer.py`'s `markers` arm:
+/// `markers all` shows kinds 0..=7; `markers <digits>` shows exactly the digit-kinds in
+/// the single token; bare `markers` hides all; anything else is a no-op.
+/// Returns `None` when the line is not a `markers` command.
 pub fn parse_markers_command(line: &str) -> Option<MarkersCommand> {
     let mut toks = line.split_whitespace();
     let cmd = toks.next()?;
@@ -370,12 +373,12 @@ impl Marker {
         self.tmax > self.tmin
     }
 
-    /// The status-line text snuffler posts while a marker is hovered
-    /// (`hoover_message`, marker.py:583, :779) — the only way to read a
-    /// marker's metadata without opening the table: an event's origin fields,
-    /// or a phase pick's angles and polarity, in Qt's field order. A field
-    /// the marker does not carry simply does not appear. Empty for a plain
-    /// marker.
+    /// The status-line text snuffler posts while a marker is hovered (`hoover_message`,
+    /// marker.py:583, :779) — the only way to read a marker's metadata without opening
+    /// the table: an event's origin fields, or a phase pick's angles and polarity, in
+    /// Qt's field order.
+    /// A field the marker does not carry simply does not appear.
+    /// Empty for a plain marker.
     #[must_use]
     pub fn hover_message(&self) -> String {
         let mut toks: Vec<String> = Vec::new();
@@ -418,9 +421,8 @@ impl Marker {
     }
 
     /// First-motion glyph, snuffler's own arrows (`polarity_symbols`,
-    /// `marker.py:21`): ↑ up, ↓ down, ↕ undecided. The bundled `JetBrains Mono`
-    /// fallback covers all three (verified against its cmap), which is what
-    /// unblocked switching off the ASCII stand-ins.
+    /// `marker.py:21`): ↑ up, ↓ down, ↕ undecided.
+    /// The bundled `JetBrains Mono` fallback covers all three.
     #[must_use]
     pub fn polarity_symbol(&self) -> &'static str {
         match self.polarity {
@@ -468,8 +470,7 @@ mod tests {
 
     // The Snuffler Qt palette is exactly Qt's `select_color` arithmetic over
     // `g_color_b` — `kind*3 + 1` when selected or hovered, `kind*3 + 2`
-    // otherwise — including the chocolate2 entry an earlier transcription had
-    // slipped to chocolate3.
+    // otherwise.
     #[test]
     fn the_qt_marker_palette_is_select_color_over_g_color_b() {
         let palette = MarkerPalette::SNUFFLER_QT;

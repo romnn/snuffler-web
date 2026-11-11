@@ -141,7 +141,7 @@ def test_initial_file_source_uses_append_rules_before_registering(
     )
     duplicate_result = servicer.load_bytes(duplicate, None)
 
-    # Source identity no longer exempts an initial open from duplicate detection.
+    # Source identity does not exempt an initial open from duplicate detection.
     assert not duplicate_result.loaded
     assert "src1" not in bridge._SOURCE_TRACES
     assert bridge._TRACES == [real]
@@ -875,8 +875,8 @@ def test_polarization_requires_the_padded_window() -> None:
 
 def test_seisbench_grid_keeps_every_fragment() -> None:
     # A channel split across two contiguous files must land in the model input
-    # whole — seisbench's stream_to_array writes each trace at its offset, and
-    # keeping only the last fragment once amputated the first file silently.
+    # whole, as seisbench's stream_to_array writes each trace at its offset;
+    # keeping only the last fragment would silently amputate the first file.
     spec = {"sampling_rate": 100.0, "component_order": "ZNE"}
     frags = [
         make_trace("XX", "STA1", "BHZ", 0.0, 300, 1.0),

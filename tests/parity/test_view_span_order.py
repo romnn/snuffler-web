@@ -1,12 +1,12 @@
 """A grouped row's span stack must not depend on the time window.
 
 Co-located channels of one grouped row draw on top of each other, so the last
-span painted decides the row's visible colour. The members used to be ordered
-by their *chopped* tmin — a value that snaps to each trace's own sample grid —
-so two sample rates could swap places as the window shifted, and a small pan or
-zoom visibly recoloured the row (IU TUC BH2 in the multiloc example flipped
-blue to orange). The order is keyed on channel identity now; these tests pin
-that the stack is identical across windows and equals the nslc order.
+span painted decides the row's visible colour. Ordering the members by their
+*chopped* tmin, which snaps to each trace's own sample grid, would let two sample
+rates swap places as the window shifts, and a small pan or zoom would recolour the
+row (IU TUC BH2 in the multiloc example flips blue to orange). These tests pin
+that the stack is keyed on channel identity: identical across windows and equal
+to the nslc order.
 
     task test:parity:bridge
 """

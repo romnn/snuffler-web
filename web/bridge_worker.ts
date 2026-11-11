@@ -1,10 +1,8 @@
-// The app loads our OWN fork-free Pyodide 314 build (pthread + OpenMP + SIMD;
-// py3.14 / emscripten 5.0.3) and all wheels from the locally-served py-mt/
-// (runtime + pyodide-lock.json + wheels, incl. pyrocko + protobuf). This is the
-// ONLY runtime: the page is always cross-origin isolated (see index.html), which
-// SharedArrayBuffer / wasm threads require. A separate, non-threaded build can be
-// produced later via the `threads` build-time feature and hosted on its own path
-// so the two never interfere; there is no runtime CDN fallback / ?threads toggle.
+// The Pyodide worker: it boots our own Pyodide 314 build (pthread + OpenMP + SIMD;
+// py3.14 / emscripten 5.0.3) with every wheel from the locally served py-mt/, and
+// relays each bridge request to bridge.py.
+// This is the only runtime; the page is always cross-origin isolated (see
+// index.html), which SharedArrayBuffer and wasm threads require.
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
   BootProgressSchema,
@@ -31,10 +29,9 @@ import {
   setExternalWait,
   setInterpreterOwnership,
 } from "./execution_control.js";
-import { BridgeActivity, BridgeMethod, rpc, type ActivityMeta } from "./rpc.js";
+import { BridgeActivity, BridgeMethod, type ActivityMeta } from "./rpc.js";
 import { WORKER_RELOAD_SNUFFLINGS } from "./worker_command.js";
 import {
-  type BridgeTimings,
   type WorkerEventMessage,
   type WorkerFailureMessage,
   type WorkerReplyPayload,
@@ -48,16 +45,13 @@ const RUNTIME_EPOCH =
   Number.isSafeInteger(epochParameter) && epochParameter >= 0 ? epochParameter >>> 0 : 0;
 
 // TextDecoder.decode() throws "The provided ArrayBufferView value must not be
-// shared" when handed a view backed by a SharedArrayBuffer in this engine. Our
-// Pyodide is a threaded (pthread) build, so its WASM heap IS a SharedArrayBuffer,
-// and Pyodide's hiwire Python->JS string conversion decodes straight off that heap
-// (e.g. loadPackage()'s unpack_buffer -> to_js(get_dynlibs(...)), and any Python
-// string/exception crossing into JS). (wasm-bindgen sidesteps this by `.slice()`-ing
-// out of shared memory first.) NOTE most decodes — emscripten's own pervasive
-// C-string reads — do NOT trip this, so we must not slow them down: try the native
-// decode first and only copy-and-retry the rare inputs the engine actually rejects.
-// The success path is thus native speed, and on engines that already accept shared
-// views no copy ever happens. Must run before Pyodide is loaded.
+// shared" on a view backed by a SharedArrayBuffer in some engines.
+// The threaded Pyodide heap is one, and Pyodide's Python->JS string conversion
+// decodes straight off it (loadPackage()'s unpack_buffer, any Python string or
+// exception crossing into JS).
+// Most decodes do not trip this, so the native decode runs first and only the
+// rejected inputs are copied and retried.
+// Must run before Pyodide is loaded.
 if (typeof SharedArrayBuffer !== "undefined") {
   const proto = TextDecoder.prototype;
   const decode = proto.decode;
@@ -93,8 +87,6 @@ let activeSeisbenchJobId = 0n;
 let activeJob: { control: Int32Array; blocksView: boolean } | null = null;
 let activeViewControl: Int32Array | null = null;
 let pyodideInterrupt: Uint8Array | null = null;
-const GET_VIEW_METHOD = rpc("getView");
-const BRIDGE_PERF_LOG = false;
 type PythonLane = ActivityMeta["lane"];
 type MlDeviceInfo = { device: MlDevice; adapter: unknown | null };
 type OrtWorkerDevice = "webgpu" | "wasm";
@@ -472,16 +464,13 @@ async function fetchBytes(url: string, loaded: (bytes: number) => void): Promise
 // actually waiting on.
 //
 // The spans each phase gets are its share of a real first visit, measured at
-// 25 Mbit/s with a cold cache (~20 s end to end). The app wasm and the Python
-// assets download CONCURRENTLY now (index.html starts this worker at page
-// parse), and the two meters cannot see each other's bytes, so the bar shows
-// whichever is further along: the app's span covers most of a cold load and is
-// sized for that (0 -> 0.44, driven by the Trunk loader; see
-// scripts/patch-trunk-loader.mjs), then downloads -> 0.84, installing -> 0.92,
-// importing -> 0.96, first scene the rest. Both long phases are metered by
-// what actually costs the time — bytes for the download and install, modules for
-// the import — rather than by step count, so the bar tracks work done and not the
-// number of names in a list.
+// 25 Mbit/s with a cold cache (~20 s end to end).
+// The app wasm and the Python assets download concurrently (index.html starts
+// this worker at page parse) and the two meters cannot see each other's bytes,
+// so the bar shows whichever is further along: the app's span is 0 -> 0.44
+// (driven by the Trunk loader; see scripts/patch-trunk-loader.mjs), then
+// downloads -> 0.84, installing -> 0.92, importing -> 0.96, first scene the rest.
+// The long phases are metered by bytes and modules, so the bar tracks work done.
 let bootPhase = "Starting…";
 let bootFraction = 0;
 
@@ -1116,46 +1105,28 @@ async function boot() {
 }
 
 // Shape the {"result": BridgeResult bytes, "buffer"?: ndarray} dict that
-// bridge.call() returns into the worker's postMessage payload. The result bytes
-// (the proto envelope — success variant OR BridgeError) always flow through;
-// the zero-copy ys buffer is transferred only when present (getView).
-function bridgeResult(res, timings: BridgeTimings | null = null): WorkerReplyPayload {
+// bridge.call() returns into the worker's postMessage payload.
+// The zero-copy ys buffer is transferred only when present (getView).
+function bridgeResult(res): WorkerReplyPayload {
   try {
-    const shapeT0 = performance.now();
-    const resultT0 = performance.now();
     const result = takePythonBytes(res.get("result"));
-    if (timings) {
-      timings.result_copy_ms = performance.now() - resultT0;
-      timings.result_bytes = result.byteLength;
-    }
     const resultBuffer = result.buffer as ArrayBuffer;
     const out: WorkerReplyPayload = { result: resultBuffer, transfer: [resultBuffer] };
     if (res.has("buffer")) {
       const ysProxy = res.get("buffer");
       let buf: any = null;
       try {
-        const viewT0 = performance.now();
         buf = ysProxy.getBuffer();
-        if (timings) timings.buffer_view_ms = performance.now() - viewT0;
         const d = buf.data;
-        const copyT0 = performance.now();
         const ys = copyBytes(
           d instanceof Uint8Array ? d : new Uint8Array(d.buffer, d.byteOffset, d.byteLength)
         );
-        if (timings) {
-          timings.ys_copy_ms = performance.now() - copyT0;
-          timings.ys_bytes = ys.byteLength;
-        }
         out.ys = ys.buffer;
         out.transfer.push(ys.buffer);
       } finally {
         if (buf) buf.release();
         destroyPyProxy(ysProxy);
       }
-    }
-    if (timings) {
-      timings.shape_ms = performance.now() - shapeT0;
-      out.perf = timings;
     }
     return out;
   } finally {
@@ -1174,18 +1145,12 @@ function bridgeTextResult(value: string): WorkerReplyPayload {
   return { result: resultBuffer, transfer: [resultBuffer] };
 }
 
-// The worker is a DUMB RELAY: it forwards the generated method id + request bytes
-// (+ optional out-of-band data) to bridge.py's async dispatch, which runs the rpc
-// — including its own network fetches (pyfetch) — and returns the BridgeResult
-// envelope (plus the zero-copy ys buffer for getView). It spells no
-// method names of its own, so nothing here can drift from the .proto.
-//
-// MountGfStore is a typed rpc, but its registered directory handle rides beside
-// the protobuf request because browser handles cannot be serialized into it.
-async function handleRequest(
-  msg: WorkerRequest,
-  workerRecvMs: number
-): Promise<WorkerReplyPayload> {
+// The worker is a relay: it forwards the generated method id, the request bytes
+// and optional out-of-band data to bridge.py's async dispatch, which runs the rpc
+// and returns the BridgeResult envelope.
+// MountGfStore's directory handle rides beside the protobuf request because
+// browser handles cannot be serialized into it.
+async function handleRequest(msg: WorkerRequest): Promise<WorkerReplyPayload> {
   await boot();
   if (!pyodideInterrupt) {
     pyodideInterrupt = new Uint8Array(msg.interrupt as SharedArrayBuffer);
@@ -1200,15 +1165,10 @@ async function handleRequest(
   postOperationStarted(jobId);
   const { reporter, beginRequestCommit, beginExternalWait, endExternalWait, enterProtectedFrame } =
     operationCallbacks(msg, lane, control, interrupt);
-  // The single seam into bridge.py for this request. Both dispatch paths (the
-  // GF-store mount and the plain rpc) must pass the same callback set and share
-  // the escaped-cancellation backstop, so the call is spelled exactly once.
-  const callPython = async (
-    data: Uint8Array | string | null,
-    timings: BridgeTimings | null = null
-  ): Promise<WorkerReplyPayload> => {
+  // The single seam into bridge.py for this request, shared by the GF-store mount
+  // and the plain rpc so both pass the same callbacks and cancellation backstop.
+  const callPython = async (data: string | null): Promise<WorkerReplyPayload> => {
     let res;
-    const pyCallT0 = performance.now();
     try {
       res = await bridge.call(
         msg.method,
@@ -1224,8 +1184,7 @@ async function handleRequest(
       if (isEscapedCancellation(control, error)) return bridgeCancelledResult();
       throw error;
     }
-    if (timings) timings.py_call_ms = performance.now() - pyCallT0;
-    return bridgeResult(res, timings);
+    return bridgeResult(res);
   };
   try {
     // A request cancelled while it was queued never reaches Python: dispatching
@@ -1234,43 +1193,25 @@ async function handleRequest(
     if (cancellationRequested(control)) {
       return bridgeCancelledResult();
     }
-    const requestTimings: BridgeTimings | null =
-      BRIDGE_PERF_LOG && msg.method === GET_VIEW_METHOD
-        ? {
-            worker_recv_ms: workerRecvMs,
-            request_bytes: msg.request ? msg.request.byteLength || 0 : 0,
-            data_bytes: msg.data ? msg.data.byteLength || 0 : 0,
-          }
-        : null;
     if (msg.method === WORKER_RELOAD_SNUFFLINGS) {
-      // Re-fetch bridge.py (the snuffling logic) and importlib.reload it, preserving
-      // the loaded pile + catalog/station/command state across the reload so the
-      // session is not lost (snuffler's Shift+R reloads code, not data).
-      // The list of what survives lives in bridge.py itself (`_RELOAD_KEEP` behind
-      // `_reload_snapshot`/`_reload_restore`) — a TypeScript copy of Python global
-      // names went stale once and silently dropped session state.
-      // The hasattr guard only bridges a dev session whose in-memory module
-      // predates the snapshot functions.
-      for (const mod of ["seisbench_infer.py"]) {
-        const modSrc = await (await fetchOk(resolveUrl(mod))).text();
-        py.FS.writeFile(`/${mod}`, modSrc);
+      // Re-fetch the Python sources and importlib.reload them, keeping the session
+      // (snuffler's Shift+R reloads code, not data).
+      // What survives is listed in bridge.py's `_RELOAD_KEEP`.
+      for (const file of ["seisbench_infer.py", "bridge.py"]) {
+        py.FS.writeFile(`/${file}`, await (await fetchOk(resolveUrl(file))).text());
       }
-      const src = await (await fetchOk(resolveUrl("bridge.py"))).text();
-      py.FS.writeFile("/bridge.py", src);
       py.runPython(`
-import importlib, bridge
-for _m in ('seisbench_infer',):
-    if _m in importlib.sys.modules:
-        importlib.reload(importlib.sys.modules[_m])
-_saved = bridge._reload_snapshot() if hasattr(bridge, '_reload_snapshot') else {}
+import importlib, sys, bridge
+if 'seisbench_infer' in sys.modules:
+    importlib.reload(sys.modules['seisbench_infer'])
+_saved = bridge._reload_snapshot()
 importlib.invalidate_caches()
 try:
     importlib.reload(bridge)
 finally:
     # The snapshot detached the session state from the module dict, so restore
-    # must run even when the reload raised — skipping it would lose the pile.
-    if hasattr(bridge, '_reload_restore'):
-        bridge._reload_restore(_saved)
+    # must run even when the reload raised.
+    bridge._reload_restore(_saved)
 `);
       return bridgeTextResult("ok");
     }
@@ -1289,7 +1230,7 @@ finally:
       await py.mountNativeFS(mount, msg.handle);
       return await callPython(mount);
     }
-    return await callPython(msg.data ?? null, requestTimings);
+    return await callPython(null);
   } finally {
     releaseInterpreter(lane, control, interrupt);
   }
@@ -1303,7 +1244,6 @@ finally:
 void boot().catch(postRuntimeFailure);
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const workerRecvMs = performance.now();
   const msg = event.data || {};
   if (msg.epoch !== RUNTIME_EPOCH) {
     const response: WorkerFailureMessage = {
@@ -1316,11 +1256,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     return;
   }
   const jobId = typeof msg.jobId === "bigint" ? msg.jobId : BigInt(msg.jobId || 0);
-  handleRequest(msg, workerRecvMs)
+  handleRequest(msg)
     .then((result) => {
-      const transfer = result.transfer || [];
-      const { transfer: _transfer, ...payload } = result;
-      if (payload.perf) payload.perf.worker_post_epoch_ms = Date.now();
+      const { transfer, ...payload } = result;
       const response: WorkerSuccessMessage = {
         epoch: RUNTIME_EPOCH,
         id: msg.id,

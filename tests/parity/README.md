@@ -2,7 +2,7 @@
 
 Measures the web port against upstream snuffler, its reference (see
 [ADR 2](../../adr/0002-upstream-qt-is-a-reference.md)). Three tiers, in descending value
-per unit of effort, and nothing here drives pixels over VNC.
+per unit of effort, and none of them compares pixels.
 
 | | what it compares | needs |
 | --- | --- | --- |
@@ -29,17 +29,16 @@ can drift the same way the first one can.
 
 The web side is `web/bridge.py`, imported directly with `PYTHONPATH=web/proto:web` and
 called at `_get_view_data` — the same entry point the Pyodide worker calls. Asking it
-for **undecimated** samples turns out to be simple: every scenario names one of Qt's
-fixed visible lengths, and on that path the payload *is* the chopped samples, at the
-trace's own rate unless `allow_downsampling` asked `Trace.downsample` for otherwise —
-which answers the plan's open question about how to compare like with like. The
+for **undecimated** samples is simple: every scenario names one of Qt's fixed visible
+lengths, and on that path the payload *is* the chopped samples, at the trace's own
+rate unless `allow_downsampling` asked `Trace.downsample` for otherwise. The
 frontend's own Adaptive policy, which decimates instead of refusing channels, is the
 one thing tier 1 never asks for; it has no Qt counterpart, and
 `test_adaptive_visible_length.py` holds it to its own claims instead.
 
 Each scenario also runs the web side twice and fingerprints the loaded pile before and
 after, because a view computation must be a pure function of the data and must leave it
-alone. That check is what caught degapping rewriting the pile in place.
+alone; degapping in place, for example, would fail it.
 
 Alongside the scenarios, `freq_limits.py` walks a 2352-point grid of
 deltat × length × passband over `_decon_freq_limits` against `PileViewer.get_freq_limits`
@@ -68,30 +67,26 @@ million — which is why 0 is the normal answer here and these two are read agai
 
 ```
 pass demo-bandpass-full   59/59 checks match   max_rel_rms=2.57e-08
-pass demo-demean-zoom     23/59 checks match [demean-extent]
+pass demo-demean-zoom     23/59 checks match [some-entry]
 ```
 
 `pass` means every check either matched or diverged exactly as `known_gaps.toml` says
-it should. `bug` means the same, except that one of the entries accounting for it is a
-confirmed defect rather than a legitimate difference — there are none at present.
-`FAIL` means a divergence nobody wrote down — or a documented one that stopped
-happening, which fails just as loudly so the register cannot rot into folklore.
+it should; the bracket lists the entries the scenario names. `bug` means the same,
+except that one of the entries accounting for it is a confirmed defect rather than a
+legitimate difference. `FAIL` means a divergence nobody wrote down, or a documented
+one that stopped happening, which fails just as loudly so the register cannot rot.
 
 That last rule is what makes a fix land cleanly: repair the defect and the entry
-covering it fails as stale, so the code change and the register change have to arrive
-in the same commit. Every `[[defect]]` this suite found on its first runs has now gone
-that way. Removing one is also how the *next* difference surfaces — an entry masks
-every other disagreement in the checks it claims, and dropping the deconvolution-unit
-entry immediately exposed that the web deconvolved before filtering where snuffler
-restitutes after.
+covering it fails as stale, so the code change and the register change arrive in the
+same commit. Removing an entry is also how the *next* difference surfaces, because an
+entry masks every other disagreement in the checks it claims.
 
 The line between `[[numeric]]` and `[[defect]]` is the one worth being strict about,
-because it is easy to get wrong in the comfortable direction. Three entries started as
-"legitimate" and moved to `[[defect]]` on review: two rested on a plausible reason that
-turned out to be false when checked (the ellipsoidal distance is *not* unavailable in
-Pyodide — `distance_accurate50m(..., implementation='python')` is bit-identical to the C
-path), and one hid an unjustified difference inside a defensible one. An entry earns
-`[[numeric]]` by naming a constraint someone can verify, not by sounding reasonable.
+because it is easy to get wrong in the comfortable direction. An entry earns
+`[[numeric]]` by naming a constraint someone can verify, not by sounding reasonable:
+"the ellipsoidal distance is unavailable in Pyodide" sounds plausible and is false,
+since `distance_accurate50m(..., implementation='python')` is bit-identical to the C
+path.
 
 `max_rel_rms` is the worst relative RMS residual over all traces in the scenario. On a
 clean scenario it sits at ~2.6e-8, which is the float32 the payload crosses the bridge
@@ -106,9 +101,8 @@ recursively, every built-in snuffling with the `Param`/`Switch`/`Choice` knobs i
 declares, the control strip, the shipped help tables — and the **live key bindings**,
 asked rather than read. Snuffler's key map is a chain of comparisons inside
 `keyPressEvent` ending in a fall-through to `QWidget`; standing in for that
-fall-through during a probe answers "is this key bound" exactly, which is how the
-harness noticed that snuffler's own help page understates its marker-kind and phase-key
-ranges.
+fall-through during a probe answers "is this key bound" exactly, even where snuffler's
+own help page understates its marker-kind and phase-key ranges.
 
 `inventory_web.ts` reads the web surface off the accessibility layer — the DOM
 projection for role, name, state and value range, and `?a11y=debug`'s AccessKit tree
@@ -125,7 +119,7 @@ once by a human, so the diff stays exact everywhere else.
 
 ## Tier 3 — scenario parity through both GUIs
 
-Thin, and built last. One scenario format, two drivers, one snapshot schema per step:
+One scenario format, two drivers, one snapshot schema per step:
 menu checkbox states, control-strip values, and the marker table.
 
 The Qt driver drives a real offscreen viewer inside a real `QMainWindow` — menu actions
@@ -143,10 +137,10 @@ Two things are deliberately **not** compared:
   different track under the two layouts. What the marker *is* — kind, phase, polarity,
   and whether it is selected — is compared; where it went is recorded for a human.
 
-The driver deliberately does *not* click the canvas before sending a keystroke. It used
-to, to work around single-key shortcuts dying after a menu was operated from the
-accessibility layer; with that fixed, clicking first would only hide a regression of
-exactly the kind a keyboard-only user would hit.
+The web driver deliberately does *not* click the canvas before sending a keystroke:
+single-key shortcuts must keep working after a menu was operated from the
+accessibility layer, and clicking first would hide a regression of exactly the kind a
+keyboard-only user would hit.
 
 ## The corpus
 
@@ -191,17 +185,15 @@ Three of them need a `visible_length` in their scenarios. Qt fetches nothing fin
 trace turns those scenarios back into comparisons of recordings rather than of a fetch
 policy. It is a Qt-side knob; the web decimates whatever it is given.
 
-`eifel` is a deployment: on its first run it found what only one carries, a dead channel
-pinned at −2²³, which the web port scaled to a `[0, 1]` range that left the flatline
-outside its own track where snuffler centres it. `bonin-2015-05-30-m7.8-multiloc` is the opposite
-shape — six stations, chosen because each records the same ground motion two or three
-times over. Co-located sensors are the only data on which "Grouped by Location" means
-anything, and real ones bring what the synthetic `multiloc` cannot arrange: 20 Hz beside
-40 Hz on one row, gains an order of magnitude apart, a −515 000-count offset beside a
-partner at −628, and sensor depths that differ where the coordinates do not. That last
-one is what found the station table's missing per-location position — invisible under
-every sort but the 3D distance one, where the depth reaches the gather key and pulls a
-merged row apart.
+`eifel` is a deployment, and carries what only a deployment does, such as a dead
+channel pinned at −2²³ that snuffler centres in its track.
+`bonin-2015-05-30-m7.8-multiloc` is the opposite shape: six stations, chosen because
+each records the same ground motion two or three times over. Co-located sensors are
+the only data on which "Grouped by Location" means anything, and real ones bring what
+the synthetic `multiloc` cannot arrange: 20 Hz beside 40 Hz on one row, gains an order
+of magnitude apart, a −515 000-count offset beside a partner at −628, and sensor
+depths that differ where the coordinates do not, which only the 3D distance sort
+sees.
 
 To rebuild after changing a generator: `python tests/parity/corpus/build.py --force
 --update-manifest`, and review the parity deltas in the same commit.
@@ -226,31 +218,25 @@ The line between `[[manual]]` and the enforced kinds is mechanical rather than
 editorial. `evaluate` only ever looks at entries a scenario named, so a `[[numeric]]`
 or `[[defect]]` entry nothing names is inert — it excuses nothing and can never go
 stale, which is indistinguishable from one that has quietly rotted. A full tier-1 run
-fails on any such entry. That rule is what moved `waterfall-pipeline` into
-`[[manual]]`, where it always belonged.
+fails on any such entry.
 
 Every entry is either **signed off** — its `why` justifies the difference, and a
-difference really must be justified; "free choice" is a reason to match, which is
-how the azimuth wrap stopped existing — or marked **`todo = true`**: open work the
-diff excuses without mistaking it for a decision. Tier 2 prints the two apart, as
-`gap` and `todo`.
+difference really must be justified; "free choice" is a reason to match — or marked
+**`todo = true`**: open work the diff excuses without mistaking it for a decision.
+Tier 2 prints the two apart, as `gap` and `todo`.
 
 Every entry has to keep applying. A numeric or defect entry that stops diverging, and a
 feature entry that stops matching anything, both fail the run as stale.
 
 An entry covering `samples` can also say what *shape* it excuses: `residual =
 "constant"` makes the run verify that the divergence vanishes once each segment's
-constant offset is removed. That re-arms the samples check under the excuse — the
-demean-extent entry can no longer hide a second, unrelated sample defect in the
-scenarios it covers, which is precisely how the decon-taper difference stayed
-hidden once.
+constant offset is removed. That re-arms the samples check under the excuse, so the
+entry cannot hide a second, unrelated sample defect in the scenarios it covers.
 
-An entry can likewise say *where* it excuses: `subjects.<kind>` lists glob
-patterns over the finding subject, so the min-deltat entry excuses geometry and
-scales only on the channel Qt actually drops, and the 3D-distance entry only on
-the stations with elevation or depth — a divergence anywhere else in those kinds
-fails as unexplained, and a strict entry has to keep reproducing inside its own
-scope.
+An entry can likewise say *where* it excuses: `subjects.<kind>` lists glob patterns
+over the finding subject, so an entry excuses a kind only on the channels it names.
+A divergence anywhere else in that kind fails as unexplained, and a strict entry has
+to keep reproducing inside its own scope.
 
 ### What the register does not yet reach
 
@@ -268,12 +254,6 @@ would graduate a whole group of entries at once:
   by anything.
 - **No tier compares rendering, by design.** Anything whose only symptom is what gets
   drawn lands in `[[manual]]` even when it changes information rather than appearance.
-
-Two more are narrower but sharper: `compare_annotations` returns early unless the sort
-is `distance`, so the azimuth, backazimuth and block scenarios compare no annotation at
-all; and `compare_tracks` filters Qt's empty tracks away, which is a decision about
-layout parity that now lives in `known_gaps.toml` as `track-stack-membership` rather
-than only in a comparator docstring.
 
 The enforcement is itself tested: `test_gaps.py` pins the edge cases of
 `gaps.evaluate` and the register validation — scoping, per-kind staleness, the
@@ -324,6 +304,9 @@ scenario.py         the scenario and dataset model both tiers read
 harness.py          process scaffolding: environment, import paths, colours
 gaps.py             known_gaps.toml loaded, validated and enforced
 test_gaps.py        pytest edge cases for that enforcement
+test_reload_keep.py pytest guard for bridge.py's reload keep-list
+test_bridge_snufflings.py, test_adaptive_visible_length.py, test_view_span_order.py
+                    bridge behaviour against real pyrocko (task test:parity:bridge)
 qt_oracle.py        offscreen PileViewer -> real paint -> snapshot
 web_oracle.py       bridge._get_view_data -> snapshot
 compare.py          snapshot diff with per-field tolerances

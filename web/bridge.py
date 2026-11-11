@@ -1,14 +1,10 @@
-"""Type-checked pyrocko shim that runs inside Pyodide and drives the egui
-frontend.
+"""The pyrocko side of the bridge, running inside the Pyodide worker.
 
-This module is the *only* place that touches pyrocko. It exposes a tiny, stable,
-protobuf API to the Pyodide worker (`web/bridge_worker.js`), which in turn is
-called from Rust (`src/bridge.rs`) via `web/bridge.js`. The worker-facing
-``*_pb`` functions parse and return generated protobuf messages; every request
-and response on the live path is protobuf bytes (no JSON crosses the boundary).
-
-pyrocko itself is left completely unmodified; we only call its public API
-(`pyrocko.trace.Trace`, `pyrocko.io.load`).
+This module is the only place that touches pyrocko.
+The worker (`web/bridge_worker.ts`) dispatches each `BridgeService` rpc to a
+method of `_BridgeServicer` through `call`, which decodes the protobuf request
+and encodes the protobuf response.
+pyrocko itself is unmodified; only its public API is called.
 """
 
 from __future__ import annotations
@@ -102,9 +98,9 @@ _DERIVED_TRACES: Dict[str, List[ptrace.Trace]] = {}
 # owned hash through a catalog load, marker load, or frontend edit.
 _DERIVED_EVENTS: Dict[str, Dict[str, Any]] = {}
 # True while the pile still holds only the boot demo (the synthetic example or
-# a checksummed example bundle nobody asked to keep). The first real data that
-# would append to it replaces it instead: Qt opens empty, so its append-on-open
-# never composes with a pre-seeded pile the way the web's boot example would.
+# a checksummed example bundle nobody asked to keep).
+# The first real data that would append to it replaces it instead, because Qt
+# opens empty and never appends onto a pre-seeded pile.
 _PILE_IS_EXAMPLE = False
 # Owners of each content digest currently represented in the pile.
 # A source can retain its last digest while owning no traces after converging on
@@ -126,25 +122,23 @@ _DATA_GEN = 0
 _RESPONSE_GEN = 0
 _VIEW_PERF_LOG_INTERVAL_S = 1.0
 _VIEW_PERF_SLOW_MS = 25.0
-# The processed-cutout cache, exactly snuffler's: one slot holding the last
-# `prepare_cutout2`-style state vector and its processed traces, reused whenever
-# the requested window is contained in the cached one and the rest of the vector
+# The processed-cutout cache, as snuffler's: one slot holding the last
+# `prepare_cutout2` state vector and its processed traces, reused whenever the
+# requested window is contained in the cached one and the rest of the vector
 # matches (pile_viewer.py:3640).
 _CUTOUT_VEC: Optional[Tuple[Any, ...]] = None
 _CUTOUT_TRACES: Optional[List[ptrace.Trace]] = None
-# The notices the cached cutout's processing produced, re-emitted on every
-# cache hit: the drawn data is the same failed-filter/unrestituted data, so the
-# warning must outlive the one view that happened to rebuild the cutout.
+# The notices the cached cutout's processing produced, re-emitted on every cache
+# hit because the drawn data still carries the failed filter or restitution.
 _CUTOUT_NOTICES: List[str] = []
 # snuffler's `tf_cache`: the combined FFT-filtering transfer function per
-# (deltat, nfreqs, nslc-or-None). Keyed additionally on the corners and the
-# response generation so it can never go stale — Qt instead clears it from the
-# filter-change slots.
+# (deltat, nfreqs, nslc-or-None).
+# Also keyed on the corners and the response generation so it can never go stale,
+# where Qt clears it from the filter-change slots instead.
 _TF_CACHE: Dict[Tuple[Any, ...], np.ndarray] = {}
-# Frozen scale ranges ('Fix Scale Ranges'). Snuffler remembers them with no
-# notion of what produced them, so they survive filter, sort and even pile
-# changes (pile_viewer.py:3281); this port matches that and deliberately does not
-# key them on any context.
+# Frozen scale ranges ('Fix Scale Ranges').
+# Snuffler remembers them with no notion of what produced them, so they survive
+# filter, sort and even pile changes (pile_viewer.py:3281), and so do these.
 _OLD_DATA_RANGES: Dict[Any, Tuple[float, float]] = {}
 # Snuffler's `trace_styles` (`determine_box_styles`, pile_viewer.py:2947): the
 # box tint index per (full_id, deltat), recomputed when the pile changes.
@@ -183,14 +177,11 @@ def _mark_traces_changed() -> None:
 
 
 # The session state a Shift+R code reload carries over: everything the user
-# loaded, derived or configured — pile, provenance, metadata, command filters,
-# scale memories, mounted stores — plus the generation counters that keep the
-# frontend's caches coherent. Deliberately absent: the pure caches (cutouts,
-# transfer functions, box styles, waterfall LUTs), which rebuild from the
-# restored generations, and per-view transients like the notice list. The
-# worker's reload snippet calls `_reload_snapshot`/`_reload_restore` so this
-# module owns the list; a name here that stops existing is caught by
-# tests/parity/test_reload_keep.py.
+# loaded, derived or configured, plus the generation counters that keep the
+# frontend's caches coherent.
+# Pure caches (cutouts, transfer functions, box styles, waterfall LUTs) are
+# absent because they rebuild from the restored generations.
+# tests/parity/test_reload_keep.py catches a name here that stops existing.
 _RELOAD_KEEP = (
     "_TRACES",
     "_SOURCE_TRACES",
@@ -223,33 +214,23 @@ _RELOAD_KEEP = (
 
 
 def _reload_snapshot() -> Dict[str, Any]:
-    """The session state a code reload must carry over, captured off the *old*
-    module just before ``importlib.reload`` — and detached from it.
+    """Detach the session state a code reload carries over from the old module.
 
-    The names are popped, not read: ``importlib.reload`` reuses the module
-    dict, so a name left behind would survive the reload even when the new
-    source no longer defines it — a zombie global nothing reads.
-    Popping loses nothing, because re-executing the source recreates every
-    living global with its fresh default; the caller must pair this with
-    `_reload_restore` (in a ``finally``, so a failed reload cannot strand the
-    detached state).
-
-    Keyed by name, not versioned: state survives exactly where old and new
-    code agree on the global's name.
-    A global renamed or retired between the two versions resets to its fresh
-    default on that reload — an accepted loss, since Shift+R is a dev-loop
-    tool, not a persistence format."""
+    The names are popped, not read: ``importlib.reload`` reuses the module dict,
+    so a name left behind would survive even when the new source no longer
+    defines it.
+    The caller pairs this with `_reload_restore` in a ``finally``, so a failed
+    reload cannot strand the detached state.
+    A global renamed between the two versions resets to its fresh default, an
+    accepted loss for a dev-loop tool."""
     return {name: globals().pop(name) for name in _RELOAD_KEEP if name in globals()}
 
 
 def _reload_restore(saved: Dict[str, Any]) -> None:
     """Reinstall a `_reload_snapshot` into the freshly reloaded module.
 
-    Only names the *new* module's `_RELOAD_KEEP` still claims are installed:
-    a snapshot entry the new code no longer knows would otherwise be parked
-    as a zombie global that nothing reads while the successor state sits
-    empty.
-    State introduced by newer code keeps its fresh default.
+    Only names the new module's `_RELOAD_KEEP` still claims are installed, so a
+    retired name is not parked as a global nothing reads.
     The generation bump makes every cache rebuild against the restored pile."""
     globals().update({name: value for name, value in saved.items() if name in _RELOAD_KEEP})
     _mark_traces_changed()
@@ -259,20 +240,18 @@ def _without_empty(traces: Iterable[ptrace.Trace]) -> List[ptrace.Trace]:
     """Drop the sampleless "traces" a MiniSEED file can carry.
 
     Datacenters ship records with no samples and a sample rate of zero, and pyrocko
-    hands each one back as a trace. Nothing can be drawn from it, so keeping it costs
-    a blank row that looks like a dead channel — which is a thing this viewer is
-    supposed to be able to show, and so a row that lies. pyrocko's own ``pile`` refuses
-    such a file outright (``dispatch_key`` takes ``log(deltatmin)``), so there is no
-    upstream behaviour to match here: it is this or a traceback.
+    hands each one back as a trace.
+    Kept, each would draw a blank row indistinguishable from a dead channel.
+    pyrocko's own ``pile`` refuses such a file outright (``dispatch_key`` takes
+    ``log(deltatmin)``), so there is no upstream behaviour to match.
     """
     return [tr for tr in traces if tr.deltat > 0.0 and tr.ydata is not None and tr.ydata.size]
 
 
 def _set_traces(traces: List[ptrace.Trace], append: bool = False) -> None:
     global _TRACES, _PILE_IS_EXAMPLE
-    # Real data replaces the boot example rather than joining it: appending
-    # onto the demo pile would show the user's channels among synthetic noise
-    # with nothing marking which is which.
+    # Real data replaces the boot example rather than joining it, so the user's
+    # channels never mix with unmarked synthetic noise.
     if append and _PILE_IS_EXAMPLE:
         append = False
     _TRACES = (list(_TRACES) + traces) if append else traces
@@ -283,8 +262,8 @@ def _set_traces(traces: List[ptrace.Trace], append: bool = False) -> None:
         _DIGEST_OWNERS.clear()
         _DERIVED_TRACES.clear()
         # The replaced scene's events, stations and responses go with its
-        # waveforms — user loads only ever append, so nothing user-owned can
-        # pass through here except in the boot-example handover above.
+        # waveforms; user loads only ever append, so only the boot-example
+        # handover above reaches here with user data.
         _clear_dataset_metadata()
     _PILE_IS_EXAMPLE = False
     _mark_traces_changed()
@@ -297,13 +276,11 @@ def _clear_event_context() -> None:
 
 
 def _clear_dataset_metadata() -> None:
-    """Drop the non-waveform context of a replaced scene. The events, station
-    coordinates and instrument responses all describe the dataset going away;
-    any of them surviving into the next scene sorts it wrongly (stale
-    coordinates) or deconvolves an overlapping NSLC against the wrong
-    response. Only scene *replacements* come through here — an example
-    bundle, the boot example giving way to the first real load, EmptyScene, a
-    live-stream reset — never a user append."""
+    """Drop the events, station coordinates and responses of a replaced scene.
+
+    Any of them surviving into the next scene would sort it by stale coordinates
+    or deconvolve an overlapping NSLC against the wrong response.
+    Only scene replacements come through here, never a user append."""
     global _RESPONSE_GEN
     _clear_event_context()
     _STATIONS.clear()
@@ -316,10 +293,10 @@ def _clear_dataset_metadata() -> None:
 
 
 def _replace_source(source_id: str, new_traces: List[ptrace.Trace]) -> None:
-    """Swap the traces previously loaded from ``source_id`` for freshly-loaded ones
-    (the reload path). Removes the old per-source Trace objects by identity and
-    appends the new, leaving synthetic/FDSN/other-source traces untouched — the
-    faithful analog of pyrocko ``reload_modified`` only touching changed files."""
+    """Swap the traces previously loaded from ``source_id`` for freshly loaded ones.
+
+    The old traces are removed by identity, leaving every other source untouched,
+    as pyrocko's ``reload_modified`` only touches changed files."""
     global _TRACES
     old = _SOURCE_TRACES.get(source_id)
     if old is None:
@@ -363,12 +340,12 @@ def _remove_digest_owner(digest: str, source_id: str) -> None:
 
 
 def _replace_derived(origin: str, new_traces: List[ptrace.Trace]) -> None:
-    """Swap the traces a snuffling's previous run added for this run's — the
-    trace half of Qt's `cleanup()` ticket contract (snuffling.py:1689), scoped
-    by origin. Identity-based, so it can never delete a user-loaded trace that
-    merely shares a name; and it leaves `_SOURCE_TRACES`, the load digests and
-    the boot-example flag alone, because derived traces never came from a file
-    and replacing them must not reset file provenance."""
+    """Swap the traces a snuffling's previous run added for this run's.
+
+    This is the trace half of Qt's `cleanup()` ticket contract
+    (snuffling.py:1689), scoped by origin.
+    Removal is by identity, so a user-loaded trace that merely shares a name
+    survives, and file provenance is left alone."""
     global _TRACES
     old = _DERIVED_TRACES.get(origin)
     if old:
@@ -382,10 +359,8 @@ def _replace_derived(origin: str, new_traces: List[ptrace.Trace]) -> None:
 def _trace_selected(tr: ptrace.Trace) -> bool:
     """Whether the ':' command-line filters leave this trace visible.
 
-    pyrocko's canonical NSLC matcher (shell globs, case-insensitive, anchored on
-    the full "net.sta.loc.cha" code), the same one snuffler's hide/quick-filter
-    use — match_nslc takes a list of patterns and returns True if any matches.
-    This is what snuffler passes into `prepare_cutout2` as its `trace_filter`.
+    Uses pyrocko's `match_nslc`, as snuffler's hide and quick filters do; this is
+    the `trace_filter` snuffler passes into `prepare_cutout2`.
     """
     from pyrocko.util import match_nslc
 
@@ -399,12 +374,10 @@ def _visible_traces() -> List[ptrace.Trace]:
 
 
 def _pile() -> Any:
-    """The loaded traces as a real `pyrocko.pile.Pile`.
+    """The loaded traces as a real `pyrocko.pile.Pile`, rebuilt when they change.
 
-    The view chops through `pile.chopper` — snuffler's own chopping, degapping and
-    sampling-rate selection — rather than a reimplementation of it. Rebuilt lazily
-    when the trace set changes; the Trace objects are shared, not copied, which is
-    safe because the chopper hands out chopped copies.
+    The Trace objects are shared, not copied, which is safe because the chopper
+    hands out chopped copies.
     """
     global _PILE, _PILE_GEN
     if _PILE is None or _PILE_GEN != _DATA_GEN:
@@ -419,17 +392,14 @@ def _pile() -> Any:
 
 
 # Station coordinates -> (lat, lon, elevation, depth) and the active event
-# (lat, lon, depth_m, time), populated by the FDSN fetch helpers below. Used for
-# distance/azimuth sorting. The fetch itself runs here in Python (pyfetch over the
-# browser's network); URL building, parsing and geo math are all pyrocko/Python.
+# (lat, lon, depth_m, time), used for distance and azimuth sorting.
 #
 # Keyed as snuffler keys it (`station_keys`, pile_viewer.py:1375): every station is
 # filed under both `(net, sta, loc)` and `(net, sta)`, and looked up in that order.
-# Co-located instruments differ in more than their location code — IU.ANMO's two
-# broadbands hang 145 m and 90 m down the same borehole — so a table with one entry
-# per station cannot say where either of them is. The two-element key stays because
-# it is snuffler's fallback for a trace whose location code no station file mentions,
-# and, as there, the last station added wins it.
+# Co-located instruments can differ in position (IU.ANMO's two broadbands hang
+# 145 m and 90 m down the same borehole), so the location code matters.
+# The two-element key is snuffler's fallback for a trace whose location code no
+# station file mentions, and, as there, the last station added wins it.
 _STATIONS: Dict[Tuple[str, ...], Tuple[float, float, float, float]] = {}
 _ACTIVE_EVENT: Optional[Tuple[float, float, float, float]] = None
 # Registry key of the active event, so machine-made picks (cake, F-keys through
@@ -540,9 +510,9 @@ _STAGE_COUNTER = 0
 
 
 def _stage_bytes(name: str, content: bytes) -> str:
-    """Write request bytes into the Pyodide FS and return the path. pyrocko's
-    ``io.load`` reads a file, so file-carrying rpcs stage here in Python — the
-    worker is a dumb relay and no longer touches the FS for loads."""
+    """Write request bytes into the Pyodide FS and return the path.
+
+    pyrocko's ``io.load`` reads a file, so file-carrying rpcs stage here."""
     global _STAGE_COUNTER
     os.makedirs(_STAGE_DIR, exist_ok=True)
     _STAGE_COUNTER += 1
@@ -596,10 +566,6 @@ def _local_cors_proxy_url(url: str) -> str:
     return "http://127.0.0.1:17684/cors?url=%s" % quote(url, safe="")
 
 
-def _local_fdsn_proxy_url(url: str) -> str:
-    return _local_cors_proxy_url(url)
-
-
 def _seisbench_progress(frac: float, label: str) -> None:
     try:
         import js
@@ -641,7 +607,7 @@ async def _operation_safe_point(done: int, total: Optional[int], phase: str) -> 
 async def _pyfetch_fdsn(url: str) -> Any:
     from pyodide.http import pyfetch
 
-    proxied = _local_fdsn_proxy_url(url)
+    proxied = _local_cors_proxy_url(url)
     try:
         resp = await _await_external_operation(pyfetch(proxied))
     except Exception:
@@ -735,10 +701,9 @@ def _load_path_traces(path: str, fmt: str) -> List[ptrace.Trace]:
     return _without_empty(pio.load(path, format=fmt2))
 
 
-def _load_path_scene(name: str, path: str, fmt: str, append: bool = False) -> scene_pb2.SceneMeta:
-    """Load a file already staged in Pyodide's FS with pyrocko's ``io.load``."""
-    del name
-    _set_traces(_load_path_traces(path, fmt), append=append)
+def _load_path_scene(path: str, fmt: str) -> scene_pb2.SceneMeta:
+    """Replace the pile with a file already staged in Pyodide's FS."""
+    _set_traces(_load_path_traces(path, fmt))
     return _scene_meta()
 
 
@@ -773,9 +738,8 @@ def _view_notice(message: str) -> None:
     """Record a processing failure for the view being built.
 
     Delivered on `ViewMeta.notices` so the frontend can say what was drawn
-    unprocessed — snuffler lets these exceptions reach the user, and silently
-    drawing unfiltered data as filtered is the one failure mode worse than
-    either. Deduplicated per view.
+    unprocessed, where snuffler lets these exceptions reach the user.
+    Deduplicated per view.
     """
     if message not in _VIEW_NOTICES:
         _VIEW_NOTICES.append(message)
@@ -783,11 +747,10 @@ def _view_notice(message: str) -> None:
 
 def _get_instrument_response(nslc_id: NslcId, tmin: float, tmax: float) -> Any:
     """The response for `nslc_id` over the view window, resolved as snuffler
-    resolves it (`get_instrument_response`, pile_viewer.py:4468): the StationXML
-    documents stay a list in load order and the first one that resolves wins; a
-    document that raises — including on an ambiguous double match — is skipped;
-    and a channel that resolves nowhere is reported rather than silently passed
-    through.
+    resolves it (`get_instrument_response`, pile_viewer.py:4468).
+
+    The first StationXML document that resolves wins, a document that raises is
+    skipped, and a channel that resolves nowhere is reported once.
     """
     resp = None
     for sx in _STATIONXMLS:
@@ -812,27 +775,20 @@ def _remove_response(
     tmin: Optional[float] = None,
     tmax: Optional[float] = None,
 ) -> ptrace.Trace:
-    """Deconvolve the instrument response using StationXML fetched from an FDSN
-    station service (Data ▸ Download ▸ Fetch responses).
+    """Deconvolve the instrument response with snuffler's frequency limits.
+
     A trace without a matching response passes through with a view notice.
-    The frequency limits + cut-off-fading match snuffler's deconvolution exactly.
+    The response is resolved over the view window (``tmin``/``tmax``), not the
+    trace's own span, as the reference does (pile_viewer.py:3845), so a trace
+    crossing a metadata epoch boundary resolves for the epoch on screen.
 
-    The response is requested over the *view window* (``tmin``/``tmax``), not the
-    trace's own span, because that is what the reference passes
-    (pile_viewer.py:3845) — a trace crossing a metadata epoch boundary should
-    resolve for the epoch on screen.
+    The result is in the instrument's own input unit (velocity for a broadband),
+    as snuffler's ``get_instrument_response`` produces; ``fake_input_units='M'``
+    would differ from Qt by a factor of i*omega.
 
-    The result is in the instrument's own input unit — velocity for a broadband —
-    because that is what snuffler's ``get_instrument_response`` produces. Passing
-    ``fake_input_units='M'`` here instead would append a differentiation stage and
-    yield displacement, differing from Qt by a factor of i*omega across the band with
-    nothing on screen to say so.
-
-    Takes the *already demeaned and filtered* segment, because that is the order
-    snuffler restitutes in: its restitution block runs over `processed_traces`, after
-    the lowpass/highpass. The order matters even though both steps are linear — the
-    frequency limits are derived from `data_len`, so deconvolving a differently
-    extended trace tapers differently."""
+    Takes the already demeaned and filtered segment, the order snuffler
+    restitutes in: the frequency limits derive from `data_len`, so a differently
+    extended trace would taper differently."""
     if not enabled:
         return tr
     span_tmin = float(tr.tmin) if tmin is None else float(tmin)
@@ -861,10 +817,8 @@ _SUBSORT = {
     "sncl": (1, 0, 3, 2),
     "lnsc": (2, 0, 1, 3),
     "cnsl": (3, 0, 1, 2),
-    # Three elements, not four: these are snuffler's "Grouped by Location" pair, and
-    # the element left out of the key is the one the rows group over — every location
-    # of a channel lands on the same row. Listing all four here instead made them
-    # duplicates of `nscl` and `sncl`.
+    # Three elements: snuffler's "Grouped by Location" pair leaves the location out
+    # of the key, so every location of a channel lands on the same row.
     "nsc_l": (0, 1, 3),
     "snc_l": (1, 0, 3),
 }
@@ -878,16 +832,12 @@ def _subsort_perm(subsort: str) -> Tuple[int, ...]:
 def _dist_m(alat: float, alon: float, blat: float, blon: float) -> float:
     """Surface distance in metres on the WGS84 spheroid, as snuffler measures it.
 
-    ``Location.distance_to`` — what ``set_event_relative_data`` fills ``dist_m``
-    from — measures on the WGS84 spheroid via ``orthodrome_ext``, the compiled
-    extension the minimal wheel does not ship. But ``distance_accurate50m`` takes
-    ``implementation='python'`` and then evaluates the same Meeus formula with plain
-    ``math``, agreeing with the C path bit-for-bit. The analytic ``cosdelta`` form
-    used here before is spherical, and drifts by several hundred metres over a few
-    hundred kilometres.
-
-    The scalar entry point on purpose: the ``_numpy`` one broadcasts scalars to 0-d
-    arrays and its Python branch then dies in ``num.where``.
+    ``Location.distance_to`` measures via ``orthodrome_ext``, the compiled
+    extension the minimal wheel does not ship.
+    ``distance_accurate50m(implementation='python')`` evaluates the same Meeus
+    formula with plain ``math``, agreeing with the C path bit-for-bit.
+    The scalar entry point on purpose: the ``_numpy`` one broadcasts scalars to
+    0-d arrays and its Python branch then dies in ``num.where``.
     """
     from pyrocko import orthodrome as od
 
@@ -951,21 +901,14 @@ def _sort_distance(net: str, sta: str, loc: str, distances_3d: bool) -> Optional
     # a degree value converted back with some radius.
     surface_m = _dist_m(elat, elon, slat, slon)
     if distances_3d:
-        # `event.depth - station.depth`, exactly as `set_event_relative_data` forms it
-        # (station.py:184). This is deliberately *not* the honest vertical leg: it
-        # takes the station's borehole depth and ignores its elevation, so a station
-        # 1.7 km up a mountain is measured as though it stood at sea level. The
-        # geometrically honest term is `event.depth + elevation - depth`, which
-        # snuffler does not compute — and parity with snuffler is what this port
-        # claims, so it is not ours to quietly correct here. Fixing it belongs
-        # upstream; doing it here would make every distance disagree with the Qt
-        # application the port is measured against.
+        # `event.depth - station.depth`, exactly as `set_event_relative_data` forms
+        # it (station.py:184).
+        # It ignores the station elevation, which is an upstream quirk kept for
+        # parity rather than corrected here.
         #
-        # `sqrt(dd**2 + ...)` rather than `math.hypot`, which computes the same
-        # length more accurately: `set_event_relative_data` uses the plain
-        # square-root form, and a distance sitting within an ulp of a 0.5 km
-        # rounding boundary (IU.ANMO in the bonin corpus, 10152.5 km) prints a
-        # different kilometre under the two.
+        # `sqrt(dd**2 + ...)` rather than `math.hypot`, as upstream: a distance
+        # within an ulp of a 0.5 km rounding boundary (IU.ANMO in the bonin corpus,
+        # 10152.5 km) prints a different kilometre under the two.
         dd = float(edep) - float(sdep)
         return math.sqrt(dd**2 + surface_m**2)
     return surface_m
@@ -1019,10 +962,10 @@ def _sort_annotation(net: str, sta: str, loc: str, sort: str, distances_3d: bool
 def _sort_order(
     traces: List[ptrace.Trace], sort: str, subsort: str, distances_3d: bool = False
 ) -> List[int]:
-    """Index order for the traces. Distance/azimuth sorts use station coordinates
-    (from a station fetch) + the active event; without them they fall back to name
-    order. With ``distances_3d`` the distance sort adds the source depth and station
-    elevation (snuffler's '3D distances' option). All geo math is pyrocko's."""
+    """Index order for the traces.
+
+    Distance and azimuth sorts use station coordinates and the active event, and
+    fall back to name order without them."""
     perm = _subsort_perm(subsort)
 
     def namekey(tr: ptrace.Trace) -> Tuple[str, ...]:
@@ -1138,15 +1081,10 @@ def _fft_filter(
     then retrend.
 
     The transfer function folds the order-4 Butterworth low/high responses
-    together with — when Deconvolution is on — the cosine taper and the inverted
-    instrument response, all in a single FFT pass; and in that case the fitted
-    trend is deliberately *not* re-added (pile_viewer.py:3794), even when no
-    response was found for the channel. detrend/retrend are the OLS-line removal
-    those snuffler helpers do (np.polyfit == their linregress).
-
-    The transfer function is cached exactly on snuffler's `tf_cache` key —
-    (deltat, nfreqs, nslc-when-deconvolving) — widened by the corners and the
-    response generation, which Qt handles by clearing the cache instead."""
+    together with, when Deconvolution is on, the cosine taper and the inverted
+    instrument response.
+    With Deconvolution on the fitted trend is not re-added (pile_viewer.py:3794),
+    even when no response was found for the channel."""
     from pyrocko import response
 
     it = np.arange(seg.data_len(), dtype=float)
@@ -1156,13 +1094,11 @@ def _fft_filter(
     seg.set_ydata(y - slope * it - offset)
     freqs, fdata = seg.spectrum(pad_to_pow2=True, tfade=None)
     nfreqs = int(fdata.size)
-    # The response is resolved BEFORE the cache lookup and a fingerprint of its
-    # content rides the key: responses are epoch-dependent, so two same-shaped
-    # windows on one channel straddling a StationXML epoch boundary must not
-    # share whichever transfer function was computed first. The fingerprint is
-    # over the serialized response (each resolve builds a fresh object, so
-    # object identity would defeat the cache); two windows inside one epoch
-    # serialize identically and keep sharing the cached transfer function.
+    # Responses are epoch-dependent, so a fingerprint of the resolved response
+    # rides the cache key: two windows straddling a StationXML epoch boundary
+    # must not share a transfer function.
+    # It hashes the serialized response because each resolve builds a fresh
+    # object.
     inst_resp = _get_instrument_response(seg.nslc_id, resp_tmin, resp_tmax) if remove_resp else None
     key = (
         float(seg.deltat),
@@ -1213,20 +1149,18 @@ def _filter_seg(
     resp_tmax: float = 0.0,
 ) -> None:
     """Apply the main filter to a chopped trace, honoring the FFT-filtering and
-    bandpass-as-low+highpass options. Filter corners at/above Nyquist are skipped
-    (snuffler's ``< 0.5/deltat`` guards), not left to a bare try/except.
+    bandpass-as-low+highpass options.
 
-    With FFT filtering on, Deconvolution is folded into the same pass — snuffler
-    enters that branch when a corner *or* `remove_resp` is set
-    (pile_viewer.py:3699) and skips the separate restitution entirely
+    Filter corners at or above Nyquist are skipped (snuffler's ``< 0.5/deltat``
+    guards).
+    With FFT filtering on, Deconvolution is folded into the same pass
+    (pile_viewer.py:3699) and snuffler skips the separate restitution
     (pile_viewer.py:3840), so the caller must not restitute again.
-
-    `demean=False` on the lowpass/highpass stages, as Qt passes it
-    (pile_viewer.py:3821): those pyrocko filters demean by default and never add
-    the mean back, so leaving the default would remove a mean of its own even
-    with Demean off. The bandpass branch has no such parameter to get wrong.
-    A filter that still throws rolls the segment back to its unprocessed
-    samples and delivers the failure with the view."""
+    The lowpass/highpass stages pass `demean=False`, as Qt does
+    (pile_viewer.py:3821), because those pyrocko filters otherwise demean on
+    their own even with Demean off.
+    A filter that throws rolls the segment back to its unprocessed samples and
+    reports the failure with the view."""
     original = seg.ydata
     try:
         if fft:
@@ -1242,12 +1176,10 @@ def _filter_seg(
             if hp is not None and (lp is None or hp < lp) and hp < fmax:
                 seg.highpass(4, float(hp), demean=False)
     except Exception as exc:  # noqa: BLE001 — drawn unfiltered, but never silently
-        # Roll back to the pre-filter samples: the FFT branch detrends before
-        # the transfer function can fail, and the IIR branch can apply the
-        # lowpass before the highpass throws — either would ship half-processed
-        # data labelled "drawn unfiltered". Every pyrocko filter *replaces*
-        # ydata (`astype` copies, lfilter/irfft allocate), so the saved
-        # reference is exactly the unprocessed array.
+        # Either branch can fail half-way (after the detrend, or between the
+        # lowpass and the highpass).
+        # Every pyrocko filter replaces ydata rather than mutating it, so the
+        # saved reference is exactly the unprocessed array.
         seg.set_ydata(original)
         _view_notice("filter failed for %s.%s.%s.%s: %s" % (*seg.nslc_id, exc))
 
@@ -1268,12 +1200,11 @@ def _adequate_tpad(hp: Optional[float], lp: Optional[float]) -> float:
 
 def _rotate_pairs_inplace(processed_traces: List[ptrace.Trace], rotate_deg: float) -> None:
     """Rotate horizontal pairs in place, exactly as `prepare_cutout2` does
-    (pile_viewer.py:3865): after demean, filtering and restitution, pairing the
-    N/E or 1/2 channels of one net.sta.loc whose sampling and start agree within
-    tolerance — `deltat` to 0.1 %, `tmin` to 1 % of a sample — at equal length.
-    The chopper has already aligned both channels of a real pair, which is what
-    makes these tolerances reachable; requiring exact float equality on the raw
-    traces silently skipped horizontals that start a fraction of a sample apart.
+    (pile_viewer.py:3865).
+
+    Pairs the N/E or 1/2 channels of one net.sta.loc whose sampling and start
+    agree within tolerance (`deltat` to 0.1 %, `tmin` to 1 % of a sample) at equal
+    length.
     """
     phi = rotate_deg / 180.0 * math.pi
     cphi = math.cos(phi)
@@ -1319,31 +1250,25 @@ def _prepare_cutout(
     rotate: float,
     liberal_fetch: bool,
 ) -> List[ptrace.Trace]:
-    """The traces snuffler would be about to draw for this window: a faithful
-    transcription of `PileViewerMain.prepare_cutout2` (pile_viewer.py:3590), with
-    the chopping, degapping, downsampling, filtering and restitution all done by
-    the same pyrocko code Qt calls.
+    """The traces snuffler would draw for this window: a transcription of
+    `PileViewerMain.prepare_cutout2` (pile_viewer.py:3590) running the same
+    pyrocko code Qt calls.
 
-    Stages, in the reference's order: derive `min_deltat_allow` — the finest
-    sampling the window can use, below which channels are not fetched at all
-    (`visible_length` is None for this frontend's Adaptive policy, which drops
-    that floor entirely and decimates the payload instead);
-    optionally snap the fetch window to an absolute power-of-two grid (Liberal
-    Fetch); chop a tpad-padded window through `pile.chopper` (which degaps);
-    demean each chop, skipping `tabu` traces; filter — one combined FFT pass, or
-    the Butterworth stages after the optional anti-aliased `Trace.downsample`
-    loop; restitute (unless the FFT pass already folded the response in); rotate
-    matching horizontal pairs in place; and finally chop back to the requested
-    window plus four samples per side, dropping anything shorter than two
-    samples.
+    Stages, in the reference's order:
 
-    The processing extent is therefore the padded fetch window, not the whole
-    trace: the mean Demean removes, the filter transient, the detrend line and
-    the deconvolution grid all follow the window exactly as they do in snuffler.
+    - derive `min_deltat_allow`, the finest sampling the window fetches
+      (`visible_length` is None for the Adaptive policy, which drops that floor
+      and decimates the payload instead);
+    - optionally snap the fetch window to a power-of-two grid (Liberal Fetch);
+    - chop a tpad-padded window through `pile.chopper`, which degaps;
+    - demean, filter (optionally after anti-aliased downsampling), restitute
+      and rotate horizontal pairs;
+    - chop back to the requested window plus four samples per side.
 
-    Cached exactly as Qt caches it (pile_viewer.py:3632): one state vector,
-    reused when the new window is contained in the cached one and every other
-    member matches.
+    The processing extent is the padded fetch window, not the whole trace, as
+    in snuffler.
+    Cached as Qt caches it (pile_viewer.py:3632): one state vector, reused when
+    the new window is contained in the cached one and every other member matches.
     """
     global _CUTOUT_VEC, _CUTOUT_TRACES
     p = _pile()
@@ -1352,10 +1277,9 @@ def _prepare_cutout(
 
     tsee = tmax - tmin
     if visible_length is None:
-        # Adaptive: no channel is refused, so there is no floor to derive. The
-        # decimation target is the canvas's own — two samples per bin, which is
-        # what a min/max envelope emits — and it is what 'Allow Downsampling'
-        # aims at here instead of a fixed budget's share of the window.
+        # Adaptive: no channel is refused, so there is no floor to derive.
+        # 'Allow Downsampling' aims at the canvas resolution, two samples per
+        # pixel as a min/max envelope emits.
         min_deltat_allow = 0.0
         min_deltat_wo_decimate = tsee / max(1.0, 2.0 * float(npx))
     else:
@@ -1369,9 +1293,8 @@ def _prepare_cutout(
             if target_deltat_lp > min_deltat_wo_decimate:
                 min_deltat_allow = min_deltat_w_decimate
 
-        # A power of *e*, not of ten — almost certainly an upstream slip for
-        # `log10`/`10**`, reproduced deliberately because it is the reference
-        # behaviour (see `min-deltat-allow` history in tests/parity).
+        # A power of e, not of ten: likely an upstream slip for `log10`, kept
+        # because it is the reference behaviour.
         min_deltat_allow = math.exp(int(math.floor(math.log(min_deltat_allow))))
 
     tmin_ = tmin
@@ -1418,9 +1341,6 @@ def _prepare_cutout(
         and vec[2:] == _CUTOUT_VEC[2:]
     ):
         processed_traces = _CUTOUT_TRACES
-        # The cached data still carries whatever went wrong while it was
-        # built; a pan that hits the cache must warn like the view that
-        # missed it.
         for message in _CUTOUT_NOTICES:
             _view_notice(message)
     else:
@@ -1470,11 +1390,9 @@ def _prepare_cutout(
                             _filter_seg(tr, hp, lp, False, lphp)
                     processed_traces.append(tr)
 
-            # Outside the chopper loop, over the completed list: the inverse
-            # transfer is not idempotent, so mapping it over the accumulated
-            # list per batch would restitute earlier batches once per later
-            # batch. With tinc=None the chopper yields exactly once today, but
-            # the placement must not corrupt data the day that changes.
+            # Outside the chopper loop: the inverse transfer is not idempotent,
+            # so running it per batch over the accumulated list would restitute
+            # earlier batches repeatedly if the chopper ever yields more than once.
             if remove_resp and not fft:
                 processed_traces = [
                     _remove_response(tr, True, hp, lp, tmin, tmax) for tr in processed_traces
@@ -1543,18 +1461,14 @@ def _display_envelope(
 ) -> Tuple[np.ndarray, float, float]:
     """Reduce a slice to about ``bins`` bins, as the min and max of each.
 
-    This is what the Adaptive visible length spends instead of refusing channels:
-    every channel is fetched at its own rate, and the payload is cut down here to
-    the resolution the canvas can draw. Two samples per bin — the bin's extremes,
-    in the order they occur — emitted at half the bin width, so the run stays a
-    uniform span (the renderer draws nothing else) and the peak inside each bin
-    survives, which plain subsampling would drop and an anti-alias decimation
-    would smooth away.
+    The Adaptive visible length fetches every channel at its own rate and cuts
+    the payload down here to the resolution the canvas can draw.
+    Each bin emits its two extremes in the order they occur, at half the bin
+    width, so the run stays a uniform span and every peak survives.
 
     Bins are anchored to the trace's absolute sample grid rather than to the
     slice, so a pan moves the trace without changing which sample is a peak.
-    Up to one bin (up to ``stride`` samples) at each end falls outside the grid
-    and is dropped — at the envelope's ~1 bin/pixel that trim is under a pixel.
+    Up to one bin at each end falls outside the grid and is dropped.
 
     Returns the payload with its new sample spacing and start time, or the input
     unchanged when it is already at or below the target.
@@ -1562,10 +1476,8 @@ def _display_envelope(
     n = int(y.size)
     if bins <= 0 or n == 0 or deltat <= 0.0:
         return y, deltat, t0
-    # The stride derives from the WINDOW, not from the clipped slice length:
-    # the slice gains or loses a sample as the window's sub-sample phase moves,
-    # and a slice-derived samples-per-bin could cross a ladder rung on a pure
-    # pan, re-binning the whole trace at once. The window is pan-invariant.
+    # The stride derives from the window, not the clipped slice length, which
+    # gains or loses a sample on a pure pan and could cross a ladder rung.
     stride = _stable_bin_stride(window_len / (float(deltat) * float(bins)))
     if stride < 2 or n <= 2 * stride:
         return y, deltat, t0
@@ -1599,28 +1511,22 @@ def _waterfall_row_strips(
     """Snuffler-style waterfall strips for one track row: normalized amplitude
     over time, on one shared amplitude scale and one shared time resolution.
 
-    Snuffler normalises per image row, and a row there is a whole trace
-    (``pile_viewer_waterfall.py:148``; ``_common_scale`` is always on). This
-    port's row is a *track*, which can carry several segments, so the peak is
-    taken across every strip of the row before dividing — two pieces of a gapped
-    channel share one colour scale, as they share one labelled row. The
-    decimation stride is derived once per row for the same reason: both pieces
-    keep one time resolution.
+    Snuffler normalises per image row, a whole trace there
+    (``pile_viewer_waterfall.py:148``).
+    A row here is a track that can carry several segments, so the peak and the
+    decimation stride are shared across every strip of the row.
 
     Takes ``(yview, t0, deltat)`` per segment; returns ``(strip, t0, dt)`` per
-    segment, strips as little-endian float32. ``color_scale`` (``lin`` | ``sqrt``
-    | ``log``) compresses the envelope before colour-mapping — a frontend
-    addition, linear by default, which is all snuffler has.
+    segment, strips as little-endian float32.
+    ``color_scale`` (``lin`` | ``sqrt`` | ``log``) compresses the envelope before
+    colour-mapping; snuffler only has ``lin``.
     """
     from scipy import signal as sps
 
     if not slices:
         return []
     # One target resolution for the row: the coarsest any piece would have
-    # chosen on its own, so no piece is stretched past its own sampling. The
-    # per-piece stride comes from the WINDOW, not from the clipped slice
-    # length: the slice gains or loses a sample as the window's sub-sample
-    # phase moves, and a stride derived from it would jump on a pure pan.
+    # chosen on its own, derived from the window so a pure pan cannot change it.
     window_len = max(0.0, float(window[1]) - float(window[0]))
     target_dt = max(
         float(deltat) * max(1, int(window_len / (float(deltat) * max(1, 2 * int(npx)))))
@@ -1629,12 +1535,9 @@ def _waterfall_row_strips(
     prepared: "List[Tuple[np.ndarray, float, float]]" = []
     for y, t0, deltat in slices:
         step = max(1, int(round(target_dt / float(deltat))))
-        # Anchor the take to the trace's own absolute sample grid, exactly as
-        # `_display_envelope` anchors its bins: `y[::step]` alone selects
-        # samples relative to the chopped start, which advances one sample per
-        # sample of pan, so every column re-sampled and the strip shimmered
-        # instead of sliding. (Qt anchors on the trace's tmin the same way,
-        # pile_viewer_waterfall.py:124.)
+        # Anchor the take to the trace's absolute sample grid, as
+        # `_display_envelope` anchors its bins and Qt does
+        # (pile_viewer_waterfall.py:124), so a pan slides the strip.
         base = int(math.floor(float(t0) / float(deltat) + 0.5))
         offset = (-base) % step
         data = np.ascontiguousarray(np.asarray(y, dtype=np.float64)[offset::step])
@@ -1695,12 +1598,12 @@ def _wf_rgba(
     lut: np.ndarray,
 ) -> np.ndarray:
     """Colour-map one waterfall amplitude strip to RGBA, packed one pixel per
-    float32 (its 4 little-endian bytes ARE the RGBA) so it rides the same
-    zero-copy ``ys`` buffer; the frontend just reinterprets and blits. Mirrors the
-    former Rust normalisation exactly: clip the ``[lo, hi]`` band by
-    ``clip_lo/clip_hi``, optional reverse, then LUT lookup. Symmetry is not
-    handled here: in snuffler it constrains the clip *pair* (`set_symetry`,  # spellcheck:ignore-line
-    gui/util.py:817), which the frontend enforces on the sliders themselves."""
+    float32 so it rides the same zero-copy ``ys`` buffer.
+
+    Clips the ``[lo, hi]`` band by ``clip_lo/clip_hi``, optionally reverses, then
+    looks up the LUT.
+    Symmetry is not handled here: in snuffler it constrains the clip pair
+    (`set_symetry`, gui/util.py:817), which the frontend enforces on the sliders."""  # spellcheck:ignore-line
     span = max(hi - lo, 1e-6)
     band_lo = lo + clip_lo * span
     band_hi = lo + clip_hi * span
@@ -1708,8 +1611,7 @@ def _wf_rgba(
     tn = np.clip((strip.astype(np.float64) - band_lo) / rng, 0.0, 1.0)
     if reverse:
         tn = 1.0 - tn
-    # matplotlib indexes its 256-entry LUT with int(t * 256) clipped to 255;
-    # * 255 picked every interior value's neighbour.
+    # matplotlib indexes its 256-entry LUT with int(t * 256) clipped to 255.
     idx = np.minimum((tn * 256.0).astype(np.int64), 255)
     rgba = np.empty((idx.size, 4), dtype=np.uint8)
     rgba[:, :3] = lut[idx]
@@ -1726,9 +1628,6 @@ def _colorize_waterfall(meta: view_pb2.ViewMeta, ys: np.ndarray, req: view_pb2.V
     clip_hi = float(req.wf_clip_hi)
     if not clip_hi > clip_lo:
         clip_lo, clip_hi = 0.0, 1.0
-    # Symmetry is a constraint the frontend applies to the clip pair (snuffler's
-    # `set_symetry`), so by the time the band arrives here it is already  # spellcheck:ignore-line
-    # symmetric when it should be; no colour-side handling remains.
     reverse = bool(req.wf_reverse)
     for t in meta.tracks:
         if not t.nf:
@@ -1794,15 +1693,11 @@ def _gather_sort_value(tr: ptrace.Trace, sort: str, distances_3d: bool) -> Tuple
     """The sort-mode value snuffler prepends to a track's gather key.
 
     ``set_gathering`` builds the key as ``ssort(tr) + <subsorted nslc>``
-    (pile_viewer.py:1741), so the value a geo sort orders by is *part of the row's
-    identity*, not just its position. Two traces the subsort would merge onto one
-    row are pulled apart whenever they disagree here — which is how a station whose
-    instruments sit at different depths comes apart under a 3D distance sort, having
-    tied under every other sort. Sorting by name prepends nothing (``lambda tr: ()``)
-    and nothing is ever split.
-
-    ``None`` for a trace with no station, matching the ``default_getter`` each geo
-    entry passes; traces that share that fate share a row, as they do in snuffler.
+    (pile_viewer.py:1741), so the geo sort value is part of the row's identity:
+    two traces the subsort would merge are split when they disagree here.
+    Sorting by name prepends nothing.
+    ``None`` for a trace with no station, matching each geo entry's
+    ``default_getter``.
     """
     if sort not in ("distance", "azimuth", "azimuth_blocks", "backazimuth"):
         return ()
@@ -1838,12 +1733,10 @@ def _row_universe(
 ) -> List[Tuple[Tuple[Any, ...], ptrace.Trace]]:
     """The track rows of the whole pile, in draw order.
 
-    Snuffler's stack is one row per gather key of *every* blacklist-selected trace
-    (`set_gathering` keys the pile, pile_viewer.py:1750), whether or not it has
-    data in the window — a channel with no data on screen keeps its labelled empty
-    row, so panning across a gap cannot reshuffle the stack. Rows are ordered by
-    the same key the traces sort by; each carries a representative trace for the
-    label and the annotation.
+    Snuffler's stack is one row per gather key of every selected trace
+    (pile_viewer.py:1750), whether or not it has data in the window, so panning
+    across a gap cannot reshuffle the stack.
+    Each row carries a representative trace for the label and the annotation.
     """
     selected = _visible_traces()
     order = _sort_order(selected, sort, subsort, distances_3d)
@@ -1857,17 +1750,13 @@ def _row_universe(
 
 def _pile_color_keys(subsort: str) -> List[str]:
     """Snuffler's `color_keys` (`pile.gather_keys(color)`, pile_viewer.py:1753):
-    the distinct values of the subsort's coloring function over the whole pile —
-    no blacklist, no window — in sorted order. The trace palette numbers over this
-    list, so a key keeps its colour as the view scrolls; numbering over the
-    visible slice instead recolours the same station on every scroll, which
-    snuffler cannot do.
+    the distinct values of the subsort's coloring function over the whole pile,
+    sorted, so a key keeps its colour as the view scrolls.
 
-    The per-subsort coloring functions are the second halves of snuffler's subsort
-    `menudef` (pile_viewer.py:1020): location for NSLC and the two grouped-by-
-    location modes, channel for NSCL/SNCL/LNSC, and the net+sta+loc composite for
-    CNSL — dot-joined here, which sorts identically to snuffler's tuple since
-    the codes cannot contain dots.
+    The coloring functions are the second halves of snuffler's subsort `menudef`
+    (pile_viewer.py:1020).
+    CNSL's net+sta+loc composite is dot-joined, which sorts identically to
+    snuffler's tuple since the codes cannot contain dots.
     """
 
     def color(tr: ptrace.Trace) -> str:
@@ -1919,12 +1808,10 @@ def _trace_boxes_by_row(
     """Snuffler's trace boxes (`draw_trace_boxes`, pile_viewer.py:2968): the
     pile's data coverage per row over the view window.
 
-    Sourced from the pile rather than the fetched cutout, which is the property
-    that matters: a channel `min_deltat_allow` declined to fetch still reports
-    where its data lies, so a view zoomed far beyond the data keeps an anchor to
-    navigate back to. One box per overlapping trace, or — above Qt's 500-trace
-    threshold — one per (row, style) batch spanning first-appended `tmin` to
-    last-appended `tmax` in `full_id` order, quirks and all."""
+    Sourced from the pile rather than the fetched cutout, so a channel
+    `min_deltat_allow` declined to fetch still shows where its data lies.
+    One box per overlapping trace, or, above Qt's 500-trace threshold, one per
+    (row, style) batch spanning first-appended `tmin` to last-appended `tmax`."""
     styles = _box_styles()
     overlapping = [tr for tr in _TRACES if tr.overlaps(tmin, tmax) and _trace_selected(tr)]
     overlapping.sort(key=lambda tr: tr.full_id)
@@ -2047,9 +1934,6 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     perf_visible = time.monotonic()
     distances_3d = bool(req.distances_3d)
     perm = _subsort_perm(subsort)
-    # The row stack comes from the whole pile, not from what the cutout returned:
-    # a channel with no data in the window (or one min_deltat_allow declined to
-    # fetch) keeps its labelled, empty row exactly as it does under snuffler.
     rows = _row_universe(sort, subsort, distances_3d)
     row_index = {key: idx for idx, (key, _head) in enumerate(rows)}
     members_by_row: List[List[Tuple[int, ptrace.Trace]]] = [[] for _ in rows]
@@ -2086,38 +1970,24 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
     wanted_tracks = 0
     sample_tracks = 0
     for row_idx, (_row_key, head) in enumerate(rows):
-        # One deterministic layering per row, independent of the window: the
-        # chop start snaps to each member's own sample grid, so ordering by
-        # chopped tmin first let a pan or zoom reorder which co-located trace
-        # draws last — visibly recoloring a grouped row wherever near-identical
-        # channels overlap (different sample rates snap differently, and the
-        # nslc tiebreak only fires on exact equality). Channel identity first
-        # gives every window the same stack; deltat separates same-nslc
-        # duplicates at different rates whose chopped tmins could still cross;
-        # tmin time-orders the gapped segments within one channel.
+        # One layering per row, independent of the window, so a pan cannot
+        # reorder which co-located trace draws last.
+        # Chopped tmins snap to each member's own sample grid, so they cannot
+        # lead the key; tmin only orders the gapped segments of one channel.
         members = sorted(
             members_by_row[row_idx],
             key=lambda item: (item[1].nslc_id, item[1].deltat, item[1].tmin),
         )
         wanted_tracks += 1
-        # A row is named by what it groups on: an element the rows merge over drops
-        # out of the label and becomes '*' in the identity rather than showing one
-        # member's value. Both are snuffler's own representations — its track label
-        # is the gather key, and its `track_patterns` hold '*' for the merged
-        # element, which is what keeps a marker matched to its row even when the
-        # marker's own location has no data in the window.
+        # An element the rows merge over becomes '*' in the identity, as in
+        # snuffler's `track_patterns`, so a marker stays matched to its row.
         net, sta, loc, cha = (head.nslc_id[i] if i in perm else "*" for i in range(4))
-        # The label is snuffler's: the gather key space-joined, sort value first,
-        # nslc elements in the subsort's permuted order, `None`s skipped and the
-        # empty location kept (`plabel`, pile_viewer.py:3521) — so the subsort is
-        # visible in the label and a distance-sorted row reads "123 km XX STA01
-        # HHZ" here as it does there.
+        # The label is snuffler's `plabel` (pile_viewer.py:3521): the gather key
+        # space-joined, sort value first, nslc elements in subsort order.
         nslc_part = " ".join(head.nslc_id[i] for i in perm)
         label = nslc_part
-        # The head's own location, not the row identity's '*': a row that merges over
-        # locations still holds instruments at one distance, because the gather key
-        # carries that distance. Reading it off '*' would fall back to whichever
-        # location the station table filed last and mislabel one of the split rows.
+        # The head's own location, not the row identity's '*': the gather key
+        # carries the distance, so every member of the row shares it.
         annotation = _sort_annotation(
             head.nslc_id[0], head.nslc_id[1], head.nslc_id[2], sort, bool(req.distances_3d)
         )
@@ -2130,18 +2000,13 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
 
         spans: List[_SpanBuild] = []
         nf = 0
-        fmax = 0.0
         wf_slices: "List[Tuple[np.ndarray, float, float, ptrace.Trace]]" = []
         for _tr_idx, tr in members:
-            # Data and scale ranges for the requested track page only: snuffler's
-            # trace_selector restricts the chopper to `shown_tracks_range`
-            # (pile_viewer.py:1798), so its group scales range over the shown
-            # rows — scrolling the stack changes a common scale there, and now
-            # here too.
+            # Data and scale ranges for the requested track page only, as
+            # snuffler's trace_selector restricts the chopper to
+            # `shown_tracks_range` (pile_viewer.py:1798).
             if not want_samples:
                 continue
-            # `tr` is already processed and chopped to the requested window plus
-            # four samples per side — exactly the trace snuffler is about to draw.
             if tr.ydata is None or not len(tr.ydata):
                 continue
             entry = (
@@ -2168,11 +2033,9 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if scale_sliced is not None:
                 yrange, yrmin, rdt, _range_offset = scale_sliced
                 if fast_individual_minmax:
-                    # Merged, not overwritten: the segments of one channel share a
-                    # scaling key, so the range has to span all of them.
-                    # nanmin/nanmax because `trace.minmax` uses them
-                    # (trace.py:2549): Qt ignores a NaN sample and produces a
-                    # real range, so the fast path must too.
+                    # Merged across the segments of one channel, which share a
+                    # scaling key.
+                    # nanmin/nanmax because `trace.minmax` uses them (trace.py:2549).
                     lo, hi = float(np.nanmin(yrange)), float(np.nanmax(yrange))
                     previous = data_ranges.get(tr.nslc_id)
                     data_ranges[tr.nslc_id] = (
@@ -2185,12 +2048,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             if data_sliced is None:
                 continue
             yview, ytmin, deltat, _sample_offset = data_sliced
-            # Under a fixed visible length the payload is the samples themselves,
-            # always: with Allow Downsampling on the data was already anti-alias
-            # decimated by `Trace.downsample` inside the cutout, exactly as Qt
-            # decimates — there is no separate display envelope to substitute for
-            # it. Adaptive is the case that needs one, because nothing bounded
-            # what was fetched.
+            # Only Adaptive needs a display envelope: under a fixed visible length
+            # the cutout already bounded the fetch and decimated as Qt does.
             if adaptive_visible_length:
                 yview, deltat, ytmin = _display_envelope(yview, deltat, ytmin, npx, tmax - tmin)
             if yview.size:
@@ -2214,10 +2073,9 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 wf_range = (float(strip.min()), float(strip.max())) if wf_abs else None
                 spans.append(_SpanBuild(t0 - tmin, dt, int(strip.size), strip, tr, wf_range))
             if wf_abs and spans:
-                # One colour range per ROW, spanning its segments — the state
-                # contract says the clip sliders are relative to each track's
-                # own range, and a page-wide range would recolour a track
-                # whenever a louder neighbour scrolled into the page.
+                # One colour range per row, spanning its segments: the clip
+                # sliders are relative to each track's own range, and a page-wide
+                # range would recolour a track when a louder neighbour scrolls in.
                 row_lo = min(build.wf_range[0] for build in spans if build.wf_range)
                 row_hi = max(build.wf_range[1] for build in spans if build.wf_range)
                 if row_hi <= row_lo:
@@ -2226,15 +2084,9 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                     build._replace(wf_range=(row_lo, row_hi)) if build.wf_range else build
                     for build in spans
                 ]
-        # A row with no image strip (or no spans) is kept in BOTH modes:
-        # snuffler's stack is one labelled row per pile gather key, occupied or
-        # not, and the frontend treats `meta.tracks` as that full universe — it
-        # derives the scroll range and the next page request from its length.
-        # Waterfall used to drop span-less rows here, which collapsed the
-        # universe to the occupied page: scrolling died (max offset hit zero)
-        # and each shorter reply shrank the next request, ratcheting the stack
-        # down to the leading occupied rows. The painter draws a strip-less
-        # waterfall row as an empty labelled row, like a wiggle row without data.
+        # A row without spans is kept in both modes: the frontend treats
+        # `meta.tracks` as the full row universe and derives the scroll range and
+        # the next page request from its length.
         t = meta.tracks.add()
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
@@ -2249,7 +2101,6 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
                 box.style = bstyle
         if mode == "waterfall":
             t.nf = int(nf)
-            t.fmax = fmax
         for build in spans:
             span = t.spans.add()
             span.t0_rel = build.t0_rel
@@ -2266,10 +2117,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             offset += int(build.payload.size)
 
     perf_loop = time.monotonic()
-    if mode == "waterfall":
-        # The Abs colour range was settled per row above; nothing spans rows.
-        pass
-    elif range_traces or data_ranges:
+    # The waterfall's colour range was settled per row above.
+    if mode != "waterfall" and (range_traces or data_ranges):
         if range_traces:
             mode_param, outer_mode = _scaling_base_modes(base)
 
@@ -2286,13 +2135,10 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             data_ranges.update(
                 {key: (float(lo), float(hi)) for key, (lo, hi) in raw_ranges.items()}
             )
-        # Exactly snuffler's freeze (pile_viewer.py:3281): remember the live
-        # ranges while the option is off, serve the remembered ones while it is
-        # on, with no notion of what produced them — they survive filter, sort
-        # and pile changes, which is what makes "freeze, change the passband,
-        # compare amplitudes" work. One deliberate improvement: a *copy* is
-        # stored where Qt keeps an alias, so ':scaling' overrides applied below
-        # cannot leak into what gets remembered.
+        # Snuffler's freeze (pile_viewer.py:3281): remember the live ranges while
+        # the option is off and serve the remembered ones while it is on.
+        # A copy is stored where Qt keeps an alias, so ':scaling' overrides
+        # applied below cannot leak into what gets remembered.
         if fix_scale_ranges:
             data_ranges.update(_OLD_DATA_RANGES)
         else:
@@ -2316,13 +2162,10 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
         # each drawn against their own amplitude scale.
         for span, source in scaled_spans:
             dymin, dymax = data_ranges.get(_trace_scaling_key(source, scaling_group), (0.0, 1.0))
-            # An equal range is real data — a dead channel pinned at one value — and
-            # AutoScaler pads it to ±1 around the value, exactly as snuffler centres
-            # such a flatline.
-            # Only a non-finite or inverted range has no meaning. With nanmin /
-            # nanmax upstream (matching `trace.minmax`) the non-finite case is an
-            # *all*-NaN slice, where Qt hands AutoScaler NaN and draws a nonsense
-            # axis — a crash-shaped behaviour not worth reproducing.
+            # An equal range is a flatline that AutoScaler pads to ±1, as snuffler
+            # does.
+            # A non-finite range comes from an all-NaN slice, where Qt draws a
+            # nonsense axis; that is not reproduced.
             if not math.isfinite(dymin) or not math.isfinite(dymax) or dymax < dymin:
                 dymin, dymax = 0.0, 1.0
             ymin, ymax, yinc = yscaler.make_scale((dymin / gain, dymax / gain))
@@ -2333,9 +2176,8 @@ def _get_view_data(req: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.ndar
             span.ymax = ymax
             span.ymean = 0.5 * (ymin + ymax)
             span.yscale = max(gain * half, 1e-12)
-            # The scaler's tick increment and label exponent ride along so 'Show
-            # Scale Axes' draws snuffler's exact ticks and numbers
-            # (pile_viewer.py:3357) — Qt reads both off this same AutoScaler.
+            # The tick increment and label exponent let 'Show Scale Axes' draw
+            # snuffler's exact ticks (pile_viewer.py:3357).
             span.yinc = float(yinc)
             span.yexp = int(yscaler.make_exp(yinc)) if float(yinc) > 0.0 else 0
 
@@ -2396,10 +2238,10 @@ def _konno_ohmachi_smooth(values: np.ndarray, freqs: np.ndarray, bandwidth: floa
 
 
 class _FigureEmpty(Exception):
-    """Raised by a figure draw fn when there is nothing to plot (no selected
-    traces, missing event, ...). render_figure turns it into a FigureResult whose
-    ``error`` the frontend shows as text — mirroring how snuffling errors surface
-    in the viewer instead of crashing it."""
+    """Raised by a figure draw function when there is nothing to plot.
+
+    `_render_figure_png` turns it into a FigureResult ``error`` the frontend
+    shows as text."""
 
 
 _MPL_READY = False
@@ -2422,11 +2264,10 @@ def _render_figure_png(
 ) -> figure_pb2.FigureResult:
     """Render a matplotlib figure headlessly and return it as PNG bytes.
 
-    This is the faithfulness seam: ``draw`` runs the *exact* pyrocko/matplotlib
-    plotting code, so the frontend shows the same figure the Qt snuffler would —
-    no hand-rolled egui reimplementation to drift. Sizing follows the egui window
-    (device pixels + dpi); ``dark`` picks matplotlib's dark style so the figure
-    matches the app theme. A :class:`_FigureEmpty` becomes an ``error`` result."""
+    ``draw`` runs the same pyrocko/matplotlib plotting code the Qt snuffler
+    does.
+    Sizing follows the egui window (device pixels and dpi), and ``dark`` picks
+    matplotlib's dark style to match the app theme."""
     _ensure_mpl()
     import matplotlib.style as mstyle
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -2517,10 +2358,9 @@ def _fig_ampspec(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
         if freq.size > 2:
             flimits.append(float(freq[1]))
             flimits.append(float(freq[-1]))
-        # The y-limit statistics run over the *positive* bins only: Qt's bare
-        # `log(0)` propagates -inf into mean and std; flooring the log instead
-        # lets one flatlined channel drag the shared axis thirty decades down
-        # and squash every real spectrum. Masking is the honest version of both.
+        # The y-limit statistics run over the positive bins only: Qt's bare
+        # `log(0)` propagates -inf into mean and std, and one flatlined channel
+        # would drag the shared axis down and squash every real spectrum.
         positive = absa[absa > 0.0]
         if positive.size:
             labsa = np.log(positive)
@@ -2619,9 +2459,7 @@ def _fig_spectrogram(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> Non
     fmin = float(p.spectrogram_fmin) if p.HasField("spectrogram_fmin") else None
     fmax = float(p.spectrogram_fmax) if p.HasField("spectrogram_fmax") else None
     color_scale = p.spectrogram_color_scale or "log"
-    # Qt's image-size guards (spectrogram.py:91): more grid columns or rows than
-    # this would build an unreasonably large mesh — a limit that matters more in
-    # a browser, not less.
+    # Qt's image-size guards (spectrogram.py:91).
     nt_max, nf_max = 2000, 500
 
     def downsample_plan(n: int, n_max: int) -> Tuple[int, int]:
@@ -2757,7 +2595,7 @@ def _fig_spectrogram(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> Non
     if plotted == 0:
         raise _FigureEmpty("Not enough data in the window for the chosen window length.")
     # One shared colour scale plus a colorbar (Qt's `psd` colour dim), so the
-    # panels are comparable — the whole point of drawing them side by side.
+    # panels are comparable.
     zmin, zmax = min(zvalues), max(zvalues)
     for mesh in meshes:
         mesh.set_clim(zmin, zmax)
@@ -2893,6 +2731,32 @@ def _polarization_channels(
     return by_channel
 
 
+_NO_POLARIZATION_MARKERS = (
+    "No selected markers.\n\nCreate and select markers at points of interest. "
+    "Normal and phase markers are accepted."
+)
+
+
+def _polarization_windows(
+    req: snuffling_pb2.SnufflingRequestParams,
+) -> List[Tuple[Tuple[str, str, str], str, float, float]]:
+    """Qt's polarization windows (`get_selected` + `transform_time_span`,
+    polarization.py:205): one per selected channel-scoped marker, starting
+    Offset·Length after the marker start, Length long.
+
+    An unscoped marker contributes nothing, as in Qt."""
+    pol = req.snufflings.polarization
+    t_length = float(pol.polarization_t_length or 1.0)
+    ft_offset = float(pol.polarization_ft_offset)
+    windows: List[Tuple[Tuple[str, str, str], str, float, float]] = []
+    for s in req.selected_spans:
+        w_tmin = float(s.tmin) + t_length * ft_offset
+        w_tmax = w_tmin + t_length
+        for n in s.nslc_ids:
+            windows.append(((n.net, n.sta, n.loc), n.cha[:-1] if n.cha else "", w_tmin, w_tmax))
+    return windows
+
+
 def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
     """Per-station polarization figure — a faithful port of
     ``snufflings/polarization.py``: the analysis windows come from the *selected
@@ -2906,7 +2770,6 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
 
     pol = req.snufflings.polarization
     t_length = float(pol.polarization_t_length or 1.0)
-    ft_offset = float(pol.polarization_ft_offset)
     delta_azi = float(pol.polarization_azimuth)
     rotate_to_rt = bool(pol.polarization_rotate_to_rt)
     dot_position = min(1.0, max(0.0, float(pol.polarization_dot_position)))
@@ -2916,20 +2779,9 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
     hp = pol.polarization_highpass if pol.HasField("polarization_highpass") else None
     lp = pol.polarization_lowpass if pol.HasField("polarization_lowpass") else None
 
-    # Qt's windows (`get_selected` + `transform_time_span`): one per selected
-    # channel-scoped marker, anchored at the marker start, Offset·Length later,
-    # Length long. An unscoped marker contributes nothing there either.
-    windows: List[Tuple[Tuple[str, str, str], str, float, float]] = []
-    for s in req.selected_spans:
-        w_tmin = float(s.tmin) + t_length * ft_offset
-        w_tmax = w_tmin + t_length
-        for n in s.nslc_ids:
-            windows.append(((n.net, n.sta, n.loc), n.cha[:-1] if n.cha else "", w_tmin, w_tmax))
+    windows = _polarization_windows(req)
     if not windows:
-        raise _FigureEmpty(
-            "No selected markers.\n\nCreate and select markers at points of "
-            "interest. Normal and phase markers are accepted."
-        )
+        raise _FigureEmpty(_NO_POLARIZATION_MARKERS)
 
     bazis: Dict[Tuple[str, str, str], float] = {}
     if _ACTIVE_EVENT is not None and _STATIONS:
@@ -3093,10 +2945,7 @@ def _fig_polarization(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> No
 
 
 def _fig_cake_model(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
-    """Cake 'Plot Model' — pyrocko's *exact* matplotlib model figure (P/S velocity
-    vs depth over the shaded layer cross-section). Reuses
-    ``pyrocko.plot.cake_plot.my_model_plot`` (pure matplotlib, no Qt) instead of
-    re-drawing it in Rust, so it can never drift from the Qt snuffler."""
+    """Cake 'Plot Model': pyrocko's own ``cake_plot.my_model_plot`` figure."""
     from pyrocko import cake
     from pyrocko.plot import cake_plot
 
@@ -3106,9 +2955,7 @@ def _fig_cake_model(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None
 
 
 def _fig_cake_rays(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
-    """Cake 'Plot Rays' — pyrocko's *exact* ray-path figure (ray fan + source dot +
-    receiver triangles over the shaded model). Reuses
-    ``pyrocko.plot.cake_plot.my_rays_plot``; all geometry is cake's ray tracer."""
+    """Cake 'Plot Rays': pyrocko's own ``cake_plot.my_rays_plot`` figure."""
     from pyrocko import cake
     from pyrocko.plot import cake_plot
 
@@ -3144,8 +2991,7 @@ def _fig_cake_rays(fig: Any, req: snuffling_pb2.SnufflingRequestParams) -> None:
 
 def _fig_beachball(fig: Any, req: figure_pb2.FigureRequest) -> None:
     """Focal-mechanism beachball for a catalog event's moment tensor, drawn by
-    pyrocko's own matplotlib beachball (deviatoric, scarlet-red compressional
-    quadrants, like the Qt snuffler marker editor) — never re-derived in Rust."""
+    pyrocko's matplotlib beachball like the Qt snuffler marker editor."""
     from pyrocko import moment_tensor as mtm
     from pyrocko.plot import tango_colors
     from pyrocko.plot.beachball import plot_beachball_mpl
@@ -3183,9 +3029,9 @@ _FIGURES: Dict[str, Callable[[Any, snuffling_pb2.SnufflingRequestParams], None]]
 
 
 def _render_figure(req: figure_pb2.FigureRequest) -> figure_pb2.FigureResult:
-    """Dispatch a FigureRequest to the matching pyrocko/matplotlib figure. Any
-    error (bad params, no data, plotting failure) becomes an ``error`` result the
-    frontend shows as text, so a broken figure never takes down the viewer."""
+    """Dispatch a FigureRequest to the matching pyrocko/matplotlib figure.
+
+    Any error becomes an ``error`` result the frontend shows as text."""
     if req.kind == "beachball":
 
         def draw(fig: Any) -> None:
@@ -3208,10 +3054,10 @@ def _render_figure(req: figure_pb2.FigureRequest) -> figure_pb2.FigureResult:
 
 
 async def _load_gf_store_url(base_url: str) -> bridge_pb2.StringValue:
-    """Mount a Green's-functions store by fetching its files from an HTTP base URL
-    into the Pyodide filesystem (no File-System-Access-API directory picker). The
-    base must serve a ``.manifest`` (newline-separated relative file paths). Then
-    register the store like a directory mount and return its "GF Store: <id>" label."""
+    """Mount a Green's-functions store fetched from an HTTP base URL.
+
+    The base must serve a ``.manifest`` of newline-separated relative file paths.
+    Returns the store's "GF Store: <id>" label."""
     from pyodide.http import pyfetch
 
     base = base_url.rstrip("/")
@@ -3224,10 +3070,9 @@ async def _load_gf_store_url(base_url: str) -> bridge_pb2.StringValue:
         if line.strip()
     ]
     # Download into a per-attempt staging tree and move it into place only once
-    # every file landed: the session transaction rolls back _GF_STORES on
-    # failure or cancellation, but not the filesystem, and a later attempt
-    # reuses this root — stale files from a half-downloaded manifest must not
-    # shadow the new store's contents.
+    # every file landed: the session transaction rolls back _GF_STORES but not
+    # the filesystem, so a half-downloaded store must never occupy a root a
+    # later attempt reuses.
     global _STAGE_COUNTER
     _STAGE_COUNTER += 1
     staging = "/gfstores/.staging%d" % _STAGE_COUNTER
@@ -3247,15 +3092,12 @@ async def _load_gf_store_url(base_url: str) -> bridge_pb2.StringValue:
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return bridge_pb2.StringValue(value=gf_store_label(root))
+    return bridge_pb2.StringValue(value=_gf_store_label(root))
 
 
 def _ensure_real_gf() -> Any:
-    """Import the FULL ``pyrocko.gf`` (LocalEngine/DCSource/Target/Request), first
-    evicting the lightweight stub that :func:`_gf_modules` installs for the cake
-    GF-store path — that stub has only ``gf.store``/``gf.meta`` and would make the
-    seismosizer fail. Needs ``ensureGf`` (requests + pyodide-http), which the
-    GF-store mount already installs."""
+    """Import the full ``pyrocko.gf``, first evicting the ``gf.store``/``gf.meta``
+    stub that `_gf_modules` installs for the cake GF-store path."""
     import importlib
     import sys
 
@@ -3267,10 +3109,10 @@ def _ensure_real_gf() -> Any:
 
 
 def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.SnufflingResult:
-    """Synthetic seismograms from a double-couple point source via
-    ``pyrocko.gf.LocalEngine`` and a mounted Green's-functions store — a faithful
-    port of ``snufflings/seismosizer.py`` (DCSource). Adds the synthetic traces to
-    the pile and a source event marker. Needs a mounted GF store + `ensureGf`."""
+    """Synthetic seismograms through ``pyrocko.gf.LocalEngine`` and a mounted
+    Green's-functions store, a port of ``snufflings/seismosizer.py``.
+
+    Adds the synthetic traces to the pile and a source event marker."""
     # Qt's `call()` opens with `self.cleanup()` (seismosizer.py:97) — before
     # any validation — so even a failing run clears the previous run's
     # synthetics and marker.
@@ -3290,11 +3132,8 @@ def _seismosizer_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2
         return _seismosizer_result(req, refuse)
     except Exception as exc:  # noqa: BLE001 — surface, don't raise
         # Qt surfaces any exception out of `call()` in the snuffling error
-        # dialog with the cleanup above already done — a damaged store,
-        # regularization or event conversion must not fail differently from
-        # the two refusals `fail()` handles.
-        # Without the scene and origin on this path, the frontend would keep
-        # the previous run's output.
+        # dialog with the cleanup above already done.
+        # The scene and origin make the frontend drop the previous run's output.
         return refuse("%s: %s\n\n%s" % (type(exc).__name__, exc, traceback.format_exc()))
 
 
@@ -3333,9 +3172,7 @@ def _seismosizer_result(
         "boxcar": gf.BoxcarSTF,
     }.get(stf_type)
     if stf_of is None and stf_type != "None":
-        # Qt's Choice widget makes an unknown label unrepresentable (its
-        # `get_stf` dict lookup would KeyError); over the bridge it is an
-        # invalid request, refused rather than silently run with no STF.
+        # Qt's Choice widget makes an unknown label unrepresentable.
         return refuse("Unknown STF type %r." % stf_type)
     stf = stf_of(duration=float(p.seis_stf_duration)) if stf_of is not None else None
     common = dict(
@@ -3412,9 +3249,7 @@ def _seismosizer_result(
             **common,
         )
     else:
-        # The five types above are the closed set Qt's Choice offers; an
-        # unknown label silently becoming a DCSource would run the wrong
-        # physics without a word.
+        # The five types above are the closed set Qt's Choice offers.
         return refuse("Unknown source type %r." % src_type)
     source.regularize()
 
@@ -3504,9 +3339,7 @@ def _seismosizer_result(
     ev = source.pyrocko_event()
     ev_hash = str(ev.get_hash())
     # The event's own magnitude, not the dial's: a PseudoDynamicRupture
-    # derives its moment from slip and geometry, and an SFSource has none at
-    # all — the configured value would be wrong for one and a fiction for the
-    # other.
+    # derives its moment from slip and geometry, and an SFSource has none.
     result.text = "%d synthetic trace(s) from a %s%s." % (
         len(traces),
         src_type,
@@ -3521,24 +3354,12 @@ def _seismosizer_result(
     marker.lat = float(ev.lat)
     marker.lon = float(ev.lon)
     marker.depth = float(ev.depth or 0.0)
-    mt = ev.moment_tensor
-    if mt is not None:
-        mnn, mee, mdd, mne, mnd, med = (float(x) for x in mt.m6())
-        marker.moment_tensor.mnn = mnn
-        marker.moment_tensor.mee = mee
-        marker.moment_tensor.mdd = mdd
-        marker.moment_tensor.mne = mne
-        marker.moment_tensor.mnd = mnd
-        marker.moment_tensor.med = med
+    if ev.moment_tensor is not None:
+        marker.moment_tensor.CopyFrom(_moment_tensor_message(ev.moment_tensor))
     marker.event_hash = ev_hash
     markers.add(marker, strength=float(ev.magnitude or 0.0))
-    # Commit only now, with every fallible step behind us: event conversion or
-    # marker construction throwing above must leave the cleaned state, never a
-    # scene holding new synthetics without their marker.
-    # Qt's rerun contract: `call()` opens with `self.cleanup()`
-    # (seismosizer.py:97), so a new run replaces the previous run's synthetics
-    # instead of stacking over them — and only those, never the file pile or
-    # its provenance.
+    # Commit only now, with every fallible step behind us, so a failure never
+    # leaves new synthetics without their marker.
     _replace_derived_events("seismosizer", {ev_hash: ev})
     _replace_derived("seismosizer", traces)
     result.scene.CopyFrom(_scene_meta())
@@ -3668,9 +3489,8 @@ def _seisbench_groups(
                 continue
         _apply_seisbench_filter(seg, spec)
         key = (net, sta, loc)
-        # A component row collects *every* fragment, exactly as seisbench's
-        # stream_to_array writes each trace at its offset — a channel split
-        # across files must not shrink to whichever fragment came last.
+        # A component row collects every fragment, as seisbench's stream_to_array
+        # writes each trace at its offset.
         staged.setdefault(key, {}).setdefault(row, []).append(
             (float(seg.tmin), np.asarray(seg.ydata, dtype=np.float32))
         )
@@ -3721,12 +3541,8 @@ async def _seisbench_pick_result(
     _seisbench_progress(0.01, "%s · preparing waveform chunks" % progress_prefix)
     # Qt's picker runs the marker-span scope through the pile chopper in
     # 300-second batches padded by one second plus the main high-pass filter's
-    # settling margin (seisbench_picker.py:248), in `mode='visible'` — one pass
+    # settling margin (seisbench_picker.py:248), in `mode='visible'`: one pass
     # per selected span, over that span's channels only.
-    # Collapsing several spans to their envelope would change the *output*,
-    # not just the cost: the model would see, and pick in, the data between
-    # disjoint markers, and a channel would be picked during a span whose
-    # marker never selected it.
     tinc, model_pad = 300.0, 1.0
     use_view_filter = bool(params.use_predefined_filters)
     view_highpass = (
@@ -3741,12 +3557,10 @@ async def _seisbench_pick_result(
     markers = _MarkerAccumulator(req.marker_budget)
     n_p = n_s = 0
     annotation_traces: List[ptrace.Trace] = []
-    # The bar's total comes from span arithmetic alone, so no pre-pass over
-    # the data is needed: windows advance it in equal shares and the model's
-    # mini-batches fill the current share.
-    # Each chopper batch streams straight through inference and is released,
-    # as Qt's loop does — collecting every station's resampled grid first
-    # would hold the whole selection in memory at once.
+    # The progress total comes from span arithmetic alone: windows advance it in
+    # equal shares and the model's mini-batches fill the current share.
+    # Each chopper batch streams through inference and is released, as Qt's loop
+    # does, so the whole selection is never held in memory at once.
     total_windows = max(
         1,
         sum(
@@ -3831,8 +3645,7 @@ async def _seisbench_pick_result(
                     annotation_traces.append(annotation)
             # Qt's SeisBench picker uses kind 0 for P and 1 for S, marks the
             # picks automatic, and rides the pick probability on the marker's
-            # incidence angle (seisbench_picker.py:341) — the number a user
-            # most wants back from an ML picker.
+            # incidence angle (seisbench_picker.py:341).
             for phase, kind in (("P", 0), ("S", 1)):
                 if phase not in sbi.labels(spec):
                     continue
@@ -3904,13 +3717,6 @@ def _snuffling_spans(
     return spans
 
 
-def _matches_selection(tr: ptrace.Trace, spans: List[Tuple[float, float, Optional[Any]]]) -> bool:
-    """Whether any selected span's channel patterns admit this trace — the
-    union of `chopper_selected_traces`' per-marker selectors, for the runners
-    that collapse the spans themselves to one window."""
-    return any(sel is None or sel(tr) for _s0, _s1, sel in spans)
-
-
 def _chopper_selected_traces(
     req: snuffling_pb2.SnufflingRequestParams,
     mode: str = "inview",
@@ -3919,17 +3725,12 @@ def _chopper_selected_traces(
     **chopper_kwargs: Any,
 ) -> Iterator[Any]:
     """Qt's `Snuffling.chopper_selected_traces` (snuffling.py:952) over the
-    real pile: one `Pile.chopper` run per selected non-event marker — its span
-    and channel patterns become `tmin`/`tmax`/`trace_selector` — or one over
-    the visible window when nothing is selected (`fallback=True` there).
+    real pile: one `Pile.chopper` run per `_snuffling_spans` entry, yielding its
+    batches.
 
-    The viewer contributes its `mode` selector, intersected with the marker's, the
-    composition Qt builds at snuffling.py:1072: the shown track rows for
-    ``'inview'`` (the default there too), the hide/quick filters for
-    ``'visible'``.
-    Yields the chopper's batches, so degapping of file-split traces, `full_id`
-    ordering and incomplete-window weeding come from pyrocko's own
-    `_process_chopped` (pile.py:1213), not a reimplementation.
+    The viewer's `mode` selector is intersected with the marker's, as Qt does at
+    snuffling.py:1072: the shown track rows for ``'inview'``, the hide and quick
+    filters for ``'visible'``.
     """
     viewer_sel: Callable[[ptrace.Trace], bool]
     if mode == "inview":
@@ -3969,13 +3770,9 @@ async def _run_snuffling_result(
         return _seismosizer_run(req)
 
     if name == "minmax":
-        # Qt's Minimum/Maximum reports *raw* pile values (minmax.py:42 passes
-        # no `main_bandpass`), so no view passband here — the numbers
-        # deliberately describe the data, not the screen.
-        # Its chopper runs the default `mode='inview'` with `degap=False`, and
-        # `trace.minmax` folds every chopped piece into one (min, max) per
-        # NSLC (minmax.py:49) — a channel split across files or picked by
-        # several markers still yields a single row.
+        # Qt's Minimum/Maximum reports raw pile values (minmax.py:42 passes no
+        # `main_bandpass`), and `trace.minmax` folds every chopped piece into
+        # one row per NSLC (minmax.py:49).
         mima = ptrace.minmax(
             seg
             for batch in _chopper_selected_traces(req, degap=False)
@@ -4092,10 +3889,7 @@ async def _run_snuffling_result(
 
     if name == "polarization":
         # Covariance-eigenvalue polarization analysis (Jurkevics, 1988) per
-        # 3-component station — the text twin of the figure: the same
-        # raw-pile chopper, marker-derived windows, component schemes, own
-        # 4th-order filters with settling pad, demeaning and rotation
-        # convention, reported as numbers.
+        # 3-component station: the figure's analysis, reported as numbers.
         polarization = req.snufflings.polarization
         php = (
             polarization.polarization_highpass
@@ -4108,33 +3902,17 @@ async def _run_snuffling_result(
             else None
         )
         t_length = float(polarization.polarization_t_length or 1.0)
-        ft_offset = float(polarization.polarization_ft_offset)
         azimuth = float(polarization.polarization_azimuth)
 
-        windows: List[Tuple[Tuple[str, str, str], str, float, float]] = []
-        for s in req.selected_spans:
-            w_tmin = float(s.tmin) + t_length * ft_offset
-            w_tmax = w_tmin + t_length
-            for pn in s.nslc_ids:
-                windows.append(
-                    ((pn.net, pn.sta, pn.loc), pn.cha[:-1] if pn.cha else "", w_tmin, w_tmax)
-                )
+        windows = _polarization_windows(req)
         if not windows:
-            return snuffling_pb2.SnufflingResult(
-                show_window=True,
-                text=(
-                    "No selected markers.\n\nCreate and select markers at points "
-                    "of interest. Normal and phase markers are accepted."
-                ),
-            )
+            return snuffling_pb2.SnufflingResult(show_window=True, text=_NO_POLARIZATION_MARKERS)
 
         lines = ["%-16s %8s %8s %6s %6s" % ("station", "az[°]", "inc[°]", "rect", "plan")]
         for nsl, chagroup, w_tmin, w_tmax in windows:
             by_channel: Dict[str, np.ndarray] = {}
             trs: Dict[str, ptrace.Trace] = {}
-            # The same extraction the figure runs — raw pile, channel pattern
-            # only, complete padded windows — then chopped to the bare analysis
-            # window, since only the numbers are reported.
+            # The figure's extraction, chopped to the bare analysis window.
             for cha, seg in _polarization_channels(
                 nsl, chagroup, w_tmin, w_tmax, php, plp, t_length
             ).items():
@@ -4191,12 +3969,6 @@ async def _run_snuffling_result(
     return snuffling_pb2.SnufflingResult(show_window=True, text="Unknown snuffling: %s" % name)
 
 
-# --- FDSN web services (network) -------------------------------------------
-# These helpers build the FDSN request URLs and parse the responses. The fetch
-# runs in Python too (pyfetch, in the async servicer methods above), so the whole
-# workflow is one rpc and the worker stays a dumb relay.
-
-
 def _dataselect_url(req: data_pb2.WaveformDownloadRequest) -> str:
     """FDSN dataselect (waveform) query URL."""
     base = _fdsn_base(req.datacenter)
@@ -4220,8 +3992,6 @@ def _load_waveform_path_scene(path: str) -> scene_pb2.SceneMeta:
     Appends: Qt's download snuffling adds the fetched traces to whatever is
     loaded (`Pile.add_file` via download.py:140), it never replaces the pile.
     """
-    if not path:
-        return scene_pb2.SceneMeta(tmin=0.0, tmax=1.0)
     traces = list(pio.load(path, format="mseed"))
     _set_traces(traces, append=True)
     return _scene_meta()
@@ -4296,10 +4066,11 @@ def _append_mseed_scene(
 
 
 def _event_url(req: data_pb2.CatalogRequest) -> str:
-    """FDSN event (catalog) query URL. Text format by default; full QuakeML with
-    all origins (so focal-mechanism moment tensors are included) when the request
-    asks for MTs — this is the browser-feasible MT source (GlobalCMT/GEOFON-mt are
-    blocked by mixed-content/CORS)."""
+    """FDSN event (catalog) query URL.
+
+    Text format by default; QuakeML with all origins when the request asks for
+    moment tensors, the MT source a browser can reach (GlobalCMT and GEOFON-mt
+    are blocked by mixed content or CORS)."""
     base = _fdsn_base(req.datacenter)
     if req.with_mt:
         q = "&".join(
@@ -4335,16 +4106,13 @@ def _ftime(s: str) -> float:
 
 
 def _parse_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb2.SnufflingResult:
-    """Parse FDSN event 'text' format into event markers; set the active event
-    (largest magnitude) for distance/azimuth sorting.
+    """Parse FDSN event 'text' format into event markers and activate the
+    largest-magnitude event.
 
-    Every event carries its full origin (lat/lon/depth/magnitude), its identity
-    (event id, region, catalog) and is put in ``_EVENT_REGISTRY``, so ``e`` on
-    one activates the *real* origin — and the auto-activated marker itself is
-    flagged ``active`` so the state is visible on the canvas and in the table.
+    Every event goes into ``_EVENT_REGISTRY`` with its full origin, so ``e`` on
+    one activates the real origin.
     """
     from pyrocko import model
-    from pyrocko import orthodrome as od
 
     result = snuffling_pb2.SnufflingResult(show_window=True)
     markers = _MarkerAccumulator(budget)
@@ -4395,41 +4163,49 @@ def _parse_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_p
         if len(lines) < 30:
             lines.append("M%.1f  %s  %s" % (mag, when, region))
         markers.add(marker, strength=mag, payload=ev)
-    retained = markers.retained_candidates()
-    best = max(
-        retained,
-        key=lambda item: float(item[0].magnitude) if item[0].HasField("magnitude") else 0.0,
-        default=None,
-    )
-    for marker, event in retained:
-        _register_event(marker.event_hash, event)
-    if best is not None:
-        best_marker = best[0]
-        _activate_event(best_marker.event_hash)
-        best_marker.active = True
-        for marker, _event in retained:
-            marker.dist_active_km = (
-                float(
-                    od.distance_accurate50m(
-                        float(marker.lat),
-                        float(marker.lon),
-                        float(best_marker.lat),
-                        float(best_marker.lon),
-                    )
-                )
-                / 1000.0
-            )
+    best_marker = _activate_largest_event(markers.retained_candidates())
+    if best_marker is not None:
         header = (
             "%d event(s) found; active event M%.1f (distance sort enabled).\n"
             "Jumped the view to the events — load waveforms for this time to "
             "see them on data." % (markers.total, float(best_marker.magnitude))
         )
     else:
-        _activate_event(None)
         header = "No events found in this time window."
     body = "\n".join(lines)
     result.text = header + ("\n\n" + body if body else "")
     return _finalize_event_markers(result, markers)
+
+
+def _activate_largest_event(
+    retained: List[Tuple[snuffling_pb2.SnufMarker, Any]],
+) -> Optional[snuffling_pb2.SnufMarker]:
+    """Register the retained events and activate the largest-magnitude one.
+
+    The active marker is flagged and every marker gets its distance to it for
+    the table's Dist [km] column.
+    Returns the active marker, or None when nothing was retained."""
+    from pyrocko import orthodrome as od
+
+    for marker, event in retained:
+        _register_event(marker.event_hash, event)
+    best = max(
+        retained,
+        key=lambda item: float(item[0].magnitude) if item[0].HasField("magnitude") else 0.0,
+        default=None,
+    )
+    if best is None:
+        _activate_event(None)
+        return None
+    best_marker = best[0]
+    _activate_event(best_marker.event_hash)
+    best_marker.active = True
+    for marker, _event in retained:
+        distance_m = od.distance_accurate50m(
+            float(marker.lat), float(marker.lon), float(best_marker.lat), float(best_marker.lon)
+        )
+        marker.dist_active_km = float(distance_m) / 1000.0
+    return best_marker
 
 
 def _short_event_name(name: Optional[str]) -> str:
@@ -4445,16 +4221,16 @@ def _short_event_name(name: Optional[str]) -> str:
 
 def _parse_events_quakeml(text: str, budget: _MarkerBudget = None) -> snuffling_pb2.SnufflingResult:
     """Parse an FDSN QuakeML event response into event markers carrying moment
-    tensors, and precompute the Kagan angle of every MT event to the active
-    (largest-magnitude) event. Reuses pyrocko's own QuakeML reader + MomentTensor
-    (no seismology reimplemented in Rust). Also populates the event registry and
-    ``_ACTIVE_EVENT`` so the Map overlay and distance sort keep working."""
+    tensors, with the Kagan angle of every MT event to the active
+    (largest-magnitude) event.
+
+    Also populates the event registry and activates the largest event."""
     from pyrocko import moment_tensor as mtm
     from pyrocko import orthodrome as od
     from pyrocko import util
 
     # quakeml.py eagerly imports pyrocko.gui.snuffler.marker; install the stub that
-    # avoids running the Qt snuffler package init first (same trick as markers IO).
+    # avoids running the Qt snuffler package init first.
     _marker_module()
     from pyrocko.io import quakeml
 
@@ -4513,13 +4289,7 @@ def _parse_events_quakeml(text: str, budget: _MarkerBudget = None) -> snuffling_
             )
         mt = ev.moment_tensor
         if mt is not None:
-            mnn, mee, mdd, mne, mnd, med = (float(x) for x in mt.m6())
-            marker.moment_tensor.mnn = mnn
-            marker.moment_tensor.mee = mee
-            marker.moment_tensor.mdd = mdd
-            marker.moment_tensor.mne = mne
-            marker.moment_tensor.mnd = mnd
-            marker.moment_tensor.med = med
+            marker.moment_tensor.CopyFrom(_moment_tensor_message(mt))
             if _ACTIVE_MT is not None:
                 marker.kagan_deg = float(mtm.kagan_angle(_ACTIVE_MT, mt))
         when = util.time_to_str(ev.time)[:19]
@@ -4553,9 +4323,7 @@ def _parse_events_quakeml(text: str, budget: _MarkerBudget = None) -> snuffling_
     return _finalize_event_markers(result, markers)
 
 
-def _moment_tensor_message(moment_tensor: Any) -> Optional[common_pb2.MomentTensor]:
-    if moment_tensor is None:
-        return None
+def _moment_tensor_message(moment_tensor: Any) -> common_pb2.MomentTensor:
     mnn, mee, mdd, mne, mnd, med = (float(value) for value in moment_tensor.m6())
     return common_pb2.MomentTensor(mnn=mnn, mee=mee, mdd=mdd, mne=mne, mnd=mnd, med=med)
 
@@ -4574,9 +4342,9 @@ def _event_snapshot(event_hash: str, event: Any) -> common_pb2.EventSnapshot:
         value = getattr(event, field, None)
         if value:
             setattr(snapshot, field, str(value))
-    moment_tensor = _moment_tensor_message(getattr(event, "moment_tensor", None))
+    moment_tensor = getattr(event, "moment_tensor", None)
     if moment_tensor is not None:
-        snapshot.moment_tensor.CopyFrom(moment_tensor)
+        snapshot.moment_tensor.CopyFrom(_moment_tensor_message(moment_tensor))
     return snapshot
 
 
@@ -4623,11 +4391,8 @@ def _event_state(limit: Optional[int] = None) -> common_pb2.ActiveEventResult:
 
 
 def _set_active_event(req: data_pb2.SetActiveEventRequest) -> common_pb2.ActiveEventResult:
-    """Set (or clear) the user-chosen active event — the single reference every
-    downstream consumer (station distances, Kagan column, cake/seismosizer origin,
-    map centre) reads from ``_ACTIVE_EVENT``/``_ACTIVE_MT``. Faithful port of
-    snuffler ``set_active_event_marker`` / ``deactivate_event_marker``; recomputes
-    the Kagan angle of every registered event against the new active MT."""
+    """Set or clear the user-chosen active event, as snuffler's
+    ``set_active_event_marker`` / ``deactivate_event_marker`` do."""
     from pyrocko import model
 
     if req.deactivate:
@@ -4655,24 +4420,28 @@ def _set_active_event(req: data_pb2.SetActiveEventRequest) -> common_pb2.ActiveE
     return _event_state()
 
 
+def _pyrocko_moment_tensor(tensor: common_pb2.MomentTensor) -> Any:
+    from pyrocko import moment_tensor as mtm
+
+    return mtm.MomentTensor(
+        mnn=tensor.mnn,
+        mee=tensor.mee,
+        mdd=tensor.mdd,
+        mne=tensor.mne,
+        mnd=tensor.mnd,
+        med=tensor.med,
+    )
+
+
 def _update_event(snapshot: common_pb2.EventSnapshot) -> common_pb2.ActiveEventResult:
     """Replace one registry event from the frontend's complete edited snapshot."""
     from pyrocko import model
-    from pyrocko import moment_tensor as mtm
 
     if not snapshot.event_hash:
         raise ValueError("event update requires an event_hash")
     moment_tensor = None
     if snapshot.HasField("moment_tensor"):
-        tensor = snapshot.moment_tensor
-        moment_tensor = mtm.MomentTensor(
-            mnn=tensor.mnn,
-            mee=tensor.mee,
-            mdd=tensor.mdd,
-            mne=tensor.mne,
-            mnd=tensor.mnd,
-            med=tensor.med,
-        )
+        moment_tensor = _pyrocko_moment_tensor(snapshot.moment_tensor)
     event = model.Event(
         time=float(snapshot.time),
         lat=float(snapshot.lat),
@@ -4728,12 +4497,11 @@ def _station_url(req: data_pb2.StationRequest) -> str:
 
 
 def _parse_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
-    """Parse FDSN station text and remember coordinates for sorting/cake/map.
+    """Parse FDSN station text and remember the coordinates.
 
-    The query asks for *channel* level, whose rows carry the location code and
-    the sensor depth (`#Net|Sta|Loc|Cha|Lat|Lon|Elev|Depth|…`) — exactly what
-    the per-location station table wants. Station-level rows
-    (`#Net|Sta|Lat|Lon|Elev|Site|…`) still parse, as the fallback for servers
+    The query asks for channel level, whose rows carry the location code and the
+    sensor depth (`#Net|Sta|Loc|Cha|Lat|Lon|Elev|Depth|…`).
+    Station-level rows (`#Net|Sta|Lat|Lon|Elev|Site|…`) still parse, for servers
     that answer coarser than asked.
     """
     n = 0
@@ -4778,8 +4546,7 @@ def _parse_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
 
 def _load_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
     """Parse a local pyrocko station file into the ``_STATIONS`` coordinate table
-    (distance/azimuth sorting, cake, map), via pyrocko's own ``model.load_stations``."""
-    global _STATIONS
+    with pyrocko's own ``model.load_stations``."""
     if not text.strip():
         return snuffling_pb2.SnufflingResult(show_window=True, text="empty station file")
     import tempfile
@@ -4820,30 +4587,9 @@ def _load_stations_result(text: str) -> snuffling_pb2.SnufflingResult:
     )
 
 
-def _station_distances_result() -> data_pb2.StationDistanceList:
-    """Great-circle distance/azimuth/backazimuth (degrees) from the active event
-    to each known station, via pyrocko's ``orthodrome`` — for the marker/station
-    distance columns. Empty (``has_event=False``) until an event is active."""
-    result = data_pb2.StationDistanceList(has_event=_ACTIVE_EVENT is not None)
-    if _ACTIVE_EVENT is None or not _STATIONS:
-        return result
-    from pyrocko import orthodrome as od
-
-    elat, elon = _ACTIVE_EVENT[0], _ACTIVE_EVENT[1]
-    for (net, sta), (slat, slon, _elev, _depth) in _stations_by_name().items():
-        entry = result.stations.add()
-        entry.net = net
-        entry.sta = sta
-        entry.distance_deg = _dist_deg(elat, elon, slat, slon)
-        entry.azimuth_deg = float(od.azimuth(elat, elon, slat, slon)) % 360.0
-        entry.backazimuth_deg = float(od.azimuth(slat, slon, elat, elon)) % 360.0
-    return result
-
-
 def _load_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb2.SnufflingResult:
-    """Parse a local pyrocko event file into event markers and set the active
-    event (largest magnitude, for distance/azimuth sorting), via pyrocko's own
-    ``model.load_events``. Mirrors the FDSN catalog path."""
+    """Parse a local pyrocko event file into event markers and activate the
+    largest-magnitude event, like the FDSN catalog path."""
     if not text.strip():
         _activate_event(None)
         result = snuffling_pb2.SnufflingResult(show_window=True, text="empty event file")
@@ -4868,8 +4614,6 @@ def _load_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb
         except OSError:
             pass
 
-    from pyrocko import orthodrome as od
-
     result = snuffling_pb2.SnufflingResult(show_window=True)
     markers = _MarkerAccumulator(budget)
     for ev in events:
@@ -4877,9 +4621,6 @@ def _load_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb
         lon = float(ev.lon)
         depth = float(ev.depth or 0.0)
         mag = float(ev.magnitude) if ev.magnitude is not None else 0.0
-        # The full origin and identity ride the marker, and the event goes in
-        # the registry, so activating it later uses the real origin instead of
-        # a rebuilt zero-depth stand-in.
         h = str(ev.name) if ev.name else str(ev.get_hash())
         marker = snuffling_pb2.SnufMarker()
         marker.t = float(ev.time)
@@ -4896,37 +4637,13 @@ def _load_events_result(text: str, budget: _MarkerBudget = None) -> snuffling_pb
         marker.lon = lon
         marker.depth = depth
         markers.add(marker, strength=mag, payload=ev)
-    retained = markers.retained_candidates()
-    best = max(
-        retained,
-        key=lambda item: float(item[0].magnitude) if item[0].HasField("magnitude") else 0.0,
-        default=None,
-    )
-    for marker, event in retained:
-        _register_event(marker.event_hash, event)
-    if best is not None:
-        best_marker = best[0]
-        _activate_event(best_marker.event_hash)
-        # Auto-activation stays, made visible on the marker itself.
-        best_marker.active = True
-        for marker, _event in retained:
-            marker.dist_active_km = (
-                float(
-                    od.distance_accurate50m(
-                        float(marker.lat),
-                        float(marker.lon),
-                        float(best_marker.lat),
-                        float(best_marker.lon),
-                    )
-                )
-                / 1000.0
-            )
+    best_marker = _activate_largest_event(markers.retained_candidates())
+    if best_marker is not None:
         result.text = "%d event(s) loaded; active event M%.1f (distance sort enabled)." % (
             markers.total,
             float(best_marker.magnitude),
         )
     else:
-        _activate_event(None)
         result.text = "No events in file."
     return _finalize_event_markers(result, markers)
 
@@ -4947,15 +4664,11 @@ def _response_url(req: data_pb2.StationRequest) -> str:
 
 
 def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResult:
-    """Parse StationXML documents into instrument responses.
+    """Parse StationXML documents into instrument responses and station
+    coordinates.
 
-    Appended to the document list rather than merged into one: snuffler keeps its
-    ``station_xmls`` as a list in load order and resolves each channel against
-    the first document that answers (pile_viewer.py:4470), so a second load adds
-    responses instead of discarding the first load's, and a channel described in
-    two documents restitutes instead of raising on the merge's ambiguity.
-
-    Station coordinates are also harvested for distance/azimuth sorting.
+    Appended to the document list in load order, as snuffler keeps its
+    ``station_xmls`` (pile_viewer.py:4470).
     """
     global _RESPONSE_GEN
     xml_texts = [text for text in xml_texts if text.strip()]
@@ -4974,11 +4687,9 @@ def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResul
         for net in sx.network_list
         for st in net.station_list
     )
-    # Coordinates via `get_pyrocko_stations`, the same call snuffler feeds
-    # `--stationxml` files through — not the station element's own lat/lon.
-    # The two can genuinely disagree (real files carry channel positions ~100 m
-    # away from the station element), and snuffler's distance/azimuth sorts follow
-    # the channel-derived position, epoch handling and all.
+    # Coordinates via `get_pyrocko_stations`, as snuffler loads `--stationxml`,
+    # not the station element's own lat/lon: real files carry channel positions
+    # ~100 m away from the station element.
     for st in (station for sx in station_xmls for station in sx.get_pyrocko_stations()):
         try:
             _add_station(
@@ -5001,12 +4712,10 @@ def _load_responses_result(xml_texts: List[str]) -> snuffling_pb2.SnufflingResul
     )
 
 
-# One archive carrying a whole dataset — waveforms, station metadata and an event
-# catalogue as the datacenter delivered them. `File ▸ Examples` fetches these, but
-# nothing below is specific to the ones this app ships: members are dispatched by
-# what they are, so a zip someone assembled by hand loads exactly the same way. That
-# is the point of using a zip at all — a dataset is never one file, and handing out
-# one file is the difference between a teaching aid and a set of instructions.
+# A bundle is one zip carrying a whole dataset: waveforms, station metadata and an
+# event catalogue.
+# Members are dispatched by content, so a hand-assembled zip loads the same way as
+# the shipped examples.
 _ZIP_MAGIC = b"PK\x03\x04"
 
 # What the shipped bundles carry so a downloaded copy still says what it is.
@@ -5057,13 +4766,9 @@ class StaleSessionCommit(NamedTuple):
 
 def _clone_dataset_state(state: _DatasetState) -> _DatasetState:
     trace_copies: Dict[int, ptrace.Trace] = {}
-    # One memo across every event-object-carrying field: _replace_derived_events
+    # One memo across every event-carrying field: _replace_derived_events
     # retires registry entries by object identity, and _ACTIVE_MT aliases the
-    # registered event's moment tensor. Independent deepcopy calls would give
-    # the workspace two distinct copies of the same event, so retirement would
-    # silently stop matching and superseded derived events would leak in the
-    # registry forever. (_ACTIVE_EVENT needs no copy: it is an immutable float
-    # tuple snapshot, not a reference into the registry.)
+    # registered event's moment tensor, so the clones must keep sharing objects.
     event_memo: Dict[int, Any] = {}
 
     def clone_trace(trace: ptrace.Trace) -> ptrace.Trace:
@@ -5149,24 +4854,18 @@ def _install_view_caches(caches: _ViewLaneCaches) -> None:
 
 
 class SessionStore:
-    # Clone economy: begin_transaction() pays the transaction's single deep
-    # clone, containing the only objects a handler can mutate.
-    # snapshot() and capture_update() capture shallow state: fresh containers
-    # over objects the respective install path never lets the other side mutate.
-    # An interleaved view and the commit therefore cost container copies, not a
-    # full copy of every trace's samples.
-    #
-    # The view projection is owned by the store (not by call()'s locals), the
-    # workspace reference survives until reinstalled, and the cache stash is
-    # gated on a completed projection — so a partial enter_view/exit_view
-    # self-heals on the next cycle instead of orphaning the workspace or
-    # letting job caches masquerade as committed-view caches. This is healing,
-    # not atomicity: interrupts cannot reach the view lane today (GetView is
-    # NOT_CANCELLABLE and the ownership handoff clears the byte), and that
-    # gate is what a cancellable view rpc would have to replace. View-lane
-    # caches swap together with the dataset state: the view keeps caches built
-    # against the committed snapshot across interleaves, and the job never
-    # sees them.
+    """The committed session state and the transaction a running job works on.
+
+    begin_transaction() pays the transaction's single deep clone; snapshot() and
+    capture_update() copy containers only, over objects the other side never
+    mutates.
+    A view that interleaves with a job sees the committed snapshot: enter_view
+    and exit_view swap the dataset state and the view-lane caches together, so
+    the job never sees view caches and the view never sees the job's.
+    A partial enter_view/exit_view self-heals on the next cycle; interrupts
+    cannot reach the view lane because GetView is not cancellable.
+    """
+
     def __init__(self) -> None:
         self._generation = 0
         self._transaction_snapshot: Optional[SessionSnapshot] = None
@@ -5215,13 +4914,9 @@ class SessionStore:
         self._view_projected = True
 
     def exit_view(self) -> None:
-        # The workspace reference is dropped only after the reinstall: an
-        # interrupt landing mid-way then leaves it captured, and the next
-        # enter_view/exit_view cycle re-projects and re-installs the same
-        # workspace instead of orphaning the job's state. The caches are
-        # stashed only when the projection completed — an interrupt inside
-        # enter_view would otherwise let job-era caches masquerade as
-        # committed-view caches on the next interleave.
+        # The job's state reference is dropped only after the reinstall, and the
+        # view caches are stashed only when the projection completed, so an
+        # interrupted cycle cannot orphan the job's state or mislabel its caches.
         job_update = self._suspended_job_update
         if job_update is None:
             return
@@ -5237,9 +4932,8 @@ class SessionStore:
     def commit(self, expected: int, update: SessionUpdate) -> Optional[StaleSessionCommit]:
         actual = self._generation
         if expected != actual:
-            # Defensive: the job lane is serialized, so a mismatch means a
-            # protocol fault upstream; kept as a typed guard because a wrong
-            # commit is a one-way door.
+            # The job lane is serialized, so a mismatch is a protocol fault
+            # upstream; guarded because a wrong commit cannot be undone.
             self._transaction_snapshot = None
             self._drop_view_projection()
             return StaleSessionCommit(expected, actual)
@@ -5379,13 +5073,9 @@ def _bundle_role(name: str, payload: bytes) -> str:
 def _bundle_about(manifest: Dict[str, Any]) -> Optional[data_pb2.BundleAbout]:
     """What the dataset is, for the bundles that describe themselves.
 
-    This is the whole reason the examples are worth shipping — someone who opens one
-    should learn what they are looking at, not just watch traces appear. It is not a
-    load report: it says nothing about this particular load, so it stays true while
-    the dataset is open and the frontend can show it again on demand.
-
-    ``None`` for an archive carrying no prose, which is most of them: any zip of data
-    files loads here, and one a user assembled has nothing to say about itself.
+    Not a load report: it stays true while the dataset is open, so the frontend
+    can show it again on demand.
+    ``None`` for an archive carrying no prose.
     """
     blurb = str(manifest.get("blurb", "")).strip()
     characteristics = [
@@ -5398,8 +5088,6 @@ def _bundle_about(manifest: Dict[str, Any]) -> Optional[data_pb2.BundleAbout]:
     if blurb:
         parts.append(blurb)
     if characteristics:
-        # Not "what to try": these are the characteristics of the recording, and
-        # the reason this dataset is in the menu rather than another one.
         parts.append(
             "What is unique about this dataset:\n"
             + "\n".join("  • %s" % item for item in characteristics)
@@ -5482,30 +5170,16 @@ def _load_bundle_result(
             if events.text.startswith(("could not parse", "empty")):
                 raise ValueError("%s: %s" % (name, events.text))
             for marker in events.markers:
-                nslcs = [
-                    (
-                        events.nslc_table[index].net,
-                        events.nslc_table[index].sta,
-                        events.nslc_table[index].loc,
-                        events.nslc_table[index].cha,
-                    )
-                    for index in marker.nslc_indexes
-                    if index < len(events.nslc_table)
-                ]
                 copy_marker = snuffling_pb2.SnufMarker()
                 copy_marker.CopyFrom(marker)
-                bundle_markers.add(copy_marker, nslcs)
+                bundle_markers.add(copy_marker, _marker_nslcs(events, marker))
             bundle_markers.total += int(events.markers_dropped)
             loaded.append(events.text)
         info.text = ("%s\n\n%s" % (title, "\n".join(loaded))).strip()
         bundle_markers.finish(info)
         info.event_state.CopyFrom(_event_state(bundle_markers.limit))
-        # A described dataset opens one window, and it is the description: the counts
-        # are already in the status line, and burying the prose under them was how the
-        # same three lines about instrument responses ended up in front of every reader
-        # of every example.
-        # An undescribed archive still reports, since otherwise
-        # nothing at all would say what it did.
+        # A described dataset opens only its description, since the counts are
+        # already in the status line; an undescribed archive still reports.
         info.show_window = about is None
         staged = _dataset_state()
         result = data_pb2.BundleResult(scene=scene, info=info, view=view, about=about)
@@ -5529,7 +5203,6 @@ async def _example_list() -> data_pb2.ExampleList:
             title=str(entry.get("title", "")),
             blurb=str(entry.get("blurb", "")),
             characteristics=[str(item) for item in entry.get("characteristics", [])],
-            citation=str(entry.get("citation", "")),
             url=str(entry.get("url", "")),
             bytes=int(entry.get("bytes", 0)),
             sha256=str(entry.get("sha256", "")),
@@ -5541,9 +5214,8 @@ _PLATES: Optional[List[data_pb2.PlateBoundary]] = None
 
 
 async def _plate_boundaries() -> List[data_pb2.PlateBoundary]:
-    """Parse pyrocko's shipped Bird (2003) ``plates.kml`` into lon/lat polylines
-    (memoized). Pure geometry passthrough of pyrocko's own data via stdlib XML —
-    the map overlays exactly what the Qt map snuffling draws."""
+    """Parse pyrocko's shipped Bird (2003) ``plates.kml`` into lon/lat polylines,
+    the boundaries the Qt map snuffling draws (memoized)."""
     global _PLATES
     if _PLATES is not None:
         return _PLATES
@@ -5643,9 +5315,6 @@ def _map_data_result(
     return msg
 
 
-# --- Marker file I/O (pyrocko marker format) -------------------------------
-
-
 _marker_mod: Any = None
 _gf_store_mod: Any = None
 _gf_meta_mod: Any = None
@@ -5658,12 +5327,10 @@ GF_STORE_PREFIX = "GF Store: "
 def _marker_module() -> Any:
     """Load pyrocko's ``marker`` module without running the snuffler package init.
 
-    ``import pyrocko.gui.snuffler.marker`` would first execute
-    ``pyrocko/gui/snuffler/__init__.py``, which eagerly imports the full Qt
-    snuffler application, and PyQt is not in our Pyodide wheel — nor could it be.
-    marker.py itself only needs util/plot/model/trace, so
-    install a lightweight stub for the ``snuffler`` package (carrying the real
-    directory on ``__path__``) and import the submodule through it.
+    ``pyrocko/gui/snuffler/__init__.py`` imports the Qt application, and PyQt
+    cannot exist in Pyodide.
+    marker.py itself only needs util/plot/model/trace, so a stub ``snuffler``
+    package carrying the real directory on ``__path__`` stands in for it.
     """
     global _marker_mod
     if _marker_mod is None:
@@ -5686,14 +5353,11 @@ def _marker_module() -> Any:
 
 
 def _gf_modules() -> Tuple[Any, Any]:
-    """Load ``pyrocko.gf.store`` + ``pyrocko.gf.meta`` WITHOUT running
-    ``pyrocko/gf/__init__.py``.
+    """Load ``pyrocko.gf.store`` and ``pyrocko.gf.meta`` without running
+    ``pyrocko/gf/__init__.py``, the way `_marker_module` loads the marker module.
 
-    ``import pyrocko.gf`` pulls seismosizer -> ws -> ``import requests`` (only
-    needed by RemoteEngine). Reading a local store's config + 1D earth model needs
-    neither requests nor ``store_ext``, so install a stub ``pyrocko.gf`` package
-    (real dir on ``__path__``) and import just the two submodules — the same trick
-    as :py:func:`_marker_module`.
+    ``import pyrocko.gf`` pulls in ``requests`` through RemoteEngine, which reading
+    a local store's config and earth model does not need.
     """
     global _gf_store_mod, _gf_meta_mod
     if _gf_store_mod is None or _gf_meta_mod is None:
@@ -5716,13 +5380,9 @@ def _gf_modules() -> Tuple[Any, Any]:
     return _gf_store_mod, _gf_meta_mod
 
 
-def gf_store_label(store_dir: str) -> str:
-    """Read a mounted GF store's config (no ``store_ext`` / network needed),
-    register it so its embedded 1D earth model is selectable in Cake Phase, and
-    return its dropdown label.
-
-    Raises on failure; the ``call()`` failsafe turns that into a BridgeError.
-    """
+def _gf_store_label(store_dir: str) -> str:
+    """Register a mounted GF store, so its embedded 1D earth model is selectable
+    in Cake Phase, and return its dropdown label."""
     gfstore, _gfmeta = _gf_modules()
     cfg = gfstore.Store(store_dir).config
     sid = str(cfg.id)
@@ -5744,7 +5404,6 @@ def _markers_to_text(req: data_pb2.MarkerFile) -> str:
     """Serialize markers to pyrocko's snuffler marker-file format."""
     pm = _marker_module()
     from pyrocko import model
-    from pyrocko import moment_tensor as mtm
 
     # Build the event objects first, keyed by the web-side identity hash: a
     # phase pick associated with an event *in the same file* is linked through
@@ -5760,10 +5419,7 @@ def _markers_to_text(req: data_pb2.MarkerFile) -> str:
         if canonical is not None:
             events[event_hash] = canonical
             continue
-        mt = None
-        if m.HasField("moment_tensor"):
-            t = m.moment_tensor
-            mt = mtm.MomentTensor(mnn=t.mnn, mee=t.mee, mdd=t.mdd, mne=t.mne, mnd=t.mnd, med=t.med)
+        mt = _pyrocko_moment_tensor(m.moment_tensor) if m.HasField("moment_tensor") else None
         ev: Any = model.Event(
             time=float(m.tmin),
             lat=float(m.lat) if m.HasField("lat") else 0.0,
@@ -5795,12 +5451,9 @@ def _markers_to_text(req: data_pb2.MarkerFile) -> str:
             ev = events.get(m.event_hash) if m.HasField("event_hash") else None
             if ev is None:
                 # An event without a web-side hash still saves; rebuild inline.
-                mt = None
-                if m.HasField("moment_tensor"):
-                    t = m.moment_tensor
-                    mt = mtm.MomentTensor(
-                        mnn=t.mnn, mee=t.mee, mdd=t.mdd, mne=t.mne, mnd=t.mnd, med=t.med
-                    )
+                mt = (
+                    _pyrocko_moment_tensor(m.moment_tensor) if m.HasField("moment_tensor") else None
+                )
                 ev = model.Event(
                     time=tmin,
                     lat=float(m.lat) if m.HasField("lat") else 0.0,
@@ -5871,9 +5524,8 @@ def _markers_from_text(text: str, budget: _MarkerBudget = None) -> data_pb2.Snuf
     path = "/tmp/markers_in.txt"
     with open(path, "w") as f:
         f.write(text)
-    # A malformed file raises out of here — the dispatch turns it into the
-    # error dialog Qt shows — rather than reporting success with zero markers,
-    # matching the station and event loaders beside it.
+    # A malformed file raises, which the dispatch turns into the error dialog
+    # Qt shows.
     ms = pm.load_markers(path)
     pm.associate_phases_to_events(ms)
     for mk in ms:
@@ -5918,13 +5570,7 @@ def _markers_from_text(text: str, budget: _MarkerBudget = None) -> data_pb2.Snuf
                     marker.lat = float(ev.lat)
                     marker.lon = float(ev.lon)
                     if ev.moment_tensor is not None:
-                        mnn, mee, mdd, mne, mnd, med = (float(x) for x in ev.moment_tensor.m6())
-                        marker.moment_tensor.mnn = mnn
-                        marker.moment_tensor.mee = mee
-                        marker.moment_tensor.mdd = mdd
-                        marker.moment_tensor.mne = mne
-                        marker.moment_tensor.mnd = mnd
-                        marker.moment_tensor.med = med
+                        marker.moment_tensor.CopyFrom(_moment_tensor_message(ev.moment_tensor))
                 try:
                     ehash = mk.get_event_hash()
                 except Exception:
@@ -5995,14 +5641,13 @@ def _markers_from_text(text: str, budget: _MarkerBudget = None) -> data_pb2.Snuf
     return _finalize_event_markers(result, markers)
 
 
-# Directory holding the cake earth models (tiny .nd text files shipped as build
-# assets and fetched into the Pyodide FS on first cake use; the minimal wheel has
-# no data dir, so cake.builtin_models() is empty and models must be loaded by
-# path). They are fetched here in Python (pyfetch) — see _ensure_earth_models.
+# Directory holding the cake earth models, fetched from the build assets on first
+# use: the minimal wheel has no data dir, so cake.builtin_models() is empty and
+# models are loaded by path.
 MODEL_DIR = "/earthmodels"
 
-# Builtin cake models served under earthmodels/<stem>.nd (matches the Cake Phase
-# dropdown). Fetched lazily on first cake run so the boot path stays light.
+# Builtin cake models served under earthmodels/<stem>.nd, matching the Cake Phase
+# dropdown.
 _CAKE_MODELS = [
     "ak135-f-average-no-ocean.f",
     "ak135-f-average-no-ocean.l",
@@ -6110,11 +5755,8 @@ def _cake_stations() -> List[Tuple[str, str, float, float]]:
     """``(net, sta, dist_deg, depth_m)`` for the stations cake gets rays at.
 
     Qt's scope (`get_active_event_and_stations`, snuffling.py:806): stations
-    whose traces hold data within an hour of the event, one per distinct
-    station *entry* — a borehole and a surface sensor at one site are two,
-    resolved per trace through the location-specific key with the station-wide
-    fallback. Distances are great-circle degrees from the active event (which
-    is what ``cake.arrivals`` wants).
+    whose traces hold data within an hour of the event, one per distinct station
+    entry, so a borehole and a surface sensor at one site are two.
     """
     if _ACTIVE_EVENT is None:
         return []
@@ -6139,12 +5781,8 @@ def _cake_stations() -> List[Tuple[str, str, float, float]]:
 
 
 def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.SnufflingResult:
-    """Theoretical arrivals → phase markers (the Cake Phase 'Run' action).
-
-    All travel-time computation is pyrocko's :py:mod:`pyrocko.cake` (pure
-    numpy/scipy ray tracing) and the geometry is :py:func:`_dist_deg`; this only
-    marshals the rays into markers and a per-pick angle table.
-    """
+    """Theoretical arrivals as phase markers (the Cake Phase 'Run' action), with
+    a per-pick angle table."""
     model, phase_names, tshift, use_station_depth, _mode = _cake_section(req)
     if _ACTIVE_EVENT is None:
         return snuffling_pb2.SnufflingResult(
@@ -6170,8 +5808,7 @@ def _cake_run(req: snuffling_pb2.SnufflingRequestParams) -> snuffling_pb2.Snuffl
     for net, sta, dist_deg, depth in _cake_stations():
         nstations += 1
         # `station.depth`, which is what Qt's "Use station depth" means
-        # (cake_phase.py). This used to approximate a borehole from a negative
-        # elevation because the station table carried no depth; it does now.
+        # (cake_phase.py).
         rdepth = float(depth) if use_station_depth else 0.0
         # Qt raytraces the direct distance *and* the major arc (360° minus it,
         # cake_phase.py:146), which is where PKP/SKS-type late arrivals live.
@@ -6228,10 +5865,8 @@ def _command_glob(scope: Optional[str], pattern: str) -> str:
         fields[idx[scope]] = pattern
         return ".".join(fields)
     # No scope: the token is the glob itself, anchored over the full
-    # "net.sta.loc.cha" string exactly as snuffler passes it to `match_nslc`
-    # (pile_viewer.py:4326). A substring convenience here would make the
-    # documented `hide n <pattern>` form's bare tokens destructive typos:
-    # `hide n` would hide every channel whose id contains an n.
+    # "net.sta.loc.cha" string as snuffler passes it to `match_nslc`
+    # (pile_viewer.py:4326).
     return pattern
 
 
@@ -6566,6 +6201,19 @@ def _marker_limit(budget: _MarkerBudget) -> int:
     return max(1, min(requested, MAX_MARKER_BUDGET))
 
 
+def _marker_nslcs(
+    result: snuffling_pb2.SnufflingResult | data_pb2.SnufMarkerList,
+    marker: snuffling_pb2.SnufMarker,
+) -> List[NslcId]:
+    """The channels a marker of ``result`` references through its NSLC table."""
+    table = result.nslc_table
+    return [
+        (table[index].net, table[index].sta, table[index].loc, table[index].cha)
+        for index in marker.nslc_indexes
+        if index < len(table)
+    ]
+
+
 def _replace_marker_rows(
     result: _MarkerResultT,
     rows: Iterable[Tuple[snuffling_pb2.SnufMarker, Iterable[NslcId]]],
@@ -6591,11 +6239,9 @@ def _marker_retention_rank(
 ) -> Tuple[int, int, float, float, int]:
     """One marker's claim to survive a budget cut; higher tuples are kept.
 
-    Retention tiers before raw strength: event markers carry no incidence angle
-    and would otherwise score 0.0, so a mixed over-budget set would keep only
-    phase picks and drop every event those picks reference. The active marker
-    outranks everything. Shared by ``_MarkerAccumulator`` and
-    ``_truncate_marker_result`` so the two bounds cannot drift apart.
+    The active marker outranks everything, then event markers, then strength:
+    events carry no incidence angle, so ranking by strength alone would drop
+    every event the retained picks reference.
     """
     if strength is None and marker.HasField("incidence_angle"):
         strength = float(marker.incidence_angle)
@@ -6687,29 +6333,18 @@ def _truncate_marker_result(result: _MarkerResultT, budget: _MarkerBudget) -> _M
     for _, marker in ranked:
         copy_marker = snuffling_pb2.SnufMarker()
         copy_marker.CopyFrom(marker)
-        nslcs = [
-            (
-                result.nslc_table[index].net,
-                result.nslc_table[index].sta,
-                result.nslc_table[index].loc,
-                result.nslc_table[index].cha,
-            )
-            for index in marker.nslc_indexes
-            if index < len(result.nslc_table)
-        ]
-        kept.append((copy_marker, nslcs))
+        kept.append((copy_marker, _marker_nslcs(result, marker)))
     _replace_marker_rows(result, kept)
     result.markers_dropped += count - limit
     return result
 
 
 class _BridgeServicer:
-    """Implements the generated `BridgeServicer`: one typed method per rpc (proto
-    request in, proto response out), each delegating to the pyrocko-backed compute
-    functions above. The generated `dispatch()` parses the request, packs the
-    BridgeResult oneof, and converts any exception to a BridgeError — so there is
-    no hand-written dispatch table or per-method serialize/parse boilerplate.
-    mypy structurally checks these signatures against the generated Protocol."""
+    """Implements the generated `BridgeServicer`, one typed method per rpc.
+
+    The generated `dispatch()` parses the request, packs the BridgeResult oneof
+    and converts any exception to a BridgeError.
+    mypy checks these signatures structurally against the generated Protocol."""
 
     def make_example(self, request: bridge_pb2.Empty, data: Any) -> scene_pb2.SceneMeta:
         return _make_example_scene()
@@ -6777,7 +6412,7 @@ class _BridgeServicer:
     async def load_url(self, request: data_pb2.LoadUrlRequest, data: Any) -> scene_pb2.SceneMeta:
         name = request.url.rsplit("/", 1)[-1] or "data"
         raw = await _fetch_bytes(_asset_url(request.url))
-        return _load_path_scene(name, _stage_bytes(name, raw), request.fmt, False)
+        return _load_path_scene(_stage_bytes(name, raw), request.fmt)
 
     async def list_examples(self, request: bridge_pb2.Empty, data: Any) -> data_pb2.ExampleList:
         return await _example_list()
@@ -6796,9 +6431,8 @@ class _BridgeServicer:
 
             digest = hashlib.sha256(raw).hexdigest()
             if digest != request.sha256:
-                # Without this the failure surfaces as a parse error from deep
-                # inside pyrocko, which reads as "this dataset is broken" rather
-                # than "the download did not finish".
+                # Otherwise a truncated download surfaces as a parse error deep
+                # inside pyrocko.
                 raise ValueError(
                     "%s does not match the checksum in the index (expected %s…, got %s…): "
                     "the download was truncated, or the index is stale"
@@ -6821,8 +6455,7 @@ class _BridgeServicer:
         self, request: figure_pb2.FigureRequest, data: Any
     ) -> figure_pb2.FigureResult:
         _operation_progress(0, 3, "Preparing figure")
-        # Cake figures need the earth-model data files staged first (same as the
-        # cake 'Run' snuffling); other figures compute from loaded traces.
+        # Cake figures need the earth models staged, as the cake 'Run' does.
         if request.kind in ("cake_model", "cake_rays"):
             model = request.params.snufflings.cake.cake_model or ""
             if not model.startswith(GF_STORE_PREFIX):
@@ -6868,11 +6501,6 @@ class _BridgeServicer:
     async def map_data(self, request: data_pb2.MapRequest, data: Any) -> data_pb2.MapData:
         return _map_data_result(request, await _plate_boundaries())
 
-    def station_distances(
-        self, request: bridge_pb2.Empty, data: Any
-    ) -> data_pb2.StationDistanceList:
-        return _station_distances_result()
-
     def set_active_event(
         self, request: data_pb2.SetActiveEventRequest, data: Any
     ) -> common_pb2.ActiveEventResult:
@@ -6904,9 +6532,6 @@ class _BridgeServicer:
     def load_station_xml(
         self, request: data_pb2.LoadStationXmlRequest, data: Any
     ) -> snuffling_pb2.SnufflingResult:
-        # Same parsing as fetched FDSN responses: appends to _STATIONXMLS
-        # (deconvolution) and harvests station coordinates (distance/azimuth
-        # sorting, cake).
         return _load_responses_result(list(request.texts))
 
     def load_stations(
@@ -7039,7 +6664,7 @@ class _BridgeServicer:
     def mount_gf_store(self, request: bridge_pb2.Empty, data: Any) -> bridge_pb2.StringValue:
         if not data:
             raise ValueError("mounting a GF store requires a mounted directory path")
-        return bridge_pb2.StringValue(value=gf_store_label(str(data)))
+        return bridge_pb2.StringValue(value=_gf_store_label(str(data)))
 
 
 _SERVICER = _BridgeServicer()
@@ -7055,10 +6680,10 @@ async def call(
     end_external_wait: Any = None,
     enter_protected_frame: Any = None,
 ) -> Dict[str, Any]:
-    """Dispatch a bridge method through the generated typed servicer; always
-    return {"result": <BridgeResult bytes>, "buffer"?: ndarray}. Async because some
-    rpcs do network I/O (pyfetch); never raises — any exception becomes a
-    BridgeError (the request is decoded off a JS proxy here, before dispatch)."""
+    """Dispatch a bridge method through the generated typed servicer.
+
+    Returns {"result": <BridgeResult bytes>, "buffer"?: ndarray} and never
+    raises: any exception becomes a BridgeError envelope."""
     token = _OPERATION_REPORTER.set(cast(Optional[OperationReporter], reporter))
     begin_wait_token = _BEGIN_EXTERNAL_WAIT.set(
         cast(Optional[ExternalWaitCallback], begin_external_wait)
@@ -7069,14 +6694,12 @@ async def call(
     sealed: Optional[bool] = None
 
     def seal_execution() -> bool:
-        """Linearize this exit against cancellation. The gate CAS disarms the
-        interrupt byte and moves the control word somewhere no later
-        `requestCancellation` can arm it, so rollback and reply marshalling can
-        never receive a stray SIGINT. Returns False when cancellation won.
+        """Linearize this exit against cancellation; False when cancellation won.
 
-        Memoized: the gate is a one-shot CAS, so a second invocation — a commit
-        that failed after sealing, unwinding into the BaseException arm — would
-        read False and mislabel the failure as a cancellation nobody asked for.
+        The gate CAS disarms the interrupt byte so rollback and reply
+        marshalling never receive a stray SIGINT.
+        Memoized because the gate is one-shot: a commit failing after sealing
+        would otherwise read False and report a cancellation nobody asked for.
         """
         nonlocal sealed
         if sealed is None:
@@ -7086,30 +6709,23 @@ async def call(
     def finish_call_result(
         result: Dict[str, Any], snapshot: Optional[SessionSnapshot]
     ) -> Dict[str, Any]:
-        if not seal_execution():
-            if snapshot is not None:
-                _SESSION_STORE.rollback(snapshot)
-            return bridge_dispatch.cancelled_result()
+        sealed_in_time = seal_execution()
         if snapshot is not None:
             _SESSION_STORE.rollback(snapshot)
-        return result
+        return result if sealed_in_time else bridge_dispatch.cancelled_result()
 
     snapshot: Optional[SessionSnapshot] = None
     in_view_lane = False
     try:
-        # Interpreter ownership is granted HERE, from the first protected
-        # bytecodes, never by the worker before the call: until this callback
-        # runs the control word stays ...WithoutInterpreter, where cancellation
-        # cannot arm SIGINT, so Pyodide's coroutine-scheduling plumbing between
-        # the JS invocation and this frame can never consume an interrupt. If
-        # cancellation is already pending, the callback arms the byte and the
-        # very next bytecode raises the typed cancellation inside this try.
+        # Interpreter ownership is granted here, inside the protecting try,
+        # never by the worker before the call, so Pyodide's coroutine plumbing
+        # between the JS invocation and this frame can never consume an
+        # interrupt.
+        # A pending cancellation arms the byte and raises on the next bytecode.
         if enter_protected_frame is not None:
             enter_protected_frame()
-        # The activity lookup runs inside the protecting try: a cancellation
-        # interrupt landing in these first bytecodes — or a method id the
-        # generated table does not know — must surface as a typed envelope, not
-        # escape to JS as a transport error.
+        # An unknown method id must surface as a typed envelope, not escape to
+        # JS as a transport error.
         activity = bridge_dispatch.ACTIVITY_BY_METHOD[method]
         if activity.lane == "VIEW":
             in_view_lane = True
@@ -7122,10 +6738,6 @@ async def call(
                     _SERVICER, method, _raw_bytes(request), data
                 )
             return finish_call_result(result, None)
-        # Transaction setup runs inside the protecting try too: a cancellation
-        # interrupt during the workspace clone must surface as the typed
-        # cancelled envelope, not escape as a transport error with
-        # _transaction_snapshot left installed.
         if activity.session_access == "MUTATING":
             snapshot = _SESSION_STORE.snapshot()
             _SESSION_STORE.begin_transaction(snapshot)
@@ -7148,13 +6760,9 @@ async def call(
         stale.stale.actual_generation = stale_commit.actual_generation
         return {"result": stale.SerializeToString()}
     except KeyboardInterrupt:
-        # On the view lane this is defensive only: no interrupt can reach it
-        # today — GetView is the sole VIEW rpc and is NOT_CANCELLABLE, and the
-        # ownership handoff clears the byte before a view runs. If a cancellable
-        # view rpc is ever added, revisit enter_view/exit_view first: they
-        # self-heal from a partial projection (retained workspace, gated cache
-        # stash) but are not fully atomic. The typed envelope keeps the reply
-        # structured so Rust retries the view.
+        # No interrupt reaches the view lane, whose only rpc GetView is not
+        # cancellable; a cancellable view rpc would need enter_view/exit_view
+        # made atomic first.
         seal_execution()
         if snapshot is not None:
             _SESSION_STORE.rollback(snapshot)

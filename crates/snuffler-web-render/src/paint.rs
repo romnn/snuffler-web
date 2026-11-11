@@ -260,12 +260,14 @@ struct TickDraw {
     labels: timeaxis::TickLabels,
 }
 
-/// Render the persistent waveform content (everything except the transient hover
-/// crosshair) to any [`DrawTarget`]. This is the snuffler `drawit` analogue: the
-/// on-screen and SVG export backends drive identical geometry through it.
+/// Renders the persistent waveform content (everything except the transient hover
+/// crosshair) to any [`DrawTarget`].
+///
+/// This is the snuffler `drawit` analogue: the on-screen and SVG export backends
+/// drive identical geometry through it.
 #[expect(
     clippy::too_many_lines,
-    reason = "cohesive draw routine against one projection context; splitting would \
+    reason = "the per-row trace pass shares one projection context; splitting it would \
               obscure the layered draw order"
 )]
 pub fn paint(
@@ -289,16 +291,15 @@ pub fn paint(
     let x_of = |t: f64| rect.left() + ((t - view_tmin) / window) as f32 * rect.width();
     let point_margin = 4.0;
     let time_margin = f64::from(point_margin / rect.width().max(1.0)) * window;
-    // Colour from the subsort the REPLY was produced under, not the live UI
+    // Colour from the subsort the reply was produced under, not the live UI
     // state: after a subsort change, a whole round trip still paints the old
-    // reply's tracks and color_keys, and keying those with the new subsort
-    // produced a transient palette belonging to neither state. An unknown wire
-    // value (an empty pre-first-reply view) falls back to the live state.
+    // reply's tracks and color_keys, and keying those with the new subsort would
+    // give a transient palette belonging to neither state.
+    // An unknown wire value (an empty pre-first-reply view) falls back to the
+    // live state.
     let subsort = Subsort::from_wire(&view.meta.subsort).unwrap_or(state.subsort);
     let label_fallback = label_fallback_active(&view.meta.color_keys);
 
-    // Stroke colors by coloring key; the row tints and the colored strokes both
-    // look their key up here.
     let qt_colors = state.wiggle_theme.mirrors_qt_coloring();
     let boxes_visible = state.boxes_visible(pal.theme);
     // The boxes and the strokes carry two different classes: a box is the pile's
@@ -310,10 +311,9 @@ pub fn paint(
     // every trace one colour.
     //
     // A location-grouped row is the exception, and keeps colouring by the coloring
-    // key: there several traces share one row, the key is what tells them apart,
-    // and a row's box style cannot — the box style steps per contiguous run, so
-    // every trace of the row would land on the run its window starts in and the
-    // row would go back to being one colour.
+    // key: there several traces share one row and the key is what tells them apart.
+    // The box style cannot, because it steps per contiguous run, so every trace of
+    // the row would land on the run its window starts in.
     // Snuffler Qt keeps colouring by the coloring key throughout, boxes or no
     // boxes, because upstream's two toggles are independent.
     let strokes_carry_box_style = !boxes_visible && !qt_colors && !subsort.groups_locations();
@@ -331,217 +331,10 @@ pub fn paint(
 
     target.fill_rect(rect, 0.0, pal.bg);
 
-    // Snuffler's trace boxes, under every theme: one per contiguous run of a
-    // channel's data, in the style the pile's `determine_box_styles` numbered it
-    // with, so a box's colour means the same thing whatever the palette.
     if boxes_visible && !waterfall {
-        target.push_clip(track_area);
-        for (k, t) in visible.iter().enumerate() {
-            let top = top0 + k as f32 * row_h + row_h * 0.05;
-            let bot = top0 + k as f32 * row_h + row_h * 0.95;
-            if bot <= top {
-                continue;
-            }
-            // The boxes come from the pile, not from the fetched spans
-            // (`draw_trace_boxes` reads `pile.iter_traces`, pile_viewer.py:2968),
-            // so a channel `min_deltat_allow` declined to fetch still shows where
-            // its data lies — without this, a view zoomed far beyond the data
-            // goes blank with nothing left to navigate back to.
-            // Past 500 traces in the window the bridge hands each row merged
-            // per-style runs whose gaps close — but that is `draw_trace_boxes`'
-            // own batching, so Qt's boxes close them identically.
-            for tbox in &t.boxes {
-                if tbox.tmax < view_tmin || tbox.tmin > view_tmax {
-                    continue;
-                }
-                let x0 = x_of(tbox.tmin).clamp(track_area.left(), track_area.right());
-                // Qt strokes the outline with a cosmetic pen, so a box thinner
-                // than a pixel still marks its spot; flooring the width at one
-                // pixel is this painter's equivalent.
-                let x1 = x_of(tbox.tmax)
-                    .clamp(track_area.left(), track_area.right())
-                    .max(x0 + 1.0);
-                let style = pal.box_style(usize::try_from(tbox.style).unwrap_or(0));
-                let r = Rect::from_min_max(pos2(x0, top), pos2(x1, bot));
-                target.fill_rect(r, 0.0, style.fill);
-                if let Some(frame) = style.frame {
-                    target.line(r.left_top(), r.right_top(), 1.0, frame);
-                    target.line(r.right_top(), r.right_bottom(), 1.0, frame);
-                    target.line(r.right_bottom(), r.left_bottom(), 1.0, frame);
-                    target.line(r.left_bottom(), r.left_top(), 1.0, frame);
-                }
-            }
-        }
-        target.pop_clip();
+        draw_trace_boxes(target, pal, lay, &x_of);
     }
-
-    // The time axis, following `TimeAx.drawit` (pile_viewer.py:539): snuffler's
-    // own tick choice and calendar anchoring (`timeaxis::make_ticks`, with its
-    // `approx_ticks = 7`), the abbreviation ladder measured against the tick
-    // spacing, the second and third context rows centred under the ticks where
-    // their unit rolls over, and a left-edge fallback row when none did.
-    //
-    // Both offsets are snuffler's, rearranged rather than guessed. `drawit`
-    // gives the tick label a *baseline* at `vmin + rect0.height() + ticklen`,
-    // which puts the top of its glyphs exactly `ticklen` below the top of the
-    // axis area; each row under it stacks by the height of the label above.
-    // Measuring a digit stands in for `QFontMetrics.boundingRect`.
-    let (axis_ticks, tinc) = timeaxis::make_ticks(view_tmin, view_tmax, 7.0);
-    let axis_top = track_area.bottom();
-    let tick_label_h = target.measure("0", AXIS_PT).y;
-    let row0_y = axis_top + QT_TICK_LEN;
-    let row1_y = row0_y + tick_label_h;
-    let row2_y = row1_y + tick_label_h;
-    let axis_pad = 10.0;
-    let mut draws: Vec<TickDraw> = Vec::new();
-    // Qt computes the abbreviation level per tick in its first pass and its
-    // second pass reads the loop variable after that pass has finished — so the
-    // last tick's level applies to every label. Reproduced: label widths at one
-    // increment are near-equal, which is what makes it work there.
-    let mut abbr_level = 0_usize;
-    for tick in &axis_ticks {
-        let x = x_of(*tick);
-        // Screen chrome only: snuffler's savesvg carries no grid, so an
-        // exported figure — the artifact people put in papers — must not either.
-        if state.show_time_grid && !export {
-            target.line(
-                pos2(x, track_area.top()),
-                pos2(x, track_area.bottom()),
-                1.0,
-                pal.grid,
-            );
-        }
-        // The tick mark snuffler always draws, grid or no grid: ten pixels down
-        // from the top of the axis area (`ticklen`, pile_viewer.py:546).
-        target.line(
-            pos2(x, axis_top),
-            pos2(x, axis_top + QT_TICK_LEN),
-            1.0,
-            pal.axis_text,
-        );
-        let mut labels = timeaxis::tick_to_labels(*tick, tinc);
-        // Qt hides the year at the epoch on sub-day windows, assuming synthetic
-        // data (pile_viewer.py:569).
-        if *tick == 0.0 && window < SDAY {
-            if labels.l2.is_some() {
-                labels.l2 = None;
-            } else {
-                labels.l1 = None;
-            }
-        }
-        let pinc_approx = (x_of(*tick + tinc) - x).max(0.0);
-        let ushift = if labels.l0_center {
-            pinc_approx * 0.5
-        } else {
-            0.0
-        };
-        abbr_level = 0;
-        for candidate in [labels.l0.as_str(), labels.l0_brief.as_str(), ""] {
-            if target.measure(candidate, AXIS_PT).x <= pinc_approx * 0.9 {
-                break;
-            }
-            abbr_level += 1;
-        }
-        draws.push(TickDraw {
-            tick: *tick,
-            x,
-            ushift,
-            labels,
-        });
-    }
-
-    let mut l1_hits = 0_u32;
-    let mut l2_hits = 0_u32;
-    let mut first_tick_with_label: Option<f64> = None;
-    for draw in &draws {
-        let label0 = match abbr_level {
-            0 => draw.labels.l0.as_str(),
-            1 => draw.labels.l0_brief.as_str(),
-            _ => "",
-        };
-        let w0 = target.measure(label0, AXIS_PT).x;
-        let cx = draw.x + draw.ushift;
-        if rect.left() + axis_pad < cx - w0 * 0.5 && cx + w0 * 0.5 < rect.right() - axis_pad {
-            if first_tick_with_label.is_none() {
-                first_tick_with_label = Some(draw.tick);
-            }
-            target.text(
-                pos2(cx, row0_y),
-                Align2::CENTER_TOP,
-                label0,
-                AXIS_PT,
-                pal.axis_text,
-            );
-        }
-        if let Some(l1) = &draw.labels.l1 {
-            let w1 = target.measure(l1, AXIS_PT).x;
-            if rect.left() + axis_pad < draw.x - w1 * 0.5
-                && draw.x + w1 * 0.5 < rect.right() - axis_pad
-            {
-                target.text(
-                    pos2(draw.x, row1_y),
-                    Align2::CENTER_TOP,
-                    l1,
-                    AXIS_PT,
-                    pal.axis_text,
-                );
-                l1_hits += 1;
-            }
-        }
-        if let Some(l2) = &draw.labels.l2 {
-            let w2 = target.measure(l2, AXIS_PT).x;
-            if rect.left() + axis_pad < draw.x - w2 * 0.5
-                && draw.x + w2 * 0.5 < rect.right() - axis_pad
-            {
-                target.text(
-                    pos2(draw.x, row2_y),
-                    Align2::CENTER_TOP,
-                    l2,
-                    AXIS_PT,
-                    pal.axis_text,
-                );
-                l2_hits += 1;
-            }
-        }
-    }
-
-    // Left-edge fallback: the context row the first labelled tick would carry,
-    // drawn only when no on-screen tick triggered one (pile_viewer.py:636).
-    let fallback_tick = first_tick_with_label.unwrap_or(view_tmin);
-    let (mut fb_l1, mut fb_l2) = timeaxis::l1_l2_tick(fallback_tick, tinc);
-    if -3600.0 * 25.0 < fallback_tick && fallback_tick <= 3600.0 * 25.0 && window < SDAY {
-        // The epoch-year suppression again, for the fallback (pile_viewer.py:641).
-        if fb_l2.is_empty() {
-            fb_l1.clear();
-        } else {
-            fb_l2.clear();
-        }
-    }
-    if l1_hits == 0 && !fb_l1.is_empty() {
-        target.text(
-            pos2(rect.left() + axis_pad, row1_y),
-            Align2::LEFT_TOP,
-            &fb_l1,
-            AXIS_PT,
-            pal.axis_text,
-        );
-    }
-    if l2_hits == 0 && !fb_l2.is_empty() {
-        target.text(
-            pos2(rect.left() + axis_pad, row2_y),
-            Align2::LEFT_TOP,
-            &fb_l2,
-            AXIS_PT,
-            pal.axis_text,
-        );
-    }
-    // The axis baseline snuffler closes `drawit` with (pile_viewer.py:668).
-    target.line(
-        pos2(rect.left(), axis_top),
-        pos2(rect.right(), axis_top),
-        1.0,
-        pal.axis_text,
-    );
+    draw_time_axis(target, state, pal, lay, &x_of, export);
 
     // Snuffler's label-size ladder (pile_viewer.py:3505): shrink the label font
     // until a row fits more than one line of it, stopping at 2 pt; whether the
@@ -584,10 +377,7 @@ pub fn paint(
                 pos2(rect.left() + 0.5, top + 1.0),
                 pos2(rect.right() - 0.5, bot - 1.0),
             );
-            target.line(r.left_top(), r.right_top(), 1.0, pal.sep);
-            target.line(r.right_top(), r.right_bottom(), 1.0, pal.sep);
-            target.line(r.right_bottom(), r.left_bottom(), 1.0, pal.sep);
-            target.line(r.left_bottom(), r.left_top(), 1.0, pal.sep);
+            stroke_rect(target, r, 1.0, pal.sep);
         }
 
         // Independent of the bands, and most useful alongside them: a band is keyed
@@ -618,9 +408,8 @@ pub fn paint(
         } else {
             // "Clip traces" clips to the same 90% inner box the trace is scaled
             // into, so a spike is cut exactly at ymin/ymax as Qt cuts it
-            // (pile_viewer.py:3186, :3462) — clipping to the row instead let a
-            // spike spill about 5% of the row height past its own range. Off,
-            // the trace may run across the whole track area.
+            // (pile_viewer.py:3186, :3462).
+            // Off, the trace may run across the whole track area.
             let (cl_top, cl_bot) = if state.clip_traces {
                 (mid - row_h * 0.45, mid + row_h * 0.45)
             } else {
@@ -633,9 +422,8 @@ pub fn paint(
             // Display scale (units→pixels) comes entirely from pyrocko (yscale), and
             // is per span: snuffler projects per (track, scaling key), so two sensors
             // sharing a location-grouped row each keep their own amplitude scale.
-            // The projection arithmetic stays f64 until the final pixel, because
-            // the range scalars are float64 end to end now (a DC offset that
-            // dwarfs the span would quantize visibly at f32).
+            // The projection stays f64 until the final pixel, because a DC offset
+            // that dwarfs the span would quantize visibly at f32.
             let y_of = |span: &ViewSpan, v: f64| {
                 let half = span.yscale.max(1e-12);
                 let amp = f64::from(row_h) * 0.45 * f64::from(state.gain) / half;
@@ -675,9 +463,7 @@ pub fn paint(
                         .unwrap_or(pal.trace),
                 };
                 // Uniform samples only: the bridge chops exactly as snuffler does
-                // and drops anything shorter than two samples (pile_viewer.py:3905),
-                // so the old interleaved-extrema and single-sample forms no longer
-                // arrive.
+                // and drops anything shorter than two samples (pile_viewer.py:3905).
                 if span.dt > 0.0 {
                     let samples = view.samples(span);
                     if samples.len() >= 2 {
@@ -696,13 +482,10 @@ pub fn paint(
                             .clamp(0.0, samples.len() as f64)
                             as usize;
                         // Every sample in the widened slice is emitted, outside
-                        // points included: the slice reaches one sample beyond
-                        // each edge, and the clip rect cuts the crossing
+                        // points included, and the clip rect cuts the crossing
                         // segment geometrically (as Qt's painter does).
-                        // Filtering points by x instead dropped the
-                        // boundary-crossing segment, so at picking zooms the
-                        // wiggle detached from both canvas edges and its ends
-                        // snapped sample by sample under a pan.
+                        // Filtering points by x would drop that segment, so at
+                        // picking zooms the wiggle would detach from both edges.
                         let points: Vec<_> = samples
                             .get(start_idx..end_idx)
                             .unwrap_or(&[])
@@ -868,19 +651,7 @@ pub fn paint(
         pos2(rect.left(), rect.top()),
         pos2(rect.right(), track_area.bottom()),
     ));
-    draw_markers(
-        target,
-        state,
-        pal,
-        track_area,
-        top0,
-        visible,
-        row_h,
-        &x_of,
-        pal.axis_text,
-        markers_over,
-        &marker_ids,
-    );
+    draw_markers(target, state, pal, lay, &x_of, markers_over, &marker_ids);
     target.pop_clip();
 
     target.push_clip(track_area);
@@ -910,6 +681,245 @@ pub fn paint(
         }
     }
     target.pop_clip();
+}
+
+/// Snuffler's trace boxes, under every theme: one per contiguous run of a
+/// channel's data, in the style the pile's `determine_box_styles` numbered it
+/// with, so a box's colour means the same thing whatever the palette.
+///
+/// The boxes come from the pile, not from the fetched spans (`draw_trace_boxes`
+/// reads `pile.iter_traces`, `pile_viewer.py:2968`), so a channel `min_deltat_allow`
+/// declined to fetch still shows where its data lies.
+/// Without that, a view zoomed far beyond the data goes blank with nothing left to
+/// navigate back to.
+/// Past 500 traces in the window the bridge hands each row merged per-style runs
+/// whose gaps close, which is `draw_trace_boxes`' own batching.
+fn draw_trace_boxes(
+    target: &mut dyn DrawTarget,
+    pal: &Palette,
+    lay: &Layout<'_>,
+    x_of: &impl Fn(f64) -> f32,
+) {
+    let track_area = lay.track_area;
+    target.push_clip(track_area);
+    for (k, t) in lay.visible.iter().enumerate() {
+        let top = lay.top0 + k as f32 * lay.row_h + lay.row_h * 0.05;
+        let bot = lay.top0 + k as f32 * lay.row_h + lay.row_h * 0.95;
+        if bot <= top {
+            continue;
+        }
+        for tbox in &t.boxes {
+            if tbox.tmax < lay.view_tmin || tbox.tmin > lay.view_tmax {
+                continue;
+            }
+            let x0 = x_of(tbox.tmin).clamp(track_area.left(), track_area.right());
+            // Qt strokes the outline with a cosmetic pen, so a box thinner than a
+            // pixel still marks its spot; flooring the width at one pixel is this
+            // painter's equivalent.
+            let x1 = x_of(tbox.tmax)
+                .clamp(track_area.left(), track_area.right())
+                .max(x0 + 1.0);
+            let style = pal.box_style(usize::try_from(tbox.style).unwrap_or(0));
+            let r = Rect::from_min_max(pos2(x0, top), pos2(x1, bot));
+            target.fill_rect(r, 0.0, style.fill);
+            if let Some(frame) = style.frame {
+                stroke_rect(target, r, 1.0, frame);
+            }
+        }
+    }
+    target.pop_clip();
+}
+
+/// The time axis, following `TimeAx.drawit` (`pile_viewer.py:539`).
+///
+/// It uses snuffler's own tick choice and calendar anchoring
+/// (`timeaxis::make_ticks`, with its `approx_ticks = 7`), the abbreviation ladder
+/// measured against the tick spacing, the second and third context rows centred
+/// under the ticks where their unit rolls over, and a left-edge fallback row when
+/// none did.
+///
+/// Both offsets are snuffler's, rearranged rather than guessed.
+/// `drawit` gives the tick label a *baseline* at `vmin + rect0.height() + ticklen`,
+/// which puts the top of its glyphs exactly `ticklen` below the top of the axis
+/// area; each row under it stacks by the height of the label above.
+/// Measuring a digit stands in for `QFontMetrics.boundingRect`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one axis pass, kept in drawit's order so it can be read against it"
+)]
+fn draw_time_axis(
+    target: &mut dyn DrawTarget,
+    state: &AppState,
+    pal: &Palette,
+    lay: &Layout<'_>,
+    x_of: &impl Fn(f64) -> f32,
+    export: bool,
+) {
+    let (rect, track_area, window) = (lay.rect, lay.track_area, lay.window);
+    let (axis_ticks, tinc) = timeaxis::make_ticks(lay.view_tmin, lay.view_tmax, 7.0);
+    let axis_top = track_area.bottom();
+    let tick_label_h = target.measure("0", AXIS_PT).y;
+    let row0_y = axis_top + QT_TICK_LEN;
+    let row1_y = row0_y + tick_label_h;
+    let row2_y = row1_y + tick_label_h;
+    let axis_pad = 10.0;
+    let mut draws: Vec<TickDraw> = Vec::new();
+    // Qt computes the abbreviation level per tick in its first pass and its
+    // second pass reads the loop variable after that pass has finished, so the
+    // last tick's level applies to every label.
+    // Label widths at one increment are near-equal, which is what makes it work.
+    let mut abbr_level = 0_usize;
+    for tick in &axis_ticks {
+        let x = x_of(*tick);
+        // Screen chrome only: snuffler's savesvg carries no grid, so an exported
+        // figure must not either.
+        if state.show_time_grid && !export {
+            target.line(
+                pos2(x, track_area.top()),
+                pos2(x, track_area.bottom()),
+                1.0,
+                pal.grid,
+            );
+        }
+        // The tick mark snuffler always draws, grid or no grid: ten pixels down
+        // from the top of the axis area (`ticklen`, pile_viewer.py:546).
+        target.line(
+            pos2(x, axis_top),
+            pos2(x, axis_top + QT_TICK_LEN),
+            1.0,
+            pal.axis_text,
+        );
+        let mut labels = timeaxis::tick_to_labels(*tick, tinc);
+        // Qt hides the year at the epoch on sub-day windows, assuming synthetic
+        // data (pile_viewer.py:569).
+        if *tick == 0.0 && window < SDAY {
+            if labels.l2.is_some() {
+                labels.l2 = None;
+            } else {
+                labels.l1 = None;
+            }
+        }
+        let pinc_approx = (x_of(*tick + tinc) - x).max(0.0);
+        let ushift = if labels.l0_center {
+            pinc_approx * 0.5
+        } else {
+            0.0
+        };
+        abbr_level = 0;
+        for candidate in [labels.l0.as_str(), labels.l0_brief.as_str(), ""] {
+            if target.measure(candidate, AXIS_PT).x <= pinc_approx * 0.9 {
+                break;
+            }
+            abbr_level += 1;
+        }
+        draws.push(TickDraw {
+            tick: *tick,
+            x,
+            ushift,
+            labels,
+        });
+    }
+
+    let mut l1_hits = 0_u32;
+    let mut l2_hits = 0_u32;
+    let mut first_tick_with_label: Option<f64> = None;
+    for draw in &draws {
+        let label0 = match abbr_level {
+            0 => draw.labels.l0.as_str(),
+            1 => draw.labels.l0_brief.as_str(),
+            _ => "",
+        };
+        let w0 = target.measure(label0, AXIS_PT).x;
+        let cx = draw.x + draw.ushift;
+        if rect.left() + axis_pad < cx - w0 * 0.5 && cx + w0 * 0.5 < rect.right() - axis_pad {
+            if first_tick_with_label.is_none() {
+                first_tick_with_label = Some(draw.tick);
+            }
+            target.text(
+                pos2(cx, row0_y),
+                Align2::CENTER_TOP,
+                label0,
+                AXIS_PT,
+                pal.axis_text,
+            );
+        }
+        if let Some(l1) = &draw.labels.l1 {
+            let w1 = target.measure(l1, AXIS_PT).x;
+            if rect.left() + axis_pad < draw.x - w1 * 0.5
+                && draw.x + w1 * 0.5 < rect.right() - axis_pad
+            {
+                target.text(
+                    pos2(draw.x, row1_y),
+                    Align2::CENTER_TOP,
+                    l1,
+                    AXIS_PT,
+                    pal.axis_text,
+                );
+                l1_hits += 1;
+            }
+        }
+        if let Some(l2) = &draw.labels.l2 {
+            let w2 = target.measure(l2, AXIS_PT).x;
+            if rect.left() + axis_pad < draw.x - w2 * 0.5
+                && draw.x + w2 * 0.5 < rect.right() - axis_pad
+            {
+                target.text(
+                    pos2(draw.x, row2_y),
+                    Align2::CENTER_TOP,
+                    l2,
+                    AXIS_PT,
+                    pal.axis_text,
+                );
+                l2_hits += 1;
+            }
+        }
+    }
+
+    // Left-edge fallback: the context row the first labelled tick would carry,
+    // drawn only when no on-screen tick triggered one (pile_viewer.py:636).
+    let fallback_tick = first_tick_with_label.unwrap_or(lay.view_tmin);
+    let (mut fb_l1, mut fb_l2) = timeaxis::l1_l2_tick(fallback_tick, tinc);
+    if -3600.0 * 25.0 < fallback_tick && fallback_tick <= 3600.0 * 25.0 && window < SDAY {
+        // The epoch-year suppression again, for the fallback (pile_viewer.py:641).
+        if fb_l2.is_empty() {
+            fb_l1.clear();
+        } else {
+            fb_l2.clear();
+        }
+    }
+    if l1_hits == 0 && !fb_l1.is_empty() {
+        target.text(
+            pos2(rect.left() + axis_pad, row1_y),
+            Align2::LEFT_TOP,
+            &fb_l1,
+            AXIS_PT,
+            pal.axis_text,
+        );
+    }
+    if l2_hits == 0 && !fb_l2.is_empty() {
+        target.text(
+            pos2(rect.left() + axis_pad, row2_y),
+            Align2::LEFT_TOP,
+            &fb_l2,
+            AXIS_PT,
+            pal.axis_text,
+        );
+    }
+    // The axis baseline snuffler closes `drawit` with (pile_viewer.py:668).
+    target.line(
+        pos2(rect.left(), axis_top),
+        pos2(rect.right(), axis_top),
+        1.0,
+        pal.axis_text,
+    );
+}
+
+/// Outlines `r` with four `width`-wide strokes.
+fn stroke_rect(target: &mut dyn DrawTarget, r: Rect, width: f32, color: Color32) {
+    target.line(r.left_top(), r.right_top(), width, color);
+    target.line(r.right_top(), r.right_bottom(), width, color);
+    target.line(r.right_bottom(), r.left_bottom(), width, color);
+    target.line(r.left_bottom(), r.left_top(), width, color);
 }
 
 /// Shell-style glob match (`*`, `?`, `[seq]`, `[!seq]`), anchored at both ends —
@@ -997,29 +1007,6 @@ fn marker_matches_trace(m: &Marker, t: &ViewTrack, loc: &str) -> bool {
         })
 }
 
-/// Returns the vertical row spans to which an optional NSLC-scoped marker applies.
-#[must_use]
-pub fn marker_row_spans(
-    marker: &Marker,
-    area: Rect,
-    top0: f32,
-    visible: &[ViewTrack],
-    row_h: f32,
-) -> Vec<(f32, f32)> {
-    if marker.nslc_ids.is_empty() {
-        return vec![(area.top(), area.bottom())];
-    }
-    visible
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| marker.nslc_ids.iter().any(|n| marker_matches_track(n, t)))
-        .map(|(k, _)| {
-            let top = top0 + k as f32 * row_h;
-            (top, top + row_h)
-        })
-        .collect()
-}
-
 /// The snippet-highlight half of Qt's `Marker.draw_trace` (`marker.py:381`):
 /// under a span marker the covered samples are re-drawn in the marker's colour
 /// at width 1, with outlined 4x4 squares on the first and last covered sample;
@@ -1067,11 +1054,8 @@ fn draw_marker_snippets(
     };
     let square = |target: &mut dyn DrawTarget, pt: emath::Pos2, col: Color32| {
         // Qt's `drawpoint`: an unfilled 4x4 rect under a width-2 pen.
-        let r = Rect::from_min_max(pos2(pt.x - 2.0, pt.y - 2.0), pos2(pt.x + 2.0, pt.y + 2.0));
-        target.line(r.left_top(), r.right_top(), 2.0, col);
-        target.line(r.right_top(), r.right_bottom(), 2.0, col);
-        target.line(r.right_bottom(), r.left_bottom(), 2.0, col);
-        target.line(r.left_bottom(), r.left_top(), 2.0, col);
+        let r = Rect::from_center_size(pt, emath::Vec2::splat(4.0));
+        stroke_rect(target, r, 2.0, col);
     };
     for (id, m) in marker_ids
         .iter()
@@ -1189,10 +1173,7 @@ fn draw_marker_label(
             pos2(plate.right() + 2.0, plate.bottom()),
         );
         target.fill_rect(plate, 0.0, plate_bg);
-        target.line(plate.left_top(), plate.right_top(), 1.0, col);
-        target.line(plate.right_top(), plate.right_bottom(), 1.0, col);
-        target.line(plate.right_bottom(), plate.left_bottom(), 1.0, col);
-        target.line(plate.left_bottom(), plate.left_top(), 1.0, col);
+        stroke_rect(target, plate, 1.0, col);
     } else {
         target.fill_rect(plate, 0.0, plate_bg);
     }
@@ -1241,7 +1222,6 @@ fn markers_overloaded(state: &AppState) -> bool {
 /// way to the dotted overview line and the count readout.
 #[expect(
     clippy::too_many_lines,
-    clippy::too_many_arguments,
     reason = "one marker pass over one projection context, layered exactly as Qt \
               layers it; splitting per layer would duplicate the filters"
 )]
@@ -1249,15 +1229,19 @@ fn draw_markers(
     target: &mut dyn DrawTarget,
     state: &AppState,
     pal: &Palette,
-    area: Rect,
-    top0: f32,
-    visible: &[ViewTrack],
-    row_h: f32,
+    lay: &Layout<'_>,
     x_of: &impl Fn(f64) -> f32,
-    fg: Color32,
     overloaded: bool,
     marker_ids: &[MarkerId],
 ) {
+    let Layout {
+        track_area: area,
+        top0,
+        visible,
+        row_h,
+        ..
+    } = *lay;
+    let fg = pal.axis_text;
     let v0 = area.top();
     let v1 = area.bottom();
 
@@ -1514,12 +1498,6 @@ mod tests {
             .unwrap_or([Color32::TRANSPARENT; N])
     }
 
-    // The box-style assignment these tests used to pin — per-trace styling so
-    // co-located instruments differ, and a gap starting a new style — moved to
-    // the bridge (`_box_styles`, web/bridge.py), which transcribes snuffler's
-    // `determine_box_styles` over the pile instead of re-deriving styles from
-    // the fetched spans.
-
     #[test]
     fn qt_theme_takes_snufflers_palette_and_blacks_out_past_it() {
         // `pyrocko.plot.color` indexes a seven-entry list and returns (0, 0, 0) for
@@ -1652,8 +1630,7 @@ mod tests {
         // with — its sensors' locations — are already in the pile-wide list.
         // Letting its label pad the numbering instead would add and remove a
         // key as data moves in and out of the window, recoloring other
-        // stations' traces on a mere pan or zoom (the blue↔olive flip where
-        // the seven-colour ramp wraps).
+        // stations' traces on a mere pan or zoom.
         let pile_keys = vec!["00".to_owned(), "10".to_owned()];
         let mut occupied = track("XL", "CO01", "*", "BHZ", "XL CO01 BHZ");
         occupied.spans = vec![
@@ -1858,9 +1835,9 @@ mod tests {
 
     // Qt's snippet chop (`tr.chop` in `Marker.draw_trace`, marker.py:410)
     // raises `NoData` for a marker that misses the segment, so nothing is
-    // drawn on it. The regression this pins: clamping the chop indices instead
-    // put a spurious endpoint square on an earlier segment's final sample
-    // whenever a span marker sat past that segment on a gapped channel.
+    // drawn on it.
+    // Clamping the chop indices instead would put a spurious endpoint square on
+    // an earlier segment's final sample of a gapped channel.
     #[test]
     fn a_span_marker_after_a_segment_draws_no_square_on_it() {
         // One hundred 1 Hz samples from t = 0: the segment ends at t = 99,
@@ -1916,9 +1893,7 @@ mod tests {
     // Pins the pile-backed half of the trace boxes: a channel `min_deltat_allow`
     // declined to fetch arrives with no spans but with its pile coverage on
     // `ViewTrack::boxes`, and the painter must still mark it — floored at one
-    // pixel, the way Qt's cosmetic pen strokes a sub-pixel `drawRect`. Boxes
-    // derived from the fetched spans instead leave a zoomed-far-out view blank,
-    // with nothing to navigate back to.
+    // pixel, the way Qt's cosmetic pen strokes a sub-pixel `drawRect`.
     #[test]
     fn an_unfetched_channel_still_paints_its_pile_backed_box() {
         let state = AppState {
@@ -2028,8 +2003,8 @@ mod tests {
         // A location-grouped subsort puts every location of a channel on one row, and
         // the coloring key is the only thing telling those traces apart.
         // The box style cannot do it: it steps per contiguous run, so every trace of
-        // the row starts inside the same run and keying the strokes on it painted the
-        // whole row a single colour — which is what hiding the boxes used to do.
+        // the row starts inside the same run and keying the strokes on it would paint
+        // the whole row a single colour.
         let (tmin, tmax) = (1_700_000_000.0, 1_700_000_010.0);
         let mut row = track("IU", "MAJO", "*", "BH1", "IU MAJO BH1");
         row.spans = ["00", "10"]
@@ -2153,10 +2128,8 @@ mod tests {
     fn boundary_crossing_samples_are_emitted_for_the_clip_to_cut() {
         // At picking zooms adjacent samples sit many pixels apart, and the
         // segment reaching the canvas edge has its outer endpoint off-screen.
-        // Culling those points individually dropped the crossing segment, so
-        // the wiggle detached from both edges and its ends snapped sample by
-        // sample under a pan. The points are emitted and the clip rect cuts
-        // the line geometrically, as Qt's painter does.
+        // The points are emitted and the clip rect cuts the line geometrically,
+        // as Qt's painter does, so the wiggle stays attached to both edges.
         let state = AppState {
             tmin: 1_700_000_000.0,
             tmax: 1_700_000_010.0,

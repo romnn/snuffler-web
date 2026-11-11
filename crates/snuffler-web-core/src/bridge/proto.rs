@@ -1,8 +1,8 @@
 pub use snuffler_web_proto::bridge::v1 as pb;
 
-// DOM adapters return protobuf manifests, decoded here before Rust submits any
-// Python work through the generated client. `what` names the adapter for typed
-// decode failures.
+// DOM adapters return protobuf manifests, decoded here before Rust submits any Python
+// work through the generated client.
+// `what` names the adapter for typed decode failures.
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use snuffler_web_proto::CallError;

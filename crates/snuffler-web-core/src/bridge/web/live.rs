@@ -4,21 +4,42 @@
 #![allow(
     clippy::wildcard_imports,
     clippy::needless_pass_by_value,
-    reason = "split out of the web module and glued with the same glob import; \
-              owned parameters cross the JS/async boundary as in the parent"
+    reason = "the submodule shares the web module's glob import, and owned \
+              parameters cross the JS/async boundary as in the parent"
 )]
 
 use super::*;
+use crate::seedlink::drain_records as drain_seedlink_records;
 
 thread_local! {
     static LIVE_SEEDLINK: StdRefCell<Option<LiveSeedlinkHandle>> = const { StdRefCell::new(None) };
 }
 
+/// The live socket plus the JS callbacks it invokes.
+///
+/// The closures are owned here because the socket calls them until [`Drop`]
+/// detaches them; dropping one earlier would leave the socket a dangling callback.
 struct LiveSeedlinkHandle {
     ws: web_sys::WebSocket,
+    #[expect(
+        dead_code,
+        reason = "keeps the socket's open callback alive until drop"
+    )]
     on_open: Closure<dyn FnMut(web_sys::Event)>,
+    #[expect(
+        dead_code,
+        reason = "keeps the socket's message callback alive until drop"
+    )]
     on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
+    #[expect(
+        dead_code,
+        reason = "keeps the socket's error callback alive until drop"
+    )]
     on_error: Closure<dyn FnMut(web_sys::ErrorEvent)>,
+    #[expect(
+        dead_code,
+        reason = "keeps the socket's close callback alive until drop"
+    )]
     on_close: Closure<dyn FnMut(web_sys::Event)>,
 }
 
@@ -37,13 +58,12 @@ impl Drop for LiveSeedlinkHandle {
         self.ws.set_onmessage(None);
         self.ws.set_onerror(None);
         self.ws.set_onclose(None);
-        let _ = self.ws.close();
-        let _ = (
-            &self.on_open,
-            &self.on_message,
-            &self.on_error,
-            &self.on_close,
-        );
+        if let Err(err) = self.ws.close() {
+            log::warn!(
+                "closing the SeedLink socket failed: {}",
+                jsval_to_string(err)
+            );
+        }
     }
 }
 
@@ -121,9 +141,9 @@ fn seedlink_connection(params: &SeedlinkParams) -> Result<SeedlinkConnection, Se
         params.selectors.trim()
     );
     let url = seedlink_proxy_url(params.host.trim(), port);
-    let ws = web_sys::WebSocket::new(&url).map_err(|e| SeedlinkError::Connect {
+    let ws = web_sys::WebSocket::new(&url).map_err(|err| SeedlinkError::Connect {
         url,
-        detail: jsval_to_string(e),
+        detail: jsval_to_string(err),
     })?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
     Ok(SeedlinkConnection {
@@ -404,8 +424,6 @@ fn seedlink_commands(params: &SeedlinkParams) -> Vec<String> {
     commands
 }
 
-use crate::seedlink::drain_records as drain_seedlink_records;
-
 const INGEST_MAILBOX_BYTES: usize = 8 * 1024 * 1024;
 const INGEST_MAILBOX_RESIDENCE_S: f64 = 10.0;
 
@@ -679,8 +697,6 @@ fn complete_live_ingest(
         state.diagnostic = None;
         state.snuffling = None;
         clear_event_state(state);
-        state.station_dists.clear();
-        state.station_dists_gen = None;
         state.live_seedlink_started_at = Some(live.started_at);
         LiveIngestEffect::ResetSession
     } else {
@@ -800,7 +816,6 @@ impl Bridge {
     /// Reports whether a live `SeedLink` socket is active.
     #[must_use]
     pub fn seedlink_active(&self) -> bool {
-        let _scene_gen = self.inner.borrow().scene_gen;
         LIVE_SEEDLINK.with(|slot| slot.borrow().is_some())
     }
 

@@ -1,7 +1,7 @@
 pub use snuffler_web_core::snufflings::seismosizer::Config;
 
 use super::Action;
-use super::widgets::{param_row, run_button};
+use super::widgets::{checkbox_row, choice_row, param_row, run_button};
 
 const WAVEFORM_TYPES: [&str; 6] = [
     "Displacement [m]",
@@ -25,22 +25,6 @@ const SOURCE_TYPES: [&str; 5] = [
     "PseudoDynamicRupture",
 ];
 
-fn choice_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str]) {
-    ui.horizontal(|ui| {
-        ui.add_sized(
-            [150.0, 0.0],
-            egui::Label::new(label).halign(egui::Align::Max),
-        );
-        egui::ComboBox::from_id_salt(label)
-            .selected_text(value.as_str())
-            .show_ui(ui, |ui| {
-                for opt in options {
-                    ui.selectable_value(value, (*opt).to_owned(), *opt);
-                }
-            });
-    });
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "Qt's five source snufflings in one panel: one parameter row each"
@@ -52,7 +36,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
 
     ui.horizontal(|ui| {
         ui.add_sized(
-            [150.0, 0.0],
+            [160.0, 0.0],
             egui::Label::new("GF Store").halign(egui::Align::Max),
         );
         egui::ComboBox::from_id_salt("seis_store")
@@ -79,7 +63,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
 
     ui.horizontal(|ui| {
         ui.add_sized(
-            [150.0, 0.0],
+            [160.0, 0.0],
             egui::Label::new("… or from URL").halign(egui::Align::Max),
         );
         ui.add(
@@ -203,10 +187,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
             config.nx = nx.round() as u32;
             config.ny = ny.round() as u32;
         }
-        ui.horizontal(|ui| {
-            ui.add_space(160.0);
-            ui.checkbox(&mut config.tapered, "Tapered tractions");
-        });
+        checkbox_row(ui, &mut config.tapered, "Tapered tractions");
     }
     // Qt's STF duration ceiling is per source panel: 50 s for the point
     // sources, 100 s for the single force, 20 s for the extended ruptures

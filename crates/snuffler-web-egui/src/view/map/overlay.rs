@@ -336,9 +336,7 @@ pub fn events(
 /// The `+` / `−` buttons in the map's top-right corner, returning the zoom levels
 /// they asked for this frame.
 ///
-/// Deliberately one self-contained function over one rectangle, drawn after the
-/// map so it lands on top: the buttons are an experiment beside the wheel, and
-/// keeping them one deletion wide is part of the design.
+/// Drawn after the map so the buttons land on top of it.
 pub fn zoom_buttons(ui: &mut Ui, rect: Rect) -> f64 {
     let mut levels = 0.0;
     for (index, (label, step, tip)) in [("+", 1.0, "Zoom in"), ("−", -1.0, "Zoom out")]

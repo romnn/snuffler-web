@@ -10,10 +10,9 @@ message Nslc {
 }
 
 // A moment tensor as the six independent components in pyrocko's NED convention
-// (north-east-down), matching `pyrocko.moment_tensor.MomentTensor.m6()`. Ferried
-// from a catalog QuakeML event to the frontend so a beachball can be rendered by
-// pyrocko/matplotlib (never re-derived in Rust) and the Kagan angle computed in
-// Python.
+// (north-east-down), matching `pyrocko.moment_tensor.MomentTensor.m6()`.
+// Ferried from a catalog QuakeML event to the frontend so a beachball can be rendered by
+// pyrocko/matplotlib (never re-derived in Rust) and the Kagan angle computed in Python.
 message MomentTensor {
   double mnn = 1;
   double mee = 2;

@@ -380,10 +380,11 @@ impl ActivityLedger {
                 RejectReason::RuntimeUnavailable(fault),
             );
         }
-        // Supersession must not run ahead of admission: a rejected submission
-        // that had already cancelled its predecessor would leave the user with
-        // neither the old work nor the new. The superseded entries do count as
-        // freed capacity, since admitting the replacement cancels them.
+        // Supersession must not run ahead of admission: a rejected submission that had
+        // already cancelled its predecessor would leave the user with neither the old
+        // work nor the new.
+        // The superseded entries do count as freed capacity, since admitting the
+        // replacement cancels them.
         let superseded: Vec<JobHandle> = if operation.activity().policy == Policy::LatestWins {
             self.queue
                 .iter()
@@ -485,12 +486,6 @@ impl ActivityLedger {
             .map(|(id, record)| (JobHandle { id: *id }, record))
     }
 
-    /// Number of accepted jobs waiting for their lane permit.
-    #[must_use]
-    pub fn queued_count(&self) -> usize {
-        self.queue.len()
-    }
-
     /// Attempts to move the first queued job in its lane onto that lane's permit.
     pub fn try_dispatch(&mut self, handle: JobHandle, waker: &Waker) -> bool {
         let Some(record) = self.records.get(&handle.id) else {
@@ -541,7 +536,7 @@ impl ActivityLedger {
     }
 
     /// Marks a dispatched request as executing with indeterminate progress.
-    pub fn mark_running(&mut self, handle: JobHandle, now_s: f64) {
+    fn mark_running(&mut self, handle: JobHandle, now_s: f64) {
         if let Some(record) = self.records.get_mut(&handle.id) {
             let active = match record.operation.activity().lane {
                 Lane::View => self.active_view,
@@ -935,7 +930,7 @@ mod tests {
             ledger.get(queued).map(super::JobRecord::state),
             Some(JobState::Done(Outcome::Cancelled))
         ));
-        assert_eq!(ledger.queued_count(), 0);
+        assert_eq!(ledger.queue.len(), 0);
     }
 
     #[test]
@@ -1006,7 +1001,7 @@ mod tests {
         let replacement = ledger.submit(Operation::GetView, None, b"second".to_vec(), 2.0);
         assert!(matches!(replacement, Submission::Rejected(_, _)));
         assert!(!ledger.is_terminal(queued));
-        assert_eq!(ledger.queued_count(), 1);
+        assert_eq!(ledger.queue.len(), 1);
     }
 
     /// Pruning only removes terminal records, so an absent record answers

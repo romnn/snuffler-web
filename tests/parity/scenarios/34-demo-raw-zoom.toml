@@ -4,9 +4,9 @@ dataset = "demo"
 tiers = [1]
 
 # start_s puts the window's largest sample four samples outside it, inside the
-# +/- 4-sample chop margin both sides now take. With no filter there is no tpad, so
-# this pins that the bare margin behaves identically — the control the filtered zoom
-# scenarios lean on.
+# +/- 4-sample chop margin both sides take.
+# With no filter there is no tpad, so this pins that the bare margin behaves
+# identically, the control the filtered zoom scenarios lean on.
 [window]
 start_s = 207.0
 length_s = 60.0

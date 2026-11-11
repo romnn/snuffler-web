@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use egui::{Align2, Color32, ColorImage, Pos2, Rect, Vec2};
+use egui::{Align2, Color32, Pos2, Rect, Vec2};
 
 pub use snuffler_web_render::draw::{DrawTarget, RasterImage, SvgTarget, encode_png_rgba};
 
@@ -87,11 +87,4 @@ impl DrawTarget for EguiTarget<'_> {
     fn pop_clip(&mut self) {
         self.clips.pop();
     }
-}
-
-/// Encodes an egui color image as PNG bytes.
-pub fn encode_png(image: &ColorImage) -> Option<Vec<u8>> {
-    let width = u32::try_from(image.size[0]).ok()?;
-    let height = u32::try_from(image.size[1]).ok()?;
-    encode_png_rgba(width, height, image.as_raw())
 }

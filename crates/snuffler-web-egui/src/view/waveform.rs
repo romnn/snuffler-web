@@ -10,7 +10,6 @@
               sample/track indices; these casts are inherent to the drawing math"
 )]
 
-use std::cell::Cell;
 use std::collections::HashMap;
 
 use egui::{
@@ -25,7 +24,7 @@ use snuffler_web_core::state::{
     ActiveEventReq, AppState, DEFAULT_NTRACKS_SHOWN, MAX_TRACK_H, MIN_TRACK_H, PickingState,
     ScalingGroup, SortMode, ViewDrag, ViewMode,
 };
-use snuffler_web_render::layout::{AXIS_H, compute_layout, track_geometry};
+use snuffler_web_render::layout::{AXIS_H, Layout, compute_layout, track_geometry};
 use snuffler_web_render::paint::{marker_matches_track, paint};
 use snuffler_web_render::palette::{Theme, canvas_theme, palette};
 
@@ -38,8 +37,6 @@ const WORKING_TMAX: f64 = 60_904_915_200.0;
 
 /// Width of the vertical track scrollbar carved off the right edge.
 const SCROLLBAR_W: f32 = 12.0;
-const PAINT_PERF_LOG_INTERVAL_MS: f64 = 1_000.0;
-const PAINT_PERF_SLOW_MS: f64 = 8.0;
 /// Maximum endpoint candidates inspected for one pointer position.
 const MAX_HIT_CANDIDATES: usize = 256;
 
@@ -58,10 +55,6 @@ impl MarkerHit {
             Self::None | Self::Overloaded(_) => None,
         }
     }
-}
-
-thread_local! {
-    static LAST_PAINT_PERF_LOG_MS: Cell<f64> = const { Cell::new(0.0) };
 }
 
 /// Per-frame cache of waterfall textures, rebuilt only when the view data epoch
@@ -113,63 +106,6 @@ fn build_image(view: &ViewData, t: &ViewTrack, span: &ViewSpan) -> Option<ColorI
         usize::try_from(image.height).ok()?,
     ];
     Some(ColorImage::from_rgba_unmultiplied(size, &image.rgba))
-}
-
-/// Counts the decoded points sent through the painter for performance logging.
-fn paint_payload_points(visible: &[ViewTrack]) -> usize {
-    visible
-        .iter()
-        .filter(|track| track.nf == 0)
-        .flat_map(|track| track.spans.iter())
-        .map(|span| {
-            let count = usize::try_from(span.count).unwrap_or(usize::MAX);
-            if span.dt < 0.0 {
-                count.saturating_mul(2)
-            } else {
-                count
-            }
-        })
-        .sum::<usize>()
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "diagnostic counters are logged as f64 for compact timing output"
-)]
-fn maybe_log_paint_perf(
-    waterfall: bool,
-    total_ms: f64,
-    view: &ViewData,
-    visible: &[ViewTrack],
-    row_h: f32,
-    rect: Rect,
-) {
-    let now = js_sys::Date::now();
-    let should_log = total_ms >= PAINT_PERF_SLOW_MS
-        || LAST_PAINT_PERF_LOG_MS.with(|last| {
-            let elapsed = now - last.get();
-            if elapsed >= PAINT_PERF_LOG_INTERVAL_MS {
-                last.set(now);
-                true
-            } else {
-                false
-            }
-        });
-    if !should_log {
-        return;
-    }
-    let points = paint_payload_points(visible);
-    log::info!(
-        "[paint] mode={} total_ms={:.2} visible_tracks={} payload_points={} ys={} row_h={:.1} rect={:.0}x{:.0}",
-        if waterfall { "waterfall" } else { "wiggle" },
-        total_ms,
-        visible.len(),
-        points,
-        view.ys.len(),
-        row_h,
-        rect.width(),
-        rect.height(),
-    );
 }
 
 /// Render the current wiggle/waterfall view to a standalone SVG string at the
@@ -297,12 +233,12 @@ pub fn show(
     );
 
     // Resolve the controls into row geometry and cache the on-screen window so
-    // the next view request fetches the visible page. The cached count is the
-    // FULL page (`n_page`), not the possibly-clamped `n_draw`: it sizes the
-    // per-track payload budget and rides the request identity, and a partial
-    // last page changing the horizontal resolution (and forcing a re-fetch) on
-    // a purely vertical scroll was a determinism bug. A page reaching past the
-    // last row just returns fewer rows.
+    // the next view request fetches the visible page.
+    // The cached count is the full page (`n_page`), not the possibly-clamped
+    // `n_draw`: it sizes the per-track payload budget and rides the request
+    // identity, so a partial last page must not change the horizontal resolution
+    // (and force a re-fetch) on a purely vertical scroll.
+    // A page reaching past the last row just returns fewer rows.
     let g = track_geometry(state, total, track_area_h);
     state.track_height = g.height;
     state.track_scroll = g.scroll;
@@ -315,21 +251,11 @@ pub fn show(
         full_rect.min,
         egui::pos2(full_rect.max.x - sb_w, full_rect.max.y),
     );
-    let rect = wave_rect;
     let wave_resp = ui.interact(wave_rect, bg.id.with("wave"), Sense::click_and_drag());
 
     let lay = compute_layout(state, view, wave_rect);
     let mut target = EguiTarget::new(painter.clone(), &wf.textures);
-    let paint_t0 = js_sys::Date::now();
     paint(&mut target, state, view, &pal, &lay, waterfall, false);
-    maybe_log_paint_perf(
-        waterfall,
-        js_sys::Date::now() - paint_t0,
-        view,
-        lay.visible,
-        lay.row_h,
-        wave_rect,
-    );
 
     if overflow {
         let strip = Rect::from_min_max(
@@ -350,17 +276,7 @@ pub fn show(
         .hover_pos()
         .filter(|position| lay.track_area.contains(*position))
         .map_or(MarkerHit::None, |position| {
-            marker_hit_at(
-                state,
-                lay.visible,
-                lay.track_area,
-                lay.top0,
-                lay.row_h,
-                lay.view_tmin,
-                lay.window,
-                lay.rect,
-                position,
-            )
+            marker_hit_at(state, &lay, position)
         });
     state.marker_hit_overload = match pointer_hit {
         MarkerHit::Overloaded(count) => Some(count),
@@ -391,23 +307,7 @@ pub fn show(
         );
     }
 
-    let t_at_x = |x: f32| {
-        lay.view_tmin + f64::from(((x - rect.left()) / rect.width()).clamp(0.0, 1.0)) * lay.window
-    };
-    handle_interaction(
-        ui,
-        &wave_resp,
-        state,
-        lay.visible,
-        lay.top0,
-        lay.row_h,
-        lay.view_tmin,
-        lay.window,
-        rect,
-        lay.track_area,
-        &t_at_x,
-        pointer_hit,
-    );
+    handle_interaction(ui, &wave_resp, state, &lay, pointer_hit);
     wave_resp
 }
 
@@ -484,27 +384,24 @@ fn draw_scrollbar(
 }
 
 /// Finds the topmost visible marker under a pointer position.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "marker hit-testing needs the view and projection context to map a click to a marker"
-)]
+///
 /// Qt's `marker_under_cursor` (`pile_viewer.py:2146`): a hit lands within
-/// `click_tolerance` — 5 px worth of time — of either *endpoint*, never across
+/// `click_tolerance` (5 px worth of time) of either *endpoint*, never across
 /// the span between them, so a wide span marker can be clicked through to
-/// reach what lies behind it. The first marker in list order wins, as Qt's
-/// loop returns it; the row under the pointer must be one the marker's
-/// patterns take.
-fn marker_hit_at(
-    state: &AppState,
-    visible: &[ViewTrack],
-    area: Rect,
-    top0: f32,
-    row_h: f32,
-    view_tmin: f64,
-    window: f64,
-    rect: Rect,
-    pos: egui::Pos2,
-) -> MarkerHit {
+/// reach what lies behind it.
+/// The first marker in list order wins, as Qt's loop returns it; the row under
+/// the pointer must be one the marker's patterns take.
+fn marker_hit_at(state: &AppState, lay: &Layout<'_>, pos: egui::Pos2) -> MarkerHit {
+    let Layout {
+        rect,
+        track_area: area,
+        view_tmin,
+        window,
+        visible,
+        row_h,
+        top0,
+        ..
+    } = *lay;
     if !area.contains(pos) {
         return MarkerHit::None;
     }
@@ -542,8 +439,8 @@ fn marker_hit_at(
     }
     MarkerHit::None
 }
+
 #[expect(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "pointer interaction combines pan, zoom, marker picking, and uncertainty dragging against one projection context"
 )]
@@ -551,21 +448,26 @@ fn handle_interaction(
     ui: &egui::Ui,
     resp: &egui::Response,
     state: &mut AppState,
-    visible: &[ViewTrack],
-    top0: f32,
-    row_h: f32,
-    view_tmin: f64,
-    window: f64,
-    rect: Rect,
-    track_area: Rect,
-    t_at_x: &impl Fn(f32) -> f64,
+    lay: &Layout<'_>,
     pointer_hit: MarkerHit,
 ) {
+    let Layout {
+        rect,
+        track_area,
+        view_tmin,
+        window,
+        visible,
+        row_h,
+        top0,
+        ..
+    } = *lay;
+    let t_at_x =
+        |x: f32| view_tmin + f64::from(((x - rect.left()) / rect.width()).clamp(0.0, 1.0)) * window;
     let modifiers = ui.input(|i| i.modifiers);
     // Plain wheel scrolling arrives via `smooth_scroll_delta`, but egui re-routes
-    // ctrl/⌘+wheel into a zoom gesture (zeroing the scroll delta), so qt
-    // snuffler's ctrl+wheel track-zoom never fired here. Recover it from the raw
-    // wheel events, which keep their real modifiers.
+    // ctrl/⌘+wheel into a zoom gesture (zeroing the scroll delta).
+    // Snuffler's ctrl+wheel track-zoom is recovered from the raw wheel events,
+    // which keep their real modifiers.
     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
     let ctrl_wheel = ui.input(raw_ctrl_wheel);
     let area_h = track_area.height();
@@ -708,9 +610,7 @@ fn handle_interaction(
             m.event_time = pk.event_time;
             m.nslc_ids = rel_nslc;
             m.selected = true;
-            for existing in &mut state.markers {
-                existing.selected = false;
-            }
+            deselect_all(state);
             state.markers.insert(m);
             state.picking = pk.batch.then(|| PickingState {
                 batch: true,
@@ -728,9 +628,7 @@ fn handle_interaction(
                 // Qt's batch re-arm passes through `start_picking`, whose
                 // `deselect_all` covers the marker just committed — only a
                 // single-shot pick stays selected.
-                for existing in &mut state.markers {
-                    existing.selected = false;
-                }
+                deselect_all(state);
             }
         }
         return;
@@ -746,9 +644,7 @@ fn handle_interaction(
         .flatten();
     if let Some(hit) = pressed_marker {
         if !modifiers.shift {
-            for m in &mut state.markers {
-                m.selected = false;
-            }
+            deselect_all(state);
         }
         state.markers.edit(hit, |marker| marker.selected = true);
     }
@@ -832,9 +728,7 @@ fn handle_interaction(
     if resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        for m in &mut state.markers {
-            m.selected = false;
-        }
+        deselect_all(state);
         let t = t_at_x(p.x);
         state.picking = Some(PickingState {
             batch: false,
@@ -904,9 +798,9 @@ fn zoom_tracks(state: &mut AppState, area_h: f32, anchor: f32, notches: f32) {
     let cur_h = resolved_height(state, area);
     let cur_n = (area / cur_h).max(1.0);
     // Qt changes the shown count by max(1, shown/5) per notch
-    // (pile_viewer.py:2622) — a fixed step of 1 made zooming a 100-track stack
-    // interminable. The height cap grows with the area so a single-track view
-    // stays reachable, as Qt's count clamp to [1, ntracks] keeps it.
+    // (pile_viewer.py:2622).
+    // The height cap grows with the area so a single-track view stays reachable,
+    // as Qt's count clamp to [1, ntracks] keeps it.
     let amount = (cur_n / 5.0).max(1.0);
     let new_n = (cur_n + amount * notches).max(1.0);
     let new_h = (area / new_n).clamp(MIN_TRACK_H, MAX_TRACK_H.max(area));
@@ -935,17 +829,16 @@ fn handle_keyboard(
     deltatmin: f64,
 ) {
     // Don't fire single-key shortcuts while a text field (FDSN forms, command
-    // line) has the keyboard — otherwise typing "n" would jump markers.
+    // line) has the keyboard, or typing "n" would jump markers.
     //
     // Asked of the text edit specifically, not of focus in general:
     // `egui_wants_keyboard_input` is true whenever *any* widget holds focus, so a
-    // menu item activated from the keyboard kept focus afterwards and killed every
-    // single-key shortcut until a pointer click on the canvas took it back. That is
-    // invisible to a mouse user and a dead end for a keyboard-only one, and
-    // snuffler has no such state: closing a menu returns the keyboard to the viewer.
+    // menu item activated from the keyboard would keep every single-key shortcut
+    // dead until a pointer click on the canvas.
+    // Snuffler has no such state: closing a menu returns the keyboard to the viewer.
     //
     // An open menu still swallows them, the way a QMenu holds the keyboard while it
-    // is up; the point is that closing it gives them back.
+    // is up.
     if ui.ctx().text_edit_focused() || ui.ctx().any_popup_open() {
         return;
     }
@@ -963,10 +856,9 @@ fn handle_keyboard(
             .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }));
         // Qt dispatches its letter commands on the typed text, so a Ctrl, Cmd or
         // Alt chord produces a control character and matches nothing
-        // (pile_viewer.py:2225); its accelerators are separate QActions. Same
-        // split here: the accelerators first, single-key commands only when no
-        // chord modifier is down — without this, Ctrl+P jumped to the previous
-        // marker with the browser's own binding suppressed.
+        // (pile_viewer.py:2225); its accelerators are separate QActions.
+        // Same split here: the accelerators first, single-key commands only when no
+        // chord modifier is down, so Ctrl+P is not the previous-marker key.
         if i.modifiers.ctrl || i.modifiers.command || i.modifiers.alt {
             if (i.modifiers.ctrl || i.modifiers.command) && !i.modifiers.alt {
                 // Snuffler's File accelerators (pile_viewer.py:874-921). Ctrl+O
@@ -1033,10 +925,11 @@ fn handle_keyboard(
             state.tmin -= win;
             state.tmax -= win;
         }
-        // Track-zoom keys (snuffler: + shows one track MORE, - one LESS, = resets
-        // to the initial count). These now drive the track height: more tracks =
-        // shorter rows. Plus is Shift+Equals on most layouts, so accept either for
-        // "more"; bare Equals (no shift) is the reset (auto-fit sentinel).
+        // Track-zoom keys (snuffler: + shows one track more, - one less, = resets
+        // to the initial count), applied as a track height: more tracks means
+        // shorter rows.
+        // Plus is Shift+Equals on most layouts, so accept either for "more"; bare
+        // Equals (no shift) is the reset (auto-fit sentinel).
         let cur_h = resolved_height(state, track_area_h);
         let cur_n = (track_area_h.max(1.0) / cur_h).round().max(1.0);
         // Qt clamps the shown *count* to [1, ntracks] (pile_viewer.py:2717), so a
@@ -1100,9 +993,7 @@ fn handle_keyboard(
             }
         }
         if i.key_pressed(Key::D) {
-            for m in &mut state.markers {
-                m.selected = false;
-            }
+            deselect_all(state);
         }
         if i.key_pressed(Key::G) {
             go_to_selection(state, shift, scene_range, deltatmin); // Shift+G: tight
@@ -1171,16 +1062,7 @@ fn handle_keyboard(
                     }
                     if let Some(m) = state.markers.get_mut(idx) {
                         if !m.is_event {
-                            // Converting a plain marker to an event collapses the
-                            // span to its start and drops the channel scope, as
-                            // Qt's `convert_to_event_marker` does (marker.py:495)
-                            // — an event is an instant that belongs to no track.
-                            m.is_event = true;
-                            m.phase = None;
-                            m.uncertainty = None;
-                            m.polarity = None;
-                            m.tmax = m.tmin;
-                            m.nslc_ids.clear();
+                            convert_to_event(m);
                         }
                         // Every Qt event has an identity — `get_event_hash`
                         // falls back to hashing the event's own fields — and
@@ -1213,12 +1095,7 @@ fn handle_keyboard(
                 } else {
                     for &idx in &candidates {
                         if let Some(m) = state.markers.get_mut(idx) {
-                            m.is_event = true;
-                            m.phase = None;
-                            m.uncertainty = None;
-                            m.polarity = None;
-                            m.tmax = m.tmin;
-                            m.nslc_ids.clear();
+                            convert_to_event(m);
                         }
                     }
                 }
@@ -1257,9 +1134,7 @@ fn handle_keyboard(
         // `start_picking` deselects everything on entry, so nothing but the
         // floating pick can be acted on, and a fresh pick is always kind 0.
         if i.key_pressed(Key::Escape) && state.picking.take().is_none() {
-            for m in &mut state.markers {
-                m.selected = false;
-            }
+            deselect_all(state);
             state.picking = Some(PickingState {
                 batch: true,
                 ..Default::default()
@@ -1365,6 +1240,25 @@ fn handle_keyboard(
             }
         }
     });
+}
+
+/// Clears the marker selection.
+fn deselect_all(state: &mut AppState) {
+    for marker in &mut state.markers {
+        marker.selected = false;
+    }
+}
+
+/// Converts a plain marker to an event, as Qt's `convert_to_event_marker` does
+/// (`marker.py:495`): the span collapses to its start and the channel scope is
+/// dropped, since an event is an instant that belongs to no track.
+fn convert_to_event(m: &mut Marker) {
+    m.is_event = true;
+    m.phase = None;
+    m.uncertainty = None;
+    m.polarity = None;
+    m.tmax = m.tmin;
+    m.nslc_ids.clear();
 }
 
 /// Up/Down first-motion polarity, Qt's exact gate (`pile_viewer.py:2233`): only

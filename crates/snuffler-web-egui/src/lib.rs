@@ -30,8 +30,9 @@ pub use a11y::snuffler_a11y_action;
 pub use app::App;
 
 // Off-main-thread work runs on a wasm-bindgen-rayon worker pool (the `threads`
-// feature; see `app` + `AGENTS.md`). The `pub use` is what makes wasm-bindgen-rayon
-// generate the worker entry point, so it must live in the crate root and be public.
+// feature; see `AGENTS.md`).
+// The `pub use` is what makes wasm-bindgen-rayon generate the worker entry point,
+// so it must live in the crate root and be public.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 pub use wasm_bindgen_rayon::init_thread_pool;
 

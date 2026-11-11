@@ -10,8 +10,7 @@ pub mod forms;
 pub mod help;
 pub mod map;
 pub mod marker_table;
-/// Optional resvg-backed high-DPI PNG export; see the `svg-raster` feature.
-#[cfg(feature = "svg-raster")]
+/// The resvg-backed high-DPI PNG export.
 pub mod raster;
 pub mod waveform;
 

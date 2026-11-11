@@ -38,8 +38,8 @@ def load_register(tmp_path: Path, body: str) -> gaps.Register:
     return gaps.Register.load(path)
 
 
-# One entry shaped like min-deltat-allow: two kinds scoped to the channel the
-# divergence lives on, one kind (with a structural subject) left kind-wide.
+# One entry with two kinds scoped to the channel the divergence lives on, and one
+# kind (with a structural subject) left kind-wide.
 SCOPED = """
     [[numeric]]
     key = "scoped"

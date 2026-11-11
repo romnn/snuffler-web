@@ -11,9 +11,9 @@ import "snuffler/bridge/v1/snuffling.proto";
 import "snuffler/bridge/v1/view.proto";
 
 // A Python exception, carried as a DTO instead of raised across the JS boundary.
-// (A raised exception's traceback can't be converted to JS on the threaded
-// SharedArrayBuffer build — TextDecoder rejects the shared view — so errors must
-// travel as proto bytes like every other DTO. See AGENTS.md.)
+// A raised exception's traceback cannot be converted to JS on the threaded
+// SharedArrayBuffer build, because TextDecoder rejects the shared view, so errors
+// travel as proto bytes like every other DTO.
 message BridgeError {
   string kind = 1; // exception class name
   string message = 2; // str(exc)
@@ -93,8 +93,8 @@ message WorkerEvent {
   uint32 runtime_epoch = 4;
 }
 
-// Request for methods whose input is carried entirely out-of-band (a staged
-// file, fetched FDSN text) or that take no parameters at all.
+// Request for methods that take no parameters, or whose only input travels
+// out-of-band (MountGfStore's mounted directory).
 message Empty {}
 
 message Cancelled {}
@@ -122,44 +122,47 @@ message CancelJobReply {
 }
 
 // The envelope every bridge response is wrapped in: exactly one of `error` or a
-// concrete success payload. bridge.py's single `call()` failsafe always returns
-// one of these; Rust decodes it into a Result. The zero-copy waveform buffer for
-// `view` ships out-of-band alongside this message (not in the oneof).
+// concrete success payload.
+// bridge.py's single `call()` failsafe always returns one of these, and Rust
+// decodes it into a Result.
+// Each success variant carries a distinct message, which is how the generated
+// client binds an rpc to its variant.
+// The zero-copy waveform buffer for `view` ships out-of-band alongside this
+// message, not in the oneof.
 message BridgeResult {
   oneof result {
     BridgeError error = 1;
-    SceneMeta scene = 2; // makeExample, loadUrl, emptyScene, loadWaveformPath
-    ViewMeta view = 3; // getView (paired with the ys buffer)
-    SnufflingResult snuffling = 5; // runSnuffling, catalogSearch, fetchStations, fetchResponses
-    MapData map_data = 7; // mapData
-    CommandResult command = 8; // runCommand
-    SnufMarkerList markers = 9; // loadMarkers
-    StringValue text = 10; // markersToText, addCakeModel
-    FigureResult figure = 11; // renderFigure (a real pyrocko/matplotlib figure as PNG)
-    StationDistanceList station_distances = 12; // stationDistances
-    ActiveEventResult active_event = 13; // setActiveEvent
-    ExampleList examples = 14; // listExamples
-    BundleResult bundle = 15; // loadBundle (a scene plus the metadata that came with it)
-    FileBlob blob = 16; // exportWaveforms, exportStations
-    LoadBytesResult load_bytes = 17; // loadBytes (scene plus duplicate verdict)
+    SceneMeta scene = 2;
+    ViewMeta view = 3;
+    SnufflingResult snuffling = 5;
+    MapData map_data = 7;
+    CommandResult command = 8;
+    SnufMarkerList markers = 9;
+    StringValue text = 10;
+    FigureResult figure = 11;
+    ActiveEventResult active_event = 13;
+    ExampleList examples = 14;
+    BundleResult bundle = 15;
+    FileBlob blob = 16;
+    LoadBytesResult load_bytes = 17;
     Cancelled cancelled = 18;
     Stale stale = 19;
     IngestMiniSeedResult ingest = 20;
   }
 }
 
-// The single source of truth for the bridge boundary: bridge.py implements one
-// handler per rpc (typed proto request -> typed proto response), and the Rust
-// client + Python dispatcher are generated from this so a method can never be
-// wired to the wrong request or response type. Responses cross the wire wrapped
-// in BridgeResult (the matching oneof variant, or BridgeError); the generated
-// glue unwraps that.
+// The single source of truth for the bridge boundary.
+// bridge.py implements one handler per rpc (typed proto request -> typed proto
+// response), and the Rust client and Python dispatcher are generated from this,
+// so a method can never be wired to the wrong request or response type.
+// Responses cross the wire wrapped in BridgeResult (the matching oneof variant,
+// or BridgeError), and the generated glue unwraps that.
 //
-// The Pyodide worker relays every ordinary method to bridge.py. Network rpcs do
-// their own HTTP in Python via pyodide-http's pyfetch. MountGfStore is the one
-// typed rpc with worker-side setup: the picked browser directory handle rides
-// beside the protobuf request (it cannot be serialized into it), the worker
-// mounts it, and Python labels the mounted store.
+// The Pyodide worker relays every ordinary method to bridge.py.
+// Network rpcs do their own HTTP in Python via pyodide-http's pyfetch.
+// MountGfStore is the one typed rpc with worker-side setup: the picked browser
+// directory handle rides beside the protobuf request (it cannot be serialized
+// into it), the worker mounts it, and Python labels the mounted store.
 //
 // Two transport details ride ALONGSIDE these messages, never inside the oneof:
 // the zero-copy float32 `ys` buffer returned with GetView, and (for
@@ -287,15 +290,6 @@ service BridgeService {
       policy: ACTIVITY_POLICY_LATEST_WINS
       session_access: SESSION_ACCESS_READ_ONLY
       cancellation: CANCELLATION_SUPPORT_SUPPORTED
-    };
-  }
-  rpc StationDistances(Empty) returns (StationDistanceList) {
-    option (activity) = {
-      label: "Computing station distances"
-      lane: ACTIVITY_LANE_JOB
-      policy: ACTIVITY_POLICY_DEDUP
-      session_access: SESSION_ACCESS_READ_ONLY
-      cancellation: CANCELLATION_SUPPORT_NOT_SUPPORTED
     };
   }
   rpc SetActiveEvent(SetActiveEventRequest) returns (ActiveEventResult) {

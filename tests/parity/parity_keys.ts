@@ -7,7 +7,7 @@
 
 /// What to do to the keyboard for one token: `press` for a named key or a combination,
 /// `type` for a character whose key name depends on the layout.
-export interface KeyAction {
+interface KeyAction {
   kind: "press" | "type";
   value: string;
 }
@@ -71,7 +71,7 @@ function character(base: string): KeyAction {
   return { kind: "press", value: base };
 }
 
-export function keyActions(token: string): KeyAction[] {
+function keyActions(token: string): KeyAction[] {
   return token
     .split(",")
     .map((part) => part.trim())

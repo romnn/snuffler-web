@@ -154,10 +154,7 @@ def build(out: Path, force: bool = False) -> List[Dict[str, Any]]:
             changed = _write_if_changed(target, payload)
         index.append(
             {
-                **{
-                    key: entry[key]
-                    for key in ("slug", "title", "blurb", "characteristics", "citation")
-                },
+                **{key: entry[key] for key in ("slug", "title", "blurb", "characteristics")},
                 "url": f"assets/examples/{slug}.zip",
                 "bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),

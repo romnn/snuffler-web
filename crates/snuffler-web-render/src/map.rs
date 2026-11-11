@@ -11,28 +11,31 @@ use emath::{Pos2, Rect, Vec2, pos2};
 /// Side length of one raster tile, in map pixels at its own zoom level.
 pub const TILE_SIZE: f64 = 256.0;
 
-/// Latitude where the Web-Mercator projection runs away to infinity. Cutting the
-/// world here is what makes it exactly square, and every tile server does it.
+/// Latitude where the Web-Mercator projection runs away to infinity.
+/// Cutting the world here is what makes it exactly square, and every tile server does it.
 pub const MAX_LATITUDE: f64 = 85.051_128_78;
 
 /// Deepest zoom level the raster basemaps serve.
 pub const MAX_ZOOM: f64 = 18.0;
 
-/// How fast the zoom converges on its target, in rad/s. A critically damped
-/// spring is ~99% of the way there after `5 / omega` seconds, so this is a
-/// ~310 ms glide: long enough to read as motion, short enough to feel direct.
+/// How fast the zoom converges on its target, in rad/s.
+///
+/// A critically damped spring is ~99% of the way there after `5 / omega` seconds, so
+/// this is a ~310 ms glide: long enough to read as motion, short enough to feel direct.
 const ZOOM_OMEGA: f64 = 16.0;
 
-/// Same, for the recentring that `fit` asks for. Slower than the zoom so a fit
-/// reads as one camera move rather than two racing ones.
+/// Same, for the recentring that `fit` asks for.
+/// Slower than the zoom so a fit reads as one camera move rather than two racing ones.
 const PAN_OMEGA: f64 = 11.0;
 
-/// Zoom levels below which the zoom spring is considered parked. A twentieth of a
-/// level is well under one pixel of tile scale.
+/// Zoom levels below which the zoom spring is considered parked.
+/// A thousandth of a level is well under one pixel of tile scale.
 const ZOOM_EPSILON: f64 = 0.001;
 
-/// A backgrounded tab hands back one enormous frame delta on return; stepping the
-/// springs by it would teleport the camera. Cap the step instead.
+/// Longest spring step, in seconds.
+///
+/// A backgrounded tab hands back one enormous frame delta on return, and stepping the
+/// springs by it would teleport the camera.
 const MAX_STEP_SECONDS: f64 = 1.0 / 15.0;
 
 /// Fraction of the viewport a [`Camera::fit`] fills, leaving a margin so markers
@@ -68,27 +71,17 @@ impl World {
                 .clamp(0.0, 1.0),
         }
     }
-
-    /// Inverts [`World::from_lat_lon`], returning `(lat, lon)` in degrees.
-    #[must_use]
-    pub fn to_lat_lon(self) -> (f64, f64) {
-        let lat = std::f64::consts::PI
-            .mul_add(-2.0 * self.y, std::f64::consts::PI)
-            .sinh()
-            .atan()
-            .to_degrees();
-        (lat, self.x.mul_add(360.0, -180.0))
-    }
 }
 
 /// A critically damped spring.
 ///
 /// Critically damped is the whole point: it eases *in* from rest and *out* into
 /// its target without ever overshooting, and re-aiming it mid-flight carries the
-/// current velocity over instead of restarting — which is what a wheel does when
-/// it fires three notches in as many frames. The step below is the closed-form
-/// solution, so it is exact and stable at any frame rate rather than an Euler
-/// integration that blows up on a long frame.
+/// current velocity over instead of restarting, which is what a wheel does when
+/// it fires three notches in as many frames.
+///
+/// The step is the closed-form solution, so it is exact and stable at any frame
+/// rate rather than an Euler integration that blows up on a long frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Spring {
     value: f64,
@@ -200,11 +193,11 @@ pub fn ease_out(t: f64) -> f64 {
 /// happened — is what makes the map zoom *towards* something: the centre is
 /// re-derived from this every frame rather than interpolated in world space.
 ///
-/// That distinction is the whole point. World-space interpolation looks correct
-/// and is not: the scale grows exponentially while the pan shrinks linearly, so
-/// their product — where the target actually appears — swings *outward* before
-/// coming back. Deciding where the point should sit on screen and solving for the
-/// centre inverts that, and the target simply slides in.
+/// World-space interpolation looks correct and is not: the scale grows
+/// exponentially while the pan shrinks linearly, so their product (where the
+/// target actually appears) swings *outward* before coming back.
+/// Deciding where the point should sit on screen and solving for the centre
+/// inverts that, and the target simply slides in.
 #[derive(Clone, Copy, Debug)]
 struct Anchor {
     /// The world point being held.
@@ -273,13 +266,6 @@ impl Camera {
     #[must_use]
     pub fn zoom(self) -> f64 {
         self.zoom.value()
-    }
-
-    /// The zoom the camera is heading for; the next wheel notch adds to this, not
-    /// to the animated value, so notches accumulate instead of cancelling.
-    #[must_use]
-    pub fn zoom_target(self) -> f64 {
-        self.zoom.target()
     }
 
     /// The world position at the centre of the viewport.
@@ -453,8 +439,10 @@ impl Camera {
         self.clamp_to_world(viewport);
     }
 
-    /// Where framing `bounds` in `viewport` puts the camera. Shared by both fit
-    /// paths, so an eased fit and a cut can never disagree about the destination.
+    /// Where framing `bounds` in `viewport` puts the camera.
+    ///
+    /// Shared by both fit paths, so an eased fit and a cut can never disagree about
+    /// the destination.
     fn framing(bounds: GeoBounds, viewport: Rect) -> (World, f64) {
         let (north_west, south_east) = bounds.corners();
         let center = World {
@@ -537,12 +525,10 @@ impl Camera {
     /// Confines the centre so the viewport never leaves the world.
     ///
     /// The value is bounded at the zoom being *drawn*, and the target at the zoom
-    /// it is *heading for* — they are different limits whenever a zoom is in
-    /// flight, and conflating them is a real bug rather than a nicety. Bounding
-    /// the target at the current zoom means a fit that zooms in gets its centre
-    /// clipped to what the old, wider view allowed: pressing Fit from far out
-    /// would land short and leave an edge station off screen, and only a second
-    /// press — by then already at the fitted zoom — would frame it properly.
+    /// it is *heading for*; they differ whenever a zoom is in flight.
+    /// Bounding the target at the current zoom would clip a zooming-in fit's centre
+    /// to what the old, wider view allowed, so Fit from far out would land short of
+    /// an edge station.
     fn clamp_to_world(&mut self, viewport: Rect) {
         let (drawn, heading_for) = (self.zoom.value(), self.zoom.target());
         for (spring, extent) in [
@@ -593,18 +579,6 @@ impl TileGrid {
     pub fn tiles(&self) -> impl Iterator<Item = (u32, u32)> {
         let (x, y) = (self.x.clone(), self.y.clone());
         y.flat_map(move |row| x.clone().map(move |column| (column, row)))
-    }
-
-    /// How many tiles the grid holds.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        (self.x.end() - self.x.start() + 1) as usize * (self.y.end() - self.y.start() + 1) as usize
-    }
-
-    /// Whether the grid covers nothing (it never does; present for `len`'s sake).
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Fetch order for a tile: squared tile distance from the middle of the grid.
@@ -718,17 +692,6 @@ mod tests {
             }
         }
         bail!("the camera never settled")
-    }
-
-    #[test]
-    fn projecting_a_coordinate_round_trips() {
-        for &(lat, lon) in &[(0.0, 0.0), (27.83, 140.49), (-33.9, -18.4), (85.0, 179.9)] {
-            let (back_lat, back_lon) = World::from_lat_lon(lat, lon).to_lat_lon();
-            assert!(
-                (back_lat - lat).abs() < 1e-9 && (back_lon - lon).abs() < 1e-9,
-                "{lat},{lon} came back as {back_lat},{back_lon}"
-            );
-        }
     }
 
     #[test]
@@ -913,10 +876,6 @@ mod tests {
                 grid.x.end(),
                 grid.y.end()
             );
-            ensure!(
-                grid.len() == grid.tiles().count(),
-                "len disagrees with tiles"
-            );
         }
         Ok(())
     }
@@ -938,7 +897,7 @@ mod tests {
 
     /// A regional network: close enough together that a fit has to zoom in, and
     /// far enough from the antimeridian that a centre clamped at the wrong scale
-    /// lands visibly wrong. This is the shape that caught the fit-lands-short bug.
+    /// lands visibly wrong.
     const REGIONAL: [(f64, f64); 4] = [
         (34.95, -106.46),
         (33.61, -116.46),
@@ -1213,7 +1172,7 @@ mod tests {
     #[test]
     fn a_fit_puts_every_point_on_screen() -> eyre::Result<()> {
         let viewport = viewport();
-        // The Bonin Islands example: six GSN stations spread most of a hemisphere.
+        // The Bonin Islands example: seven GSN stations spread most of a hemisphere.
         let stations = [
             (34.95, -106.46),
             (64.87, -147.86),

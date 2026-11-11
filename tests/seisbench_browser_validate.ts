@@ -36,12 +36,7 @@ interface ModelSpec {
 // What the bundled bridge module (web/bridge.ts -> web/gen/bridge.js) exposes of
 // itself to this harness.
 interface BridgeModule {
-  call(
-    method: string,
-    request: Uint8Array,
-    ys: Uint8Array,
-    jobId: bigint
-  ): Promise<{ result: Uint8Array }>;
+  call(method: string, request: Uint8Array, jobId: bigint): Promise<{ result: Uint8Array }>;
   seisbenchDevice(): Uint8Array;
   takeOperationEvents(): Uint8Array[];
 }
@@ -148,10 +143,10 @@ function browserArgs(disableWebgpu: boolean): string[] {
     "--disable-search-engine-choice-screen",
   ];
   if (disableWebgpu) {
-    // WebGPU is stable in current Chromium, so the interface itself can no
-    // longer be removed (--disable-webgpu / --disable-features=WebGPU are
-    // retired and silently ignored). What the app actually branches on is
-    // `requestAdapter()` handing back an adapter, so deny the adapter instead:
+    // WebGPU is stable in current Chromium, so the interface itself cannot be
+    // removed (--disable-webgpu / --disable-features=WebGPU are silently ignored).
+    // What the app actually branches on is `requestAdapter()` handing back an
+    // adapter, so deny the adapter instead:
     // with the GPU process disabled it resolves null — in workers too, where
     // the bridge makes its device choice — and the CPU (wasm) provider wins.
     args.push("--disable-gpu");
@@ -200,7 +195,7 @@ async function callBridge(
         async ({ moduleUrl: href, method: rpcMethod, request }) => {
           const bridge = (await import(href)) as BridgeModule;
           bridge.takeOperationEvents();
-          const out = await bridge.call(rpcMethod, new Uint8Array(request), new Uint8Array(), 999n);
+          const out = await bridge.call(rpcMethod, new Uint8Array(request), 999n);
           return {
             result: Array.from(out.result),
             device: Array.from(bridge.seisbenchDevice()),
@@ -263,13 +258,11 @@ async function concurrentViewProbe(
     async ({ href, runMethod, viewMethod, runBytes, viewBytes }) => {
       const bridge = (await import(href)) as BridgeModule;
       let runFinished = false;
-      const run = bridge
-        .call(runMethod, new Uint8Array(runBytes), new Uint8Array(), 2001n)
-        .finally(() => {
-          runFinished = true;
-        });
+      const run = bridge.call(runMethod, new Uint8Array(runBytes), 2001n).finally(() => {
+        runFinished = true;
+      });
       await new Promise((resolve) => setTimeout(resolve, 25));
-      await bridge.call(viewMethod, new Uint8Array(viewBytes), new Uint8Array(), 2002n);
+      await bridge.call(viewMethod, new Uint8Array(viewBytes), 2002n);
       const viewFinishedFirst = !runFinished;
       await run;
       return viewFinishedFirst;
@@ -322,10 +315,10 @@ async function runBrowserPass({
         consoleErrors.push(`pageerror: ${error.message}`);
       });
       try {
-        // `?demo=1` keeps the boot load synthetic. The scene under test is built by
-        // calling MakeExample below, so what the UI holds is irrelevant — but the app
-        // now opens on a recorded dataset by default, and fetching megabytes of
-        // waveforms would only take CPU away from the inference being measured.
+        // `?demo=1` keeps the boot load synthetic.
+        // The scene under test is built by calling MakeExample below, so what the UI
+        // holds is irrelevant, but the app opens on a recorded dataset by default, and
+        // fetching megabytes of waveforms would take CPU away from the inference.
         await page.goto(demoUrl(BASE_URL), { waitUntil: "domcontentloaded" });
         await page.waitForLoadState("load");
         await page.waitForTimeout(500);

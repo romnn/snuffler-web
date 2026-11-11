@@ -76,9 +76,9 @@ type ActivityJobs = Rc<Vec<(JobHandle, JobRecord)>>;
 #[derive(Default)]
 struct Inner {
     activity: ActivityLedger,
-    /// The last runtime epoch observed by [`web::sync_runtime`]. A change with no
-    /// RPC in flight is the only evidence of an idle worker death, so the sync
-    /// poll compares against this to report the loss exactly once.
+    /// The last runtime epoch observed by [`web::sync_runtime`].
+    /// A change with no RPC in flight is the only evidence of an idle worker death, so
+    /// the sync poll compares against this to report the loss exactly once.
     runtime_epoch: Option<crate::activity::RuntimeEpoch>,
     /// The record snapshot handed to the per-frame activity UI, keyed by the
     /// ledger revision it was built from, so idle frames share one allocation.
@@ -93,8 +93,9 @@ struct Inner {
     view: Option<Arc<ViewData>>,
     /// Incremented whenever new view data lands (for texture caching).
     view_epoch: u64,
-    /// Latest render of each open figure window (amplitude spectrum, cake, …),
-    /// keyed by figure kind. See [`FigureSlot`].
+    /// Latest render of each open figure window (amplitude spectrum, cake, …), keyed by
+    /// figure kind.
+    /// See [`FigureSlot`].
     figures: std::collections::HashMap<String, FigureSlot>,
     snuffling: Option<SnufflingResult>,
     snuffling_gen: u64,
@@ -105,28 +106,22 @@ struct Inner {
     map_request: Option<MapRequest>,
     map_request_gen: u64,
     map_job: Option<JobHandle>,
-    /// Great-circle distance (degrees) from the active event to each station,
-    /// keyed by (net, sta), for the marker editor's distance column. Refetched
-    /// when the snuffling generation it was computed for changes.
-    station_dists: std::collections::HashMap<(String, String), f64>,
-    station_dists_gen: Option<(u64, u64)>,
-    station_dists_job: Option<JobHandle>,
     /// Bumped whenever Python returns a canonical event-state projection.
     active_event_gen: u64,
     event_state: Option<ActiveEventResult>,
     tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
-    /// Bumped by [`Bridge::clear_tiles`]. Tiles are keyed by `(z, x, y)` alone, so
-    /// a fetch still in flight when the basemap changes would otherwise land in
-    /// the cleared map under the same key as its replacement.
+    /// Bumped by [`Bridge::clear_tiles`].
+    /// Tiles are keyed by `(z, x, y)` alone, so a fetch still in flight when the basemap
+    /// changes would otherwise land in the cleared map under the same key as its
+    /// replacement.
     tile_epoch: u64,
-    /// Wanted tiles that no batch has started yet, ordered by priority. Replaced
-    /// wholesale on every [`Bridge::request_tiles`], which is what lets a zoom or
-    /// a pan abandon the tiles it just moved away from instead of fetching them.
+    /// Wanted tiles that no batch has started yet, ordered by priority.
+    /// Replaced wholesale on every [`Bridge::request_tiles`], which is what lets a zoom
+    /// or a pan abandon the tiles it just moved away from instead of fetching them.
     tile_queue: Vec<TileRequest>,
     /// How many batches are out; see [`TILE_BATCHES_IN_FLIGHT`].
     tile_batches: usize,
     view_job: Option<(JobHandle, ViewParams)>,
-    view_last_error: Option<BridgeError>,
     view_retry_after_s: f64,
     next_view_sequence: u64,
     python_session_generation: u64,
@@ -147,9 +142,10 @@ struct Inner {
     /// Follow-viewport width of the active live session, from its start form
     /// (0.0 while no session runs; readers fall back to the default).
     live_seedlink_follow_s: f64,
-    /// The datasets `File ▸ Examples` offers, fetched the first time that menu is
-    /// opened rather than compiled in — so a deployment can gain an example
-    /// without a new wasm build. `None` until it has been asked for.
+    /// The datasets `File ▸ Examples` offers, fetched the first time that menu is opened
+    /// rather than compiled in — so a deployment can gain an example without a new wasm
+    /// build.
+    /// `None` until it has been asked for.
     examples: Option<Result<Vec<ExampleDataset>, BridgeError>>,
     examples_job: Option<JobHandle>,
     scientific_tools_requested: bool,
@@ -166,10 +162,10 @@ struct Inner {
     /// previous pile stops being about what is on screen without a single call
     /// site having to remember to clear it.
     dataset_note: Option<(u64, BundleAbout)>,
-    /// Whether that note has yet to be put on screen. A dataset introduces itself
-    /// once, when it arrives — which is a fact known here, at the arrival, rather
-    /// than something the frontend should have to infer by watching for the
-    /// generation to change.
+    /// Whether that note has yet to be put on screen.
+    /// A dataset introduces itself once, when it arrives — which is a fact known here, at
+    /// the arrival, rather than something the frontend should have to infer by watching
+    /// for the generation to change.
     dataset_note_unseen: bool,
 }
 
@@ -433,8 +429,9 @@ impl Bridge {
             })
     }
 
-    /// Take a pending `goto` (time, optional window length) set by a ':' command
-    /// for the session to apply. A window length zooms to match the date specificity.
+    /// Take a pending `goto` (time, optional window length) set by a ':' command for the
+    /// session to apply.
+    /// A window length zooms to match the date specificity.
     #[must_use]
     pub fn take_goto(&self) -> Option<(f64, Option<f64>)> {
         self.inner.borrow_mut().pending_goto.take()
@@ -548,17 +545,6 @@ impl Bridge {
     #[must_use]
     pub fn map_request_is_current(&self, request: &MapRequest) -> bool {
         self.inner.borrow().map_request.as_ref() == Some(request)
-    }
-
-    /// Great-circle distance (degrees) from the active event to a station, if
-    /// station coordinates + an active event are known (else `None`).
-    #[must_use]
-    pub fn station_distance(&self, net: &str, sta: &str) -> Option<f64> {
-        self.inner
-            .borrow()
-            .station_dists
-            .get(&(net.to_owned(), sta.to_owned()))
-            .copied()
     }
 
     /// Generation counter bumped on each active-event change.

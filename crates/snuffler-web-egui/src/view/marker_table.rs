@@ -14,7 +14,6 @@ pub struct MarkerTable {
     edit: Option<(MarkerColumn, MarkerId, String)>,
     order: Vec<MarkerId>,
     order_key: Option<(u64, MarkerColumn, bool)>,
-    station_distances_requested: Option<(u64, u64)>,
 }
 
 impl Default for MarkerTable {
@@ -25,7 +24,6 @@ impl Default for MarkerTable {
             edit: None,
             order: Vec::new(),
             order_key: None,
-            station_distances_requested: None,
         }
     }
 }
@@ -42,11 +40,6 @@ impl MarkerTable {
             return None;
         }
 
-        let distance_key = (bridge.snuffling_gen(), bridge.active_event_gen());
-        if self.station_distances_requested != Some(distance_key) {
-            let _submission = bridge.ensure_station_distances(distance_key.0);
-            self.station_distances_requested = Some(distance_key);
-        }
         if self
             .edit
             .as_ref()
@@ -375,17 +368,17 @@ fn marker_row(
     // Editing still targets only the raw name, which is Qt's rename path.
     if marker.is_event {
         let shown = marker.event_label();
-        changed |= edit_text_cell_with_display(
+        changed |= edit_text_cell(
             ui,
             edit,
             row,
             MarkerColumn::Phase,
             &mut marker.event_name,
-            true,
             shown,
         );
     } else {
-        changed |= edit_text_cell(ui, edit, row, MarkerColumn::Phase, &mut marker.phase, true);
+        let shown = marker.phase.clone().unwrap_or_default();
+        changed |= edit_text_cell(ui, edit, row, MarkerColumn::Phase, &mut marker.phase, shown);
     }
     changed |= marker_identity_cells(ui, row, marker, edit);
     changed |= marker_geometry_cells(ui, row, marker, edit);
@@ -424,15 +417,20 @@ fn event_snapshot(marker: &Marker) -> Option<EventSnapshot> {
         name: marker.event_name.clone(),
         region: marker.region.clone(),
         catalog: marker.catalog.clone(),
-        moment_tensor: marker.moment_tensor.map(|tensor| MomentTensor {
-            mnn: tensor[0],
-            mee: tensor[1],
-            mdd: tensor[2],
-            mne: tensor[3],
-            mnd: tensor[4],
-            med: tensor[5],
-        }),
+        moment_tensor: marker.moment_tensor.map(moment_tensor),
     })
+}
+
+/// The wire form of a marker's `[mnn, mee, mdd, mne, mnd, med]` moment tensor.
+fn moment_tensor([mnn, mee, mdd, mne, mnd, med]: [f64; 6]) -> MomentTensor {
+    MomentTensor {
+        mnn,
+        mee,
+        mdd,
+        mne,
+        mnd,
+        med,
+    }
 }
 
 fn marker_identity_cells(
@@ -527,6 +525,8 @@ fn marker_actions(ui: &mut egui::Ui, marker: &Marker, output: &mut TableOutput) 
         }
     });
 }
+
+/// Converts markers to the bridge's marker-file message, in time order.
 pub fn markers_to_file(markers: &[Marker]) -> MarkerFile {
     // Qt keeps its markers in a `Sorted(..., 'tmin')` container
     // (pile_viewer.py:833), so a saved file is always in time order — sort here
@@ -559,14 +559,7 @@ pub fn markers_to_file(markers: &[Marker]) -> MarkerFile {
                 lat: m.lat,
                 lon: m.lon,
                 event_hash: m.event_hash.clone(),
-                moment_tensor: m.moment_tensor.map(|t| MomentTensor {
-                    mnn: t[0],
-                    mee: t[1],
-                    mdd: t[2],
-                    mne: t[3],
-                    mnd: t[4],
-                    med: t[5],
-                }),
+                moment_tensor: m.moment_tensor.map(moment_tensor),
                 // A hand pick's automatic flag saves `False`, never `None`, on a
                 // phase marker (Qt writes it unconditionally).
                 automatic: if m.is_event {
@@ -611,7 +604,7 @@ fn fmt_g5(v: f64) -> String {
 /// The channel column's text: every id dot-joined, ids pipe-joined — Qt's
 /// NSLCs cell (`'|'.join('.'.join(id))`, `marker_editor.py:513`). Empty when the
 /// marker applies to all tracks. Doubles as the column's sort key.
-pub fn nslc_key(m: &Marker) -> String {
+fn nslc_key(m: &Marker) -> String {
     m.nslc_ids
         .iter()
         .map(|(n, s, l, c)| format!("{n}.{s}.{l}.{c}"))
@@ -621,7 +614,7 @@ pub fn nslc_key(m: &Marker) -> String {
 
 /// A clickable marker-table column header: shows a ▲/▼ arrow on the active sort
 /// column, toggles direction on re-click, and starts ascending on a new column.
-pub fn sort_header(
+fn sort_header(
     ui: &mut egui::Ui,
     cur: &mut MarkerColumn,
     asc: &mut bool,
@@ -650,9 +643,10 @@ pub fn sort_header(
 
 /// A marker-table numeric cell that becomes an inline text editor on click and
 /// commits a valid parse on Enter/blur; an invalid parse is discarded (Qt's
-/// toFloat validity check). Non-editable cells render as a plain label.
+/// toFloat validity check).
+/// Non-editable cells render as a plain label.
 /// Returns whether a commit wrote the value this frame.
-pub fn edit_num_cell(
+fn edit_num_cell(
     ui: &mut egui::Ui,
     edit: &mut Option<(MarkerColumn, MarkerId, String)>,
     row: MarkerId,
@@ -693,34 +687,18 @@ pub fn edit_num_cell(
     false
 }
 
-/// A marker-table string cell (the phase name) with the same click-to-edit,
-/// commit-on-blur behaviour; empty commits clear the value. Returns whether a
-/// commit wrote the value this frame.
-pub fn edit_text_cell(
+/// A marker-table string cell showing `shown`, with the same click-to-edit,
+/// commit-on-blur behaviour as [`edit_num_cell`]; empty commits clear the value.
+///
+/// Returns whether a commit wrote the value this frame.
+fn edit_text_cell(
     ui: &mut egui::Ui,
     edit: &mut Option<(MarkerColumn, MarkerId, String)>,
     row: MarkerId,
     col: MarkerColumn,
     value: &mut Option<String>,
-    editable: bool,
-) -> bool {
-    let shown = value.clone().unwrap_or_default();
-    edit_text_cell_with_display(ui, edit, row, col, value, editable, shown)
-}
-
-fn edit_text_cell_with_display(
-    ui: &mut egui::Ui,
-    edit: &mut Option<(MarkerColumn, MarkerId, String)>,
-    row: MarkerId,
-    col: MarkerColumn,
-    value: &mut Option<String>,
-    editable: bool,
     shown: String,
 ) -> bool {
-    if !editable {
-        ui.label(shown);
-        return false;
-    }
     if matches!(edit, Some((c, r, _)) if *c == col && *r == row) {
         if let Some((_, _, buf)) = edit {
             let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(110.0));

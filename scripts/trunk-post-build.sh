@@ -43,9 +43,10 @@ copy_tree_if_newer() {
 
 # The core crate's wasm externs import bridge.js through a crate-escaping module
 # path (#[wasm_bindgen(module = "/../../web/gen/bridge.js")] in
-# crates/snuffler-web-core/src/bridge.rs). wasm-bindgen cannot embed a file from
-# outside the crate as a snippet, so the emitted import resolves to
-# web/gen/bridge.js under the site root — stage the bundle there.
+# crates/snuffler-web-core/src/bridge/web/mod.rs).
+# wasm-bindgen cannot embed a file from outside the crate as a snippet, so the
+# emitted import resolves to web/gen/bridge.js under the site root; stage the
+# bundle there.
 stage_bridge_module() {
     local bridge="$repo_dir/web/gen/bridge.js"
 
@@ -88,16 +89,13 @@ manifest_model_files() {
 }
 
 # Staging the weights is OPT-OUT, because the cargo feature that makes the app ask
-# for them — `embed-data` — is on by DEFAULT. Only the lean build turns that
-# feature off (and points the app at a remote SNUFFLER_ONNX_MODEL_BASE_URL
-# instead), so only the lean build sets SNUFFLER_EMBED_DATA=0.
-#
-# The polarity is the whole point: as opt-in, the two switches disagreed silently
-# in exactly one direction — default features (app requests assets/models/) with
-# the env unset (nothing copied) — which is what the GitHub Pages workflow did,
-# since it drove trunk directly and never saw the Task workflow's env. The deploy
-# succeeded and every pick run 404'd. Getting it wrong the other way round only
-# costs ~14 MB of unused files in dist.
+# for them, `embed-data`, is on by DEFAULT.
+# Only the lean build turns that feature off (and points the app at a remote
+# SNUFFLER_ONNX_MODEL_BASE_URL instead), so only the lean build sets
+# SNUFFLER_EMBED_DATA=0.
+# The polarity matters: a build that runs trunk directly, without the Task
+# workflow's env, must still ship the weights its default features request.
+# Getting it wrong the other way round only costs ~14 MB of unused files in dist.
 stage_seisbench_models() {
     local manifest="$repo_dir/web/assets/seisbench_models.json"
     local src="$repo_dir/web/assets/models"
@@ -279,7 +277,7 @@ stage_threaded_pyodide() {
     local src="$repo_dir/docker/pyodide-mt/served"
 
     if [ ! -d "$src" ]; then
-        echo "[py-mt] MISSING - the app will hang at boot; build it with docker/pyodide-mt/build-all.sh"
+        echo "[py-mt] MISSING - the app will hang at boot; run 'task pyodide:fetch' or docker/pyodide-mt/build-all.sh"
         return
     fi
 

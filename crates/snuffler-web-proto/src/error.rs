@@ -1,10 +1,10 @@
 //! What can go wrong on one trip across the bridge.
 //!
 //! Every `BridgeService` response is a `BridgeResult` envelope carrying either a
-//! payload or a `BridgeError` — pyrocko never raises across the JS boundary (see
-//! `AGENTS.md`). These types are the Rust half of that contract: the generated
-//! client from `build/client.rs` produces them, and they are the only way a bridge call
-//! reports failure.
+//! payload or a `BridgeError`, because pyrocko never raises across the JS boundary.
+//! These types are the Rust half of that contract: the generated client from
+//! `build/client.rs` produces them, and they are the only way a bridge call reports
+//! failure.
 
 use std::fmt;
 
@@ -12,10 +12,10 @@ use crate::bridge::v1 as pb;
 
 /// The bridge transport itself failed, before any envelope existed.
 ///
-/// The detail is whatever the browser threw — a JS exception carries no
-/// structure worth recovering, only a message — but the *type* still separates
-/// "the worker is gone" from a request pyrocko rejected, which are opposite
-/// problems: one is fatal and wants a reload, the other is the user's to fix.
+/// The detail is whatever the browser threw, since a JS exception carries no
+/// structure worth recovering.
+/// The *type* still separates "the worker is gone" from a request pyrocko
+/// rejected: one is fatal and wants a reload, the other is the user's to fix.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{method}: {detail}")]
 pub struct TransportError {
@@ -37,8 +37,8 @@ impl TransportError {
 
 /// The exception pyrocko raised, carried back as a DTO rather than thrown.
 ///
-/// Unlike the string this replaces, the traceback survives the trip: it is what
-/// makes a bug report actionable, and there is nowhere else to recover it from.
+/// The traceback travels with it because it is what makes a bug report
+/// actionable, and there is nowhere else to recover it from.
 #[derive(Clone, Debug, thiserror::Error)]
 pub struct RemoteError {
     /// The Python exception class, e.g. `ValueError`.
@@ -49,9 +49,10 @@ pub struct RemoteError {
     pub traceback: String,
 }
 
-// Handwritten rather than `#[error("{kind}: {message}")]`, which would render a
-// dangling separator for `raise ValueError()` — an exception is allowed to carry
-// no message at all. (thiserror's `fmt = ` escape hatch is enum-only.)
+// Handwritten rather than `#[error("{kind}: {message}")]`, which would render a dangling
+// separator for `raise ValueError()` — an exception is allowed to carry no message at
+// all.
+// (thiserror's `fmt = ` escape hatch is enum-only.)
 impl fmt::Display for RemoteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.message.is_empty() {
@@ -132,8 +133,9 @@ pub enum CallError {
 impl CallError {
     /// The pyrocko traceback behind this failure, when there is one.
     ///
-    /// Only a [`CallError::Remote`] has one; everything else went wrong on this
-    /// side of the boundary and has a Rust source chain instead.
+    /// Only a [`CallError::Remote`] has one.
+    /// Everything else went wrong on this side of the boundary and has a Rust
+    /// source chain instead.
     #[must_use]
     pub fn traceback(&self) -> Option<&str> {
         match self {
@@ -254,8 +256,7 @@ mod tests {
             remote.to_string() == "ValueError: no traces in that window",
             "the exception reads as {remote:?}"
         );
-        // The whole point of typing this: the traceback used to be dropped on the
-        // floor by the string formatting it replaces.
+        // The traceback survives the trip alongside the formatted message.
         ensure!(
             error.traceback() == Some("Traceback (most recent call last):\n  ..."),
             "the traceback came through as {:?}",

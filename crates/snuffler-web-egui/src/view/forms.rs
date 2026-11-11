@@ -271,8 +271,8 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
                     ui.end_row();
                 }
             });
-            // Qt's magnitude range runs to 10 (catalogs.py) — a cap at 9
-            // silently excludes the largest events there are.
+            // Qt's magnitude range runs to 10 (catalogs.py), so the largest events
+            // stay reachable.
             ui.add(egui::Slider::new(&mut state.cat_minmag, 0.0..=10.0).text("Min magnitude"));
             ui.checkbox(
                 &mut state.cat_with_mt,

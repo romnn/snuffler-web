@@ -1,12 +1,8 @@
-//! Translation of DOM keyboard input into [`egui::Event`]s.
+//! Translation of DOM keyboard input on a focused proxy into [`egui::Event`]s.
 //!
-//! Keyboard input is translated here rather than left to the web runner because the
-//! runner listens for keys on the canvas, and a focused proxy means the canvas does
-//! not have DOM focus — its listeners never fire.
-//!
-//! The module is target-independent on purpose: it consumes the plain
-//! [`accesskit_dom::KeyEvent`] rather than a `web-sys` handle, so the mapping is
-//! unit-tested on the host.
+//! The web runner listens for keys on the canvas, which has no DOM focus while a proxy does.
+//! The module consumes the plain [`accesskit_dom::KeyEvent`], so it is unit-tested on the
+//! host.
 
 use accesskit_dom::KeyEvent;
 
@@ -15,18 +11,15 @@ fn modifiers(event: &KeyEvent) -> egui::Modifiers {
         alt: event.alt,
         ctrl: event.ctrl,
         shift: event.shift,
-        // As in eframe's own web input: knowing whether this is a mac would let us
-        // be exact, and treating meta as command is close enough in practice.
+        // Meta counts as command without detecting macOS, as in eframe's own web input.
         mac_cmd: event.meta,
         command: event.ctrl || event.meta,
     }
 }
 
-/// Translate a DOM key event into egui events, reporting whether egui wants it.
+/// Appends the egui events for a DOM key event to `out` and returns whether egui wants it.
 ///
-/// Translated events are appended to `out`. A `false` return means the caller
-/// should leave the browser's own handling alone — most importantly for `Tab`,
-/// which has to keep moving DOM focus.
+/// On `false` the caller leaves the browser's own handling alone.
 pub fn translate(event: &KeyEvent, pressed: bool, out: &mut Vec<egui::Event>) -> bool {
     let modifiers = modifiers(event);
     let mut wanted = false;
@@ -43,9 +36,9 @@ pub fn translate(event: &KeyEvent, pressed: bool, out: &mut Vec<egui::Event>) ->
         wanted = true;
     }
 
-    // A printable key reports the character it produces as its whole name, so the
-    // named keys ("Enter", "ArrowUp", "F3", …) are exactly those longer than one
-    // scalar. Chords are shortcuts rather than text and must not be typed out.
+    // A printable key's name is the single character it produces, while named keys such as
+    // "Enter" are longer.
+    // Chords are shortcuts rather than text and must not be typed out.
     if pressed && !modifiers.command && !modifiers.alt {
         let mut chars = event.key.chars();
         if let (Some(ch), None) = (chars.next(), chars.next())

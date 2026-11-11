@@ -28,8 +28,8 @@ from typing import Any, Dict, List
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
 
-# The FDSN event service EarthScope used to run was retired in June 2026, so
-# origins come from the USGS regardless of who holds the waveforms.
+# EarthScope retired its FDSN event service in June 2026, so origins come from the
+# USGS regardless of who holds the waveforms.
 USGS = "https://earthquake.usgs.gov/fdsnws"
 
 REQUIRED = ("datacenter", "networks", "stations", "channels", "start", "end")

@@ -1,6 +1,7 @@
-// Thin browser-side client for the Pyodide worker. Rust calls this module via
-// wasm-bindgen; this module keeps DOM-only work on the main thread and sends
-// protobuf request bytes plus transferable buffers to web/bridge_worker.js.
+// Thin browser-side client for the Pyodide worker.
+// Rust calls this module via wasm-bindgen; it keeps DOM-only work on the main
+// thread and sends protobuf request bytes plus transferable buffers to
+// web/bridge_worker.ts.
 
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
@@ -39,7 +40,6 @@ import {
   type WorkerSuccessMessage,
 } from "./worker_protocol.js";
 
-const BRIDGE_PERF_LOG = false;
 const WORKER_BOOT_TIMEOUT_MS = 300_000;
 const NON_CANCELLABLE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_PENDING_REQUESTS = 8;
@@ -106,9 +106,6 @@ export function clearOpenSources() {
 type PendingRequest = {
   resolve: (msg: WorkerSuccessMessage) => void;
   reject: (err: Error) => void;
-  method: WorkerRequestMethod;
-  requestBytes: number;
-  sentMs: number;
   jobId: bigint;
   control: Int32Array;
   deadline: number | null;
@@ -191,8 +188,6 @@ function handleWorkerMessage(
   event: MessageEvent<WorkerMessage>
 ): void {
   if (worker !== instance || runtimeEpoch !== epoch) return;
-  const receivedMs = performance.now();
-  const receivedEpochMs = Date.now();
   const msg = event.data;
   if (msg.epoch !== epoch) return;
   if ("type" in msg) {
@@ -202,24 +197,6 @@ function handleWorkerMessage(
   const key = pendingRequestKey(epoch, msg.id);
   const slot = takePendingRequest(key);
   if (!slot) return;
-  if (msg.ok && BRIDGE_PERF_LOG && msg.perf && slot.method === BridgeMethod.getView) {
-    const workerToMainMs =
-      typeof msg.perf.worker_post_epoch_ms === "number"
-        ? receivedEpochMs - msg.perf.worker_post_epoch_ms
-        : NaN;
-    console.log(
-      "[bridge.js] " +
-        `method=getView total_ms=${(receivedMs - slot.sentMs).toFixed(2)} ` +
-        `worker_to_main_ms=${Number.isFinite(workerToMainMs) ? workerToMainMs.toFixed(2) : "n/a"} ` +
-        `py_call_ms=${(msg.perf.py_call_ms || 0).toFixed(2)} ` +
-        `shape_ms=${(msg.perf.shape_ms || 0).toFixed(2)} ` +
-        `result_copy_ms=${(msg.perf.result_copy_ms || 0).toFixed(2)} ` +
-        `buffer_view_ms=${(msg.perf.buffer_view_ms || 0).toFixed(2)} ` +
-        `ys_copy_ms=${(msg.perf.ys_copy_ms || 0).toFixed(2)} ` +
-        `request_bytes=${slot.requestBytes} result_bytes=${msg.perf.result_bytes || 0} ` +
-        `ys_bytes=${msg.perf.ys_bytes || 0}`
-    );
-  }
   if (msg.ok) slot.resolve(msg);
   else slot.reject(new Error(msg.error || "worker bridge request failed"));
 }
@@ -242,10 +219,7 @@ function ensureWorker(): Worker | null {
   // Adopt the worker index.html started at page load, which has had the whole
   // wasm download to get Python going; only fall back to creating one here if
   // that early start was skipped (no cross-origin isolation yet).
-  //
-  // Pyodide 314 rejects classic workers on BOTH paths — the threaded build
-  // spawns its pthread workers as ES modules, and even the stock single-threaded
-  // 314 CDN build refuses a classic worker — so always use a module worker.
+  // Pyodide 314 rejects classic workers, so this is always a module worker.
   const early = window.__snufflerWorker;
   if (early) runtimeEpoch = early.epoch;
   const epoch = runtimeEpoch;
@@ -382,12 +356,10 @@ function send(
   method: WorkerRequestMethod,
   {
     request = null,
-    data = null,
     handle = null,
     jobId,
   }: {
     request?: Uint8Array | null;
-    data?: Uint8Array | null;
     handle?: FileSystemDirectoryHandle | null;
     jobId: bigint;
   }
@@ -424,21 +396,12 @@ function send(
     transfer.push(req.buffer);
   }
 
-  const bytes = copyBytes(data);
-  if (bytes) {
-    payload.data = bytes;
-    transfer.push(bytes.buffer);
-  }
-
   if (handle != null) payload.handle = handle;
 
   const promise = new Promise<WorkerSuccessMessage>((resolve, reject) => {
     pendingRequests.set(key, {
       resolve,
       reject,
-      method,
-      requestBytes: req ? req.byteLength : 0,
-      sentMs: performance.now(),
       jobId: BigInt(jobId),
       control,
       deadline: null,
@@ -480,9 +443,8 @@ export function cancelJob(requestBytes): Uint8Array {
   return toBinary(CancelJobReplySchema, create(CancelJobReplySchema, { disposition }));
 }
 
-// Both data helpers now carry the BridgeResult envelope bytes in `result`
-// (success variant OR BridgeError); Rust decodes the oneof. rpcBytes returns the
-// envelope bytes; rpcResultWithBuffer additionally carries the zero-copy ys buffer.
+// Both helpers return the BridgeResult envelope bytes, which Rust decodes;
+// rpcResultWithBuffer additionally carries the zero-copy ys buffer.
 async function rpcBytes(
   method: WorkerRequestMethod,
   args: Parameters<typeof send>[1]
@@ -525,35 +487,24 @@ const BOOT_DONE_METHODS: BridgeMethodId[] = [
   BridgeMethod.listExamples,
 ];
 
-// The single transport seam Rust (src/bridge.rs) calls for every unary proto rpc:
-// forward (method, request) to the worker and return the BridgeResult envelope
-// bytes plus the optional out-of-band zero-copy ys buffer. The worker is a dumb
-// relay; bridge.py runs the rpc. The DOM-only browser glue keeps its own exports
-// below.
-export async function call(
-  method: BridgeMethodId,
-  request: Uint8Array,
-  data: Uint8Array,
-  jobId: bigint
-) {
+// The single transport seam Rust calls for every unary proto rpc: forward
+// (method, request) to the worker and return the BridgeResult envelope bytes plus
+// the optional out-of-band zero-copy ys buffer.
+// The DOM-only browser glue keeps its own exports below.
+export async function call(method: BridgeMethodId, request: Uint8Array, jobId: bigint) {
   let out;
   try {
-    out = await rpcResultWithBuffer(method, { request, data, jobId });
+    out = await rpcResultWithBuffer(method, { request, jobId });
   } finally {
     // Complete the loading overlay once the first post-boot work has settled; the
-    // boot sequence itself stops at 0.97. Not just the synthetic example: an app
-    // opened on `?example=<slug>` loads a bundle instead, and keying the splash on
-    // one rpc left it up at 97% forever with the waveforms drawn underneath.
-    // In `finally`, because a load that *failed* must reveal the app too — the
-    // error it produced is in the status line behind the splash.
+    // boot sequence itself stops at 0.97.
+    // In `finally`, because a failed load must reveal the app too: its error is
+    // in the status line behind the splash.
     if (!bootOverlayDone && BOOT_DONE_METHODS.includes(method)) {
       bootOverlayDone = true;
       reportBootProgress(1.0, "Ready");
     }
   }
-  // After the FIRST view, not the first scene: the scene is only data, the view is
-  // what gets painted, and warming ahead of it just moves the wait in front of the
-  // frame the user is waiting for.
   return out;
 }
 
@@ -881,10 +832,8 @@ export async function downloadFile(bytes, filename, mime) {
 }
 
 export async function savePng(bytes, filename) {
-  // `bytes` is a wasm-bindgen view over the egui WASM heap, which is a
-  // SharedArrayBuffer on this threaded build; the Blob constructor rejects shared
-  // views ("must not be shared"). copyBytes() lifts it into a private,
-  // non-shared buffer first (same trick wasm-bindgen uses for strings).
+  // `bytes` is a wasm-bindgen view over the shared egui WASM heap, which the Blob
+  // constructor rejects, so the browser receives a private copy.
   const blob = new Blob([copyBytes(bytes) ?? new Uint8Array()], { type: "image/png" });
   await saveBlob(blob, filename || "snuffler.png");
 }

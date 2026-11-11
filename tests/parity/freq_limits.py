@@ -6,7 +6,7 @@ is worth checking over a grid rather than at the single point some scenario happ
 to reach, because the two disagree only in the corners: near Nyquist, at very short
 traces, with one corner set and not the other.
 
-Run through :mod:`run_oracle`, or directly for the grid on its own.
+Run through :mod:`run_oracle` (``task test:parity -- decon-freq-limits`` alone).
 """
 
 from __future__ import annotations
@@ -67,20 +67,3 @@ def run(view: object) -> Tuple[int, List[str]]:
                 f"web {actual} vs Qt {expected}"
             )
     return points, failures
-
-
-def main() -> int:
-    import qt_oracle
-    from corpus import build as corpus_build
-
-    viewer = qt_oracle.QtViewer([corpus_build.path("oddrate.mseed")])
-    points, failures = run(viewer.view)
-    viewer.close()
-    print(f"{points - len(failures)}/{points} grid points agree")
-    for failure in failures[:20]:
-        print(f"  {failure}")
-    return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

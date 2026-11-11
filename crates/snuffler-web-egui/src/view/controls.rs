@@ -77,32 +77,85 @@ fn unit_to_filter(unit: f64, min_hz: f64, max_hz: f64) -> f64 {
     min_hz * (max_hz / min_hz).powf(unit.clamp(0.0, 1.0))
 }
 
-fn highpass_to_pos(value: Option<f64>, min_hz: f64, max_hz: f64) -> f64 {
-    let Some(hz) = value else {
-        return 0.0;
-    };
-    filter_to_unit(hz, min_hz, max_hz)
+/// Which of the two filter corners a control row edits.
+#[derive(Clone, Copy)]
+enum Corner {
+    Highpass,
+    Lowpass,
 }
 
-fn pos_to_highpass(pos: f64, min_hz: f64, max_hz: f64) -> Option<f64> {
-    if pos <= 0.0 {
-        return None;
+impl Corner {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Highpass => "Highpass [Hz]:",
+            Self::Lowpass => "Lowpass [Hz]:",
+        }
     }
-    Some(unit_to_filter(pos, min_hz, max_hz))
-}
 
-fn lowpass_to_pos(value: Option<f64>, min_hz: f64, max_hz: f64) -> f64 {
-    let Some(hz) = value else {
-        return 1.0;
-    };
-    filter_to_unit(hz, min_hz, max_hz)
-}
-
-fn pos_to_lowpass(pos: f64, min_hz: f64, max_hz: f64) -> Option<f64> {
-    if pos >= 1.0 {
-        return None;
+    /// Slider position of a corner; "off" sits at the end that filters nothing.
+    fn slider_pos(self, value: Option<f64>, min_hz: f64, max_hz: f64) -> f64 {
+        match (self, value) {
+            (_, Some(hz)) => filter_to_unit(hz, min_hz, max_hz),
+            (Self::Highpass, None) => 0.0,
+            (Self::Lowpass, None) => 1.0,
+        }
     }
-    Some(unit_to_filter(pos, min_hz, max_hz))
+
+    /// The corner a slider position selects; its "off" end turns the filter off.
+    fn value_at(self, pos: f64, min_hz: f64, max_hz: f64) -> Option<f64> {
+        let off = match self {
+            Self::Highpass => pos <= 0.0,
+            Self::Lowpass => pos >= 1.0,
+        };
+        (!off).then(|| unit_to_filter(pos, min_hz, max_hz))
+    }
+}
+
+/// One filter-corner row: a double-click on the label switches it off, the
+/// slider and the text field set it, and `last_hz` remembers the last corner
+/// that was on.
+fn filter_row(
+    ui: &mut egui::Ui,
+    corner: Corner,
+    value: &mut Option<f64>,
+    text: &mut String,
+    last_hz: &mut f64,
+    (min_hz, max_hz): (f64, f64),
+) {
+    let mut pos = corner.slider_pos(*value, min_hz, max_hz);
+    let mut slider_changed = false;
+    let row = control_row(ui, corner.label(), text, format_hz(*value), |ui| {
+        slider_changed = ui
+            .add(egui::Slider::new(&mut pos, 0.0..=1.0).show_value(false))
+            .changed();
+    });
+    if row.label.double_clicked() {
+        *value = None;
+        *text = format_hz(*value);
+    } else if slider_changed {
+        *value = corner.value_at(pos, min_hz, max_hz);
+        if let Some(hz) = *value {
+            *last_hz = hz;
+        }
+        if !row.value.has_focus() {
+            *text = format_hz(*value);
+        }
+    } else if value_committed(ui, &row.value) {
+        if let Some(parsed) = parse_hz(text, min_hz, max_hz) {
+            *value = match parsed {
+                ParsedFilter::Off => None,
+                ParsedFilter::Hz(hz) => Some(hz),
+            };
+            if let Some(hz) = *value {
+                *last_hz = hz;
+            }
+            if row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                *text = format_hz(*value);
+            }
+        } else if row.value.lost_focus() {
+            *text = format_hz(*value);
+        }
+    }
 }
 
 struct ControlRowResponse {
@@ -182,87 +235,22 @@ pub fn show(
         }
     }
 
-    let mut highpass_pos = highpass_to_pos(state.highpass, min_hz, max_hz);
-    let mut highpass_slider_changed = false;
-    let highpass_row = control_row(
+    filter_row(
         ui,
-        "Highpass [Hz]:",
+        Corner::Highpass,
+        &mut state.highpass,
         &mut state.highpass_text,
-        format_hz(state.highpass),
-        |ui| {
-            highpass_slider_changed = ui
-                .add(egui::Slider::new(&mut highpass_pos, 0.0..=1.0).show_value(false))
-                .changed();
-        },
+        &mut state.highpass_hz,
+        (min_hz, max_hz),
     );
-    if highpass_row.label.double_clicked() {
-        state.highpass = None;
-        state.highpass_text = format_hz(state.highpass);
-    } else if highpass_slider_changed {
-        state.highpass = pos_to_highpass(highpass_pos, min_hz, max_hz);
-        if let Some(hz) = state.highpass {
-            state.highpass_hz = hz;
-        }
-        if !highpass_row.value.has_focus() {
-            state.highpass_text = format_hz(state.highpass);
-        }
-    } else if value_committed(ui, &highpass_row.value) {
-        if let Some(parsed) = parse_hz(&state.highpass_text, min_hz, max_hz) {
-            state.highpass = match parsed {
-                ParsedFilter::Off => None,
-                ParsedFilter::Hz(hz) => Some(hz),
-            };
-            if let Some(hz) = state.highpass {
-                state.highpass_hz = hz;
-            }
-            if highpass_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                state.highpass_text = format_hz(state.highpass);
-            }
-        } else if highpass_row.value.lost_focus() {
-            state.highpass_text = format_hz(state.highpass);
-        }
-    }
-
-    let mut lowpass_pos = lowpass_to_pos(state.lowpass, min_hz, max_hz);
-    let mut lowpass_slider_changed = false;
-    let lowpass_row = control_row(
+    filter_row(
         ui,
-        "Lowpass [Hz]:",
+        Corner::Lowpass,
+        &mut state.lowpass,
         &mut state.lowpass_text,
-        format_hz(state.lowpass),
-        |ui| {
-            lowpass_slider_changed = ui
-                .add(egui::Slider::new(&mut lowpass_pos, 0.0..=1.0).show_value(false))
-                .changed();
-        },
+        &mut state.lowpass_hz,
+        (min_hz, max_hz),
     );
-    if lowpass_row.label.double_clicked() {
-        state.lowpass = None;
-        state.lowpass_text = format_hz(state.lowpass);
-    } else if lowpass_slider_changed {
-        state.lowpass = pos_to_lowpass(lowpass_pos, min_hz, max_hz);
-        if let Some(hz) = state.lowpass {
-            state.lowpass_hz = hz;
-        }
-        if !lowpass_row.value.has_focus() {
-            state.lowpass_text = format_hz(state.lowpass);
-        }
-    } else if value_committed(ui, &lowpass_row.value) {
-        if let Some(parsed) = parse_hz(&state.lowpass_text, min_hz, max_hz) {
-            state.lowpass = match parsed {
-                ParsedFilter::Off => None,
-                ParsedFilter::Hz(hz) => Some(hz),
-            };
-            if let Some(hz) = state.lowpass {
-                state.lowpass_hz = hz;
-            }
-            if lowpass_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                state.lowpass_text = format_hz(state.lowpass);
-            }
-        } else if lowpass_row.value.lost_focus() {
-            state.lowpass_text = format_hz(state.lowpass);
-        }
-    }
 
     // snuffler's passband_check warning is posted to the permanent status line
     // (`app.rs`), the counterpart of Qt's status area — a warning drawn here

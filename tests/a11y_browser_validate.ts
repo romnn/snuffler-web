@@ -37,7 +37,6 @@ interface BridgeModule {
   call(
     method: "/snuffler.bridge.v1.BridgeService/ListExamples",
     request: Uint8Array,
-    data: Uint8Array,
     jobId: bigint
   ): Promise<{ result: Uint8Array }>;
   currentRuntimeEpoch(): number;
@@ -570,7 +569,6 @@ async function main(): Promise<void> {
       const after = bridge.restartRuntime("browser recovery regression");
       const reply = await bridge.call(
         "/snuffler.bridge.v1.BridgeService/ListExamples",
-        new Uint8Array(),
         new Uint8Array(),
         999n
       );

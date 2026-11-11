@@ -1,10 +1,6 @@
 //! High-DPI PNG export by rasterizing the view's SVG with resvg.
 //!
-//! This module is the only place that depends on resvg / usvg / tiny-skia, and it
-//! is compiled solely when the `svg-raster` feature is on (the default). Building
-//! with `--no-default-features` drops the whole vector→raster stack from the
-//! bundle; the PNG export then falls back to capturing the egui framebuffer at
-//! screen resolution (see `app.rs`).
+//! This module is the only place that depends on resvg / usvg / tiny-skia.
 
 use resvg::{tiny_skia, usvg};
 

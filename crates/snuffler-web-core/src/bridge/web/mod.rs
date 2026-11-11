@@ -33,18 +33,13 @@ use live::*;
 // (`stage_bridge_module` in scripts/trunk-post-build.sh).
 #[wasm_bindgen(module = "/../../web/gen/bridge.js")]
 extern "C" {
-    // The single transport seam for every unary proto RPC: (method, request
-    // bytes, optional out-of-band data bytes) -> { result: BridgeResult bytes,
-    // ys: Uint8Array }. bridge.js forwards it to the Pyodide worker, which runs
-    // bridge.py and ships the out-of-band ys buffer alongside the proto. This is
-    // the custom transport the typed service client rides on.
+    // The single transport seam for every unary proto RPC: (method, request bytes)
+    // -> { result: BridgeResult bytes, ys: Uint8Array }.
+    // bridge.js forwards it to the Pyodide worker, which runs bridge.py and ships the
+    // out-of-band ys buffer alongside the proto.
+    // This is the custom transport the typed service client rides on.
     #[wasm_bindgen(js_name = call, catch)]
-    async fn js_call(
-        method: &str,
-        request: Vec<u8>,
-        data: Vec<u8>,
-        job_id: u64,
-    ) -> Result<JsValue, JsValue>;
+    async fn js_call(method: &str, request: Vec<u8>, job_id: u64) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(js_name = takeOperationEvents)]
     fn js_take_operation_events() -> js_sys::Array;
@@ -134,7 +129,6 @@ fn note_runtime_lost(state: &mut Inner, epoch: RuntimeEpoch) {
         state.desired = Some(params);
     }
     state.examples_job = None;
-    state.station_dists_job = None;
     state.map_job = None;
     state.figures.clear();
     // The owning executor futures may still be alive; without this, a retired
@@ -314,8 +308,6 @@ pub(super) fn runtime_info() -> Option<pb::RuntimeInfo> {
 }
 
 fn js_bytes(v: JsValue, field: &'static str) -> Result<Vec<u8>, MarshalError> {
-    use wasm_bindgen::JsCast;
-
     v.dyn_into::<js_sys::Uint8Array>()
         .map_err(|_| MarshalError::NotBytes { field })
         .map(|arr| arr.to_vec())
@@ -362,10 +354,10 @@ fn file_page_texts(page: BrowserFileLoadPage) -> Result<Vec<String>, BridgeError
         .collect()
 }
 
-/// Stops a composite flow at a child boundary. Every flow re-checks after an
-/// unbounded browser-local await (a picker, a directory walk): the flow may
-/// have been cancelled, or retired outright by a runtime loss, while the
-/// dialog was open, and its next child must not run.
+/// Stops a composite flow at a child boundary.
+/// Every flow re-checks after an unbounded browser-local await (a picker, a directory
+/// walk): the flow may have been cancelled, or retired outright by a runtime loss, while
+/// the dialog was open, and its next child must not run.
 fn ensure_flow_live(
     inner: &Rc<RefCell<Inner>>,
     flow: JobHandle,
@@ -412,8 +404,6 @@ fn object_uint8(obj: &JsValue, field: &'static str) -> Result<Vec<u8>, MarshalEr
 }
 
 fn object_f32(obj: &JsValue, field: &'static str) -> Result<Vec<f32>, MarshalError> {
-    use wasm_bindgen::JsCast;
-
     let val = js_sys::Reflect::get(obj, &JsValue::from_str(field))
         .map_err(|_| MarshalError::Missing { field })?;
     let arr = val
@@ -495,7 +485,6 @@ fn clear_event_state(inner: &mut Inner) {
 fn install_event_state(inner: &mut Inner, state: ActiveEventResult) {
     inner.event_state = Some(state);
     inner.active_event_gen = inner.active_event_gen.wrapping_add(1);
-    inner.station_dists_gen = None;
     clear_map_state(inner);
     invalidate_view_request(inner);
 }
@@ -671,9 +660,9 @@ async fn load_file_page(
             Err(CallError::Cancelled { .. }) => {
                 return FilePageOutcome::Cancelled { remaining };
             }
-            // Only a pyrocko rejection is a per-file verdict worth continuing
-            // past; anything below the rpc layer is a broken flow. The abort
-            // still joins the failure list, so the diagnostic keeps the
+            // Only a pyrocko rejection is a per-file verdict worth continuing past;
+            // anything below the rpc layer is a broken flow.
+            // The abort still joins the failure list, so the diagnostic keeps the
             // per-file failures that accumulated before the flow broke.
             Err(CallError::Remote(remote)) => progress.failures.push(ReloadSourceError {
                 source_id: file.handle_id.clone(),
@@ -838,161 +827,6 @@ fn clear_view(i: &mut Inner) {
     invalidate_view_request(i);
 }
 
-/// The values one track would draw, flattened across its spans, for the
-/// diagnostic log. A gapped channel contributes every segment.
-fn view_track_values(view: &ViewData, track: &ViewTrack) -> (&'static str, Vec<f32>) {
-    if track.nf > 0 {
-        return ("waterfall", Vec::new());
-    }
-    let mut kind = "missing";
-    let mut values = Vec::new();
-    for span in &track.spans {
-        if span.dt > 0.0 {
-            kind = "raw";
-            values.extend_from_slice(view.samples(span));
-        }
-    }
-    (kind, values)
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "sample count to f64 for diagnostic mean/rms; precision loss is irrelevant"
-)]
-fn finite_stats(values: &[f32]) -> Option<(f32, f32, f64, f64)> {
-    let mut n = 0usize;
-    let mut min_v = f32::INFINITY;
-    let mut max_v = f32::NEG_INFINITY;
-    let mut sum = 0.0f64;
-    let mut sum_sq = 0.0f64;
-    for &v in values.iter().filter(|v| v.is_finite()) {
-        n += 1;
-        min_v = min_v.min(v);
-        max_v = max_v.max(v);
-        let fv = f64::from(v);
-        sum += fv;
-        sum_sq += fv * fv;
-    }
-    if n == 0 {
-        return None;
-    }
-    Some((min_v, max_v, sum / n as f64, (sum_sq / n as f64).sqrt()))
-}
-
-fn sample_head(values: &[f32]) -> String {
-    values
-        .iter()
-        .take(8)
-        .map(|v| format!("{v:.5}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "sample/pixel counts to f64 for a diagnostic ratio; precision loss is irrelevant"
-)]
-fn log_view_debug(params: &ViewParams, view: &ViewData, request_ms: f64) {
-    if params.mode != "wiggle" {
-        return;
-    }
-    let toff = usize::try_from(params.track_offset).unwrap_or(usize::MAX);
-    let tcount = usize::try_from(params.track_count).unwrap_or(usize::MAX);
-
-    let rendered_tracks: Vec<_> = view.meta.tracks.iter().skip(toff).take(tcount).collect();
-    // Counted per span: a track carries one per segment of its channel, and a
-    // gapped channel can well be raw in one piece and decimated in another.
-    let payload_spans = || {
-        rendered_tracks
-            .iter()
-            .filter(|track| track.nf == 0)
-            .flat_map(|track| track.spans.iter())
-            .filter(|span| span.count > 0)
-    };
-    let raw_tracks = payload_spans().filter(|span| span.dt > 0.0).count();
-    let point_tracks = payload_spans().filter(|span| span.dt == 0.0).count();
-    let legacy_tracks = payload_spans().filter(|span| span.dt < 0.0).count();
-    let window = params.tmax - params.tmin;
-    let ys_mb = view.ys.len() as f64 * 4.0 / 1_000_000.0;
-    let throughput = if request_ms > 0.0 {
-        ys_mb / (request_ms / 1000.0)
-    } else {
-        0.0
-    };
-    log::info!(
-        "[view] t=[{:.6},{:.6}] dt_window={:.3}s npx={} track_page={}..{} returned_tracks={} ys={} ys_mb={:.3} request_ms={:.2} effective_mb_s={:.1} rendered_modes raw={} points={} legacy={}",
-        params.tmin,
-        params.tmax,
-        window,
-        params.npx,
-        params.track_offset,
-        params.track_offset + params.track_count,
-        view.meta.tracks.len(),
-        view.ys.len(),
-        ys_mb,
-        request_ms,
-        throughput,
-        raw_tracks,
-        point_tracks,
-        legacy_tracks,
-    );
-
-    for (idx, track) in view.meta.tracks.iter().enumerate().skip(toff).take(tcount) {
-        let (mode, values) = view_track_values(view, track);
-        let points_per_px = if params.npx == 0 {
-            0.0
-        } else {
-            values.len() as f64 / f64::from(params.npx)
-        };
-        // The first span stands for the row in this diagnostic line; a row that
-        // carries several says so through `spans=`, and the detail belongs in a
-        // per-span line if anyone ever needs it.
-        let first = track.spans.first();
-        let t0_rel = first.map_or(0.0, |span| span.t0_rel);
-        let dt = first.map_or(0.0, |span| span.dt);
-        let ymin = first.map_or(0.0, |span| span.ymin);
-        let ymax = first.map_or(0.0, |span| span.ymax);
-        let ymean = first.map_or(0.0, |span| span.ymean);
-        let yscale = first.map_or(0.0, |span| span.yscale);
-        if let Some((min_v, max_v, mean, rms)) = finite_stats(&values) {
-            log::debug!(
-                "[view.track] idx={} label={} mode={} spans={} count={} points_per_px={:.3} data_min={:.6} data_max={:.6} data_mean={:.6} data_rms={:.6} scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9} head=[{}]",
-                idx,
-                track.label,
-                mode,
-                track.spans.len(),
-                values.len(),
-                points_per_px,
-                min_v,
-                max_v,
-                mean,
-                rms,
-                ymin,
-                ymax,
-                ymean,
-                yscale,
-                t0_rel,
-                dt,
-                sample_head(&values),
-            );
-        } else {
-            log::debug!(
-                "[view.track] idx={} label={} mode={} spans={} count=0 scale_min={:.6} scale_max={:.6} scale_mean={:.6} yscale={:.6} t0_rel={:.6} dt={:.9}",
-                idx,
-                track.label,
-                mode,
-                track.spans.len(),
-                ymin,
-                ymax,
-                ymean,
-                yscale,
-                t0_rel,
-                dt,
-            );
-        }
-    }
-}
-
 impl Bridge {
     fn prepare_scientific_tools(&self) -> Option<Submission> {
         {
@@ -1061,8 +895,6 @@ impl Bridge {
                 i.diagnostic = None;
                 i.snuffling = None;
                 clear_event_state(&mut i);
-                i.station_dists.clear();
-                i.station_dists_gen = None;
                 i.live_seedlink_started_at = None;
                 replace_scene(&mut i, scene);
                 Ok(())
@@ -1074,9 +906,9 @@ impl Bridge {
     /// snuffler's `open_waveforms` appends too (`pile_viewer.py:1651`); the
     /// boot example is dropped first by the bridge's example-pile rule.
     pub fn load_file(&self, name: String, data: Vec<u8>, fmt: String) -> Submission {
-        // A dropped file may be a whole dataset. Deciding on the bytes rather
-        // than the extension means a bundle behaves the same however it arrives
-        // — dropped, picked, or fetched from the Examples menu.
+        // A dropped file may be a whole dataset.
+        // Deciding on the bytes rather than the extension means a bundle behaves the same
+        // however it arrives — dropped, picked, or fetched from the Examples menu.
         if data.starts_with(ZIP_MAGIC) {
             return self.load_bundle_bytes(name, data);
         }
@@ -1135,10 +967,10 @@ impl Bridge {
 
     /// Fetch the example index, once.
     ///
-    /// The menu calls this on every frame it is open, so "once" has to mean
-    /// once: a *failed* fetch is remembered too, or a datacenter that is down
-    /// would be retried at the frame rate. `force` is the user asking again,
-    /// from the retry the menu offers in its place.
+    /// The menu calls this on every frame it is open, so "once" has to mean once: a
+    /// *failed* fetch is remembered too, or a datacenter that is down would be retried at
+    /// the frame rate.
+    /// `force` is the user asking again, from the retry the menu offers in its place.
     #[must_use]
     pub fn list_examples(&self, force: bool) -> Option<Submission> {
         {
@@ -1198,9 +1030,9 @@ impl Bridge {
         self.dispatch_bundle(request, title)
     }
 
-    /// Load an example by slug, fetching the index first if it has not been
-    /// read yet. This is what `?example=<slug>` resolves to: a link someone can
-    /// hand out that opens the app on a named dataset.
+    /// Load an example by slug, fetching the index first if it has not been read yet.
+    /// This is what `?example=<slug>` resolves to: a link someone can hand out that opens
+    /// the app on a named dataset.
     ///
     /// An unknown slug is an error the user has to see — they followed a link
     /// that promised data — so it lands in the status line rather than only in
@@ -1447,9 +1279,9 @@ impl Bridge {
         )
     }
 
-    /// Mount a Green's-functions store by fetching its files from an HTTP base
-    /// URL into the Pyodide filesystem (no directory picker) and register it as
-    /// `GF Store: <id>`. Errors surface in the snuffling text window.
+    /// Mount a Green's-functions store by fetching its files from an HTTP base URL into
+    /// the Pyodide filesystem (no directory picker) and register it as `GF Store: <id>`.
+    /// Errors surface in the snuffling text window.
     pub fn load_gf_store_url(&self, url: String) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
@@ -1472,10 +1304,10 @@ impl Bridge {
         )
     }
 
-    /// Mount a Green's-functions store directory (`NativeFS`, via the File
-    /// System Access API) and add its embedded 1D earth model to the Cake
-    /// Phase dropdown as `GF Store: <id>`. Errors (unsupported browser, not a
-    /// store) surface in the snuffling text window.
+    /// Mount a Green's-functions store directory (`NativeFS`, via the File System Access
+    /// API) and add its embedded 1D earth model to the Cake Phase dropdown as
+    /// `GF Store: <id>`.
+    /// Errors (unsupported browser, not a store) surface in the snuffling text window.
     #[cfg(feature = "gf")]
     pub fn add_gf_store(&self) -> Submission {
         let inner = self.inner.clone();
@@ -1502,10 +1334,10 @@ impl Bridge {
         )
     }
 
-    /// Execute a ':' command line (goto / hide / unhide / reduce / scaling). A
-    /// goto stores a pending time the session jumps to; a visibility change swaps
-    /// the scene in place (no refit) and forces the view to re-dispatch. Either
-    /// way the outcome lands in `command_outcome` for the command line to act on.
+    /// Execute a ':' command line (goto / hide / unhide / reduce / scaling).
+    /// A goto stores a pending time the session jumps to; a visibility change swaps the
+    /// scene in place (no refit) and forces the view to re-dispatch.
+    /// Either way the outcome lands in `command_outcome` for the command line to act on.
     pub fn run_command(&self, request: CommandRequest) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
@@ -1636,9 +1468,10 @@ impl Bridge {
         )
     }
 
-    /// Reload the Python snuffling code (bridge.py) in the worker, preserving
-    /// the loaded pile (snuffler's Shift+R). Forces a view re-fetch since the
-    /// reload resets Python's view cache; the scene (track list) is unchanged.
+    /// Reload the Python snuffling code (bridge.py) in the worker, preserving the loaded
+    /// pile (snuffler's Shift+R).
+    /// Forces a view re-fetch since the reload resets Python's view cache; the scene
+    /// (track list) is unchanged.
     pub fn reload_snufflings(&self) -> Submission {
         let inner = self.inner.clone();
         let work_inner = inner.clone();
@@ -1997,50 +1830,6 @@ impl Bridge {
         submission
     }
 
-    /// Ensure the per-station distances are current for the given snuffling
-    /// generation (the active event changes with each catalog/event load). A
-    /// no-op if already fetched for this generation or a fetch is in flight.
-    #[must_use]
-    pub fn ensure_station_distances(&self, snuffling_gen: u64) -> Option<Submission> {
-        let token;
-        {
-            let i = self.inner.borrow();
-            token = (snuffling_gen, i.active_event_gen);
-            if let Some(job) = i.station_dists_job {
-                return Some(Submission::Joined(job));
-            }
-            if i.station_dists_gen == Some(token) {
-                return None;
-            }
-        }
-        let inner = self.inner.clone();
-        let work_inner = inner.clone();
-        let submission = submit_job(
-            inner,
-            self.repaint.clone(),
-            Operation::StationDistances,
-            None,
-            format!("{}:{}", token.0, token.1).into_bytes(),
-            async move {
-                let parsed = client().station_distances().await;
-                let mut i = work_inner.borrow_mut();
-                i.station_dists_job = None;
-                let list = parsed.map_err(BridgeError::from)?;
-                i.station_dists_gen = Some(token);
-                i.station_dists.clear();
-                for station in list.stations {
-                    i.station_dists
-                        .insert((station.net, station.sta), station.distance_deg);
-                }
-                Ok(())
-            },
-        );
-        if let Submission::Accepted(handle) | Submission::Joined(handle) = submission {
-            self.inner.borrow_mut().station_dists_job = Some(handle);
-        }
-        Some(submission)
-    }
-
     /// Polls watched files without showing a loading status.
     ///
     /// Successful changes install immediately; source failures still surface
@@ -2065,9 +1854,9 @@ impl Bridge {
         )
     }
 
-    /// One canonical-event mutation: run the rpc, then install Python's
-    /// registry as the new event state. The three event editors below differ
-    /// only in the rpc they run.
+    /// One canonical-event mutation: run the rpc, then install Python's registry as the
+    /// new event state.
+    /// The three event editors below differ only in the rpc they run.
     fn submit_event_state_call<F>(&self, operation: Operation, call: F) -> Submission
     where
         F: Future<Output = Result<ActiveEventResult, CallError>> + 'static,
@@ -2113,12 +1902,12 @@ impl Bridge {
 
     /// Submit every tile the map wants on screen right now.
     ///
-    /// This replaces the pending queue rather than adding to it, which is what
-    /// makes a zoom or a pan cheap: tiles the view has moved away from and
-    /// that no batch has started yet are simply dropped, and the survivors are
-    /// re-ordered by the priority the view just scored them with. Tiles
-    /// already fetched, in flight, or known to have failed are skipped, so
-    /// calling this every frame costs a filter over a screenful of keys.
+    /// This replaces the pending queue rather than adding to it, which is what makes a
+    /// zoom or a pan cheap: tiles the view has moved away from and that no batch has
+    /// started yet are simply dropped, and the survivors are re-ordered by the priority
+    /// the view just scored them with.
+    /// Tiles already fetched, in flight, or known to have failed are skipped, so calling
+    /// this every frame costs a filter over a screenful of keys.
     pub fn request_tiles(&self, wanted: Vec<TileRequest>) {
         {
             let mut i = self.inner.borrow_mut();
@@ -2221,10 +2010,10 @@ impl Bridge {
             {
                 let mut i = inner.borrow_mut();
                 i.tile_batches = i.tile_batches.saturating_sub(1);
-                // The batch as a whole can reject before every callback fired
-                // (the module failed to load, say). Anything still marked
-                // in-flight has no other way to be retired, and would block
-                // its key from ever being requested again.
+                // The batch as a whole can reject before every callback fired (the module
+                // failed to load, say).
+                // Anything still marked in-flight has no other way to be retired, and
+                // would block its key from ever being requested again.
                 if i.tile_epoch == epoch && delivered.is_err() {
                     for key in keys {
                         if matches!(i.tiles.get(&key), Some(TileState::InFlight)) {
@@ -2318,12 +2107,10 @@ impl Bridge {
             None,
             params.encode_to_vec(),
             async move {
-                let t0 = js_sys::Date::now();
                 let parsed = client()
                     .get_view(work_params.clone())
                     .await
                     .map(|(meta, ys)| ViewData { meta, ys });
-                let request_ms = js_sys::Date::now() - t0;
                 let outcome = {
                     let mut i = work_inner.borrow_mut();
                     if i.view_request_gen == request_gen {
@@ -2338,9 +2125,7 @@ impl Bridge {
                                         "stale view reply",
                                     ))
                                 } else {
-                                    log_view_debug(&work_params, &vd, request_ms);
                                     i.python_session_generation = vd.meta.session_generation;
-                                    i.view_last_error = None;
                                     i.view_retry_after_s = 0.0;
                                     // Every reply that passed the sequence and
                                     // generation fences is applied, even when a
@@ -2363,7 +2148,6 @@ impl Bridge {
                             }
                             Err(error) => {
                                 let error = BridgeError::from(error);
-                                i.view_last_error = Some(error.clone());
                                 i.view_retry_after_s = js_sys::Date::now() / 1000.0 + 0.5;
                                 i.desired = Some(work_canonical_params.clone());
                                 Err(error)

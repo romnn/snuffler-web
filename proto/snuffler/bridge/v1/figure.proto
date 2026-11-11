@@ -5,11 +5,12 @@ package snuffler.bridge.v1;
 import "snuffler/bridge/v1/common.proto";
 import "snuffler/bridge/v1/snuffling.proto";
 
-// A request to render one of pyrocko's real matplotlib figures headlessly (Agg
-// backend) in Pyodide and ship it back as a PNG. This is the faithfulness seam:
-// instead of re-drawing a figure by hand in Rust/egui (which drifts from what the
-// Qt snuffler shows), the bridge runs the exact pyrocko/matplotlib plotting code
-// and returns the resulting image, which the frontend displays as a texture.
+// A request to render one of pyrocko's real matplotlib figures headlessly (Agg backend)
+// in Pyodide and ship it back as a PNG.
+// This is the faithfulness seam: instead of re-drawing a figure by hand in Rust/egui
+// (which drifts from what the Qt snuffler shows), the bridge runs the exact
+// pyrocko/matplotlib plotting code and returns the resulting image, which the frontend
+// displays as a texture.
 message FigureRequest {
   // Which figure to render, e.g. "ampspec", "cake_model", "cake_rays",
   // "spectrogram", "polarization". bridge.py dispatches on this.
@@ -28,10 +29,10 @@ message FigureRequest {
   optional MomentTensor mt = 7;
 }
 
-// A rendered matplotlib figure as PNG bytes. `error` is non-empty when rendering
-// failed (e.g. no selected traces, missing event) — the frontend shows it in the
-// figure window instead of an image, mirroring how snuffling errors surface as
-// text rather than crashing the viewer.
+// A rendered matplotlib figure as PNG bytes.
+// `error` is non-empty when rendering failed (e.g. no selected traces, missing event) —
+// the frontend shows it in the figure window instead of an image, mirroring how snuffling
+// errors surface as text rather than crashing the viewer.
 message FigureResult {
   bytes png = 1;
   string error = 4;

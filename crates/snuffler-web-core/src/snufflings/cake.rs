@@ -30,8 +30,9 @@ const MODELS: &[&str] = &[
 
 /// Configuration for theoretical phase arrivals and Cake figures.
 pub struct Config {
-    /// `(phase name, enabled)` — includes the builtin phases plus any added via
-    /// the "Add phase" field. The leading `~` is kept; Python interprets it.
+    /// `(phase name, enabled)` — includes the builtin phases plus any added via the "Add
+    /// phase" field.
+    /// The leading `~` is kept; Python interprets it.
     pub phases: Vec<(String, bool)>,
     /// Available built-in, uploaded, and Green's-function earth models.
     pub models: Vec<String>,

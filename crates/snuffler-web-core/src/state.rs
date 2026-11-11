@@ -11,9 +11,9 @@ use crate::theme::{Theme, WiggleTheme};
 /// reset target for the "=" key.
 ///
 /// 24, because that is what the `snuffler` application passes its viewer
-/// (`snuffler.py:262`). Upstream is internally inconsistent here — the library
-/// entry point defaults to 12 and the widget to 20 — but the shell is the
-/// program this port is measured against.
+/// (`snuffler.py:262`).
+/// Upstream is internally inconsistent here — the library entry point defaults to 12 and
+/// the widget to 20 — but the shell is the program this port is measured against.
 pub const DEFAULT_NTRACKS_SHOWN: usize = 24;
 
 /// Bounds for the track-height slider (pixels per track row).
@@ -77,9 +77,9 @@ impl ScalingGroup {
     }
 }
 
-/// Statistic used to derive each track's amplitude range (snuffler's "Scaling
-/// based on ..." radio group, pile_viewer.py:958-968). Applied in the bridge over
-/// the raw samples (where they're available).
+/// Statistic used to derive each track's amplitude range (snuffler's "Scaling based on
+/// ..." radio group, pile_viewer.py:958-968).
+/// Applied in the bridge over the raw samples (where they're available).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalingBase {
     /// Uses the exact minimum and maximum.
@@ -150,8 +150,9 @@ impl ViewMode {
 }
 
 /// Station sort order (snuffler's "Sorting" station radio group,
-/// pile_viewer.py:986-1013). Distance/azimuth variants need station coordinates
-/// and an active event; without them the bridge falls back to name order.
+/// pile_viewer.py:986-1013).
+/// Distance/azimuth variants need station coordinates and an active event; without them
+/// the bridge falls back to name order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortMode {
     /// Lexicographic NSLC order.
@@ -211,9 +212,8 @@ impl SortMode {
     }
 }
 
-/// Subsort of the NSLC key (snuffler's subsort radio group,
-/// pile_viewer.py:1020-1045). Drives both trace ordering and the "Color traces"
-/// coloring key.
+/// Subsort of the NSLC key (snuffler's subsort radio group, pile_viewer.py:1020-1045).
+/// Drives both trace ordering and the "Color traces" coloring key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subsort {
     /// Network, station, location, then channel.
@@ -267,7 +267,8 @@ impl Subsort {
         matches!(self, Subsort::NscGroupL | Subsort::SncGroupL)
     }
 
-    /// The inverse of [`Subsort::as_str`]. See [`SortMode::from_wire`].
+    /// The inverse of [`Subsort::as_str`].
+    /// See [`SortMode::from_wire`].
     #[must_use]
     pub fn from_wire(value: &str) -> Option<Self> {
         [
@@ -322,10 +323,7 @@ impl ColorScale {
     pub const ALL: [ColorScale; 3] = [ColorScale::Lin, ColorScale::Sqrt, ColorScale::Log];
 }
 
-/// Waterfall colormaps.
-/// Snuffler's `ColorbarControl` (util.py:651-663) offers a different nine,
-/// sharing only viridis and magma with this list — an open gap, tracked as
-/// `waterfall-colormap-set` in `tests/parity/known_gaps.toml`.
+/// Waterfall colormaps, named as matplotlib names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Colormap {
     /// Perceptually uniform blue-green-yellow colors.
@@ -379,15 +377,17 @@ impl Colormap {
     ];
 }
 
-/// Snuffler's "Visible length" (`pile_viewer.py:1047`): a target *sample count*
-/// per trace, despite the name — never a time span. `prepare_cutout2` turns it
-/// into `min_deltat_allow`, the finest sampling worth fetching for the window,
-/// and `make_good_looking_time_range` uses it as the minimum width of a jump.
+/// Snuffler's "Visible length" (`pile_viewer.py:1047`): a target *sample count* per
+/// trace, despite the name — never a time span.
+/// `prepare_cutout2` turns it into `min_deltat_allow`, the finest sampling worth fetching
+/// for the window, and `make_good_looking_time_range` uses it as the minimum width of a
+/// jump.
 /// Selecting an entry never moves the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisibleLength {
-    /// No budget: fetch every channel whatever its sampling rate and reduce what
-    /// comes back to what the canvas can show. See [`VisibleLength::samples`].
+    /// No budget: fetch every channel whatever its sampling rate and reduce what comes
+    /// back to what the canvas can show.
+    /// See [`VisibleLength::samples`].
     Adaptive,
     /// Up to 20,000 samples.
     Short,
@@ -407,12 +407,12 @@ impl VisibleLength {
     /// Returns the target sample count, or `None` for
     /// [`VisibleLength::Adaptive`], which sets no target.
     ///
-    /// Qt's four entries are a *fetch* budget: a channel sampled finer than the
-    /// window's share of it is not fetched at all, so widening the window makes
-    /// the high-rate channels disappear rather than coarsen. Adaptive spends the
-    /// budget the other way round — nothing is refused, and the bridge decimates
-    /// each fetched trace to the pixel budget the canvas asked for (`npx`), which
-    /// is what keeps a wide window affordable.
+    /// Qt's four entries are a *fetch* budget: a channel sampled finer than the window's
+    /// share of it is not fetched at all, so widening the window makes the high-rate
+    /// channels disappear rather than coarsen.
+    /// Adaptive spends the budget the other way round — nothing is refused, and the
+    /// bridge decimates each fetched trace to the pixel budget the canvas asked for
+    /// (`npx`), which is what keeps a wide window affordable.
     #[must_use]
     pub fn samples(self) -> Option<f64> {
         match self {
@@ -523,15 +523,15 @@ pub struct PickingState {
     pub event_hash: Option<String>,
     /// Associated event origin time used by marker-file fallback matching.
     pub event_time: Option<f64>,
-    /// The channels of the track under the cursor the pick is scoped to —
-    /// every channel gathered onto the row, as Qt's `get_nslc_ids_for_track`
-    /// returns them. Empty while no track is under the cursor.
+    /// The channels of the track under the cursor the pick is scoped to — every channel
+    /// gathered onto the row, as Qt's `get_nslc_ids_for_track` returns them.
+    /// Empty while no track is under the cursor.
     pub nslc_ids: Vec<(String, String, String, String)>,
 }
 
-/// A pending "set active event" request the session drains and sends to the bridge
-/// (input handlers set it; they cannot touch the bridge directly). The session
-/// converts it to a `SetActiveEventRequest` proto message.
+/// A pending "set active event" request the session drains and sends to the bridge (input
+/// handlers set it; they cannot touch the bridge directly).
+/// The session converts it to a `SetActiveEventRequest` proto message.
 #[derive(Clone, Debug, Default)]
 pub struct ActiveEventReq {
     /// Whether the active event should be cleared instead of replaced.
@@ -551,7 +551,8 @@ pub struct AppState {
     /// Upper edge of the visible time window, in epoch seconds.
     pub tmax: f64,
 
-    /// Filters (Hz). `None` = filter disabled.
+    /// Filters (Hz).
+    /// `None` = filter disabled.
     pub highpass: Option<f64>,
     /// Low-pass cutoff in hertz, or `None` when disabled.
     pub lowpass: Option<f64>,
@@ -572,7 +573,6 @@ pub struct AppState {
     /// Editable rotation field in degrees.
     pub rotate_text: String,
 
-    // --- processing toggles (Options menu) -> ViewParams ---
     /// Removes the mean from each trace in pyrocko.
     pub demean: bool,
     /// Repairs gaps before filtering in pyrocko.
@@ -588,7 +588,6 @@ pub struct AppState {
     /// Use station depth for distances (needs coords; inert without).
     pub distances_3d: bool,
 
-    // --- scaling / sorting ---
     /// Tracks that share an amplitude range.
     pub scaling_group: ScalingGroup,
     /// Statistic used to derive amplitude ranges.
@@ -600,7 +599,6 @@ pub struct AppState {
     /// NSLC ordering within the primary sort.
     pub subsort: Subsort,
 
-    // --- view / render toggles (View menu, render-side only) ---
     /// Active waveform representation.
     pub view_mode: ViewMode,
     /// Active time-domain trace theme.
@@ -631,19 +629,20 @@ pub struct AppState {
     /// Whether a rule is drawn between rows, bands or no bands.
     ///
     /// `None` follows the theme — off under Snuffler Qt, which separates rows with
-    /// nothing at all, and on under Snuffler Web. `Some` is the user overriding
-    /// that, and is honoured under *both* themes: parity is about what the port does
-    /// by default, not about refusing to draw a rule somebody asked for.
+    /// nothing at all, and on under Snuffler Web.
+    /// `Some` is the user overriding that, and is honoured under *both* themes: parity is
+    /// about what the port does by default, not about refusing to draw a rule somebody
+    /// asked for.
     pub show_track_separators: Option<bool>,
     /// Whether the time ticks extend into a full-height grid across the tracks.
     ///
     /// Web-only, and off by default because snuffler has no such grid: `TimeAx.drawit`
     /// (`pile_viewer.py:539`) marks each tick with a 10 px stroke at the axis and draws
-    /// nothing across the rows. Reading a long window is easier with one, so the port
-    /// offers it — as something the user switches on, not as a difference it imposes.
+    /// nothing across the rows.
+    /// Reading a long window is easier with one, so the port offers it — as something the
+    /// user switches on, not as a difference it imposes.
     pub show_time_grid: bool,
 
-    // --- waterfall colorbar ---
     /// Matplotlib colormap used by pyrocko for waterfall cells.
     pub wf_cmap: Colormap,
     /// Colormap clip as fractions of each track's power range (lo, hi).
@@ -664,9 +663,9 @@ pub struct AppState {
     /// Whether the text-output window is open.
     pub show_snuffling: bool,
 
-    /// Whether the window showing what the loaded dataset says about itself is
-    /// open. It opens itself once, collapsed, when a dataset that says something
-    /// loads; the text lives in the bridge, with the scene it describes.
+    /// Whether the window showing what the loaded dataset says about itself is open.
+    /// It opens itself once, collapsed, when a dataset that says something loads; the
+    /// text lives in the bridge, with the scene it describes.
     pub show_dataset_note: bool,
 
     /// Vertical track layout.
@@ -689,9 +688,10 @@ pub struct AppState {
 
     /// User, catalog, and snuffling annotations in insertion order.
     pub markers: MarkerStore,
-    /// The controls panel's marker-kind picker highlight: the last kind applied
-    /// through it. Fresh picks are always kind 0, as snuffler's are — nothing
-    /// reads this as a default for new markers.
+    /// The controls panel's marker-kind picker highlight: the last kind applied through
+    /// it.
+    /// Fresh picks are always kind 0, as snuffler's are — nothing reads this as a default
+    /// for new markers.
     pub marker_kind: u8,
     /// Set by the `r` key; the session consumes it to trigger a bridge file reload
     /// (keyboard handlers only touch `state`, not the bridge).
@@ -709,14 +709,15 @@ pub struct AppState {
     /// Fetch a wider, grid-snapped time window so pan/zoom reuses already-fetched
     /// data instead of re-requesting (snuffler's "Liberal Fetch Optimization").
     pub liberal_fetch: bool,
-    /// Marker kinds (0..=7) currently drawn/selectable; set by the `:markers`
-    /// command (snuffler `pile_viewer.py` `markers` command). Compared against the
-    /// raw kind so kind>=8 hides under `markers all`, like pyrocko.
+    /// Marker kinds (0..=7) currently drawn/selectable; set by the `:markers` command
+    /// (snuffler `pile_viewer.py` `markers` command).
+    /// Compared against the raw kind so kind>=8 hides under `markers all`, like pyrocko.
     pub visible_marker_kinds: Vec<u8>,
     /// Active batch/interactive picking mode (Escape toggles it); `None` when not
-    /// picking. Mirrors snuffler's picking mode: a floating pick follows the
-    /// cursor, press-drag-release commits a marker, and batch mode re-arms a new
-    /// pick inheriting kind/phase/polarity.
+    /// picking.
+    /// Mirrors snuffler's picking mode: a floating pick follows the cursor,
+    /// press-drag-release commits a marker, and batch mode re-arms a new pick inheriting
+    /// kind/phase/polarity.
     pub picking: Option<PickingState>,
     /// Last pointer y during a shift-drag that adjusts phase-marker uncertainty
     /// (`Some` = a latched uncertainty drag is active); mirrors pyrocko's
@@ -762,7 +763,6 @@ pub struct AppState {
     /// Whether the per-snuffling help window (Help ▸ Snuffling Help) is open.
     pub show_snuffling_help: bool,
 
-    // --- FDSN network forms (browser fetch) ---
     /// Whether the waveform-download window is open.
     pub show_download: bool,
     /// Whether the catalog-search window is open.
@@ -864,7 +864,6 @@ impl Default for AppState {
             visible_length: VisibleLength::Adaptive,
             show_boxes: None,
             clip_traces: true,
-            // snuffler users expect colour-coded traces; default on.
             show_color_traces: None,
             antialiasing: false,
             show_scale_ranges: false,
@@ -1049,17 +1048,18 @@ impl AppState {
         self.show_boxes.unwrap_or(theme == Theme::Light)
     }
 
-    /// Whether markers of this kind are currently drawn/selectable (the
-    /// `:markers` command). Raw-kind comparison so kind>=8 hides under
-    /// `markers all`, matching pyrocko `pile_viewer.py`.
+    /// Whether markers of this kind are currently drawn/selectable (the `:markers`
+    /// command).
+    /// Raw-kind comparison so kind>=8 hides under `markers all`, matching pyrocko
+    /// `pile_viewer.py`.
     #[must_use]
     pub fn marker_kind_visible(&self, kind: u8) -> bool {
         self.visible_marker_kinds.contains(&kind)
     }
 
-    /// Set the visible marker kinds (from the `:markers` command). Deselects all
-    /// markers, mirroring snuffler's `markers` command which also clears the
-    /// selection.
+    /// Set the visible marker kinds (from the `:markers` command).
+    /// Deselects all markers, mirroring snuffler's `markers` command which also clears
+    /// the selection.
     pub fn set_visible_marker_kinds(&mut self, mut kinds: Vec<u8>) {
         kinds.sort_unstable();
         kinds.dedup();
@@ -1096,9 +1096,15 @@ mod tests {
         // A duplicate event marker still represents the canonical event.
         assert_eq!(state.markers.len(), 1);
         assert_eq!(state.remove_event_hashes, Vec::<String>::new());
-        assert!(state.markers.first().is_some_and(|marker| marker.active));
+        assert!(
+            state
+                .markers
+                .iter()
+                .next()
+                .is_some_and(|marker| marker.active)
+        );
 
-        let Some(marker) = state.markers.first_mut() else {
+        let Some(marker) = state.markers.iter_mut().next() else {
             assert_eq!(state.markers.len(), 1);
             return;
         };

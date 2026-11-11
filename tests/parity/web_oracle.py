@@ -74,7 +74,7 @@ def reset() -> None:
 
 def load(files: CorpusFiles, extras: List[str]) -> None:
     reset()
-    bridge._load_path_scene("waveforms", str(files.waveforms), "detect")
+    bridge._load_path_scene(str(files.waveforms), "detect")
     # In the order the scenario lists them, exactly as a user would load them.
     for extra in extras:
         if extra == "stations" and files.stations is not None:

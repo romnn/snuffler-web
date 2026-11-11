@@ -1,13 +1,10 @@
 """The Python half of the worker's boot: what to defer, and what to report.
 
-This module is staged into the Pyodide FS alongside ``bridge.py`` and imported by
-``web/bridge_worker.ts`` *before* it imports the bridge. It exists to keep two
-boot-time concerns — which third-party imports are deferred, and how import
-progress reaches the loading bar — out of ``bridge.py``, which is about the
-pyrocko API and nothing else.
-
-pyrocko is NOT modified by any of this. Deferring changes only *when* pyrocko's
-own dependencies execute, never pyrocko itself.
+``web/bridge_worker.ts`` imports this module before the bridge, keeping two
+boot-time concerns out of ``bridge.py``: which third-party imports are deferred,
+and how import progress reaches the loading bar.
+Deferring changes only when pyrocko's own dependencies execute, never pyrocko
+itself.
 """
 
 from __future__ import annotations
@@ -38,11 +35,9 @@ def defer(names: Sequence[str] = DEFERRED) -> List[str]:
     """Pre-seed ``sys.modules`` with lazy stand-ins for `names`.
 
     A later ``from scipy import signal`` then binds a module object that executes
-    the real module on first attribute access. That access is synchronous and
-    happens on the one Python thread this interpreter has, so a caller either sees
-    the fully initialised module or blocks until it is — there is no window in
-    which a half-initialised module is observable, and no ordering for callers to
-    get wrong.
+    the real module on first attribute access.
+    That access is synchronous on the interpreter's one Python thread, so no
+    caller can observe a half-initialised module.
 
     Returns the names actually deferred; a module already imported, or one whose
     loader does not support lazy execution, is skipped.
@@ -87,20 +82,15 @@ def warm(names: Sequence[str] = DEFERRED) -> List[str]:
     return warmed
 
 
-def import_bridge(progress: Optional[Callable[[int], None]] = None) -> ModuleType:
+def import_bridge(progress: Callable[[int], None]) -> ModuleType:
     """Import ``bridge`` (and with it pyrocko), reporting modules as they load.
 
     The import is by far the longest stretch of the boot with nothing to show for
-    it, so `progress` is called with the running count of modules imported. Counting
-    in ``__import__`` rather than a ``sys.meta_path`` finder keeps cached imports
-    (the vast majority of calls) to one dict lookup.
+    it, so `progress` is called with the running count of modules imported.
+    Counting in ``__import__`` rather than a ``sys.meta_path`` finder keeps cached
+    imports (the vast majority of calls) to one dict lookup.
     """
     import builtins
-
-    if "/" not in sys.path:
-        sys.path.insert(0, "/")
-    if progress is None:
-        return importlib.import_module("bridge")
 
     count = 0
     original = builtins.__import__

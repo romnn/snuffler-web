@@ -29,7 +29,7 @@ tasks:
       - mkdir -p docker/pyodide-mt/.work
 
   pyodide:build:
-    desc: "build the custom threaded Pyodide 314 (BUILD_CDN=1 also builds the single-threaded wheel)"
+    desc: "build the custom threaded Pyodide 314 in Docker (about an hour)"
     dir: "{{.ROOT_DIR}}"
     deps: ["fetch:pyrocko"]
     cmds:
@@ -86,7 +86,7 @@ tasks:
       SNUFFLER_EMBED_DATA: "0"
     interactive: true
     cmds:
-      - NO_COLOR=true trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features svg-raster,gf,threads {{.CLI_ARGS}}
+      - NO_COLOR=true trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features gf,threads {{.CLI_ARGS}}
 
   build:lean:
     desc: "build the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
@@ -97,7 +97,7 @@ tasks:
       TRUNK_BUILD_NO_SRI: "true"
       SNUFFLER_EMBED_DATA: "0"
     cmds:
-      - NO_COLOR=true trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features svg-raster,gf,threads {{.CLI_ARGS}}
+      - NO_COLOR=true trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features gf,threads {{.CLI_ARGS}}
 
   # The web image consumes the prebuilt Pyodide runtime rather than rebuilding
   # it, so changing that runtime only repeats its staging and compression layers.
@@ -331,11 +331,6 @@ tasks:
     cmds:
       - cargo test --doc --workspace {{.CLI_ARGS}}
 
-  lint:ast-grep:
-    desc: "lint with ast-grep rules"
-    cmds: []
-      # - sg scan
-
   lint:boundaries:
     desc: "keep the shared Rust crates free of every UI toolkit, so any frontend can build on them"
     vars:
@@ -392,16 +387,14 @@ tasks:
     env:
       QT_QPA_PLATFORM: offscreen
     cmds:
-      - buf generate
       # The harness self-test runs first: the tiers trust gaps.evaluate to hold
       # findings to the register, so its edge cases are proven before any scenario
-      # relies on them. Inlined rather than chained through test:parity:unit so
-      # scenario names passed as CLI_ARGS never leak into pytest.
-      - uv run --project qt --only-group parity python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py
-      # The bridge-level snuffling tests drive web/bridge.py's snuffling entry
-      # points against real pyrocko, so they need the oracle environment; also
-      # inlined so scenario names in CLI_ARGS never leak into pytest.
-      - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py
+      # relies on them.
+      # CLI_ARGS is cleared for both, because it carries scenario names for the oracle.
+      - task: test:parity:unit
+        vars: { CLI_ARGS: "" }
+      - task: test:parity:bridge
+        vars: { CLI_ARGS: "" }
       - uv run --project qt --group parity python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
 
   render:parity:tier1:
@@ -450,7 +443,6 @@ tasks:
       # wasm32 is the app target — the bridge/UI entrypoint lives here.
       - cargo lint -p snuffler-web-egui -p egui-a11y -p accesskit-dom --all-features --target wasm32-unknown-unknown --lib {{.CLI_ARGS}}
       - task: lint:boundaries
-      - task: lint:ast-grep
       - task: lint:py
 
   lint:fc:
@@ -463,7 +455,6 @@ tasks:
       # The fc matrix excludes `threads` (it still needs build-std); compile-
       # check that build separately so the real threaded path cannot rot.
       - task: check:threads
-      - task: lint:ast-grep
       - task: lint:py
 
   lint:fix:
@@ -471,27 +462,8 @@ tasks:
     aliases: [fix]
     cmds:
       - cargo fixit -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
-      - task: lint:ast-grep
 
   lint:actions:
     desc: "lint github actions"
     cmds:
       - actionlint
-
-  pyodide:build-pthread:
-    desc: "EXPERIMENTAL: build a pthread-enabled Pyodide in Docker (see docker/pyodide-pthread/README.md)"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - docker/pyodide-pthread/build.sh
-
-  pyodide:smoke-pthread:
-    desc: "EXPERIMENTAL: threaded-C-ext smoke test for the pthread Pyodide (needs build-pthread first)"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - docker/pyodide-pthread/smoke/run.sh
-
-  pyodide:bench-pthread:
-    desc: "EXPERIMENTAL: benchmark real pyrocko parstack OpenMP speedup in the pthread Pyodide"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - docker/pyodide-pthread/bench/run.sh

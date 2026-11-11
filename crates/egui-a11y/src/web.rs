@@ -1,10 +1,8 @@
 //! The wasm-only wiring: adapter construction, the input queue, and the drain.
 //!
-//! Everything the DOM proxies do to egui arrives here as a queued [`egui::Event`]
-//! and reaches the next pass through [`A11y::drain`]. Events cannot be pushed onto
-//! [`egui::Context::input_mut`] instead: egui rebuilds `InputState` from the
-//! frame's `RawInput` in `begin_pass`, so anything written between passes is
-//! discarded before a widget ever sees it.
+//! Proxy input is queued and reaches the next pass through [`A11y::drain`], not
+//! [`egui::Context::input_mut`]: egui rebuilds `InputState` from the frame's `RawInput` in
+//! `begin_pass`, discarding anything written between passes.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -13,11 +11,10 @@ use egui::accesskit::{ActionRequest, TreeUpdate};
 
 use crate::keys;
 
-/// The queue half of the layer, shared between the DOM listeners (via [`Bridge`]),
-/// [`A11y::drain`] and any escape hatch the app exposes.
+/// Input queued by the DOM listeners (via [`Bridge`]) and [`A11y::request`] for
+/// [`A11y::drain`].
 struct Queue {
-    /// Kept so injected input can wake an idle app: egui only repaints on demand,
-    /// and an event nobody drains is an event that never happens.
+    /// Kept so queued input can wake an idle app, since egui only repaints on demand.
     ctx: egui::Context,
     pending: RefCell<Vec<egui::Event>>,
     /// Whether DOM focus currently sits on one of the proxies.
@@ -59,24 +56,22 @@ impl accesskit_dom::Handler for Bridge {
 
 /// Handle to an installed accessibility layer.
 ///
-/// Cheap to clone; all clones share one adapter and one event queue. The layer
-/// lives as long as any clone does — apps install it once for their lifetime.
+/// Cheap to clone; all clones share one adapter and one event queue.
+/// The overlay lives as long as any clone does.
 #[derive(Clone)]
 pub struct A11y {
     queue: Rc<Queue>,
     adapter: Rc<RefCell<accesskit_dom::Adapter>>,
 }
 
-/// Turn on AccessKit for `ctx` and build the DOM projection over `canvas`.
+/// Turns on AccessKit for `ctx` and builds the DOM projection over `canvas`.
 ///
-/// The returned handle still needs two one-line connections only the app can make,
-/// because they belong to the app's web runner rather than to egui: feed each
-/// pass's tree to [`A11y::on_tree_update`], and call [`A11y::drain`] from the
-/// runner's raw-input hook.
+/// The app still feeds each pass's tree to [`A11y::on_tree_update`] and calls
+/// [`A11y::drain`] from its runner's raw-input hook.
 ///
 /// # Errors
 ///
-/// Returns [`accesskit_dom::Error`] when the overlay cannot be built — see
+/// Returns [`accesskit_dom::Error`] when the overlay cannot be built; see
 /// [`accesskit_dom::Adapter::new`].
 pub fn install(
     ctx: &egui::Context,
@@ -100,25 +95,20 @@ pub fn install(
 }
 
 impl A11y {
-    /// Mirror one pass's tree into the DOM overlay.
-    ///
-    /// Call with every update the web runner hands out; the adapter diffs
-    /// internally, so an unchanged tree costs no DOM writes.
+    /// Mirrors one pass's tree into the DOM overlay; an unchanged tree costs no DOM writes.
     pub fn on_tree_update(&self, update: &TreeUpdate) {
         let pixels_per_point = f64::from(self.queue.ctx.pixels_per_point());
         self.adapter.borrow_mut().update(update, pixels_per_point);
     }
 
-    /// Hand this pass's queued accessibility input to egui.
+    /// Hands the queued accessibility input to this pass.
     ///
     /// Call from the web runner's raw-input hook (eframe:
     /// [`raw_input_hook`](https://docs.rs/eframe/latest/eframe/trait.App.html#method.raw_input_hook)).
     pub fn drain(&self, raw_input: &mut egui::RawInput) {
         if self.queue.holds_focus.get() {
-            // The runner derives `focused` from the canvas holding DOM focus, and a
-            // focused proxy necessarily means it does not. Left uncorrected, egui
-            // would behave as if the window were in the background — no text cursor,
-            // no blink — while the user is actively typing into a widget.
+            // The runner derives `focused` from the canvas, which has no DOM focus while a
+            // proxy does; uncorrected, egui would hide the text cursor while the user types.
             raw_input.focused = true;
         }
         raw_input
@@ -126,13 +116,11 @@ impl A11y {
             .append(&mut self.queue.pending.borrow_mut());
     }
 
-    /// Queue an AccessKit action request as if a proxy had raised it.
+    /// Queues an AccessKit action request as if a proxy had raised it.
     ///
-    /// The DOM proxies drive themselves; this is the escape hatch for a caller that
-    /// already has a node id — a test harness reading the published tree JSON, or a
-    /// control the projection deliberately does not make clickable, such as a large
-    /// drag-sensing region. A well-formed request naming a node that no longer
-    /// exists is dropped by egui on the next pass.
+    /// The escape hatch for a caller that already has a node id, such as a harness reading
+    /// the tree JSON.
+    /// egui drops a request naming a node that no longer exists.
     pub fn request(&self, request: ActionRequest) {
         self.queue
             .push(egui::Event::AccessKitActionRequest(request));

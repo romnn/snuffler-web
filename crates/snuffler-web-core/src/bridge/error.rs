@@ -4,9 +4,9 @@
 //! failed, a payload violated its protocol, or a `SeedLink` socket stopped.
 //! They read alike once formatted, but callers must act on them differently.
 //!
-//! Deliberately free of `JsValue`: the error crosses into the egui frontend and
-//! is stored in a job outcome or [`crate::bridge::Bridge::diagnostic`]. Both
-//! consumers build on the host.
+//! Deliberately free of `JsValue`: the error crosses into the egui frontend and is stored
+//! in a job outcome or [`crate::bridge::Bridge::diagnostic`].
+//! Both consumers build on the host.
 
 use std::fmt;
 
@@ -83,9 +83,9 @@ pub enum BridgeError {
     #[error("reloading files failed: {0}")]
     Reload(#[from] ReloadError),
 
-    /// A DOM-only browser call — a file picker, a directory read, a download —
-    /// rejected. These have no proto envelope to carry a structured error, so
-    /// what the browser threw is all there is.
+    /// A DOM-only browser call — a file picker, a directory read, a download — rejected.
+    /// These have no proto envelope to carry a structured error, so what the browser
+    /// threw is all there is.
     #[error("{action} failed: {detail}")]
     Browser {
         /// What the user asked for, e.g. `open files`.
@@ -94,8 +94,8 @@ pub enum BridgeError {
         detail: String,
     },
 
-    /// `web/bridge.js` returned a value that is not the shape its contract
-    /// promises. Always a bug in the glue rather than anything the user did.
+    /// `web/bridge.js` returned a value that is not the shape its contract promises.
+    /// Always a bug in the glue rather than anything the user did.
     #[error(transparent)]
     Marshal(#[from] MarshalError),
 

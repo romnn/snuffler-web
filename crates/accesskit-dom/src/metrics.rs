@@ -1,12 +1,7 @@
 //! Cost accounting for the projection, compiled in by the `metrics` feature.
 //!
-//! The per-pass average is the honest measure of this layer; whole-page CPU
-//! comparisons drift by more between page loads than the layer itself uses. The
-//! write counts say whether a pass did real DOM work or only compared hashes.
-//!
-//! Without the feature, [`Recorder`] is a zero-sized no-op with the same method
-//! surface, so the call sites in [`crate::dom`] stay free of `cfg` noise and no
-//! timing call — each one a crossing into JS — is ever made.
+//! Without the feature, [`Recorder`] is a zero-sized no-op with the same methods, so the call
+//! sites stay free of `cfg` and make no timing calls into JS.
 
 /// What the projection has cost so far.
 #[cfg(feature = "metrics")]
@@ -22,12 +17,10 @@ pub struct Stats {
     pub placed: u32,
 }
 
-/// Opaque start-of-pass marker handed from [`Recorder::begin`] to
-/// [`Recorder::end_pass`].
+/// Opaque start-of-pass marker handed from [`Recorder::begin`] to [`Recorder::end_pass`].
 ///
-/// A named type rather than the timestamp itself so the metrics-less stand-in can
-/// return the same thing — a bare `()` at the call site would trip
-/// `clippy::let_unit_value` in that configuration.
+/// A named type, so the no-op stand-in does not return a bare `()` that would trip
+/// `clippy::let_unit_value` at the call site.
 #[cfg(feature = "metrics")]
 #[derive(Clone, Copy)]
 pub(crate) struct PassStart(Option<f64>);

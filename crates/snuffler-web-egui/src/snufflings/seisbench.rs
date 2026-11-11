@@ -3,7 +3,7 @@ use egui::Align;
 pub use snuffler_web_core::snufflings::seisbench::Config;
 
 use super::Action;
-use super::widgets::{param_row, run_button};
+use super::widgets::{checkbox_row, param_row, run_button};
 
 const LABEL_W: f32 = 160.0;
 const LOCAL_MODEL_BASE_URL: &str = "assets/models/";
@@ -83,17 +83,16 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
     threshold_row(ui, "P threshold", &mut config.p_threshold);
     threshold_row(ui, "S threshold", &mut config.s_threshold);
     param_row(ui, "Rescaling factor", &mut config.scale_factor, 0.1, 10.0);
-    ui.horizontal(|ui| {
-        ui.add_space(LABEL_W);
-        ui.checkbox(&mut config.show_annotation_traces, "Show annotation traces");
-    });
-    ui.horizontal(|ui| {
-        ui.add_space(LABEL_W);
-        ui.checkbox(
-            &mut config.use_predefined_filters,
-            "Use pre-defined filters",
-        );
-    });
+    checkbox_row(
+        ui,
+        &mut config.show_annotation_traces,
+        "Show annotation traces",
+    );
+    checkbox_row(
+        ui,
+        &mut config.use_predefined_filters,
+        "Use pre-defined filters",
+    );
 
     if let Some(progress) = &runtime.progress {
         ui.add_space(4.0);

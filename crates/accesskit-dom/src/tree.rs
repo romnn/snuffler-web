@@ -1,10 +1,8 @@
 //! Planning: deciding what each AccessKit node becomes, before any DOM is touched.
 //!
-//! Everything here is pure — it reads a [`TreeUpdate`] and produces [`Plan`]s — so the
-//! projection's judgement calls (role mapping, name resolution, label borrowing,
-//! region demotion) are unit-tested on the host, without a browser in the loop.
-//! The wasm-only [`crate::dom`] module then diffs each plan's signatures against what
-//! is mounted and writes only what changed.
+//! Everything here is pure, so role mapping, name resolution, label borrowing and region
+//! demotion are unit-tested on the host.
+//! The wasm-only `dom` module then diffs each plan's signatures against what is mounted.
 
 use std::hash::Hasher as _;
 
@@ -21,9 +19,6 @@ pub(crate) struct Viewport {
     pub width: f64,
     pub height: f64,
     /// The canvas backing store's size in device pixels.
-    ///
-    /// A plain attribute read, so it is what the projection watches to notice a
-    /// device-pixel-ratio change without forcing a layout.
     pub backing: (u32, u32),
     pub scale: f64,
 }
@@ -38,11 +33,10 @@ pub(crate) struct Plan<'a> {
 }
 
 impl Plan<'_> {
-    /// Role, name and state — everything `describe` writes.
+    /// Hash of role, name and state, everything `describe` writes.
     ///
-    /// Toolkits resend the whole tree every pass, so this runs for every node on every
-    /// frame. Hashing keeps it allocation-free; formatting a string per node here
-    /// was on its own a third of the layer's cost.
+    /// Toolkits resend the whole tree every pass, so this runs for every node on every frame
+    /// and must not allocate.
     pub(crate) fn description_signature(&self) -> u64 {
         use std::hash::Hash as _;
 
@@ -89,7 +83,7 @@ impl Plan<'_> {
         hasher.finish()
     }
 
-    /// Everything that ends up in the element's `style` attribute.
+    /// Hash of everything that ends up in the element's `style` attribute.
     pub(crate) fn geometry_signature(&self, viewport: &Viewport) -> u64 {
         use std::hash::Hash as _;
 
@@ -107,7 +101,7 @@ impl Plan<'_> {
     }
 }
 
-/// Walk the tree the toolkit sent, deciding what each node becomes.
+/// Walks the tree the toolkit sent, deciding what each node becomes.
 pub(crate) fn plan<'a>(
     update: &'a TreeUpdate,
     canvas_area_points: f64,
@@ -135,21 +129,17 @@ pub(crate) fn plan<'a>(
     out
 }
 
-/// Point controls at the label the toolkit named explicitly.
+/// Points controls at the label the toolkit named with a `LabelledBy` relation.
 ///
-/// A `LabelledBy` relation in the AccessKit tree (egui's `Response::labelled_by`,
-/// which e.g. `ComboBox::from_label` sets) is the toolkit saying which text names
-/// the control, so it outranks the geometric borrow below. It matters most for
-/// combo boxes: their own accesskit label is the *selected value*, so without the
-/// relation the accessible name changes every time the value does.
+/// The explicit relation outranks the geometric guess in [`borrow_labels`].
+/// It matters most for combo boxes, whose own label is the selected value.
 fn explicit_labels(plans: &mut [Plan<'_>]) {
     let planned: FxHashSet<u64> = plans.iter().map(|item| item.id).collect();
     for item in plans.iter_mut() {
         if !item.proxy.interactive {
             continue;
         }
-        // Only a target that is itself projected can be pointed at: an
-        // `aria-labelledby` naming a missing element names nothing.
+        // An `aria-labelledby` naming an unprojected element names nothing.
         let label = item
             .node
             .labelled_by()
@@ -162,13 +152,11 @@ fn explicit_labels(plans: &mut [Plan<'_>]) {
     }
 }
 
-/// What the projection does with a node, resolved once from [`Options`] so the
-/// walk carries decisions rather than the settings they came from.
+/// The [`Options`] the walk needs, resolved once per pass.
 pub(crate) struct Policy {
     /// Area (in tree coordinates) at which a clickable node becomes a region.
     pub region_area_points: f64,
-    /// Whether a control proxy is the browser's hit target; see
-    /// [`Options::pointer_proxies`](crate::Options::pointer_proxies).
+    /// Whether a control proxy is the browser's hit target; see [`Options::pointer_proxies`].
     pub pointer_proxies: bool,
 }
 
@@ -199,8 +187,7 @@ fn walk_children<'a>(
                 });
                 Some(id)
             }
-            // A node we do not project must not orphan its subtree: its children are
-            // hoisted to the nearest ancestor that does have an element.
+            // An unprojected node's children are hoisted to the nearest projected ancestor.
             None => projected_parent,
         };
         walk_children(node, next_parent, index, visited, policy, out);
@@ -224,15 +211,14 @@ pub(crate) struct Proxy<'a> {
 
 impl<'a> Proxy<'a> {
     fn for_node(node: &'a Node, index: &FxHashMap<u64, &'a Node>, policy: &Policy) -> Option<Self> {
-        let region_area_points = policy.region_area_points;
         if node.is_hidden() {
             return None;
         }
         let (mut tag, mut role, mut kind) = map_role(node.role())?;
 
-        // A control's value is not its name: a text field holding "off" is named by
-        // the "Lowpass [Hz]:" beside it, and the value belongs in the content. For a
-        // combo box or a label, though, the value *is* what identifies it.
+        // An input's value is not its name: a text field holding "off" is named by the
+        // "Lowpass [Hz]:" beside it.
+        // For a combo box or a label, though, the value is what identifies it.
         let named_by_value = !matches!(
             node.role(),
             Role::TextInput
@@ -243,10 +229,8 @@ impl<'a> Proxy<'a> {
                 | Role::ScrollBar
                 | Role::ProgressIndicator
         );
-        // Toolkits give their custom-painted and generic areas no role of their own,
-        // so a clickable one is promoted to a control rather than left as scenery.
-        // This has to happen before the name is resolved, or a promoted control would
-        // miss the sibling fallback that is usually the only thing naming it.
+        // A clickable custom-painted or generic area is promoted to a control.
+        // This must happen before name resolution, which treats controls differently.
         if matches!(kind, Kind::Region | Kind::Text)
             && role.is_none()
             && node.supports_action(Action::Click)
@@ -255,10 +239,8 @@ impl<'a> Proxy<'a> {
             kind = Kind::Control;
         }
 
-        // A container must never borrow a name from what it contains. Its children
-        // are projected too, so any text taken from them would be announced once for
-        // the container and again for the child that actually owns it — and with
-        // deeply nested containers, the same words several times over.
+        // A container never borrows a name from its children, which are projected too and
+        // would announce the same words again.
         let name = match kind {
             Kind::Region => node.label().unwrap_or_default(),
             Kind::Text => text_of(node).unwrap_or_default(),
@@ -280,10 +262,9 @@ impl<'a> Proxy<'a> {
         let area = node
             .bounds()
             .map_or(0.0, |b| (b.x1 - b.x0).max(0.0) * (b.y1 - b.y0).max(0.0));
-        let region_sized = region_area_points > 0.0 && area > region_area_points;
+        let region_sized = policy.region_area_points > 0.0 && area > policy.region_area_points;
         if matches!(kind, Kind::Control) && region_sized {
-            // Too big to be a control: publish it for reading, but never let it take
-            // presses away from the canvas underneath.
+            // Too big to be a control; see `Options::region_area_fraction`.
             tag = "div";
             role = role.or(Some("group"));
             kind = Kind::Region;
@@ -295,15 +276,10 @@ impl<'a> Proxy<'a> {
             role,
             name,
             interactive,
-            // Only a leaf carries text: `textContent` replaces an element's children,
-            // so writing it on a container would delete the proxies nested inside it.
-            // A label that senses clicks — e.g. one that resets its field when
-            // double-clicked — is promoted to a button above, and still owns its text:
-            // it is what a neighbouring control has to borrow to get a name at all.
+            // Only a leaf carries text, because `textContent` replaces an element's children.
+            // A clickable label promoted to a button keeps its text, so neighbouring
+            // controls can still borrow it as their name.
             text_content: matches!(kind, Kind::Text) || node.role() == Role::Label,
-            // A control only becomes the browser's hit target where something drives
-            // the page by element rather than by coordinate; otherwise the press
-            // belongs to the canvas, which is the only thing that can follow a drag.
             hit_testable: interactive && policy.pointer_proxies,
             labelled_by: None,
         })
@@ -380,19 +356,14 @@ fn descendant_text<'a>(
     })
 }
 
-/// Point still-nameless controls at the label painted beside them.
+/// Points still-nameless controls at the text immediately to their left on the same row.
 ///
-/// Toolkits wrap nearly every widget in a container of its own, so the text naming a
-/// control is almost never its sibling in the tree — a form row may put the label,
-/// the text field and the slider in three separate single-child containers. What
-/// does hold is what a sighted user relies on: the label is the text immediately to
-/// the left, on the same row. Linking rather than copying keeps the two in step and
-/// leaves the screen reader one copy of the words instead of two.
+/// Toolkits wrap nearly every widget in its own container, so the naming text is rarely a
+/// tree sibling; geometry is what a sighted user relies on instead.
+/// Linking rather than copying leaves the screen reader one copy of the words.
 fn borrow_labels(plans: &mut [Plan<'_>], label_gap: f64) {
     let mut borrowed: Vec<(usize, u64)> = Vec::new();
     for (position, item) in plans.iter().enumerate() {
-        // A control the toolkit labelled explicitly keeps that link; geometry
-        // only guesses for the ones nobody named.
         if !item.proxy.interactive
             || !item.proxy.name.is_empty()
             || item.proxy.labelled_by.is_some()
@@ -460,16 +431,12 @@ mod tests {
         plans.iter().find(|plan| plan.id == id)
     }
 
-    /// [`find`] for the tests that require the node to have been projected, so a
-    /// missing plan surfaces as an error rather than as an unwrap.
+    /// [`find`] for nodes that must have been projected.
     fn plan_for<'p, 'a>(plans: &'p [Plan<'a>], id: u64) -> eyre::Result<&'p Plan<'a>> {
         find(plans, id).ok_or_else(|| eyre!("no plan was projected for node {id}"))
     }
 
-    /// A nameless control is linked to the text immediately to its left on the same
-    /// row, the way a sighted user pairs them.
-    /// The projection only competes with the canvas for presses where it was asked
-    /// to: a control that hit-tests takes the drag the toolkit needs to see.
+    /// A control only takes presses from the canvas where pointer proxies were asked for.
     #[test]
     fn a_control_hit_tests_only_where_pointer_proxies_are_asked_for() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1]);
@@ -534,6 +501,7 @@ mod tests {
         Ok(())
     }
 
+    /// A nameless control is linked to the text immediately to its left on the same row.
     #[test]
     fn borrows_the_label_beside_a_control() -> eyre::Result<()> {
         let root = with_children(Role::Window, &[1, 2]);

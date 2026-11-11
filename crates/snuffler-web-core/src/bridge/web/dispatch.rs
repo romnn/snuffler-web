@@ -5,8 +5,8 @@
 #![allow(
     clippy::wildcard_imports,
     clippy::needless_pass_by_value,
-    reason = "split out of the web module and glued with the same glob import; \
-              owned parameters cross the JS/async boundary as in the parent"
+    reason = "the submodule shares the web module's glob import, and owned \
+              parameters cross the JS/async boundary as in the parent"
 )]
 
 use super::*;
@@ -330,44 +330,11 @@ where
     submission
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::cast_precision_loss,
-    reason = "transport diagnostics convert byte counts to MB and keep separate phase timings"
-)]
-fn log_transport_perf(
-    method: &str,
-    request_bytes: usize,
-    result_bytes: usize,
-    ys_bytes: usize,
-    js_call_ms: f64,
-    result_copy_ms: f64,
-    ys_copy_ms: f64,
-    total_ms: f64,
-) {
-    if !method.ends_with("/GetView") {
-        return;
-    }
-    log::info!(
-        "[bridge.transport] method=getView request_bytes={} result_bytes={} ys_bytes={} ys_mb={:.3} js_call_ms={:.2} rust_result_copy_ms={:.2} rust_ys_copy_ms={:.2} total_ms={:.2}",
-        request_bytes,
-        result_bytes,
-        ys_bytes,
-        ys_bytes as f64 / 1_000_000.0,
-        js_call_ms,
-        result_copy_ms,
-        ys_copy_ms,
-        total_ms,
-    );
-}
-
-/// The frontend's `BridgeTransport`: the generated typed client marshals each
-/// encoded request through `js_call` to the worker and reads back the
-/// `BridgeResult` bytes (and the out-of-band `ys` for buffer methods). Unit
-/// struct — the worker holds all session state.
+/// The frontend's `BridgeTransport`: the generated typed client marshals each encoded
+/// request through `js_call` to the worker and reads back the `BridgeResult` bytes (and
+/// the out-of-band `ys` for buffer methods).
+/// Unit struct — the worker holds all session state.
 pub(super) struct WorkerTransport;
-
-const BRIDGE_TRANSPORT_PERF_LOG: bool = false;
 
 impl pb::BridgeTransport for WorkerTransport {
     async fn unary(
@@ -377,10 +344,10 @@ impl pb::BridgeTransport for WorkerTransport {
         request: Vec<u8>,
     ) -> Result<Vec<u8>, TransportError> {
         let job = require_registered_job(operation, method)?;
-        let obj = js_call(method, request, Vec::new(), job.id().get())
+        let obj = js_call(method, request, job.id().get())
             .await
-            .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-        object_uint8(&obj, "result").map_err(|e| TransportError::new(method, e.to_string()))
+            .map_err(|err| TransportError::new(method, jsval_to_string(err)))?;
+        object_uint8(&obj, "result").map_err(|err| TransportError::new(method, err.to_string()))
     }
 
     async fn unary_with_buffer(
@@ -390,37 +357,14 @@ impl pb::BridgeTransport for WorkerTransport {
         request: Vec<u8>,
     ) -> Result<(Vec<u8>, Vec<f32>), TransportError> {
         let job = require_registered_job(operation, method)?;
-        let marshal = |e: MarshalError| TransportError::new(method, e.to_string());
-        if !BRIDGE_TRANSPORT_PERF_LOG {
-            let obj = js_call(method, request, Vec::new(), job.id().get())
-                .await
-                .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-            return Ok((
-                object_uint8(&obj, "result").map_err(marshal)?,
-                object_f32(&obj, "ys").map_err(marshal)?,
-            ));
-        }
-        let t0 = js_sys::Date::now();
-        let request_bytes = request.len();
-        let obj = js_call(method, request, Vec::new(), job.id().get())
+        let obj = js_call(method, request, job.id().get())
             .await
-            .map_err(|e| TransportError::new(method, jsval_to_string(e)))?;
-        let js_done = js_sys::Date::now();
-        let result = object_uint8(&obj, "result").map_err(marshal)?;
-        let result_done = js_sys::Date::now();
-        let ys = object_f32(&obj, "ys").map_err(marshal)?;
-        let done = js_sys::Date::now();
-        log_transport_perf(
-            method,
-            request_bytes,
-            result.len(),
-            ys.len() * 4,
-            js_done - t0,
-            result_done - js_done,
-            done - result_done,
-            done - t0,
-        );
-        Ok((result, ys))
+            .map_err(|err| TransportError::new(method, jsval_to_string(err)))?;
+        let marshal = |err: MarshalError| TransportError::new(method, err.to_string());
+        Ok((
+            object_uint8(&obj, "result").map_err(marshal)?,
+            object_f32(&obj, "ys").map_err(marshal)?,
+        ))
     }
 }
 
@@ -428,10 +372,10 @@ pub(super) fn client() -> pb::BridgeServiceClient<WorkerTransport> {
     pb::BridgeServiceClient::new(WorkerTransport)
 }
 
-/// Records progress against the flow's own ledger identity. By-handle rather
-/// than by-lane-slot: a retired flow's handle is terminal, where
-/// `update_progress` is a no-op, so a ghost can never overwrite a replacement
-/// job's progress bar.
+/// Records progress against the flow's own ledger identity.
+/// By-handle rather than by-lane-slot: a retired flow's handle is terminal, where
+/// `update_progress` is a no-op, so a ghost can never overwrite a replacement job's
+/// progress bar.
 pub(super) fn update_flow_progress(
     inner: &Rc<RefCell<Inner>>,
     flow: JobHandle,
@@ -449,10 +393,10 @@ pub(super) fn update_flow_progress(
     );
 }
 
-/// Retires every lane registration. Runtime loss must call this: the ledger
-/// terminates the owning jobs, but their executor futures may still be alive,
-/// and a stale registration would let a retired flow keep issuing children
-/// against the replacement interpreter while blocking every new job-lane
+/// Retires every lane registration.
+/// Runtime loss must call this: the ledger terminates the owning jobs, but their executor
+/// futures may still be alive, and a stale registration would let a retired flow keep
+/// issuing children against the replacement interpreter while blocking every new job-lane
 /// submission with an occupied lane.
 pub(super) fn clear_lane_registrations() {
     REGISTERED_LANE_JOBS.with(|active| {
@@ -462,14 +406,13 @@ pub(super) fn clear_lane_registrations() {
     });
 }
 
-/// Whether the flow owning `flow` must stop at its next child boundary. A
-/// multi-child flow has windows with no transport call in flight, so a cancel
-/// there finds nothing to interrupt; the Cancelling state is the request,
-/// honored here. The identity comparison is exact: after a runtime loss frees
-/// the lane, the slot may already hold a replacement job, and a ghost flow
-/// that consulted the slot alone would adopt that live job's identity — its
-/// children would commit into the replacement interpreter's session under the
-/// wrong job id.
+/// Whether the flow owning `flow` must stop at its next child boundary.
+/// A multi-child flow has windows with no transport call in flight, so a cancel there
+/// finds nothing to interrupt; the Cancelling state is the request, honored here.
+/// The identity comparison is exact: after a runtime loss frees the lane, the slot may
+/// already hold a replacement job, and a ghost flow that consulted the slot alone would
+/// adopt that live job's identity — its children would commit into the replacement
+/// interpreter's session under the wrong job id.
 pub(super) fn job_flow_interrupted(inner: &Rc<RefCell<Inner>>, flow: JobHandle) -> bool {
     let owner = REGISTERED_LANE_JOBS.with(|active| active.borrow().get(crate::activity::Lane::Job));
     if owner != Some(flow) {

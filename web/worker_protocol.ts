@@ -11,16 +11,12 @@ export type WorkerRequest = {
   control: SharedArrayBuffer;
   interrupt: SharedArrayBuffer;
   request?: Uint8Array;
-  data?: Uint8Array;
   handle?: FileSystemDirectoryHandle;
 };
-
-export type BridgeTimings = Record<string, number>;
 
 export type WorkerReplyPayload = {
   result: ArrayBuffer;
   ys?: ArrayBuffer;
-  perf?: BridgeTimings;
   transfer: Transferable[];
 };
 
@@ -36,7 +32,6 @@ export type WorkerSuccessMessage = {
   ok: true;
   result: ArrayBuffer;
   ys?: ArrayBuffer;
-  perf?: BridgeTimings;
 };
 
 export type WorkerFailureMessage = {

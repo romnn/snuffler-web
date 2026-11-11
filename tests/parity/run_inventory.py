@@ -178,7 +178,7 @@ def diff_section(
     """Match Qt entries to web entries and split them three ways.
 
     ``match_leaf`` lets an item match on its own name when its menu path differs —
-    the web moved several commands between menus (Cake Phase lives under Data, the
+    the web moved several commands between menus (Catalog Search lives under Data, the
     snufflings are not behind a 'Run Snuffling' submenu), and where a command sits is
     a layout decision, not a missing feature. Where it lands is still reported.
     """
@@ -258,9 +258,7 @@ def report(
             # `todo` entries are excused work-in-progress, not accepted differences;
             # the label keeps the two readable apart in the report.
             label = "todo    " if entry.get("todo") else "gap     "
-            print(
-                f"  {YELLOW}{label} {qt_path}{RESET}  {DIM}[{entry['bucket']}] {entry['title']}{RESET}"
-            )
+            print(f"  {YELLOW}{label} {qt_path}{RESET}  {DIM}{entry['title']}{RESET}")
     for path in result["extra"]:
         print(f"  {DIM}web-only {path}{RESET}")
     if states:

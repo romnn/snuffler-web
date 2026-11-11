@@ -178,8 +178,8 @@ const SNUFFLING_HELP: &[(&str, &str)] = &[
     ),
 ];
 
-/// The Help ▸ Snuffling Help window: what each built-in snuffling does.
-/// Draws the snuffling-help window when the shared state asks for it.
+/// Draws the Help ▸ Snuffling Help window, what each built-in snuffling does,
+/// when the shared state asks for it.
 pub fn show_snuffling_help(ctx: &egui::Context, state: &mut AppState) {
     if !state.show_snuffling_help {
         return;

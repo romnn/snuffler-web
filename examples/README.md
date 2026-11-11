@@ -39,7 +39,7 @@ do not — so "load an example" is a real choice rather than a single canned dem
 ```
 
 `example.toml` describes the dataset; everything else *is* the dataset and goes into
-the bundle. Four of its tables matter:
+the bundle. Three parts of it matter:
 
 - `title`, `blurb`, `characteristics`, `citation` — what the menu shows, and what
   the `About this dataset` window shows once it is loaded. The blurb's first
@@ -61,8 +61,8 @@ That script is provenance, not a generator. StationXML carries a `<Created>` sta
 and datacenters revise metadata, so re-running it does not reproduce the checked-in
 bytes; for a dataset the parity suite measures, that drifts
 `tests/parity/corpus/manifest.json` and the two have to move in one commit. Re-fetch
-to change a dataset on purpose. `eifel` predates the convention and carries no
-`[source]`: its bytes can only be restored from git.
+to change a dataset on purpose. `eifel` carries no `[source]`: its bytes can only be
+restored from git.
 
 ## The bundle format
 

@@ -186,10 +186,11 @@ pub fn window(ctx: &egui::Context, map: &mut MapState, state: &mut AppState, bri
 
 /// A fingerprint of what the auto-fit would frame: every station and event
 /// coordinate, hashed, with the station count separating the two lists.
-/// Counting alone missed real changes — switching between two selected events,
-/// or swapping datasets with equal counts, moves the coordinates without
-/// changing either count and left the newly framed data offscreen. `None`
-/// while there is nothing to frame, so an empty poll never latches as fitted.
+///
+/// Counts alone are not enough: switching between two selected events, or
+/// swapping datasets with equal counts, moves the coordinates without changing
+/// either count.
+/// `None` while there is nothing to frame, so an empty poll never latches as fitted.
 fn fit_fingerprint(d: &MapData) -> Option<u64> {
     use std::hash::Hasher;
     if d.stations.is_empty() && d.events.is_empty() {

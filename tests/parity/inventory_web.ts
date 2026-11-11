@@ -408,9 +408,9 @@ async function pressProxy(page: Page, selector: string): Promise<void> {
 /// the marker explicitly rather than relying on the pick having selected it keeps the
 /// probe measuring the keys and not the picking path, which tier 3 covers.
 async function probeSetup(page: Page): Promise<void> {
-  // The synthetic pile arrives with the page (`?demo=1`); the File menu no longer
-  // offers it, because the app opens on a real recording. Readiness comes from the
-  // application lifecycle rather than the visible status wording.
+  // The synthetic pile arrives with the page (`?demo=1`), since the File menu does
+  // not offer it.
+  // Readiness comes from the application lifecycle rather than the status wording.
   await waitForAppReady(page);
   await pressProxy(page, `${OVERLAY} [aria-label="Snufflings"]`);
   await page.waitForTimeout(400);

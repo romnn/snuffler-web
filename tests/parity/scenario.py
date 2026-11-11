@@ -206,9 +206,9 @@ class Compare:
     atol: float = 1e-9
     edge_trim_s: float = 0.0
     scale_rtol: float = 1e-6
-    # Named entries in known_gaps.toml [[numeric]] that this scenario is expected
-    # to trip. A scenario that trips none of them, or trips one that is not listed,
-    # fails.
+    # Named [[numeric]] or [[defect]] entries in known_gaps.toml this scenario is
+    # expected to trip.
+    # A scenario that trips none of them, or trips one that is not listed, fails.
     expect_divergence: List[str] = field(default_factory=list)
     reason: str = ""
 

@@ -1,114 +1,92 @@
 # Every intentional difference between Qt snuffler and the web port, and the
-# reason it exists. This file is the single register: if the two behave the same,
-# nothing is written down; if they differ, the difference either has an entry here
-# or the suite fails. An entry is one of two things, and says which:
+# reason it exists.
+# This file is the single register: if the two behave the same, nothing is
+# written down; if they differ, the difference either has an entry here or the
+# suite fails.
+# An entry is one of two things, and says which:
 #
-#   signed off   the difference is justified and stays. The `why` carries the
-#                justification, and a difference really must have one — "free
-#                choice" is not a reason to differ, it is a reason to match.
+#   signed off   the difference is justified and stays.
+#                The `why` carries the justification; "free choice" is not a
+#                reason to differ, it is a reason to match.
 #
-#   todo = true  open work: a difference or gap we intend to close, recorded here
-#                so it is excused from the diff without being mistaken for a
-#                decision. The `why` says what closing it takes.
+#   todo = true  open work: a difference we intend to close, excused from the
+#                diff without being mistaken for a decision.
+#                The `why` says what closing it takes.
 #
-# Four kinds of entry:
+# Five kinds of entry:
 #
-#   [[numeric]]  tier 1 — a place where the two pipelines legitimately compute
-#                different numbers, because the browser cannot do what Qt does or
-#                because the web port deliberately chose otherwise.
+#   [[numeric]]  tier 1: a place where the two pipelines legitimately compute
+#                different numbers.
 #
-#   [[defect]]   tier 1 — a difference that is a *bug*, found by this suite and not
-#                yet fixed. Not an excuse: a register, with the fix in the entry.
-#                Scenarios naming a defect print as `bug` rather than `pass` and the
-#                run lists every one that still reproduces.
+#   [[defect]]   tier 1: a difference that is a bug, found by this suite and not
+#                yet fixed.
+#                Not an excuse but a register, with the fix in the entry.
+#                Scenarios naming a defect print as `bug` rather than `pass`.
 #
-#   [[feature]]  tier 2 — a command Qt has that the web does not. Anything present
-#                in the Qt inventory, absent from the web inventory and absent here
-#                fails the build.
+#   [[feature]]  tier 2: a command Qt has that the web does not.
+#                Anything present in the Qt inventory, absent from the web
+#                inventory and absent here fails the build.
 #
-#   [[manual]]   a difference no tier can currently observe, recorded so it is not
-#                silent. `enforce` names the check that would observe it — required,
-#                because the kind's whole promise is that an unobservable difference
-#                still has a way out of that state. Nothing validates these against
-#                reality yet, which is exactly why they are quarantined in their own
-#                kind instead of rotting inside an enforced one.
+#   [[manual]]   a difference no tier can observe yet, recorded so it is not
+#                silent.
+#                `enforce` names the check that would observe it, and is
+#                required, so every such entry has a way out of this kind.
 #
-# The line between [[manual]] and the enforced kinds is mechanical, not editorial:
-# `evaluate` only ever looks at entries a scenario named in `expect_divergence`, so
-# a [[numeric]] or [[defect]] entry nothing names would be inert — it would excuse
-# no divergence and never go stale. A full tier-1 run fails on any such entry, which
-# is what keeps "enforced" meaning enforced.
+#   [[alias]]    the map between the two frontends' wordings.
 #
-# `bucket` says why a platform gap exists:
-# - `sandbox-hard`: the browser sandbox forbids it, with no workaround (raw sockets,
-#   silent local file access, subprocesses, native-dependency snufflings, >4 GB heaps);
-# - `needs-a-server`: possible only through an external proxy (non-CORS FDSN hosts,
-#   SeedLink);
-# - `chromium-only`: works only with the File System Access API, so Firefox and Safari
-#   degrade to one-shot uploads;
-# - `soft`: present but slower (CPU-only BLAS, browser inference).
+# The line between [[manual]] and the enforced kinds is mechanical: `evaluate`
+# only looks at entries a scenario names in `expect_divergence`, so a [[numeric]]
+# or [[defect]] entry nothing names would excuse nothing and never go stale.
+# A full tier-1 run fails on any such entry.
 #
-# `checks` lists the tier-1 check kinds the entry accounts for; `strict` (default
-# true) means the divergence must still reproduce, so an entry cannot rot into
-# folklore about behaviour that has since changed. Set it false only when the *size*
-# of the difference is data-dependent and can legitimately fall inside tolerance.
+# `checks` lists the tier-1 check kinds a [[numeric]] or [[defect]] entry
+# accounts for.
+# `strict` (default true) means the divergence must still reproduce; set it false
+# only when the size of the difference is data-dependent and can legitimately
+# fall inside tolerance.
 #
-# An entry covering `samples` may also declare `residual = "constant"`: the excused
-# divergence must then *be* a per-segment constant offset — remove its mean and the
-# remainder has to sit inside the scenario tolerance. That turns the excuse from
-# "samples may differ" into "samples may differ by exactly this shape", so a second,
-# unrelated sample defect cannot shelter behind the entry. Declare it whenever the
-# divergence has a describable shape; an entry that cannot say what shape it excuses
-# is masking everything in the checks it claims.
+# An entry covering `samples` may declare `residual = "constant"`: the excused
+# divergence must then be a per-segment constant offset, so removing its mean
+# leaves a remainder inside the scenario tolerance.
+# Declare it whenever the divergence has a describable shape, so a second,
+# unrelated sample defect cannot shelter behind the entry.
 #
 # `subjects.<kind>` narrows the excuse for one check kind to the findings whose
-# subject (the dotted nslc, mostly) matches one of its glob patterns, so a
-# divergence that lives on named channels stops excusing every other channel's, and
-# a strict entry has to keep reproducing *inside* its scope. Kinds left out of
-# `subjects` stay kind-wide — the right choice where subjects are structural
-# (`presence` has one finding, `tracks` has `count` and `order`) or where the
-# divergence genuinely touches every channel. Declare it whenever the entry's `why`
-# can say which channels carry the difference.
+# subject (mostly the dotted nslc) matches one of its glob patterns, and a strict
+# entry then has to keep reproducing inside that scope.
+# Kinds left out of `subjects` stay kind-wide, which is right where subjects are
+# structural (`presence` has one finding, `tracks` has `count` and `order`) or
+# where the divergence touches every channel.
 
 [[manual]]
 key = "vertical-leg-follows-qt"
-bucket = "hard"
 title = "The 3D vertical leg is snuffler's, which is not the honest one"
 enforce = "`qt_oracle.assert_upstream_geometry`, run before every tier-1 scenario: it computes `set_event_relative_data` on a station with both an elevation and a borehole depth and fails if upstream stops forming the vertical leg as `event.depth - station.depth`"
 why = """
 `Station.set_event_relative_data` forms the vertical leg as `event.depth -
-station.depth` (`station.py:184`) — the station's borehole depth, with its elevation
+station.depth` (`station.py:184`): the station's borehole depth, with its elevation
 dropped. A station 1.7 km up a mountain is measured as though it stood at sea level.
 The geometrically honest term is `event.depth + station.elevation - station.depth`,
 and snuffler does not write it.
 
-`bridge._sort_distance` now writes snuffler's version, deliberately. It used to write
-`event_depth + station_elevation` — the mirror-image mistake, dropping the borehole
-instead of the mountain — and the two disagreed by 11 to 119 m on the GSN stations of
-`bonin-grouped-distance-3d`. Neither was defensible as *correct*; the difference was
-which one this port is supposed to be. Parity with the Qt application is the claim
-this whole suite makes, so the port follows snuffler into the error rather than
-quietly diverging into a better answer nobody can check it against. Correcting the
-formula is upstream's to make, and the fix belongs there for every pyrocko user at
-once, not here for the browser build alone.
+`bridge._sort_distance` writes snuffler's version, deliberately. Parity with the Qt
+application is the claim this suite makes, so the port follows snuffler into the
+error rather than diverging into a better answer nobody can check it against.
+Correcting the formula is upstream's to make, for every pyrocko user at once.
 
-This is signed off rather than open work, so nothing here is waiting on a decision.
-What it is waiting on is upstream *changing its mind*: the day pyrocko starts adding
-the elevation, this port silently becomes the wrong one, and every distance sort
-diverges by tens of metres with no test naming why. That is what `enforce` above
-guards. The canary asserts the upstream formula directly rather than inferring it
-from a scenario, so it fires on a `PYROCKO_REF` bump even if no scenario in the suite
-happens to hold a station with both an elevation and a borehole — and it fails by
-this key, pointing whoever bumped the pin at this paragraph.
+Signed off. The hazard is upstream changing its mind: the day pyrocko adds the
+elevation, this port silently becomes the wrong one and every distance sort
+diverges by tens of metres. The `enforce` canary asserts the upstream formula
+directly, so it fires on a `PYROCKO_REF` bump even if no scenario holds a station
+with both an elevation and a borehole, and it fails by this key.
 """
 
-# --8<-- tier 2 --8<--
-#
-# [[alias]] is the map between the two vocabularies. The frontends were written years
-# apart and word the same command differently — 'Open waveform files...' against 'Open
-# files…', 'Sort by Names' against 'Names' — and no amount of string normalization can
-# tell that apart from a command that is genuinely absent. So each equivalence is
-# written down once, by a human, and the diff is exact everywhere else.
+# [[alias]] maps the two vocabularies.
+# The frontends word the same command differently ('Open waveform files...'
+# against 'Open files…', 'Sort by Names' against 'Names'), and no string
+# normalization can tell that apart from a command that is genuinely absent.
+# So each equivalence is written down once, by a human, and the diff is exact
+# everywhere else.
 
 [[alias]]
 qt = "File/Open waveform files..."
@@ -347,248 +325,172 @@ qt = "shift and left-click"
 web = "<shift> + click on marker"
 
 # [[feature]] is the tier-2 allowlist proper: a command Qt offers that the web does
-# not. Every entry has to keep matching something — one that stops applying fails the
-# run as stale — so this list can only ever describe the present.
+# not.
+# Every entry has to keep matching something; one that stops applying fails the
+# run as stale.
 
 [[feature]]
 qt = "File/Print"
-bucket = "soft"
 title = "No Print item: the only print a page can ask for is not the one Qt performs"
 why = """
-Qt's `File ▸ Print` opens a printer dialog and then re-paints the seismogram view
+Qt's `File ▸ Print` opens a printer dialog and re-paints the seismogram view
 *alone*, laid out afresh at the printer's page size in landscape
-(`pile_viewer.py:2846`). The one thing a page can do is `window.print()`, which hands
-the browser the whole document at screen layout — menu bar, control strip, status line
-and all — and there is no print stylesheet anywhere in this tree to narrow that down.
+(`pile_viewer.py:2846`). A page can only call `window.print()`, which hands the
+browser the whole document at screen layout, menu bar and all.
 
-The port used to carry a `File ▸ Print…` item that called exactly that, so it wore Qt's
-name over a materially different command. It is now removed rather than corrected, on
-two counts. Every browser already binds Ctrl/Cmd+P and carries Print in its own menu, so
-an item whose whole body is `window.print()` is a second name for host chrome the user
-reaches anyway — and one that a menu-bar screenshot on paper makes look broken. And the
-half Qt's command has that the host's does not — the seismogram view by itself, sized to
-a page — is already a command here: `File ▸ Save image (SVG)…` renders the view and
-nothing around it through `waveform::render_svg` (`app.rs:1050`), and printing that file
-is one browser step away.
-
-So this is signed off as a command deliberately not offered, not as one out of reach.
-What stays open is the *shape* of that export — the web renders at the current waveform
-rect where Qt sizes a fixed page canvas — and that is `export-geometry`, which since this
-removal describes the SVG alone.
+Signed off as a command deliberately not offered. Every browser already binds
+Ctrl/Cmd+P and carries Print in its own menu, so an item whose body is
+`window.print()` would wear Qt's name over a different command. The half the host's
+print lacks, the seismogram view by itself, is `File ▸ Save image (SVG)…`, and
+printing that file is one browser step away, though the export takes the current
+waveform rect where Qt sizes a fixed page canvas.
 """
 
 [[feature]]
 qt = "File/Close"
-bucket = "soft"
 title = "No 'close the viewer' command"
 why = """
-The tab is the window. There is nothing for a Close menu item to close that the
-browser's own controls do not already close, and a page cannot close a tab it did not
-open. The `q` shortcut that used to be carried "for muscle memory" is gone with it:
-it was wired to `ViewportCommand::Close`, which eframe's web backend drops unhandled,
-so the key was documented, bound and inert at once — and an inert key is worse than
-an absent one. Neither `q` nor `x` is bound or listed in the help now.
+The tab is the window. There is nothing for a Close item to close that the
+browser's own controls do not, and a page cannot close a tab it did not open.
+eframe's web backend drops `ViewportCommand::Close` unhandled, so a Close item or a
+`q`/`x` binding would be documented, bound and inert at once, which is worse than
+absent. Neither key is bound or listed in the help.
 """
 
 [[feature]]
 qt = "q"
-bucket = "soft"
 title = "q is deliberately unbound"
 why = """
-Qt's `q` quits the viewer. A page cannot close a tab it did not open, and the
-binding this port once carried "for muscle memory" was wired to
-`ViewportCommand::Close`, which eframe's web backend drops unhandled — a key that
-is documented, bound and inert at once. An inert key is worse than an absent one,
-so neither `q` nor `x` is bound or listed in the help (see `File/Close`).
-"""
-
-[[feature]]
-qt_prefix = "Snufflings/Run Snuffling/Get GEOFON Events"
-bucket = "soft"
-title = "The GEOFON presets query FDSN, not the eqinfo scrape"
-why = """
-The four one-click queries — all events, ≥ M 6, ≥ M 7, ≥ M 8 — are offered under
-Snufflings ▸ Get GEOFON Events, over the visible time range, as Qt offers them. What
-stays different is the transport: Qt's presets scrape `geofon.gfz.de/eqinfo/list.php`
-(`client/geofon.py:60`), which answers no browser; the web queries GEOFON's own FDSN
-event service. Same catalog, same events, different serialization — signed off as the
-platform reality it is.
-"""
-
-[[feature]]
-qt_prefix = "Help/Snuffling Help"
-bucket = "soft"
-title = "Snuffling Help is one indexed window, not one page per docstring"
-why = """
-Help ▸ Snuffling Help exists and describes every built-in. Qt renders each
-snuffling's full docstring as its own help page; the web shows one window with a
-written summary per snuffling — the bridge's snufflings are functions, not
-docstring-carrying plugin classes, so there is no docstring to render. The panels
-keep their inline descriptions and hover text as before. Signed off: the index the
-menu owes the user is there, in the shape the architecture has.
-"""
-
-[[feature]]
-qt_prefix = "<ctrl> + "
-bucket = "soft"
-title = "Ctrl+P has nothing to bind: Print is deliberately not offered"
-why = """
-Qt gives five File-menu commands accelerators. Four are bound here now, on Qt's own
-chords: Open (Ctrl+O), Save markers (Ctrl+S), Save selected markers (Ctrl+Shift+S)
-and Save image (Ctrl+E) — the letter dispatch gained the modifier guard Qt's
-`key_event.text()` matching gives it for free, so a chord no longer runs the bare
-letter's command. Ctrl+O and Ctrl+S shadow browser bindings, deliberately: egui
-consumes the handled key, and snuffler muscle memory outweighs the host's
-Open-file and Save-page on a page that is an application.
-
-The fifth, Ctrl+P, stays unbound because its command does: Print is deliberately
-not offered (see `File/Print`), and a chord bound to nothing would be the inert-key
-mistake this register keeps refusing.
-"""
-
-[[feature]]
-qt = "<f11>"
-bucket = "soft"
-title = "Full screen is on `f`, not F11"
-why = """
-Leaving F11 to the browser is right: the host owns that chord and fighting it would
-shadow something the user expects. The trade is real now — `f` (and View ▸
-Fullscreen) calls the browser's Fullscreen API on the document element, the one
-path that works on the web, since eframe's `ViewportCommand::Fullscreen` lands in
-an unhandled arm there. Documented on both sides.
+Qt's `q` quits the viewer; see `File/Close` for why nothing here can.
 """
 
 [[feature]]
 qt = "x"
-bucket = "soft"
-title = "Neither `q` nor `x` closes anything, deliberately"
+title = "x is deliberately unbound"
 why = """
-Qt's Close action carries two shortcuts, `q` and `x` (`pile_viewer.py:924`). A page
-cannot close a tab it did not open, so there is nothing for either key to do here —
-and the two were decided together: both unbound, both absent from the help. The
-alternative the port used to ship, a `q` bound to a viewport command the web
-backend drops, was a documented key that did nothing, which is strictly worse than
-an absent one. See `File/Close` for the menu-item half of the same wall.
+Qt's Close action carries `q` and `x` (`pile_viewer.py:924`); see `File/Close` for
+why neither is bound.
 """
 
-# [[manual]] entries — differences no tier can observe yet; see the header. `enforce`
-# names the check that would observe each one, which is the path out of this section.
-# Three blind spots account for most of what follows, and closing any of them would
-# graduate a whole group at once:
+[[feature]]
+qt_prefix = "Snufflings/Run Snuffling/Get GEOFON Events"
+title = "The GEOFON presets query FDSN, not the eqinfo scrape"
+why = """
+The four one-click queries (all events, ≥ M 6, ≥ M 7, ≥ M 8) are offered under
+Snufflings ▸ Get GEOFON Events, over the visible time range, as Qt offers them. What
+differs is the transport: Qt's presets scrape `geofon.gfz.de/eqinfo/list.php`
+(`client/geofon.py:60`), which answers no browser; the web queries GEOFON's own FDSN
+event service. Same catalog, same events, different serialization.
+"""
+
+[[feature]]
+qt_prefix = "Help/Snuffling Help"
+title = "Snuffling Help is one indexed window, not one page per docstring"
+why = """
+Help ▸ Snuffling Help describes every built-in. Qt renders each snuffling's full
+docstring as its own help page; the web shows one window with a written summary per
+snuffling, because the bridge's snufflings are functions, not docstring-carrying
+plugin classes. The panels keep their inline descriptions and hover text.
+"""
+
+[[feature]]
+qt_prefix = "<ctrl> + "
+title = "Ctrl+P has nothing to bind: Print is deliberately not offered"
+why = """
+Qt gives five File-menu commands accelerators. Four are bound here on Qt's own
+chords: Open (Ctrl+O), Save markers (Ctrl+S), Save selected markers (Ctrl+Shift+S)
+and Save image (Ctrl+E). Ctrl+O and Ctrl+S shadow browser bindings deliberately:
+egui consumes the handled key, and snuffler muscle memory outweighs the host's
+Open-file and Save-page on a page that is an application.
+
+Ctrl+P stays unbound because its command does (see `File/Print`).
+"""
+
+[[feature]]
+qt = "<f11>"
+title = "Full screen is on `f`, not F11"
+why = """
+F11 belongs to the browser, and fighting it would shadow something the user
+expects. `f` (and View ▸ Fullscreen) calls the browser's Fullscreen API on the
+document element, the one path that works on the web, since eframe's
+`ViewportCommand::Fullscreen` lands in an unhandled arm there.
+"""
+
+# [[manual]] entries: differences no tier can observe yet.
+# `enforce` names the check that would observe each one, which is the path out of
+# this section.
+# Three blind spots account for most of what follows, and closing any of them
+# would graduate a whole group at once:
 #
-#   * tier 2 diffs menu, control and key *names*. It never compares a combo box's
-#     option set, a control's range, a menu item's enabled or checked state, or the
-#     `snufflings` section its own Qt extractor already emits in full.
-#   * tier 3 snapshots menu checkables, four control values and marker identity. It
-#     does not carry the view time range, the track order, marker placement, or any
-#     state belonging to a window it did not open.
-#   * no tier compares rendering, by design — so anything whose only symptom is what
-#     is drawn lands here even when it changes information rather than appearance.
+#   * tier 2 diffs menu, control and key *names*.
+#     It never compares a combo box's option set, a control's range, a menu
+#     item's enabled or checked state, or the `snufflings` section its own Qt
+#     extractor already emits in full.
+#   * tier 3 snapshots menu checkables, four control values and marker identity.
+#     It does not carry the view time range, the track order, marker placement,
+#     or any state belonging to a window it did not open.
+#   * no tier compares rendering, by design, so anything whose only symptom is
+#     what is drawn lands here even when it changes information rather than
+#     appearance.
 
 [[manual]]
 key = "waterfall-colormap-set"
-bucket = "soft"
 title = "The Reverse toggle inverts the value where snuffler renames the colormap"
 enforce = "a tier-2 control diff that compares combo box choices, not just names"
 why = """
-The colormap set is snuffler's exact nine now — viridis, plasma, magma, binary,
-Reds, copper, seismic, RdBu and YlGn, in snuffler's own order
-(`ColorbarControl.AVAILABLE_CMAPS`, gui/util.py:651) — sampled from matplotlib by
-name, so the colours are byte-identical.
+The colormap set is snuffler's nine — viridis, plasma, magma, binary, Reds, copper,
+seismic, RdBu and YlGn, in snuffler's order (`ColorbarControl.AVAILABLE_CMAPS`,
+gui/util.py:651) — sampled from matplotlib by name, so the colours are identical.
 
-What stays different, signed off, is the Reverse mechanism: Qt appends `_r` to the
-colormap *name* (`gui/util.py:768`), leaving its combo showing the un-reversed one,
-where the web keeps an orthogonal flag and inverts the normalized value. Same
-image either way, and Qt's version has a bug worth not copying — it strips with
-`cmap.rstrip('_r')`, which turns `copper_r` into `coppe`.
+Signed off: Qt reverses by appending `_r` to the colormap *name*
+(`gui/util.py:768`), leaving its combo showing the un-reversed one, where the web
+keeps an orthogonal flag and inverts the normalized value. Same image either way,
+and Qt's version has a bug worth not copying: it strips with `cmap.rstrip('_r')`,
+which turns `copper_r` into `coppe`.
 """
 
 [[manual]]
 key = "color-traces-theming"
-bucket = "soft"
 title = "Trace coloring: snuffler's own under the Qt theme, this frontend's under its own"
 enforce = "nothing — no tier compares rendering; the palette, key and numbering halves are pinned by paint.rs unit tests"
 why = """
 In Qt, Color Traces recolors the wiggle strokes from `graph_colors`, numbered over
 the sorted distinct values of the subsort's coloring key (`color_lookup` over
 `pile.gather_keys`, `pile_viewer.py:3467`). Under the **Snuffler Qt** theme the web
-now does all of that: the per-subsort keys including CNSL's net+sta+loc composite,
-the sorted-key numbering, snuffler's seven `graph_colors`, and snuffler's black past
-the seventh key rather than a wrap. That theme also drops the empty-key fallback
-below, because snuffler has none. All pinned by paint.rs unit tests.
+does the same: the per-subsort keys including CNSL's net+sta+loc composite, the
+sorted-key numbering over the whole pile (`ViewMeta.color_keys`, so a key keeps its
+colour as the view scrolls), snuffler's seven `graph_colors`, and black past the
+seventh key. Pinned by paint.rs unit tests.
 
-The numbering base is snuffler's too: `ViewMeta.color_keys` carries
-`pile.gather_keys(color)` — the whole pile, no trace filter — computed bridge-side,
-so a key keeps its colour as the view scrolls or pages, exactly as in Qt. The old
-behaviour numbered over the on-screen slice and recoloured the same station on every
-scroll, which snuffler cannot do; that is gone on every theme.
+The **Snuffler Web** themes are this frontend's own and depart on purpose, signed
+off:
 
-Two deliberate departures remain, both belonging to the **Snuffler Web** themes, this
-frontend's own, and both signed off. The six palettes are Fieldbook, Kiln, Fjord,
-Daybreak, Herbarium and Afterglow; their pigment fitting and visual review follow
-`adr/0001-wiggle-theme-design.md`. Each keeps a palette of its own — seven hues at
-the lightness its canvas needs, since a colour legible on near-white is not legible on
-near-black, and fitted to keep all 21 pairs distinct, since a coloring key that
-lands on a neighbour's colour is a wrong statement about the data — and wraps it
-rather than going black past the seventh key. And they fall
-back to the per-track label when the coloring key is empty, so single-location data
-stays varied where snuffler would paint every trace alike. They do not claim to be
-snuffler; the Qt theme is where fidelity lives, and it is light-only for the reason
-`qt-theme-residual-chrome` gives. The trace *boxes* are not a departure under any
-theme: every palette colours a box by the pile's `determine_box_styles` index, exactly
-as Qt's `box_styles[istyle % 7]` does, and only the seven colours differ.
+  * Each keeps a palette of its own: seven hues at the lightness its canvas needs,
+    fitted to keep all 21 pairs distinct (`adr/0001-wiggle-theme-design.md`), and
+    wraps rather than going black past the seventh key.
+  * They fall back to the per-track label when the coloring key is empty, so
+    single-location data stays varied where snuffler would paint every trace alike.
+  * With the boxes hidden, their strokes are numbered by the box style
+    (`determine_box_styles`) rather than the coloring key, so hiding the boxes
+    hands the row distinction the boxes carried to the wiggle instead of drawing
+    identical wiggles. Location-grouped rows keep colouring by the key, because
+    there the key is the only thing telling a row's traces apart.
 
-The *default* follows the theme's `StrokePolicy`, and used to be a divergence in its
-own right (`color-traces-default`, removed with the entry that excused it). Qt adds
-the menu item without a `setChecked` (`pile_viewer.py:1076`), so upstream boots
-monochrome strokes over colored trace boxes; the port booted colored under every
-theme, which made the theme claiming fidelity the one place the difference showed.
-`Color Traces` is now backed by an `Option<bool>` that follows the theme until the
-user sets it: off under Snuffler Qt, on under the web themes built around coloured
-strokes, and, for the mood themes that keep snuffler's grey wiggle, on exactly where
-the trace boxes stop separating the traces — with the boxes hidden, or under a
-location-grouped subsort where one box colour covers a whole row. Once the user
-clicks it, their choice is honoured under every theme. The boxes-hidden half has no
-counterpart upstream, because Qt's two toggles are independent there; it belongs to
-the mood themes alone, which carry their palette in the boxes and so have nothing
-left to carry it when the boxes go. Snuffler Qt keeps its grey wiggle with the boxes
-off, as upstream does.
+The trace *boxes* are not a departure under any theme: every palette colours a box
+by the pile's `determine_box_styles` index, as Qt's `box_styles[istyle % 7]` does.
 
-A location-grouped subsort is the exception to that: there several traces share one
-row, the coloring key is the only thing telling them apart, and the box style cannot
-stand in for it — the style steps per contiguous run, so every trace of the row starts
-inside the same run and keying the strokes on it painted the whole row one colour.
-Grouped rows therefore keep colouring by the key whether the boxes are drawn or not,
-which is what Qt does with Color Traces on.
-
-With the boxes hidden a web theme's coloured strokes also change *which* key they
-are numbered by: the box style rather than the coloring key. The two carry different
-classes — a box is `determine_box_styles`, a stroke is `gather_keys(color)` — and on
-the single-location data most people open, every trace shares one coloring key, so
-colouring by it would draw twelve identical wiggles and lose the row distinction the
-boxes had been carrying. Taking the box style hands that exact class to the wiggle
-instead, in the ink cut from the same hue as the box, so hiding the boxes restyles
-the view without changing what it says. Snuffler has no counterpart because it never
-recolours on Show Boxes. Pinned by paint.rs.
-
-Show Boxes itself now follows the canvas until the user clicks it: on the light canvas
-the boxes are drawn, on the dark one they are not. Snuffler has no dark canvas and
-always draws them, so this is web-only by construction and cannot diverge on the
-canvas snuffler owns. The reason is the same coupling the ink has: a tinted block on
-white is a wash the wiggle reads straight through, while on near-black it must be dark
-enough to stay behind the data, and a screen of them reads as banding. The user's own
-click outranks it under either canvas and is what gets persisted — an untouched setting
-is stored as absent rather than as its current value, so it keeps following the canvas
-instead of freezing at whichever one happened to be showing when the settings were
-first saved.
-
-Tier 3 reads the boot checkbox and now sees the two agree — which is why nothing
-excuses this any more.
+Defaults follow the theme until the user clicks the option, and an untouched setting
+is persisted as absent so it keeps following. Color Traces boots off under Snuffler
+Qt, as upstream does (`pile_viewer.py:1076` adds it without `setChecked`), and on
+under the web themes built around coloured strokes; the mood themes that keep
+snuffler's grey wiggle turn it on exactly where the boxes stop separating the
+traces. Show Boxes follows the canvas: drawn on light, hidden on dark, where a
+screen of dark tinted blocks reads as banding. Snuffler has no dark canvas, so this
+cannot diverge on the canvas snuffler owns.
 """
 
 [[manual]]
 key = "marker-palette-theming"
-bucket = "soft"
 title = "Marker kinds: Tango under the Qt theme, the same families in the web theme's own shades"
 enforce = "nothing — no tier compares rendering; the family-per-kind, contrast and lit-is-lighter halves are pinned by paint.rs unit tests, and the Qt palette's `select_color` arithmetic by markers.rs"
 why = """
@@ -597,83 +499,55 @@ idle, the "2" shade when selected or alerted (`select_color`, marker.py:306). Un
 the **Snuffler Qt** theme the web uses exactly those, on Qt's white label plate.
 
 The **Snuffler Web** themes keep the contract and change the shades. Kind N is the
-same colour
-family on every theme — 0 red, 1 green, 2 blue, 3 orange, 4 purple, 5 brown,
-6 yellow, 7 grey — fitted in OKLab at the Tango family's own hue angle, and a
-selected marker still reads as selected by lifting to a lighter shade of its kind.
-What moves is lightness: the Tango shades were built for white, and on the dark
-canvas skyblue3 and plum3 sit below 2:1, while on the light canvas the lit
-chameleon2 and butter2 sit below 2:1. The web shades hold 4.8:1 and up idle on
-light and 6.3:1 and up idle on dark, and the label plate is the canvas colour rather
-than white, so a light marker's label survives the dark canvas. The kind buttons in
-the control strip and the table's symbol column take the same palette, so a kind
-looks the same wherever it is named.
+same colour family on every theme — 0 red, 1 green, 2 blue, 3 orange, 4 purple,
+5 brown, 6 yellow, 7 grey — fitted in OKLab at the Tango family's own hue angle, and
+a selected marker still lifts to a lighter shade of its kind. What moves is
+lightness: the Tango shades were built for white, and on the dark canvas skyblue3
+and plum3 sit below 2:1, while on the light canvas the lit chameleon2 and butter2
+sit below 2:1. The web shades hold 4.8:1 and up idle on light and 6.3:1 and up idle
+on dark, and the label plate is the canvas colour rather than white. The kind
+buttons in the control strip and the table's symbol column take the same palette.
 """
 
 [[manual]]
 key = "qt-theme-residual-chrome"
-bucket = "soft"
 todo = true
 title = "What the Snuffler Qt theme has been held against snuffler, and what has not"
 enforce = "a pixel check on the wiggle canvas against a `qt_oracle` PNG of the same scenario — the oracle already renders one (`want_png`), and nothing yet diffs it. Until that exists the comparisons below are an agent reading the two PNGs side by side, which is what the screenshots are written for."
 why = """
-The Snuffler Qt theme is the one that claims fidelity, so what it still gets wrong
-belongs written down rather than assumed cosmetic. Verified against rendered
-`qt_oracle` PNGs of `bonin-subsort-grouped` and `demo-raw-full`.
+The Snuffler Qt theme is the one that claims fidelity, so what has and has not been
+checked belongs written down. Examined against rendered `qt_oracle` PNGs of
+`bonin-subsort-grouped` and `demo-raw-full`:
 
-**The canvas text is bold now, as snuffler's is.** `TimeAx.drawit` sets
-`font.setBold(True)` (`pile_viewer.py:542`) for the tick labels, and the paint pass
-sets a bold font before it draws anything else (`:3203`, applied at `:3229`), so every
-label snuffler puts on its canvas is bold. This entry used to record that the port
-drew them in the default weight — measurably: on `demo-raw-full` a tick label carried
-0.081 of its box in ink against Qt's 0.183. The port now ships Ubuntu Bold and draws
-the canvas in it (`view::canvas_font`, and `font-weight` on the SVG path so an export
-matches), which closed that to 0.154 against 0.221 and the glyph width to within 3 %.
-A pixel check would still say it better than a measurement of one label does.
+  * Canvas text is bold, as snuffler's is (`pile_viewer.py:542`, `:3203`): the port
+    draws the canvas in Ubuntu Bold (`view::canvas_font`, and `font-weight` on the
+    SVG path). On `demo-raw-full` a tick label carries 0.154 of its box in ink
+    against Qt's 0.221, with the glyph width within 3 %.
+  * The axis label layout is snuffler's: rows centred under the tick that earned
+    them with the left-edge fallback, the `l0` to `l0_brief` abbreviation ladder
+    against `pinc_approx*0.9`, and the half-interval `ushift`, pinned by
+    `timeaxis.rs`/`paint.rs` unit tests against snuffler's `TimeScaler`.
+  * The track label chip is the text's own bounding rect under a white brush at
+    alpha 100 (`gui/util.py:294`, `pile_viewer.py:3230`): square and unpadded,
+    `Palette::label_pad`/`label_rounding` zero under this theme.
+  * The canvas white, `aluminium5` traces and axis, the seven Tango box styles at
+    `box_alpha = 100` with snuffler's per-trace style assignment, `graph_colors`
+    strokes with black past the seventh key, 10 px tick marks, and no grid or row
+    rules.
 
-**The axis label layout is snuffler's.** The second and third rows draw centred
-under the tick that earned them with the left-edge fallback when none did, the
-abbreviation ladder steps `l0` to `l0_brief` to nothing against `pinc_approx*0.9`,
-and the between-ticks formats take their half-interval `ushift` — all in
-`timeaxis.rs`/`paint.rs`, pinned by unit tests against values from snuffler's own
-`TimeScaler`.
+Open: the marker drawing, the scale annotations and the whole waterfall path have
+never been held against snuffler, and a pixel check would say all of it better than
+measurements of single labels do.
 
-**The track label chip is snuffler's too.** `draw_label` fills the text's own
-bounding rect with a white brush at alpha 100 (`gui/util.py:294`, `pile_viewer.py:3230`)
-— square and unpadded. The port had the brush right and the geometry wrong, padding it
-three pixels and rounding the corners, which read as a box over the trace rather than a
-backing under the text; `Palette::label_pad`/`label_rounding` are zero under this theme
-and keep the rounded plate for Snuffler Web, which was designed with it.
-
-Recorded because it was *found*, not because it was designed: it turned up on a direct
-question about whether this theme was fully at parity, in a part of the rendering no
-tier looks at. Treat the list above as what has been examined rather than as what
-differs — the marker drawing, the scale annotations and the whole waterfall path have
-never been held against snuffler at all.
-
-**Scope: light only, and that is now structural.** This entry used to carry a second
-half about a dark variant of this theme. There is no such thing any more.
-`WiggleTheme::pinned_polarity` pins the Snuffler Qt canvas to white and the frontend
-disables the light/dark control while it is selected, saying why on hover. Snuffler is
-white-canvas by construction — `aluminium5` traces on `QPalette.Base`, light Tango box
-fills at alpha 100, a white-at-alpha-100 label brush that is invisible on white — and a
-dark rendering of those numbers was never snuffler with the lights off, it was a
-different theme wearing the name. Dark belongs to the web themes that were designed
-for both canvases. So every parity claim about this theme is a claim about light, and
-no scenario can accidentally assert one about dark.
-
-The rest of the theme is matched and pinned elsewhere: the canvas white, the
-`aluminium5` traces and axis, the white-at-100 label brush, the seven Tango box styles
-at `box_alpha = 100` with snuffler's per-trace style assignment, `graph_colors` strokes
-with black past the seventh key, snuffler's 10 px tick marks, and no grid or row rules —
-the first behind `show_time_grid`, off by default, and the second never drawn under this
-theme at all. That is how the frontend keeps its own additions without imposing them on
-the theme that is supposed to look like upstream.
+The theme is light only, structurally: `WiggleTheme::pinned_polarity` pins it to the
+white canvas and the frontend disables the light/dark control while it is selected.
+Snuffler is white-canvas by construction, so a dark rendering of its numbers would
+be a different theme wearing the name, and every parity claim about this theme is a
+claim about light.
 """
 
 [[manual]]
 key = "waterfall-pipeline"
-bucket = "soft"
 title = "The waterfall builds its image from labelled track rows, not chopper-order trace rows"
 enforce = "a waterfall check kind comparing TraceWaterfall.get_image's `data` array against the web's pre-colorize strips, resampled to a common grid"
 why = """
@@ -690,115 +564,66 @@ order. So snuffler's waterfall labels point at the wrong rows whenever any track
 carries more than one trace, and its row dropping discards channels outright once
 there are more traces than pixel rows, where the web pages and loses none.
 
-The normalisation and stride follow the row definition rather than fighting it:
-`_waterfall_row_strips` takes the peak across *every* strip of a row before
-dividing, and derives one decimation stride per row, so the two segments of a
-gapped channel share one colour scale and one time resolution on their shared,
-correctly-labelled row — the row-scope analogue of snuffler's always-on per-row
-normalisation (`pile_viewer_waterfall.py:148`).
+The normalisation and stride follow the row definition: `_waterfall_row_strips`
+takes the peak across *every* strip of a row before dividing, and derives one
+decimation stride per row, so the two segments of a gapped channel share one colour
+scale and one time resolution on their shared row — the row-scope analogue of
+snuffler's per-row normalisation (`pile_viewer_waterfall.py:148`).
 
-What would still show against `TraceWaterfall.get_image` is the row identity
-itself (trace rows in chopper order against labelled track rows) and Qt's
-`num.interp` resampling against plain striding — both consequences of the
-placement decision above, not separate choices.
+What would show against `TraceWaterfall.get_image` is the row identity itself and
+Qt's `num.interp` resampling against plain striding, both consequences of the
+placement above.
 """
 
 [[manual]]
 key = "autoscale-guards-and-precision"
-bucket = "soft"
 title = "One y-range guard remains: an all-NaN slice scales to (0, 1)"
 enforce = "a corpus channel carrying NaN samples across a whole window"
 why = """
-This entry used to list three extra guards, a NaN-hostile fast path and a float32
-quantisation. Four of the five are gone: the fast individual/minmax path now uses
-`nanmin`/`nanmax` exactly as `trace.minmax` does (trace.py:2549), so a NaN sample is
-ignored and the range is correct as in Qt; the dead `ymax <= ymin` nudge is removed;
-the range scalars cross the bridge as proto `double`; and the empty-range `dict.get`
-default became unreachable the way it is in Qt once the drawn and scale slices came
-from the same processed cutout.
+The range uses `nanmin`/`nanmax` exactly as `trace.minmax` does (trace.py:2549), so a
+NaN sample is ignored as in Qt, and the range scalars cross the bridge as proto
+`double`.
 
-What stays, signed off, is the non-finite fallback to (0, 1) — which can now fire
-only when *every* sample in the slice is NaN. Qt hands that case to `AutoScaler`
-whole and draws a nonsense axis; drawing a definite 0..1 axis instead of NaN
-geometry is the same never-reproduce-a-crash rule the `:` command guards follow.
+Signed off: when *every* sample in the slice is NaN, the web falls back to a (0, 1)
+range. Qt hands that case to `AutoScaler` whole and draws a nonsense axis; a
+definite 0..1 axis instead of NaN geometry follows the same never-reproduce-a-crash
+rule the `:` command guards follow.
 """
 
 [[manual]]
 key = "filter-failures-swallowed"
-bucket = "soft"
 title = "A filter or restitution that throws becomes a status notice, not an exception"
-why = """
-A processing failure used to leave the segment drawn unfiltered with no signal at
-all (`except Exception: pass`). Now `_filter_seg` and `_remove_response` record the
-failure, `ViewMeta.notices` carries it with the view it affected, and the status
-line shows it (with the full list on hover).
-
-The remaining difference from Qt is deliberate and stays: snuffler lets the
-exception out of `prepare_cutout2` and the user sees a traceback; a browser view
-must not die on an exception, so the survivable equivalent is data drawn
-unprocessed *plus* a visible statement that it was. A failure also rolls the
-segment back to its pre-filter samples — the FFT branch detrends before it can
-fail, and the IIR branch can half-apply — so "unprocessed" is literal, not
-best-effort. The notices ride the cutout cache: a pan that reuses the processed
-cutout re-emits them, so a warning lives exactly as long as the data it warns
-about, and a fresh processing pass warns anew while the condition holds.
-The failure mode this entry was written against — unfiltered data presented as
-filtered, silently — no longer exists.
-"""
 enforce = "a tier-1 scenario supplying a corner that makes the filter raise, asserting the notice; today no scenario produces one"
+why = """
+Snuffler lets the exception out of `prepare_cutout2` and the user sees a traceback.
+A browser view must not die on an exception, so `_filter_seg` and
+`_remove_response` record the failure, `ViewMeta.notices` carries it with the view
+it affected, and the status line shows it (the full list on hover). Signed off.
+
+A failure rolls the segment back to its pre-filter samples, since the FFT branch
+detrends before it can fail and the IIR branch can half-apply, so "drawn
+unprocessed" is literal. The notices ride the cutout cache: a pan that reuses the
+processed cutout re-emits them, so a warning lives exactly as long as the data it
+warns about.
+"""
 
 [[manual]]
 key = "timeaxis-algorithm"
-bucket = "soft"
-title = "The time axis is snuffler's algorithm, transcribed"
+title = "The time axis stays f64 below the millisecond"
 enforce = "the timeaxis.rs unit tests, which pin the increment choice, the calendar anchoring and the label ladder against values from snuffler's own TimeScaler"
 why = """
-`timeaxis.rs` is now a transcription of `TimeScaler`/`TimeAx`: the 18-value
-`acceptable_tincs` table chosen by *nearest* entry to `span / 7`, calendar-anchored
-tick walks (sub-day runs restart at each day start, day steps walk whole days,
-months from the 1st, years from Jan 1 in whole-increment years), the five-level
-label ladder with the abbreviation fallback measured against `0.9 ×` the tick
-spacing, the centred-between-ticks shift for the day and month formats, the
-second and third context rows under the ticks where their unit rolls over with the
-left-edge fallback when none did, and the year-at-epoch suppression for synthetic
-data. The axis baseline and 10 px tick marks were already snuffler's.
+`timeaxis.rs` transcribes `TimeScaler`/`TimeAx`: the 18-value `acceptable_tincs`
+table chosen by nearest entry to `span / 7`, calendar-anchored tick walks, the
+five-level label ladder with its abbreviation fallback, the centred-between-ticks
+shift, the context rows and the year-at-epoch suppression for synthetic data.
 
-One knowing simplification, recorded in the module header: snuffler switches to
-its `hpfloat` high-precision time below millisecond increments; the port stays
-`f64`, which drifts only below the millisecond at large epochs. And the labels are
-not yet bold — `qt-theme-residual-chrome` keeps that with the other font-metric
-items that need a pixel diff to land honestly.
-"""
-
-[[manual]]
-key = "track-labels-and-annotations"
-bucket = "soft"
-title = "Track labels are snuffler's gather key, annotated for every geo sort"
-enforce = "the tier-1 `annotations` check, which now runs for distance, azimuth, backazimuth and the 12-block sort and compares the exact formatter strings"
-why = """
-The bridge composes the label exactly as snuffler does (`plabel`,
-pile_viewer.py:3521): the gather key space-joined, sort value first, nslc elements
-in the subsort's permuted order, `None` members skipped and the empty location
-kept — so the subsort is visible in the label and a distance-sorted track reads
-"123 km XX STA01  HHZ" on both sides. The sort values use snuffler's own
-formatters: `m_float` (km to 0 decimals above 10 km, 1 below, `%.5g` metres under
-a kilometre), `deg_float`'s bare `%4.0f`, and `sector_int`'s `[%i]` with the
-distance beside it for the 12-block sort. The "no coords" placeholder is gone;
-snuffler writes nothing there.
-
-The label also adapts to the row as snuffler's does: the font shrinks until a row
-fits more than one line of it, and below the 6 pt floor only the hovered row keeps
-a label, drawn at the floor size (pile_viewer.py:3505, :3526). Anchored
-middle-left at x = 10, as there.
-
-`compare_annotations` runs for all four geo sorts and compares the web's string
-against the one snuffler's formatter would print for Qt's own `set_origin`
-geometry, so format and value are pinned together.
+One simplification is signed off: snuffler switches to its `hpfloat` high-precision
+time below millisecond increments; the port stays `f64`, which drifts only below the
+millisecond at large epochs.
 """
 
 [[manual]]
 key = "scale-annotation"
-bucket = "soft"
 title = "'Show Scale Axes' draws snuffler's ticks and numbers"
 enforce = "a tier-1 `scales` extension returning the tick set rather than only (ymin, ymax)"
 why = """
@@ -813,7 +638,7 @@ Traces. The increment and exponent come across the bridge (`ViewSpan.yinc`,
 `.yexp`) from the same `AutoScaler` call that makes the range, so the ticks are
 pyrocko's, not a frontend recomputation.
 
-One difference stays signed off: Qt derives `approx_ticks` from the track height
+One difference is signed off: Qt derives `approx_ticks` from the track height
 when the axis is shown (`max(3, min(nlinesavail*0.5, 15))`, pile_viewer.py:3261)
 where the bridge passes a flat 15. That moves the tick spacing only, never
 `ymin`/`ymax` — `snap` is false in exactly that configuration on both sides — so
@@ -822,91 +647,63 @@ the increment is a layout decision the frontend owns.
 
 [[manual]]
 key = "trace-drawing-details"
-bucket = "soft"
-title = "Box colours, the zero line and the clip rectangle follow snuffler's rules"
+title = "With Clip Traces off, the web still clips to the track area"
 enforce = "the tier-1 `boxes` check (every scenario compares the bridge's boxes to Qt's recorded box paints) plus the paint.rs pile-backed box test; nothing compares the zero line and clip, which are one-line rules"
 why = """
-The three rules this entry tracked are snuffler's now. The Show Boxes colour is
-assigned per contiguous run of samples — the index advances whenever the next
-trace is not the same channel and rate within the gap tolerance
-(pile_viewer.py:2947) — so the colour tells you where one continuous recording
-ends, which is what the option exists to show. The zero line is drawn only when
-zero falls inside the track's y range, stops short of the scale labels, and under
-the Snuffler Qt theme takes snuffler's own trace pen. With Clip Traces on, the
-clip is the same 90 % inner box the trace is scaled into, so a spike is cut
-exactly at ymin/ymax (pile_viewer.py:3186, :3462); with it off the web still
-clips to the track area where Qt restores the widget-wide clip — a reasonable
-tightening, kept.
+The Show Boxes colour advances per contiguous run of samples (`_box_styles`, a
+transcription of `determine_box_styles` over the whole pile in `full_id` order,
+pile_viewer.py:2947). The zero line is drawn only when zero falls inside the track's
+y range and stops short of the scale labels. With Clip Traces on, the clip is the
+same 90 % inner box the trace is scaled into (pile_viewer.py:3186, :3462).
 
-The run numbering now comes from the bridge's `_box_styles`, a transcription of
-`determine_box_styles` walking the whole pile in `full_id` order — the fetched-page
-caveat this entry used to carry is gone with the span-derived styling. The seven
-Tango pairs and the alpha match exactly.
+Signed off: with Clip Traces off the web still clips to the track area where Qt
+restores the widget-wide clip, a tightening that keeps a spike out of its
+neighbours' rows.
 """
 
 [[manual]]
 key = "canvas-additions"
-bucket = "soft"
 title = "An optional on-screen grid and a cursor crosshair, never exported"
 enforce = "a byte-level check of the exported SVG, which would catch the grid leaking back into it"
 why = """
-Two screen-only additions over snuffler's canvas, both opt-in or transient and both
-excluded from the exported figure, which is where fidelity to snuffler's `savesvg`
-matters.
+Two screen-only additions over snuffler's canvas, both excluded from the exported
+figure, which is where fidelity to snuffler's `savesvg` matters.
 
 The grid: full-height vertical rules at the tick times, behind the traces, gated on
-`show_time_grid` (off by default — snuffler draws no grid, so the default look
-matches) and suppressed when `paint()` runs for the SVG/PNG export. The Snuffler Qt
-theme never draws it at all. `pal.zero` now carries at least `pal.grid`'s contrast
-in every palette, so the zero-amplitude data reference always outweighs the
-decoration beside it — and under the Snuffler Qt theme the zero line is snuffler's
-own trace pen (pile_viewer.py:3431).
+`show_time_grid` (off by default, so the default look matches snuffler) and
+suppressed when `paint()` runs for the SVG/PNG export. The Snuffler Qt theme never
+draws it. `pal.zero` carries at least `pal.grid`'s contrast in every palette, so the
+zero-amplitude reference always outweighs the decoration beside it.
 
-The crosshair follows the pointer on screen only (it lives outside `paint()`, so no
-export ever carries it). Its justification is cross-track x alignment: the status
-line already prints the cursor time — the counterpart of Qt's status-bar readout —
-but a number cannot say which wiggle on another row lines up with the one under the
-pointer, and that is what a vertical hair is for. Qt offers nothing comparable, so
-this is a deliberate addition, not a divergence from a Qt behaviour.
+The crosshair follows the pointer on screen only (it lives outside `paint()`). The
+status line already prints the cursor time, as Qt's status bar does, but a number
+cannot say which wiggle on another row lines up with the one under the pointer,
+which is what a vertical hair is for.
 """
 
 [[manual]]
 key = "marker-file-fidelity"
-bucket = "soft"
 title = "The marker file round-trips through pyrocko's own writer, with two knowable losses"
 enforce = "a marker-file round trip: build a fixed marker set on both sides, save, and diff the text"
 why = """
-The format is shared code — the web calls pyrocko's own `save_markers`/`load_markers`
-through a stub import — and the marker objects handed to that writer now carry what
-Qt's carry: sub-second digits derived from the data's sample interval
-(`time_fractional_digits`), the full `nslc_ids` *list* (a pick binds to every channel
-of the clicked track), the automatic flag (`False` for a hand pick, `@` in the label),
-incidence/take-off angles, the event's own `name`/`region`/`catalog` distinct from its
-display caption, and phase rows linked to their event row through a shared
-`model.Event` so both write the same `get_hash()` and `associate_phases_to_events`
-re-links them on load — which the web loader now calls, registering the loaded events
-for activation. Files save in time order, one bad row no longer loses the file, and
-converting a marker to an event collapses its span and channel scope in the UI, not
-silently at save time.
-Python returns every canonical event snapshot after creation,
-editing, activation and loading, so locally derived station coordinates and marker-table
-origin edits are reflected in both the saved row and every scientific consumer.
-Associated phase markers carry the event time even without a phase name or event row,
-preserving pyrocko's fallback matching.
+The format is shared code: the web calls pyrocko's own `save_markers`/`load_markers`,
+and the marker objects handed to that writer carry what Qt's carry — sub-second
+digits from the data's sample interval (`time_fractional_digits`), the full
+`nslc_ids` list, the automatic flag, incidence/take-off angles, the event's own
+`name`/`region`/`catalog`, and phase rows linked to their event row through a shared
+`model.Event`, so `associate_phases_to_events` re-links them on load.
 
-Two losses remain, and are accepted:
+Two losses are accepted:
 
-  * A kind outside 0..255 is folded modulo 256 on load — the transport is unsigned
+  * A kind outside 0..255 is folded modulo 256 on load: the transport is unsigned
     8-bit where Qt keeps a Python int. Both sides only ever create 0..7; a file
     carrying anything else was hand-edited.
   * Incidence and take-off angles survive the file and feed the hover readout, but
-    the web has no per-marker editor for them; they are display-only outside the
-    snufflings that set them.
+    the web has no per-marker editor for them.
 """
 
 [[manual]]
 key = "marker-overload-full-quiet"
-bucket = "soft"
 title = "Past 2000 markers the web silences the per-trace passes Qt keeps paying for"
 enforce = "the paint.rs overload tests: the count readout appears, and past the limit no marker colour reaches an SVG holding real samples"
 why = """
@@ -919,369 +716,216 @@ decorations, the snippet re-draw in the trace loop), leaving only the dotted
 overview line and the count readout.
 
 Deliberate: the browser repaints the whole view on every interaction frame, and
-the readout exists precisely to cap that per-frame work. The visual difference
-from Qt above the limit — no per-track verticals or snippets — is the point, not
-an accident.
+the readout exists precisely to cap that per-frame work.
 """
 
 [[manual]]
 key = "phase-key-names"
-bucket = "soft"
 title = "The phase-key mapping ships Qt's built-in default and is not configurable"
 enforce = "tier-3 `markers` — the identity tuple carries `phase`, so a scenario pressing <f3> on a selected marker pins the shipped mapping"
 why = """
-The function keys now name Qt's own defaults — F1:P, F2:S, F3:R, F4:Q, F5:?, with
-F6-F9 falling through to the literal `Undefined` (`config.py:33`, pinned by a unit
-test in `markers.rs`) — so a pick made with any F-key carries the same name into the
-same marker file on both sides.
+The function keys name Qt's defaults — F1:P, F2:S, F3:R, F4:Q, F5:?, with F6-F9
+falling through to the literal `Undefined` (`config.py:33`, pinned by a unit test in
+`markers.rs`) — so a pick carries the same name into the same marker file on both
+sides.
 
-What stays different is configurability. Qt reads `phase_key_mapping` from
-`~/.pyrocko/snuffler.pf`; a browser has no home dotfile to read, so the web ships
-the built-in default and no way to change it. A user who has customised their
-mapping gets Qt's stock names here. Signed off: interoperability with an
-unconfigured snuffler — the measured reference — wins, and a web-side settings
-store is its own feature with its own persistence questions
-(`startup-and-persistence`), not a patch on this constant.
+Signed off: Qt reads `phase_key_mapping` from `~/.pyrocko/snuffler.pf`; a browser has
+no home dotfile, so the web ships the built-in default with no way to change it.
+Interoperability with an unconfigured snuffler wins, and a settings store for it
+would be its own feature (`startup-and-persistence`).
 """
 
 [[manual]]
 key = "active-event-lifecycle"
-bucket = "soft"
-title = "Catalog loads still auto-activate the largest event — now visibly"
+title = "Catalog loads auto-activate the largest event"
 enforce = "tier-1 `annotations` — a scenario that loads the eifel catalog, sorts by distance, and either activates a non-largest event or deletes the active one"
 why = """
-Qt never activates an event on its own; the web still does on catalog search and
-event-file load, because a page anyone can open without reading the help gets
-distance sorting working out of the box. That stays, signed off — but it is no
-longer invisible or wrong:
+Qt never activates an event on its own; the web does on catalog search and
+event-file load, so distance sorting works out of the box on a page anyone can open
+without reading the help. Signed off, and visible: the auto-activated marker carries
+`active`, so the canvas outline and the table show the event Python measures
+distances from.
 
-  * The auto-activated marker itself carries `active`, so the canvas outline and
-    the table show the same event Python measures distances from.
-  * Every load path (QuakeML, FDSN-text, event file, marker file) registers its
-    events in `_EVENT_REGISTRY` with full origins, so `e` on any of them
-    activates the real origin rather than a rebuilt zero-depth stand-in.
-  * Deleting the final event marker for a hash — Backspace, the table's Delete
-    selected, or Clear all — removes the canonical registry entry and returns the
-    updated active state. A duplicate event marker keeps the shared entry alive;
-    deleting the active event clears the active origin with it.
-  * F-keys associate the named pick with the active event in the same keystroke,
-    as Qt's `set_phase_kind` does, including the event-time fallback saved without
-    an event row.
-
-`EventSnapshot` is the shared registry projection: catalog auto-activation, local
-conversion and marker-table edits return it with the active metrics.
-Rust reconciles both newly loaded and previously accumulated markers from that response,
-so map, export, Kagan/distance columns and Python computations cannot retain different
-origins.
-Active hash, origin and moment tensor are assigned together from the registry;
-switching to a non-MT event or an empty result clears the previous tensor.
-Kagan and distance remain event-row columns, while associated unnamed phase rows
-retain only the event-time fallback.
+Everything else follows Qt: every load path registers its events in
+`_EVENT_REGISTRY` with full origins, so `e` activates the real origin; deleting the
+last marker of the active event clears the active origin; and F-keys associate the
+named pick with the active event in the same keystroke, as `set_phase_kind` does.
+`EventSnapshot` is the shared registry projection every event edit returns, so map,
+export, Kagan/distance columns and Python computations see one origin.
 """
 
 [[manual]]
 key = "marker-table-surface"
-bucket = "soft"
 title = "The marker table keeps a web-shaped surface over Qt's semantics"
 enforce = "a table-column inventory on both sides, which tier 2 has no notion of today"
 why = """
-The semantic divergences are gone: Dist is Qt's — this *event* to the active event,
-`%.5g` kilometres, blank on anything that is not an event marker, refreshed on every
-activation — so it pairs with Kagan as designed; Uncertainty [s] and Event Hash are
-columns now; NSLCs shows the full pipe-joined id list; a plain row click *replaces*
-the selection (Ctrl/Shift adds) and a double click re-centres the view, as Qt's rows
-answer; the label cell edits a pick's phase name and an *event's name* — the rename
-path Qt offers through its Label column; and Clear all asks before destroying every
-marker.
+The semantics are Qt's: Dist is this event to the active event in `%.5g` km, blank
+on non-event markers; Uncertainty and Event Hash columns; the pipe-joined NSLC list;
+a plain row click replaces the selection (Ctrl/Shift adds) and a double click
+re-centres the view; the label cell edits a pick's phase or an event's name.
 
-What stays deliberately web-shaped: the span and per-row-action columns and the
-toolbar (Select/Deselect/Delete/Clear) — affordances for a browser page with no
-menu-bar chrome; all columns always visible instead of Qt's header context menu,
-column hiding, numbering toggle, print and row-zoom, which are desktop-table
-furniture; no inline beachball (the action button opens it); and no key forwarding
-from the table to the viewer — egui focus rules differ from a QTableView's, and
-Up/Down over the table still reach the polarity binding when no widget holds focus,
-which Qt avoids by eating those two keys in the table. Small, named, and owned.
-"""
-
-[[manual]]
-key = "snuffling-marker-conventions"
-bucket = "soft"
-title = "Snufflings now label and colour their markers as Qt's do"
-enforce = "tier-3 `markers`, with a scenario that runs Cake Phase or the SeisBench picker"
-why = """
-Cake Phase emits Qt's markers now: fixed `kind=2`, `('*', '*')` for location and
-channel — `''` meant "the blank location" to pyrocko and matched nothing — the
-incidence and take-off angles on the marker itself, and the association with the
-active event. The per-phase hash colour is gone with the text-table detour; the
-angles still appear in the result text, which is web presentation, not marker data.
-
-SeisBench uses Qt's kind 0 for P and 1 for S, marks its picks automatic, and rides
-the pick probability on the incidence angle exactly as Qt's picker does — the number
-a user most wants back from an ML picker, now saved in the file and readable on
-hover.
+Signed off as web-shaped: the span and per-row-action columns and the toolbar
+(Select/Deselect/Delete/Clear), affordances for a page with no menu-bar chrome; all
+columns always visible instead of Qt's header context menu, column hiding,
+numbering toggle, print and row-zoom; no inline beachball (the action button opens
+it); Clear all asks before destroying every marker; and no key forwarding from the
+table to the viewer — egui focus rules differ from a QTableView's, and Up/Down over
+the table still reach the polarity binding when no widget holds focus, which Qt
+avoids by eating those two keys in the table.
 """
 
 [[manual]]
 key = "view-navigation-keys"
-bucket = "soft"
-title = "The navigation keys follow Qt's arithmetic; the axis pan strip keeps its own height"
+title = "The axis pan strip keeps its own height"
 enforce = "a view time range in the tier-3 snapshot, plus a wheel action in the drivers"
 why = """
-The pieces this entry used to track are Qt's now. `g`/`G` re-fit the window through a
+The navigation keys follow Qt's arithmetic: `g`/`G` and `goto` re-fit through a
 transcription of `make_good_looking_time_range` (`good_looking_time_range` in
-`session.rs`): span plus 10 %, floored at one trace-visibility length, whole pile on
-an empty `g`, zoom-in on an empty `G` — and `goto` runs through the same helper, so
-its jumps carry the same floor. Ctrl+wheel steps the shown track count by
-`max(1, n/5)` per notch; the arrows nudge a selected marker by exactly one screen
-pixel of time; and the track-height cap grows with the canvas
-(`max(400 px, track area)`), so a single-track view is always reachable, the way
-Qt's count clamp to [1, ntracks] keeps it.
+`session.rs`), Ctrl+wheel steps the shown track count by `max(1, n/5)` per notch,
+the arrows nudge a selected marker by one screen pixel of time, and the track-height
+cap grows with the canvas so a single-track view is always reachable.
 
-One difference stays, signed off: the pan-only strip under the time axis is 80 px in
-Qt and 52 px in the web (`pile_viewer.py:810`, `layout.rs:8`). The strip is exactly
-each side's drawn axis, and the two axes are legitimately different heights. It is
-recorded so the gesture stays pinned to the axis rather than to a copied constant.
+Signed off: the pan-only strip under the time axis is 80 px in Qt and 52 px in the
+web (`pile_viewer.py:810`, `layout.rs:8`). The strip is exactly each side's drawn
+axis, and the two axes are legitimately different heights.
 """
 
 [[manual]]
 key = "keyboard-focus-sharing"
-bucket = "soft"
 todo = true
 title = "A keyboard-only user who tabs into the page cannot get Tab-cycling back"
 enforce = "a tier-2 probe that focuses a control before pressing a key, rather than clicking the canvas first as it does today"
 why = """
-The double-action half is fixed: arrows and Space are the keys egui's focused
-widgets also act on, and the canvas handler now declines them while any widget
-holds focus — a focused Highpass slider plus Left moves the slider only, a focused
-checkbox plus Space toggles only. Letters stay live, and the gate deliberately does
-not widen to all keys: gating on any focus at all once made the app a keyboard dead
-end, which the handler's comment records.
+Arrows and Space are the keys egui's focused widgets also act on, so the canvas
+handler declines them while any widget holds focus; letters stay live, because
+gating every key on focus makes the app a keyboard dead end.
 
-What remains open is the Tab story. Qt's viewer intercepts every key press before
-Qt's focus machinery, so Tab never leaves the canvas (`pile_viewer.py:2209`). The
-web passes Tab straight through whenever the accessibility overlay holds DOM focus,
-and that overlay is on by default. Not swallowing Tab globally is right — a canvas
-with no exit is a keyboard trap, and WCAG 2.1.2 allows consuming Tab only where a
-documented, announced exit exists. As shipped, the mouse user who clicks the canvas
-gets Tab-cycling and the keyboard-only user who tabs into the page loses it with no
-route back. A roving tabindex, or an announced Esc/F6 exit, keeps both.
+Open: Qt's viewer intercepts every key press before Qt's focus machinery, so Tab
+never leaves the canvas (`pile_viewer.py:2209`). The web passes Tab through whenever
+the accessibility overlay, on by default, holds DOM focus. Not swallowing Tab
+globally is right: a canvas with no exit is a keyboard trap, and WCAG 2.1.2 allows
+consuming Tab only where a documented, announced exit exists. As shipped, the mouse
+user who clicks the canvas gets Tab-cycling and the keyboard-only user who tabs into
+the page loses it with no route back. A roving tabindex, or an announced Esc/F6
+exit, keeps both.
 """
 
 [[manual]]
 key = "command-line-semantics"
-bucket = "soft"
 title = "The `:` commands match Qt; where they answer, Qt is silent or crashes"
 enforce = "a tier-1-style check over bridge._command_result and _visible_traces against PileViewerMain.add_blacklist_pattern and update_trace_filter; the seam exists on both sides"
 why = """
-The grammar, the history behaviour, the quick filter, the blacklist bookkeeping, the
-`markers` and `scaling` argument arms, the anchored `hide <token>` matching
-(`util.match_nslc` semantics — a bare word is a full-NSLC glob, exactly what
-`help.rs` documents), the colour-bar gestures (double-click reset, symmetric wheel,
-the 0.05 minimum band width) and `goto`'s one-visibility-length window floor
-(`make_good_looking_time_range`) all match Qt now.
+The grammar, history, quick filter, blacklist bookkeeping, the `markers` and
+`scaling` arguments, the anchored `hide <token>` matching (`util.match_nslc`
+semantics), the colour-bar gestures and `goto`'s window floor match Qt.
 
-Two divergences are kept on purpose, both of them answers where Qt has none:
+Two divergences are signed off, both answers where Qt has none:
 
   * An unmatched event name and a bare `goto` are silent no-ops in Qt
     (`pile_viewer.py:4410`, `:4455`) and errors here. A silent non-jump is worse
     than a message, and the web accepts more time formats besides.
   * `scaling foo bar` raises an uncaught `ValueError` out of Qt's slot, and
-    `scaling <pattern> ...` in Common-Scale mode would crash Qt outright on
+    `scaling <pattern> ...` in Common-Scale mode would crash Qt on
     `'.'.join(None)`. The web guards both. Never reproduce a crash.
 """
 
 [[manual]]
 key = "panel-and-window-model"
-bucket = "soft"
-title = "Panels coexist and their togglers live under Snufflings, as Qt files them"
+title = "Panel togglers are checkboxes, and tier 2 cannot see Qt's"
 enforce = "giving inventory_qt.collect a panel parent so Qt's togglers exist in the tier-2 diff; until then, a tier-3 step that opens two snufflings"
 why = """
-Every snuffling panel is its own `egui::Window` and opening one no longer closes
-another — the browser twin of Qt's tabified dock widgets (`snuffling.py:226`). The
-Markers and Main Controls togglers sit in the Snufflings menu, where Qt files all of
-its panel togglers (`toggle_panel_menu`, `pile_viewer.py:860` with
-`snuffler_app.py:667`) — the two built-ins are `add_panel` peers of the snuffling
-docks there.
+Every snuffling panel is its own `egui::Window`, and panels coexist like Qt's
+tabified dock widgets (`snuffling.py:226`). The Markers and Main Controls togglers
+sit in the Snufflings menu, where Qt files its panel togglers (`toggle_panel_menu`,
+`pile_viewer.py:860` with `snuffler_app.py:667`).
 
-One difference is kept: the togglers are checkboxes, where Qt's actions only ever
-*show* a panel and leave `m` and `c` to hide it. That is pyrocko hand-wiring
-(`toggle_panel(dockwidget, True)`, `snuffler_app.py:762`) rather than anything Qt
-imposes, and a checkbox that says whether the panel is open beats an action that
-does not.
+Signed off: the togglers are checkboxes, where Qt's actions only ever *show* a panel
+and leave `m` and `c` to hide it. That is pyrocko hand-wiring
+(`toggle_panel(dockwidget, True)`, `snuffler_app.py:762`), and a checkbox that says
+whether the panel is open beats an action that does not.
 
-Two harness blind spots remain and are recorded here rather than hidden:
-`inventory_qt` builds a bare `PileViewer` with no panel parent, so Qt's real
-togglers never exist on the Qt side of the tier-2 diff (the web's two show up as
-web-only extras); and the menu bar's corner strip is skipped as a layout, so Qt's
-`+`/`-`/`:` corner buttons are never compared — the web carries `:` with Qt's
+Two harness blind spots: `inventory_qt` builds a bare `PileViewer` with no panel
+parent, so Qt's togglers never exist on the Qt side of the tier-2 diff (the web's two
+show up as web-only extras); and the menu bar's corner strip is skipped as a layout,
+so Qt's `+`/`-`/`:` corner buttons are never compared — the web carries `:` with Qt's
 tooltip, and the `+`/`-` keys plus the Track height slider cover the other two.
 """
 
 [[manual]]
 key = "snuffling-run-scope"
-bucket = "soft"
 title = "Snufflings run over selected marker spans through the shared pile chopper"
 enforce = "a tier-3 scenario that places and selects a channel-scoped span marker, runs a snuffling, and runs it again — asserting the output honours the channel patterns and that the rerun replaced its predecessor; the `markers` check kind already exists and no browser scenario runs any snuffling yet, while `task test:parity:bridge` pins the channel scope and rerun contracts at the bridge level"
 why = """
-The request now carries the selected non-event markers — each span plus its channel
-patterns, exactly Qt's `chopper_selected_traces` scope — and every built-in consumes
-*both halves*, falling back to the visible window when nothing is selected. The
-spans drive the chop and the channel patterns gate which traces participate:
-per-span in the chopped iterators (minmax, STA/LTA, RMS, spectrogram, polarization,
-the amplitude spectrum and SeisBench), and in Seismosizer as Qt's own conjunction — a
-channel
-yields a synthetic target only where a marker matches it *and* holds its data.
-Minmax, the amplitude spectrum, STA/LTA, RMS, spectrogram and SeisBench chop through
-`_chopper_selected_traces`, a port of Qt's iterator over the real
-`pyrocko.pile.Pile` — degapping, `full_id` order and incomplete-window weeding
-are pyrocko's own, not a reimplementation.
-SeisBench runs Qt's 300-second
-batches with one second of model padding plus `2/highpass` settling padding,
-applies the main viewer's low/high-pass filters by default, and keeps only picks
-inside each batch window, exactly the picker's own guard against padding
-double-picking.
-STA/LTA skips zero-length picks the way its `marker_selector` does; polarization
-*requires* the selection, as Qt's does. Re-running a marker-producing snuffling
-(Cake, STA/LTA, SeisBench, Seismosizer) replaces its previous markers through an
-origin tag — Qt's `cleanup()` contract — while user picks and loaded files keep
-accumulating; STA/LTA, RMS, SeisBench annotations and Seismosizer replace their
-derived traces by identity (`_replace_derived`, which never resets file
-provenance).
-STA/LTA and RMS perform that cleanup before the first fallible chopper
-or filter step, and every failure returns the cleaned scene.
-Seismosizer commits nothing until every fallible step has passed: cleanup runs
-before validation and retires both the prior traces and the event object that
-origin inserted, but only while the registry still contains that exact object.
-A catalog load, marker load or frontend edit may reuse the hash without donating
-its replacement event to Seismosizer cleanup. The synthetics, replacement event and scene are stamped only
-after the event and marker are fully built, so a run that dies anywhere, from a
-damaged store to event conversion, returns the cleaned canonical event state and
-scene with its origin tag, never with half a run's output or an invisible active
-event.
+No tier observes this yet, so the contract is recorded here. The request carries the
+selected non-event markers, each span plus its channel patterns, which is Qt's
+`chopper_selected_traces` scope, and every built-in falls back to the visible window
+when nothing is selected. Polarization *requires* a selection, as Qt's does.
 
-SeisBench runs one inference pass per span over that span's channels, because an
-envelope changed the output, not just the cost (the model saw, and picked in, the
-data between disjoint markers).
-RMS and
-spectrogram likewise use one real pile-chopper stream per selected span, so blocks
-and FFT windows crossing contiguous-file boundaries are degapped before processing.
+  * Minmax, the amplitude spectrum, STA/LTA, RMS, spectrogram and SeisBench chop
+    through `_chopper_selected_traces`, a port of Qt's iterator over the real
+    `pyrocko.pile.Pile`, so degapping, `full_id` order and incomplete-window weeding
+    are pyrocko's own. Seismosizer applies Qt's conjunction: a channel yields a
+    synthetic target only where a marker matches it and holds its data.
+  * SeisBench runs Qt's 300-second batches with one second of model padding plus
+    `2/highpass` settling padding, applies the main viewer's filters by default,
+    and keeps only picks inside each batch window. It runs one inference pass per
+    span, so the model never sees the data between disjoint markers.
+  * Re-running a marker-producing snuffling (Cake, STA/LTA, SeisBench, Seismosizer)
+    replaces its previous markers through an origin tag, Qt's `cleanup()` contract;
+    derived traces are replaced by identity (`_replace_derived`).
+  * A failed run never leaves half its output: STA/LTA and RMS clean up before the
+    first fallible step, and Seismosizer commits nothing until every fallible step
+    has passed, retiring its prior event only while the registry still holds that
+    exact object.
 """
 
 [[manual]]
 key = "snuffling-control-surface"
-bucket = "soft"
-title = "The snuffling controls carry Qt's shapes and data-dependent corner bounds"
+title = "The Seismosizer shares its store and waveform-type choices across source types"
 enforce = "a fourth tier-2 diff over the `snufflings` section — the Qt extractor already emits every Param, Switch and Choice with name, default, minimum, maximum and choices, and nothing consumes it"
 why = """
-Every `Param` whose minimum is above zero is a logarithmic control now, as Qt makes
-them (`gui/util.py:512`) — the smoothing bandwidth, block lengths, windows and
-ratios stopped cramming their useful range into three percent of slider travel. The
-corner sliders cap at the loaded pile's Nyquist, so a corner the processing would
-silently discard cannot be chosen. STA/LTA and polarization apply their own corners
-as a 4th-order lowpass then highpass, like RMS always did — the main window's
-filter implementation no longer changes what a snuffling computes. The polarization
-panel's Length, Offset, Fix Scale and Show 3D Eigensystem all do what they say now,
-and the Cake model combo carries Qt's "Cake builtin: " prefix.
-The unified Seismosizer panel carries each Qt source panel's own bounds — the
-extended ruptures bury the depth floor at the datum while the point sources go
-100 km above it, MT magnitude runs −1…9 where DC and rectangular run 0…10, the
-tensor diagonals range ±√2 against ±1 off-diagonals, a rectangular rupture caps
-at 100 km against the pseudo-dynamic 300 km, and the STF duration ceiling is
-50/100/20 s per source family.
-Each source type also keeps its *own dial values*, stashed and restored on
-every switch (`switch_source`), because Qt's five snufflings are independent
-dock panels — an SF STF of 80 s must survive a peek at the DC panel instead of
-being clamped to its 50 s ceiling, and MTSource first opens on Qt's own
-magnitude default of 5.
-The store and waveform-type choices stay shared across source types, unlike
-Qt's per-snuffling copies; signed off — re-picking the store per source is
-pure friction, and the choice carries no cross-source bounds to clamp by.
+The snuffling controls carry Qt's shapes: every `Param` with a positive minimum is
+logarithmic (`gui/util.py:512`); the filter-corner range runs from
+`(0.5/deltatmax)·0.0001` on the coarsest channel to the finest channel's Nyquist;
+STA/LTA, polarization and RMS apply their own corners as a 4th-order lowpass then
+highpass; and the Cake model combo carries Qt's "Cake builtin: " prefix. The unified
+Seismosizer panel carries each Qt source panel's own bounds and keeps each source
+type's dial values across switches (`switch_source`), because Qt's five snufflings
+are independent dock panels.
 
-The filter-corner range follows the loaded sampling band on both sides: Nyquist
-from the finest channel at the top and
-`(0.5/deltatmax)·0.0001` from the coarsest channel at the bottom.
+Signed off: the store and waveform-type choices are shared across source types,
+unlike Qt's per-snuffling copies. Re-picking the store per source is pure friction,
+and the choice carries no cross-source bounds to clamp by.
 """
 
 [[manual]]
 key = "snuffling-computations"
-bucket = "soft"
-title = "What the snufflings compute now matches snuffler, with three named residues"
+title = "What the snufflings compute matches snuffler, with three named residues"
 enforce = "tier-1 `presence`/`tracks`/`samples` over derived traces for STA/LTA and RMS; tier-3 `markers` for Cake; no tier for the figures; `task test:parity:bridge` pins the minmax folding, the chopper adapter, polarization's windowing and the Seismosizer failure contract in CPython"
 why = """
-The divergences the audit listed are closed:
-
-  * Cake raytraces the direct distance *and* the major arc (`360° − dist`), so
-    PKP/SKS-type late arrivals appear; stations are Qt's set — one per distinct
-    station entry (a borehole and a surface sensor are two) among traces with data
-    within an hour of the event.
-  * STA/LTA renames its level traces into location `cg` keeping the channel, adds
-    the `.SUM.cg.` mean trace at the pile's finest sampling, pads its chops by the
-    long window, and excludes every `tabu` trace — RMS output no longer feeds the
-    detector. Seismosizer synthetics carry no `tabu` meta and stay in, exactly as
-    they do under Qt's selector (stalta.py:165).
-  * SeisBench infers on source data only: every `tabu` derived trace — an RMS
-    curve, an STA/LTA level trace — is dropped before inference, as Qt drops
-    them (seisbench_picker.py:257).
-    The model input grid writes every fragment of a split channel at its
-    offset, as seisbench's `stream_to_array` does — never just the last file.
-  * Minimum/Maximum reports raw pile values (no rotation, no view passband), as
-    Qt's does — the numbers describe the data, not the screen — folded through
-    `trace.minmax` into one row per channel (minmax.py:49), so a channel split
-    across files or picked by several markers never prints duplicate rows of
-    local extrema.
-  * Polarization chops the *raw* pile with only its channel pattern, as Qt does
-    (polarization.py:300) — a hidden component still analyses, and a window not
-    fully covered by data drops out. The windows come from the selected markers
-    (Offset/Length applied), traces get the 3-per-corner-period settling pad,
-    its own 4th-order filters below Nyquist, and the analysis-chop demean; all
-    ten of Qt's component schemes resolve; the panels are labelled with the
-    *rotated channel names* as Qt labels them (never a literal R/T); and the
-    text mode rotates with the same matrix the figure draws with.
-  * Spectrogram uses an absolute window grid with NaN gaps, Qt's `nt_max`/`nf_max`
-    size guards with Qt's refusal message, one shared PSD colour scale with a
-    colorbar, a formatted time axis, and the `2/twin` frequency floor.
-  * The amplitude spectrum's axis statistics run over positive bins only — one
-    flatlined channel no longer squashes every real spectrum.
-  * Every snuffling consumes the pile's data, never the screen's: the GUI Rotate
-    control is not applied (`chopper_selected_traces` explicitly does not respect
-    it, snuffling.py:985), traces iterate in the chopper's `full_id` order
-    (pile.py:1213) rather than the viewer's sort, and the `inview` scope selects
-    *rows* through the gather key (pile_viewer.py:1798), so a grouped row
-    contributes all its members.
-  * RMS matched already.
+Every snuffling consumes the pile's data, never the screen's: the GUI Rotate control
+is not applied (`chopper_selected_traces` does not respect it, snuffling.py:985),
+traces iterate in the chopper's `full_id` order (pile.py:1213), and the `inview`
+scope selects rows through the gather key (pile_viewer.py:1798). Derived `tabu`
+traces stay out of STA/LTA (stalta.py:165) and SeisBench (seisbench_picker.py:257),
+and Minimum/Maximum folds raw values through `trace.minmax` into one row per channel
+(minmax.py:49).
 
 Three residues, signed off: the selection markers Qt's polarization adds arrive
-only from the run path — the figure rpc returns an image and has no marker channel;
-2-component station groups are resolved by the scheme table but not drawn (the
-hodogram triptych needs Z); and the spectrogram's colorbar is matplotlib's layout,
-not Qt's smartplot frame chrome.
+only from the run path, because the figure rpc returns an image and has no marker
+channel; 2-component station groups are resolved by the scheme table but not drawn,
+because the hodogram triptych needs Z; and the spectrogram's colorbar is
+matplotlib's layout, not Qt's smartplot frame chrome.
 """
 
 [[manual]]
 key = "snuffling-service-surfaces"
-bucket = "soft"
 title = "The service forms carry Qt's workflows, minus what CORS and GMT forbid"
 enforce = "the same tier-2 `snufflings` diff, plus reading the controls of windows the inventory does not currently open"
 why = """
-Catalog search defaults to GEOFON with minimum magnitude 0 over 0-10, as Qt's does,
-and the four GEOFON presets exist as one-click menu entries over the visible range.
-The download window searches by radius around the active event's epicentre (Qt's
-primary workflow), its station query runs at channel level with the location and
-time span in the query — the rows carry per-location depths, feeding the borehole
-table — and a Save trigger hands over the loaded waveforms as MiniSEED plus the
-station table as a pyrocko station file, the two files Qt's Save writes. The map
-hides blacklisted stations and shows selected event markers, falling back to events
-in the visible time range; "Only active event" also limits stations to traces around
-the active identity/time carried by that exact request.
-Map responses are generation guarded, so a slow plate-boundary fetch cannot overwrite
-a newer selection.
-The Seismosizer offers all five of Qt's
-sources — DC, MT, single-force, rectangular, pseudo-dynamic rupture — with Qt's
-per-source parameter sets and bounds, four STF types, and target channels from
-the traces actually present (codes `loc + '-syn'`, azimuth/dip for T/R/1/2
-endings). SeisBench shows its thresholds, rescaling, annotation-trace and default
-viewer-filter controls, as Qt does.
+Catalog search, the radius-around-the-active-event download with its Save of
+MiniSEED plus a station file, the map, the five Seismosizer sources and the
+SeisBench controls follow Qt's workflows.
 
 Signed off, with reasons:
 
@@ -1297,202 +941,136 @@ Signed off, with reasons:
 
 [[manual]]
 key = "data-loading-robustness"
-bucket = "soft"
-title = "Loading appends, accumulates, skips and reports the way snuffler does"
+title = "A partially failed multi-file open reports to the console, not a dialog"
 enforce = "tier-1 `presence`/`tracks` for the append and duplicate cases; a scenario feeding a malformed file for the error surfacing"
 why = """
-The load paths now follow snuffler's: the FDSN download appends to the pile
-(`Pile.add_file` semantics, download.py:140); StationXML documents accumulate in
-load order and resolve first-match (`station_xmls`, `pile_viewer.py:4470`); a
-directory open hands every file to format detection with no extension pre-filter,
-so SDS and day-file layouts load; one unreadable file in a multi-file open is
-skipped rather than aborting the batch; a file already in the pile is refused by
-content digest (the browser twin of Qt's absolute-path check, pile.py:1115); a
-malformed marker file raises the parse failure like the station and event loaders
-beside it; and the station-file picker takes any number of files in one gesture.
-Save, picker and canonical-event failures use the recoverable diagnostic channel,
-so they remain visible without disabling view fetches, snufflings or file watching.
-File-handle reloads commit their new kind and mtime only after the matching loader
-succeeds. Changed sources are processed independently into a typed batch: a later
-failure cannot hide an earlier successful scene. Recoverable batch diagnostics are
-separate from operational readiness, so the refreshed view is fetched and Watch
-Files keeps retrying while the failure remains visible. The failure union preserves
-browser reads, worker transport, protocol decoding and pyrocko exceptions as
-distinct cases, including Python's traceback.
-A source converging on another source's bytes retires its old traces,
-bundle/waveform transitions replace the dataset in either direction, and a batch
-open preserves bundle metadata even when later waveform files append to its scene.
-Initial and reloaded bundles use one installer for their scene, event/station info,
-requested view and dataset note.
-Waveform, station and marker exports are decoded through the typed Rust client
-before their successful bytes reach the DOM download helper. Python failures keep
-their remote category and traceback; only the browser download step becomes a
-browser error.
-Digest membership is owner-counted, so a retired source cannot remove another source's
-duplicate guard when it changes again. A source suppressed after converging on an
-owned digest retains its parsed traces as lifecycle state; when the materialized
-owner changes, the suppressed source is promoted immediately without waiting for
-an mtime change that will never arrive.
-Bundle members are fully parsed in an isolated dataset transaction.
-Any waveform or metadata failure restores traces, provenance, stations, responses and
-events together before the error returns.
+The load paths follow snuffler's: the FDSN download appends to the pile
+(download.py:140); StationXML documents accumulate in load order and resolve
+first-match (`pile_viewer.py:4470`); a directory open hands every file to format
+detection; one unreadable file in a multi-file open is skipped rather than aborting
+the batch; and a file already in the pile is refused by content digest, the browser
+twin of Qt's absolute-path check (pile.py:1115).
 
-One presentation difference is kept: Qt reports a partially-failed multi-open in a
-dialog at the end (pile.py:502); the web logs the skipped names to the console and
-raises only when *nothing* loaded. The scene travels back on the same call that
-loads it, so failing a partially-successful open would discard the traces that did
-load — the status line gets the all-failed case, the console the partial one.
+Signed off: Qt reports a partially failed multi-open in a dialog at the end
+(pile.py:502); the web logs the skipped names to the console and raises only when
+*nothing* loaded. The scene travels back on the same call that loads it, so failing
+a partially successful open would discard the traces that did load.
 """
 
 [[manual]]
 key = "startup-and-persistence"
-bucket = "soft"
 title = "Query parameters stand in for the command line, localStorage for snuffler.pf"
 enforce = "a fourth inventory section extracting Qt's optparse options against the web's query-parameter readers"
 why = """
-The URL is the browser's command line, and it now carries the pieces that have a
-meaning here: `?url=` opens a waveform by URL (the positional-path twin), with
-`?format=` naming its format the way `--format` does — pyrocko's sniffer knows ten
-of its seventeen loadable formats, and this is how segy, seisan, kan, gcf and css
-get in. `?example=` and `?demo=1` predate this entry.
+The URL is the browser's command line: `?url=` opens a waveform by URL (the
+positional-path twin), with `?format=` naming its format the way `--format` does,
+which is how formats pyrocko's sniffer misses (segy, seisan, kan, gcf, css) get in.
+`?example=` and `?demo=1` pick the boot dataset.
 
-Qt's user-editable settings persist too: the `SnufflerConfig` set (config.py:33) —
-demean, the two scale annotations, the scaling mode, show boxes, clip traces, the
-chosen visible length — is written to `localStorage` on change and applied over the
-defaults at boot, one key per setting like a `.pf` line, beside the ':' command
-history that already lived there. Qt persists the visible-length *table* (names and
-values); the web's four entries are fixed, so the choice is what there is to keep.
+Qt's user-editable `SnufflerConfig` settings (config.py:33) — demean, the two scale
+annotations, the scaling mode, show boxes, clip traces, the chosen visible length —
+are written to `localStorage` on change and applied at boot, one key per setting
+like a `.pf` line. Qt persists the visible-length *table*; the web's entries are
+fixed, so the choice is what there is to keep.
 
-The rest of the seventeen-option list stays deliberately unported:
+The rest of Qt's options stay deliberately unported:
 
   * `--pattern`, `--cache`, `--force-cache`, `--store-path` name filesystem paths a
-    browser cannot read; no equivalent exists.
+    browser cannot read.
   * `--ntracks`, `--hptime`, `--disable-marker-sorting` tune what the web handles
     differently by construction: the shown track count follows the Track height
     slider, times are always f64, and the marker table always sorts.
-  * `--follow N` lives on the Live SeedLink form now (see `live-acquisition`).
-  * A format override for *local* picks does not exist in Qt either — its open
-    dialog has no format chooser; `--format` is CLI-only, and `?format=` is the
-    CLI's twin here.
-  * The phase-key map is a fixed table (`PHASE_KEYS`); editing it would need UI
-    Qt does not have either (Qt reads the map from the file, with no editor).
+  * `--follow N` lives on the Live SeedLink form (see `live-acquisition`).
+  * The phase-key map is a fixed table (see `phase-key-names`).
   * GF-store search paths are directory handles, which the browser grants only
-    through a live picker gesture — they cannot be restored from storage.
+    through a live picker gesture, so they cannot be restored from storage.
 """
 
 [[manual]]
 key = "live-acquisition"
-bucket = "soft"
-title = "Follow mode yields to the user; the buffer is bounded, adjustable, and saveable"
+title = "Live data is bounded and replaces the pile"
 enforce = "a view time range in the tier-3 snapshot for the follow suspension"
 why = """
-Following now suspends for 10 s after any interactive range change, re-armed on
-every further change, exactly Qt's `interactive_range_change_delay_time`
-(`pile_viewer.py:1253`, `:4235`); and the track scroll snaps only when a session
-starts, not on every packet. The follow window and the retention bound are on the
-Live SeedLink form (Qt's `--follow N`; Qt has no retention bound at all), and the
-received buffer downloads as MiniSEED on demand.
+Following suspends for 10 s after any interactive range change, re-armed on every
+further change, exactly Qt's `interactive_range_change_delay_time`
+(`pile_viewer.py:1253`, `:4235`). The follow window and the retention bound are on
+the Live SeedLink form, and the received buffer downloads as MiniSEED on demand.
 
-Two differences are kept:
+Signed off:
 
   * The web discards live data older than the Keep bound where Qt keeps
-    everything. wasm32 has a single bounded heap; an unbounded live buffer is a
-    real hazard, and the bound is now the user's number rather than a compiled-in
-    one.
+    everything. wasm32 has a single bounded heap, so an unbounded live buffer is a
+    real hazard; the bound is the user's number.
   * Starting a stream replaces the pile, where Qt mixes stream data into whatever
-    is loaded. The retention trim runs over the whole pile — mixed with loaded
-    files it would either chop the user's files (destructive) or exempt them and
-    unbound the buffer — so the stream gets the pile to itself, and stopping it
-    keeps the received samples for saving.
-
-Qt's continuous write-to-disk with a configurable path has no browser equivalent —
-silent writes to an arbitrary path are exactly what the sandbox exists to prevent;
-the on-demand save is what the platform allows.
+    is loaded. The retention trim runs over the whole pile, so mixed with loaded
+    files it would either chop the user's files or exempt them and unbound the
+    buffer. Stopping the stream keeps the received samples for saving.
+  * Qt's continuous write-to-disk has no browser equivalent: silent writes to an
+    arbitrary path are what the sandbox exists to prevent.
 """
 
 [[manual]]
 key = "network-reach"
-bucket = "soft"
 title = "Fewer reachable services than Qt, said plainly instead of reported as no data"
 enforce = "a tier-2 control diff that compares combo box choices — the same extension `waterfall-colormap-set` needs"
 why = """
-A failed station, response or event query now surfaces as the error it is: only
-204 and 404 — FDSN's own no-data codes — read as empty, and a 403 from the local
-proxy's allowlist (the normal outcome for a custom base URL on localhost) retries
-the host directly before failing, so a CORS-capable custom endpoint works the same
-served locally and deployed. The Live SeedLink window states its limit — the
-WebSocket tunnel exists only through the local proxy, so the deployed site cannot
-stream — instead of leaving it to a connect error.
+A failed station, response or event query surfaces as the error it is: only 204 and
+404, FDSN's own no-data codes, read as empty, and a 403 from the local proxy's
+allowlist retries the host directly before failing. The Live SeedLink window states
+that the WebSocket tunnel exists only through the local proxy.
 
-What stays narrower than Qt, deliberately:
+Signed off as narrower than Qt:
 
   * Qt reaches thirty FDSN sites by abbreviation and any host by URL
     (`client/fdsn.py:47`); the direct list here carries the hosts verified to send
     CORS headers, plus the custom-URL field for any other host that does. A
-    browser genuinely cannot fetch a host that does not.
-  * The local proxy's allowlist matches the direct list rather than widening it:
-    an open forwarder is a hazard, and a deployment that needs more reach names
-    exact targets via `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` /
-    `SNUFFLER_PROXY_ALLOW_TCP_TARGETS` rather than opening the default.
-  * The SeedLink origin stays compiled-in: the localhost proxy is the only route a
-    browser has to a raw-TCP SeedLink server, so a configurable origin would only
-    offer places the connection cannot go.
+    browser cannot fetch a host that does not.
+  * The local proxy's allowlist matches the direct list: an open forwarder is a
+    hazard, and a deployment that needs more reach names exact targets via
+    `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` / `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`.
+  * The SeedLink origin is compiled in: the localhost proxy is the only route a
+    browser has to a raw-TCP SeedLink server.
 """
 
 [[manual]]
 key = "chromium-only-file-features"
-bucket = "chromium-only"
 title = "The File System Access commands say what they need instead of doing nothing"
 enforce = "running the tier-2 inventory on more than one engine, or publishing a disabled state on the items"
 why = """
 `File ▸ Open waveform directory…` and `File ▸ Reload modified files` throw a named
-error on engines without the File System Access API — the `addGfStore` pattern —
-so Firefox and Safari get "this needs a Chromium-based browser" in the status line
-instead of a silent `Ready`. The capability limit itself is real and stays
-(`chromium-only`): there is no way to re-read a file from disk
-without `showOpenFilePicker` handles.
+error on engines without the File System Access API, so Firefox and Safari get
+"this needs a Chromium-based browser" in the status line. The limit itself is real:
+there is no way to re-read a file from disk without `showOpenFilePicker` handles.
 
-Two residues are recorded rather than hidden: files that arrived by drag-and-drop
-or the `<input type=file>` fallback register no handle, so Reload and Watch Files
-legitimately skip them even on Chromium (a File snapshot has no disk identity to
-re-read); and tier 2 runs one engine, so the inventory still cannot see an
-engine-conditional gap — the enforce line names the fix.
+Files that arrived by drag-and-drop or the `<input type=file>` fallback register no
+handle, so Reload and Watch Files skip them even on Chromium. Tier 2 runs one
+engine, so the inventory cannot see an engine-conditional gap.
 """
 
 [[manual]]
 key = "example-pile-contamination"
-bucket = "soft"
 title = "The first real data replaces the boot example instead of joining it"
 enforce = "tier-1 `presence`/`tracks`, with a scenario that boots the app path rather than the oracle's empty pile"
 why = """
-The boot pile — the synthetic demo or a checksummed example bundle — is marked as
-such in the bridge, and the first load that would append to it (File ▸ Open, the
-directory open, drag-and-drop, an FDSN download) replaces it instead. The replaced
-scene's context — events, station coordinates and instrument responses — goes
-with its waveforms, because any of it surviving would sort the new data wrongly
-or deconvolve an overlapping NSLC against the old dataset's response. The same rule
-covers every scene replacement: switching example bundles no longer stacks each
-bundle's stations and responses onto the last's, EmptyScene empties the metadata
-too, and a live-stream reset starts clean. From then on every open path appends,
-which is Qt's own behaviour (`open_waveforms`, `pile_viewer.py:1651`) — the
-hazard was only ever the composition of append-on-open with a pre-seeded pile,
-and the two open paths no longer disagree (drag-and-drop appends like the File
-menu). `File ▸ Close all` wires the previously-dead `EmptyScene` rpc for the
-blank viewer Qt boots into.
+The boot pile, the synthetic demo or an example bundle, is marked as such in the
+bridge, and the first load that would append to it (File ▸ Open, the directory
+open, drag-and-drop, an FDSN download) replaces it instead, together with its
+events, station coordinates and instrument responses, which would otherwise sort
+the new data wrongly or deconvolve an overlapping NSLC against the old response.
+From then on every open path appends, which is Qt's own behaviour
+(`open_waveforms`, `pile_viewer.py:1651`). `File ▸ Close all` gives the blank viewer
+Qt boots into.
 
-Two residues are kept, and named. Markers an example bundle delivered stay in
-the marker list when its waveforms are replaced — markers are pile-independent
-annotations on both sides, and Qt keeps loaded markers across an open too; Close
-all clears them. And metadata loaded by hand *while the boot example is still
-up* is treated as part of that scene, so replacing the example takes a
-stationxml loaded over it along — per-source ownership of stations and
-responses would preserve it, and is deliberately not built while every
-user-owned load path appends.
+Two residues are signed off. Markers an example bundle delivered stay when its
+waveforms are replaced, since markers are pile-independent on both sides and Close
+all clears them. And metadata loaded by hand while the boot example is still up
+counts as part of that scene, so replacing the example takes it along; per-source
+ownership of stations and responses would preserve it, and is not worth building
+while every user-owned load path appends.
 """
 
 [[manual]]
 key = "adaptive-visible-length-default"
-bucket = "soft"
 title = "The default visible length is this frontend's own 'Adaptive', which snuffler does not have"
 enforce = "`tests/parity/test_adaptive_visible_length.py`, run with the tier-1 suite: it asserts the policy on both counts — a channel a fixed budget refuses is drawn under Adaptive, and the decimated payload keeps the extremes of the raw samples it replaced. What no tier can see is the *default*: tier 1 pins a Qt-comparable budget in every scenario (`scenario.DEFAULTS['visible_length']`, a float, which cannot spell Adaptive), and tier 3 does not snapshot the radio group."
 why = """
@@ -1509,21 +1087,13 @@ while the 20 Hz broadbands stay, which reads as missing data rather than as a
 fetch policy. This port has a cheaper way out of the same trade, because its
 canvas already tells the bridge how many bins it can draw (`npx`): fetch every
 channel, and decimate what comes back to the min and max of each bin. The peak
-inside a bin survives — which is the part that matters in a seismogram, and the
-part plain subsampling loses — so the drawn trace is the one the raw samples
-would have drawn. Verified: on `tohoku`, Adaptive and Short differ by ~1 % of
-pixels on the channels both fetch, and Adaptive additionally draws the three
-Short leaves blank.
+inside a bin survives, so the drawn trace is the one the raw samples would have
+drawn. On `tohoku`, Adaptive and Short differ by ~1 % of pixels on the channels
+both fetch, and Adaptive additionally draws the three Short leaves blank.
 
 So this frontend adds a fifth entry, Adaptive, and boots into it. Qt's four are
-kept, unchanged and exact, next to it — the divergence is the *default*, not a
-replacement, and picking any of the four puts the port back on snuffler's own
-numbers.
-
-This is signed off rather than open work. The reason it is written down anyway is
-that it moves what the app shows out of the box, which is the loudest kind of
-difference a user meets and the easiest kind to mistake for a bug in either
-direction: a channel present here and absent in Qt is this entry, not a fetch
-defect, and a channel absent here after someone picks Short is upstream's
-behaviour faithfully reproduced, not a regression.
+kept, unchanged and exact, next to it; picking any of them puts the port back on
+snuffler's own numbers. Signed off, and written down because it moves what the app
+shows out of the box: a channel present here and absent in Qt is this entry, not a
+fetch defect.
 """

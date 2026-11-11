@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scenario import Compare, Scenario
@@ -270,9 +270,9 @@ def _compare_pair(
     rms_diff = float(np.sqrt(np.mean(diff * diff))) if diff.size else 0.0
     max_abs = float(np.max(diff)) if diff.size else 0.0
     # The residual with its own mean removed.
-    # A gap entry with `residual = "constant"` (the demean-extent shape) uses this to
-    # assert the excused divergence really is a per-segment constant offset and
-    # nothing more — see `gaps.evaluate`.
+    # A gap entry with `residual = "constant"` uses this to assert the excused
+    # divergence really is a per-segment constant offset and nothing more; see
+    # `gaps.evaluate`.
     max_abs_centered = float(np.max(np.abs(delta - np.mean(delta)))) if delta.size else 0.0
     bound = policy.atol + policy.rtol * peak
     ok = bool(max_abs <= bound) and bool(np.all(np.isfinite(b)))
@@ -300,7 +300,7 @@ def compare_tracks(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> Lis
     """Compare the stacking order, not just the membership.
 
     Every Qt track is considered, occupied or not: ``track_keys`` spans the whole
-    pile, and the web now emits the same universe — a channel with no data in the
+    pile, and the web emits the same universe — a channel with no data in the
     window keeps its labelled, empty row on both sides, so an empty row appearing
     or vanishing *is* a layout difference.
     """
@@ -687,7 +687,3 @@ def compare_all(
     findings.extend(compare_boxes(qt, web))
     findings.extend(compare_stability(run))
     return findings
-
-
-def failing_kinds(findings: Iterable[Finding]) -> List[str]:
-    return sorted({finding.kind for finding in findings if not finding.ok})

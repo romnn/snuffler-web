@@ -2,10 +2,8 @@
 
 Shift+R reloads bridge.py and restores the session state named by its
 ``_RELOAD_KEEP`` tuple.
-A name in that tuple that no longer exists as a module-level global silently
-drops that state on every reload — exactly how a TypeScript copy of the list
-once lost the instrument responses (it still said ``_STATIONXML`` after the
-global became ``_STATIONXMLS``).
+A name in that tuple that does not exist as a module-level global silently
+drops that state on every reload.
 The list is name-keyed, not versioned: renaming a state global deliberately
 resets that state on the next reload (``_reload_snapshot`` detaches the names
 from the module dict, ``_reload_restore`` reinstalls only what the new code
@@ -60,8 +58,7 @@ def test_every_kept_name_is_a_module_global() -> None:
 
 def test_the_worker_defers_to_the_python_owned_list() -> None:
     # The worker must call the snapshot/restore pair instead of keeping its own
-    # copy of the names, which is how `_STATIONXML` went stale in the first
-    # place.
+    # copy of the names, which would go stale on the next rename.
     src = (_WEB / "bridge_worker.ts").read_text()
     assert "_reload_snapshot" in src
     assert "_reload_restore" in src

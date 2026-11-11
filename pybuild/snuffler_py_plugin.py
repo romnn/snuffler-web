@@ -7,7 +7,7 @@ worker. `dispatch()` parses each request into its typed message, calls the typed
 servicer method (proto in, proto out), packs the matching `BridgeResult` oneof
 variant — the variant is read from the BridgeResult descriptor, not hardcoded —
 and wraps everything in the error-as-proto failsafe. bridge.py implements the
-`BridgeServicer` methods; there is no hand-written dispatch table any more.
+`BridgeServicer` methods; there is no hand-written dispatch table.
 """
 
 import sys

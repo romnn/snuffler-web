@@ -1,16 +1,13 @@
 //! The DOM half of the projection: mounting, diffing and event wiring.
 //!
-//! Every node the toolkit reports becomes a transparent proxy element carrying the
-//! ARIA role, name and state of the widget it stands for, nested to match the source
-//! hierarchy so that containment, reading order and grouping survive the trip.
+//! Proxies nest to match the source hierarchy, so containment, reading order and grouping
+//! survive the trip.
+//! They are `opacity: 0` rather than `display: none` or `visibility: hidden`, either of which
+//! would drop them from the accessibility tree, and `position: fixed`, so nesting them never
+//! affects where they sit.
 //!
-//! Two properties make the overlay invisible without making it inaccessible:
-//! proxies are `opacity: 0` rather than `display: none` or `visibility: hidden`,
-//! either of which would drop them from the accessibility tree; and they are
-//! `position: fixed`, so nesting them for semantics never affects where they sit.
-//!
-//! Activating a proxy sends an action request back to the toolkit rather than a
-//! synthetic pointer event, so the toolkit's own hit-testing never enters into it.
+//! Activating a proxy sends an action request rather than a synthetic pointer event, so the
+//! toolkit's own hit-testing never enters into it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -35,14 +32,12 @@ struct Mounted {
     element: HtmlElement,
     /// Recreated rather than mutated when the role changes the element type.
     tag: &'static str,
-    /// Role, name and state — everything `describe` writes.
+    /// Signature of role, name and state, everything `describe` writes.
     ///
-    /// Kept apart from `geometry` because the two change independently and each
-    /// costs a run of attribute writes, every one of them a crossing into JS: a
-    /// slider being dragged changes its value and moves nothing, while a resize
-    /// moves every proxy and renames none.
+    /// Kept apart from `geometry` because the two change independently: a dragged slider
+    /// changes its value and moves nothing, while a resize moves every proxy and renames none.
     description: u64,
-    /// Position and size — everything `place` writes.
+    /// Signature of position and size, everything `place` writes.
     geometry: u64,
 }
 
@@ -58,23 +53,20 @@ enum Applied {
 
 /// Projects [`TreeUpdate`]s into a DOM overlay above one canvas.
 ///
-/// Build one per canvas with [`Adapter::new`] and feed it every update the toolkit
-/// produces via [`Adapter::update`]; input events on the proxies reach the
-/// [`Handler`] given at construction. Dropping the adapter removes the overlay and
-/// everything in it.
+/// Build one per canvas with [`Adapter::new`] and feed it every update the toolkit produces
+/// via [`Adapter::update`].
+/// Input events on the proxies reach the [`Handler`] given at construction.
+/// Dropping the adapter removes the overlay and everything in it.
 pub struct Adapter {
     document: Document,
     overlay: HtmlElement,
-    /// Held rather than resolved per pass: the canvas outlives every tree we
-    /// project, and re-measuring it is the projection's hottest DOM read.
     canvas: web_sys::HtmlCanvasElement,
     options: Options,
     mounted: FxHashMap<u64, Mounted>,
     viewport: Option<Viewport>,
     /// Set by the `ResizeObserver`; makes the next pass re-measure the canvas.
     resized: Rc<Cell<bool>>,
-    /// The node we last moved DOM focus to, so mirroring the toolkit's focus does
-    /// not fight the browser's own focus handling.
+    /// The toolkit focus last mirrored, so each focus change is mirrored only once.
     mirrored_focus: Option<u64>,
     #[expect(
         dead_code,
@@ -103,10 +95,7 @@ impl Adapter {
         let document = canvas.owner_document().ok_or(Error::Detached)?;
         let overlay = create_element(&document, "div")?;
         set_attribute(&overlay, "id", &options.overlay_id);
-        // The container must not hit-test: only the proxies inside it do, so a press
-        // landing between them still reaches the canvas. Its `z-index` is the
-        // caller's to pick, so page chrome that must stay on top (a loading screen,
-        // a modal) can keep covering the proxies too.
+        // Only the proxies hit-test, so a press landing between them still reaches the canvas.
         set_style(
             &overlay,
             &[
@@ -123,9 +112,9 @@ impl Adapter {
             .append_child(&overlay)
             .map_err(|err| Error::Dom(format!("{err:?}")))?;
 
-        // Listeners are delegated: one set on the overlay serves every proxy, and
-        // each holds its own handle to the handler so no listener ever needs to
-        // reach back into the adapter (whose state `update` borrows mutably).
+        // One delegated set of listeners serves every proxy.
+        // Each holds its own handle to the handler, so none reaches back into the adapter
+        // while `update` borrows it mutably.
         let handler: Rc<RefCell<dyn Handler>> = Rc::new(RefCell::new(handler));
         let selector = format!("#{}", options.overlay_id);
         let listeners = vec![
@@ -178,9 +167,7 @@ impl Adapter {
 
     /// Mirrors `update` into the overlay, returning whether anything changed.
     ///
-    /// `pixels_per_point` is the toolkit's device-pixels-per-coordinate factor; the
-    /// CSS scale of the proxies is derived from it and the canvas backing store, so
-    /// they track what is actually on screen.
+    /// `pixels_per_point` is the toolkit's device pixels per tree coordinate.
     pub fn update(&mut self, update: &TreeUpdate, pixels_per_point: f64) -> bool {
         let started = self.recorder.begin();
         let viewport = self.measure(pixels_per_point);
@@ -217,9 +204,8 @@ impl Adapter {
             false
         });
 
-        // Re-parenting walks every proxy and reads its parent's live child list, so
-        // it is confined to the passes that actually added or removed one. Values
-        // changing — a slider being dragged — move nothing.
+        // Re-parenting reads every parent's live child list, so only passes that added or
+        // removed a proxy pay for it.
         if structure_changed {
             self.arrange(&plans);
         }
@@ -240,12 +226,11 @@ impl Adapter {
         self.recorder.stats()
     }
 
-    /// Re-measure only when the canvas actually moved or was resized.
+    /// Re-measures the canvas only when it was resized or its backing store changed.
     ///
-    /// `getBoundingClientRect` forces a style and layout flush, so calling it every
-    /// pass would put one in the middle of every repaint. The backing store's size
-    /// is a plain attribute read and costs nothing, and it changes whenever the
-    /// device pixel ratio does — which a `ResizeObserver` alone would not catch.
+    /// `getBoundingClientRect` forces a layout flush, so it must not run every pass.
+    /// The backing store's size is a plain attribute read, and it catches device pixel ratio
+    /// changes that a `ResizeObserver` alone would miss.
     fn measure(&mut self, pixels_per_point: f64) -> Viewport {
         let canvas = &self.canvas;
         let backing = (canvas.width(), canvas.height());
@@ -258,11 +243,9 @@ impl Adapter {
         }
 
         let rect = canvas.get_bounding_client_rect();
-        // Derived from the canvas rather than the toolkit's zoom factor: the backing
-        // store and the CSS box can disagree — after the device pixel ratio changes
-        // under a running app, a toolkit may keep sizing the backing store to the
-        // ratio it started with — and the proxies must track what is on screen, not
-        // what the toolkit intended.
+        // Derived from the canvas rather than the toolkit's zoom factor, because a toolkit may
+        // keep sizing the backing store to the device pixel ratio it started with, and the
+        // proxies must track what is on screen.
         let scale = if backing.0 > 0 && rect.width() > 0.0 {
             rect.width() * pixels_per_point / f64::from(backing.0)
         } else {
@@ -325,11 +308,10 @@ impl Adapter {
         Applied::Created
     }
 
-    /// Put every proxy under its parent, in the toolkit's own child order.
+    /// Puts every proxy under its parent, in the toolkit's own child order.
     ///
-    /// The plans arrive in depth-first order, so walking them while keeping a cursor
-    /// per parent visits each parent's children in the order they should appear, and
-    /// only the elements actually out of place are moved.
+    /// The plans arrive depth-first, so a cursor per parent visits each parent's children in
+    /// order, and only elements actually out of place are moved.
     fn arrange(&self, plans: &[Plan<'_>]) {
         let mut cursor: FxHashMap<Option<u64>, u32> = FxHashMap::default();
         for item in plans {
@@ -359,11 +341,10 @@ impl Adapter {
         }
     }
 
-    /// Follow the toolkit's focus with the DOM, but only while the overlay already
-    /// has it.
+    /// Follows the toolkit's focus with the DOM, but only while the overlay already has it.
     ///
-    /// Moving focus unasked would take it away from the canvas the moment the
-    /// toolkit focused anything, which would break ordinary mouse and keyboard use.
+    /// Moving focus unasked would take it from the canvas whenever the toolkit focused
+    /// anything, breaking ordinary mouse and keyboard use.
     fn mirror_focus(&mut self, focus: u64) {
         if self.mirrored_focus == Some(focus) {
             return;
@@ -460,9 +441,9 @@ fn on_key(handler: &Rc<RefCell<dyn Handler>>, event: web_sys::Event, pressed: bo
     let Ok(event) = event.dyn_into::<web_sys::KeyboardEvent>() else {
         return;
     };
-    // Tab has to keep moving DOM focus between proxies; everything else the toolkit
-    // wants is consumed here so the browser does not also act on it — notably Enter
-    // and Space, which would otherwise fire a second activation as a synthetic click.
+    // Tab keeps moving DOM focus between proxies.
+    // Every other key the toolkit wants is consumed, so Enter and Space do not fire a second
+    // activation as a synthetic click.
     if event.key() == "Tab" {
         return;
     }
@@ -483,22 +464,13 @@ fn element_id(overlay_id: &str, node: u64) -> String {
     format!("{overlay_id}-{node}")
 }
 
-/// Write the proxy's whole appearance and position as one `style` attribute.
+/// Writes the proxy's whole appearance and position as one `style` attribute.
 ///
-/// Each `CSSStyleDeclaration.setProperty` is a separate crossing into JS, and there
-/// are sixteen of them per proxy; serialising once and assigning the attribute
-/// turns a re-place into a single call. The rules never vary except for the two
-/// values interpolated below, so there is nothing to preserve by editing in place.
+/// One attribute write replaces sixteen `setProperty` calls, each a separate crossing into JS.
 fn place(element: &HtmlElement, item: &Plan<'_>, viewport: &Viewport) {
-    // `position: fixed` rather than absolute, so nesting proxies for semantics never
-    // changes where any of them land. Invisible via `opacity`, which — unlike
-    // `display` or `visibility` — keeps them in the accessibility tree.
-    //
     const BASE: &str = "position:fixed;margin:0;padding:0;border:0;background:transparent;\
                         color:transparent;font:inherit;overflow:hidden;white-space:nowrap;opacity:0;";
 
-    // Whether this proxy is the browser's hit target, or lets the press through to
-    // the canvas underneath; see [`Options::pointer_proxies`].
     let pointer = if item.proxy.hit_testable {
         "pointer-events:auto;"
     } else {
@@ -506,8 +478,7 @@ fn place(element: &HtmlElement, item: &Plan<'_>, viewport: &Viewport) {
     };
 
     let Some(bounds) = item.node.bounds() else {
-        // Nothing to point at: keep it in the tree but out of the way, rather than
-        // parked at the origin on top of real controls.
+        // Keep a boundless node in the tree but sized to nothing, not parked over the origin.
         set_attribute(
             element,
             "style",
@@ -518,9 +489,8 @@ fn place(element: &HtmlElement, item: &Plan<'_>, viewport: &Viewport) {
     let scale = viewport.scale;
     let width = ((bounds.x1 - bounds.x0) * scale).max(0.0);
     let height = ((bounds.y1 - bounds.y0) * scale).max(0.0);
-    // Small controls must sit above the regions containing them: node order arrives
-    // in hash order from some toolkits, so paint order alone would decide overlap
-    // arbitrarily.
+    // Smaller proxies stack above larger ones, because some toolkits send nodes in hash
+    // order and paint order alone would decide overlap arbitrarily.
     let depth = (10_000.0 - width * height / 1_000.0).clamp(1.0, 10_000.0);
     let left = viewport.left + bounds.x0 * scale;
     let top = viewport.top + bounds.y0 * scale;
@@ -544,15 +514,13 @@ fn describe(element: &HtmlElement, item: &Plan<'_>, overlay_id: &str) {
     }
 
     if item.proxy.interactive {
-        // Reachable by keyboard: focus moving here is routed back into the toolkit
-        // as an AccessKit focus request, so the two never fight over it.
+        // Focus moving here is routed back to the toolkit as an AccessKit focus request.
         set_attribute(element, "tabindex", "0");
     }
     if item.proxy.text_content {
         element.set_text_content(Some(item.proxy.name));
     } else if item.proxy.name.is_empty() {
-        // A container with nothing of its own to say stays anonymous rather than
-        // announcing a name borrowed from a child that will announce it too.
+        // A nameless container stays anonymous rather than repeating its children's text.
         remove_attribute(element, "aria-label");
     } else {
         set_attribute(element, "aria-label", item.proxy.name);

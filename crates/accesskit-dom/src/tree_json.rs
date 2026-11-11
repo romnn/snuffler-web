@@ -1,12 +1,7 @@
 //! Debug serialization of the AccessKit tree, compiled in by the `tree-json` feature.
 //!
-//! The DOM projection in [`crate::dom`] is the real consumer of the tree; this is
-//! the view for a human or a test harness that wants the raw node data — roles,
-//! bounds, supported actions — rather than the DOM's lossier rendering of it.
-//!
-//! The tree lands on a caller-chosen window global as JSON (see
-//! [`crate::Options::tree_json_global`]), with a second `<global>Rev` global counting
-//! republishes so a reader can tell a stale snapshot from a live one.
+//! The JSON lands on the window global named by [`crate::Options::tree_json_global`], for
+//! harnesses that want the raw node data rather than the DOM's lossier rendering of it.
 
 // Writing into a `String` is infallible; the `Result` exists only to satisfy the
 // trait, so every `write!` below discards it.
@@ -33,7 +28,7 @@ impl Publisher {
         }
     }
 
-    /// Publish `update` on the configured global, bumping the revision counter.
+    /// Publishes `update` on the configured global and bumps the revision counter.
     pub fn publish(&mut self, update: &TreeUpdate) {
         let Some(window) = web_sys::window() else {
             return;
@@ -58,10 +53,8 @@ impl Publisher {
     }
 }
 
-// AccessKit node ids are `u64` and some toolkits fill the full range (egui's are
-// hashes of its widget ids), so they must cross into JS as strings: `JSON.parse`
-// would round anything past 2^53 to a different number, and a rounded id matches no
-// node when it comes back as an action request.
+// Node ids cross into JS as strings: toolkits such as egui use the full `u64` range, and
+// `JSON.parse` would round anything past 2^53 to an id that matches no node.
 fn push_node_id(id: NodeId, out: &mut String) {
     out.push('"');
     out.push_str(&id.0.to_string());
@@ -132,10 +125,7 @@ fn push_node(id: NodeId, node: &Node, out: &mut String) {
         out.push_str(",\"hidden\":true");
     }
 
-    // What the DOM projection would turn into a real click target vs. a label. The
-    // names come from the crate-wide action table, so what this dump advertises is
-    // exactly what `action_from_name` accepts back (`setValue` excepted, since it
-    // needs a payload).
+    // Supported actions, named from the crate-wide table that `action_from_name` reads.
     let actions: Vec<&str> = [
         Action::Click,
         Action::Focus,

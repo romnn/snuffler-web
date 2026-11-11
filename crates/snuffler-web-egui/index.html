@@ -14,11 +14,10 @@
          loading. There is no runtime toggle: a non-threaded build, if ever
          needed, is produced via the `threads` build-time feature and hosted on a
          separate path so the two never interfere. -->
-    <!-- NOT quiet: on a browser where isolation cannot be reached the shim's own
+    <!-- Not quiet: on a browser where isolation cannot be reached the shim's own
          messages ("perhaps due to private mode", "a secure context is required")
-         are the only explanation there is, and it returns early — without ever
-         registering — on engines that predate `crossOriginIsolated`. Silencing
-         that left an iPad stuck on the loading bar with an empty console. -->
+         are the only explanation there is, and it returns early, without ever
+         registering, on engines that predate `crossOriginIsolated`. -->
     <script>
         (function () {
             window.coi = {
@@ -53,10 +52,9 @@
     <link data-trunk rel="copy-file" href="../../web/bootstrap.py" />
     <link data-trunk rel="copy-file" href="../../web/gen/bridge_worker.js" />
     <link data-trunk rel="copy-file" href="../../web/gen/ort_worker.js" />
-    <!-- cross-origin isolation shim (opt-in; see the script in <head>) -->
+    <!-- cross-origin isolation shim (configured by the script in <head>) -->
     <link data-trunk rel="copy-file" href="../../web/coi-serviceworker.js" />
     <link data-trunk rel="copy-dir" href="../../web/proto" data-target-path="proto" />
-    <!-- demo data from the on-demand pyrocko checkout (see task fetch:pyrocko) -->
     <!-- Bird (2003) tectonic plate boundaries for the map overlay (pyrocko's own KML) -->
     <link data-trunk rel="copy-file"
         href="../../sources/pyrocko/src/gui/snuffler/snufflings/map/plates.kml" />

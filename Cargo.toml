@@ -34,12 +34,8 @@ version = "0.0.1"
 edition = "2024"
 
 [profile.release]
-# Optimize for size: this is a render-only wasm frontend — all heavy computation
-# runs in Pyodide — so a smaller download matters more than peak CPU throughput.
-# Complementary to wasm-opt -Oz (the egui frontend's Trunk.toml): rustc/LLVM shrinks the codegen,
-# wasm-opt does a further wasm-level size pass. Use "z" for an even smaller binary
-# if the UI still feels smooth.
-# opt-level = "s"
+# rustc optimizes for speed, because the canvas renderer runs every frame; the
+# release build's wasm-opt -Oz pass (scripts/trunk-post-build.sh) then shrinks it.
 opt-level = 3
 lto = true
 codegen-units = 1
@@ -59,7 +55,7 @@ codegen-units = 16
 incremental = true
 strip = "none"
 debug = "line-tables-only"
-# The dev build had these on, and they catch far more than they cost at opt-level 3.
+# They catch far more than they cost at opt-level 3.
 debug-assertions = true
 overflow-checks = true
 

@@ -22,10 +22,10 @@ impl MarkerBudget {
         Self(NonZeroU32::new(DEFAULT_MARKER_BUDGET).unwrap_or(NonZeroU32::MIN))
     }
 
-    /// Interprets a producer-echoed budget, falling back to the standard bound
-    /// when the echo is zero or exceeds the calibrated hard cap. Nothing lets a
-    /// user pick a budget, so an invalid echo is a producer bug to absorb, not
-    /// an error for a caller to route.
+    /// Interprets a producer-echoed budget, falling back to the standard bound when the
+    /// echo is zero or exceeds the calibrated hard cap.
+    /// Nothing lets a user pick a budget, so an invalid echo is a producer bug to absorb,
+    /// not an error for a caller to route.
     #[must_use]
     pub fn from_wire(value: u32) -> Self {
         NonZeroU32::new(value)
@@ -223,18 +223,6 @@ impl MarkerStore {
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Marker> {
         self.changed();
         self.markers.get_mut(index)
-    }
-
-    /// Returns the first marker.
-    #[must_use]
-    pub fn first(&self) -> Option<&Marker> {
-        self.markers.first()
-    }
-
-    /// Returns the first marker mutably and invalidates derived indexes.
-    pub fn first_mut(&mut self) -> Option<&mut Marker> {
-        self.changed();
-        self.markers.first_mut()
     }
 
     /// Resolves a stable identity to its current marker.

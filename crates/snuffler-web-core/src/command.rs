@@ -1,16 +1,16 @@
 //! The ':' command line, mirroring pyrocko's snuffler (`pile_viewer.py`'s
 //! `LineEditWithAbort` + `PileViewer.inputline_*`).
 //!
-//! This is the frontend-independent half: visibility, the edited line, the
-//! recalled history, and what happens to the input once a command has run. A
-//! frontend draws [`CommandLine::text`], forwards the four bindings snuffler has
+//! This is the frontend-independent half: visibility, the edited line, the recalled
+//! history, and what happens to the input once a command has run.
+//! A frontend draws [`CommandLine::text`], forwards the four bindings snuffler has
 //! (Return, Escape, Up, Down) and honours [`CommandLine::focus_request`].
 //!
 //! Snuffler decides the post-run behaviour synchronously, from the
-//! `(clearit, hideit, error)` triple `inputline_finished` returns. Here the
-//! commands that reach pyrocko are asynchronous, so a submitted line stays
-//! pending — and the input stays open — until [`CommandLine::resolve`] applies
-//! the same rules to the answer.
+//! `(clearit, hideit, error)` triple `inputline_finished` returns.
+//! Here the commands that reach pyrocko are asynchronous, so a submitted line stays
+//! pending — and the input stays open — until [`CommandLine::resolve`] applies the same
+//! rules to the answer.
 
 /// Commands whose input line snuffler clears once they have run (`clearit`), so
 /// the blacklist edit does not stay in the box ready to be re-submitted.
@@ -22,9 +22,9 @@ const QUICK_FILTER_COMMANDS: [&str; 4] = ["n", "s", "l", "c"];
 /// Longest history snuffler keeps (`save_inputline_history` writes the last 100).
 const MAX_HISTORY: usize = 100;
 
-/// Hint shown in an empty input, verbatim from snuffler. The arrows need a font
-/// that carries them — the egui frontend draws this line in `JetBrains Mono` for
-/// exactly that reason.
+/// Hint shown in an empty input, verbatim from snuffler.
+/// The arrows need a font that carries them — the egui frontend draws this line in
+/// `JetBrains Mono` for exactly that reason.
 pub const PLACEHOLDER: &str =
     "Quick commands: e.g. 'c HH?' to select channels. Use ↑ or ↓ to navigate.";
 
@@ -59,14 +59,15 @@ pub struct CommandLine {
     /// Error from the last command, shown under the input until the line is
     /// edited again.
     pub error: Option<String>,
-    /// The submitted line waiting for its result. While this is set the input
-    /// stays open, matching snuffler's synchronous "nothing moves until the
-    /// command has run".
+    /// The submitted line waiting for its result.
+    /// While this is set the input stays open, matching snuffler's synchronous "nothing
+    /// moves until the command has run".
     pending: Option<String>,
     /// Accepted lines, oldest first.
     history: Vec<String>,
-    /// Cursor into `history` for Up/Down. `history.len()` is the empty slot past
-    /// the newest entry, which is where a fresh input starts.
+    /// Cursor into `history` for Up/Down.
+    /// `history.len()` is the empty slot past the newest entry, which is where a fresh
+    /// input starts.
     hist_ind: usize,
     /// Whether the stored history has been read yet (snuffler loads the history
     /// file the first time the input is shown).
@@ -108,14 +109,8 @@ impl CommandLine {
         }
     }
 
-    /// Whether a submitted line is still waiting for its result.
-    #[must_use]
-    pub fn is_pending(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    /// Takes the pending focus grab, if any. The frontend calls this once per
-    /// frame while drawing the input.
+    /// Takes the pending focus grab, if any.
+    /// The frontend calls this once per frame while drawing the input.
     pub fn take_focus_request(&mut self) -> Option<FocusRequest> {
         self.focus_request.take()
     }
@@ -143,9 +138,9 @@ impl CommandLine {
 
     /// Accepts the line for execution and returns it (snuffler's Return).
     ///
-    /// The input stays open and keeps the keyboard until [`Self::resolve`]
-    /// reports how the command went. An empty line runs nothing and just closes
-    /// the input, as it does in snuffler.
+    /// The input stays open and keeps the keyboard until [`Self::resolve`] reports how
+    /// the command went.
+    /// An empty line runs nothing and just closes the input, as it does in snuffler.
     pub fn submit(&mut self) -> Option<String> {
         let line = self.text.clone();
         if line.trim().is_empty() {
@@ -220,9 +215,9 @@ fn has_argument(line: &str) -> bool {
     line.split_whitespace().nth(1).is_some()
 }
 
-/// Where the browser keeps the command history. Snuffler writes
-/// `$HOME/.pyrocko/.snuffler_history`; `localStorage` is its counterpart for an
-/// app with no filesystem of its own.
+/// Where the browser keeps the command history.
+/// Snuffler writes `$HOME/.pyrocko/.snuffler_history`; `localStorage` is its counterpart
+/// for an app with no filesystem of its own.
 #[cfg(target_arch = "wasm32")]
 const HISTORY_KEY: &str = "snuffler.command_history";
 

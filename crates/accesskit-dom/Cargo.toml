@@ -4,9 +4,9 @@ version.workspace = true
 authors = ["Roman Dahm <contact@romnn.com>"]
 edition.workspace = true
 description = "Project an AccessKit tree into live DOM elements: a web adapter for AccessKit"
-# Deliberately free of egui/eframe (enforced by `task lint:boundaries`): anything
-# that produces AccessKit tree updates can drive it. Flip `publish` once the
-# crate name and license are settled.
+# Free of egui/eframe (enforced by `task lint:boundaries`), so any AccessKit producer can
+# drive it.
+# Unpublished until the crate name and license are settled.
 publish = false
 
 [package.metadata.cargo-fc]
@@ -32,6 +32,7 @@ tree-json = []
 [dependencies]
 accesskit = "0.24"
 rustc-hash = { version = "2.1.3", default-features = false, features = ["std"] }
+thiserror.workspace = true
 
 [dev-dependencies]
 color-eyre.workspace = true
@@ -54,6 +55,5 @@ web-sys = { version = "0.3", features = [
     "KeyboardEvent",
     "Node",
     "ResizeObserver",
-    "ResizeObserverEntry",
     "Window",
 ] }

@@ -35,12 +35,7 @@ thread_local! {
     static A11Y: RefCell<Option<egui_a11y::A11y>> = const { RefCell::new(None) };
 }
 
-/// Whether to build and publish the accessibility layer.
-///
-/// On unless `?a11y=0` says otherwise. Accessibility that has to be asked for is
-/// not much use to the people who need it, and the cost of leaving it on is one
-/// AccessKit node per widget per pass plus a DOM diff that touches nothing when
-/// nothing changed.
+/// The `?a11y=` query parameter, if the URL carries one.
 fn flag() -> Option<String> {
     web_sys::window()
         .and_then(|window| window.location().search().ok())
@@ -52,6 +47,12 @@ fn flag() -> Option<String> {
         })
 }
 
+/// Whether to build and publish the accessibility layer.
+///
+/// On unless `?a11y=0` says otherwise.
+/// Accessibility that has to be asked for is not much use to the people who need
+/// it, and the cost of leaving it on is one AccessKit node per widget per pass plus
+/// a DOM diff that touches nothing when nothing changed.
 fn enabled() -> bool {
     !matches!(flag().as_deref(), Some("0" | "false" | "off"))
 }

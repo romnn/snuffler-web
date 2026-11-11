@@ -6,13 +6,13 @@ scipy** (compiled to WebAssembly via [Pyodide](https://pyodide.org)); only the U
 is new: a [Rust/egui](https://github.com/emilk/egui) frontend compiled to WASM.
 We give snuffler a new outfit without touching its brain.
 
-> Status: a working app. Loads synthetic data, SAC, and real MiniSEED; stacked
-> wiggle display **and a waterfall/spectrogram view**, adaptive time axis, NSLC
-> labels, highpass/lowpass/gain, **component rotation**, scaling & sorting,
-> pan/zoom, markers, an **amplitude-spectrum snuffling**, **light/dark/system
-> themes**, and a progress-bar loading screen. **`File ▸ Examples`** loads real
-> recorded datasets on demand — each one a link you can hand out
-> (`?example=<slug>`), see [`examples/`](examples/).
+Loads MiniSEED, SAC and the other formats pyrocko reads, from files, FDSN
+services or a live SeedLink stream; shows them as stacked wiggles or a waterfall
+with snuffler's filters, rotation, scaling, sorting and markers; and runs ports of
+snuffler's built-in snufflings (spectra, spectrogram, polarization, STA/LTA, cake,
+seismosizer, SeisBench pickers). **`File ▸ Examples`** loads real recorded
+datasets on demand — each one a link you can hand out (`?example=<slug>`), see
+[`examples/`](examples/).
 
 ## The original Qt snuffler
 
@@ -30,7 +30,7 @@ against: `task snuffler`, see [`qt/`](qt/).
  ├─ Web Worker
  │  └─ Pyodide (CPython + numpy + scipy + pyrocko, all WASM)     ← the compute
  │     └─ web/bridge.py  — strict-typed pyrocko shim
- ├─ web/bridge.js        — main-thread client, DOM I/O, worker RPC
+ ├─ web/bridge.ts        — main-thread client, DOM I/O, worker RPC
  ├─ proto/               — protobuf bridge schema, generated for Rust/Python
  └─ Rust frontend (wasm32, via Trunk/wasm-bindgen)               ← the UI
       ├─ crates/snuffler-web-core/    — session state + async protobuf bridge (no egui)
@@ -45,9 +45,9 @@ target pixel width); pyrocko filters and decimates the traces and returns compac
 side and `buf generate` emits Python code plus mypy stubs for the Pyodide side.
 
 **pyrocko is used unmodified.** We replace only its *build system* for the web:
-`pybuild/` cross-compiles just the two C extensions the inspector needs
-(`signal_ext`, and `mseed_ext` + bundled `libmseed`) into a Pyodide wheel; the
-rest of pyrocko ships as its normal pure-Python tree.
+`pybuild/setup.py` cross-compiles its C extensions (all but `evalresp_ext`, whose
+C library is not bundled) into a Pyodide wheel; the rest of pyrocko ships as its
+normal pure-Python tree.
 
 ## Toolchain (clone → mise → Task)
 
@@ -108,12 +108,10 @@ runtime into `docker/pyodide-mt/served/` in seconds — no Docker, no emsdk, no
 hour. Build it with `task pyodide:build` when the runtime itself is what you are
 changing: a patch, a package pin, or `pybuild/setup.py`.
 
-**Both Pyodide paths run our custom Pyodide 314** (py3.14 / emscripten 5.0.3),
-built in `docker/pyodide-mt` (`build-all.sh`, the multi-hour but cacheable step):
-the threaded `py-mt/` runtime (pthread + OpenMP + SIMD, reachable via `?threads=1`
-+ the coi-serviceworker) and a single-threaded `dist-py/` pyrocko wheel for the
-stock 314.0.0 CDN fallback — differing only in multithreading + SIMD. No host
-emsdk/xbuildenv is involved; the wheels are built inside the pyodide-env image.
+**The app runs our custom Pyodide 314** (py3.14 / emscripten 5.0.3, pthread +
+OpenMP + SIMD), built in `docker/pyodide-mt` (`build-all.sh`, the multi-hour but
+cacheable step) and served at `py-mt/`. No host emsdk/xbuildenv is involved; the
+wheels are built inside the pyodide-env image.
 
 ## Docker
 
@@ -187,21 +185,25 @@ those stages run under emulation and are slow.
 
 | Path | What |
 |---|---|
-| `web/bridge.js` | main-thread JS client for the Pyodide worker |
-| `web/bridge_worker.js` | Pyodide boot, wheel install, protobuf RPC, buffer transfer |
-| `web/bridge.py` | type-checked pyrocko shim (`make_example`, `load_bytes`, `get_view`) |
+| `web/bridge.ts` | main-thread client for the Pyodide worker |
+| `web/bridge_worker.ts` | Pyodide boot, package install, protobuf RPC, buffer transfer |
+| `web/bridge.py` | the type-checked pyrocko side of every bridge RPC |
 | `proto/` | protobuf schema for the Rust/Python bridge |
+| `adr/` | architecture decision records |
 | `examples/` | real recorded datasets: `File ▸ Examples` fetches each as one bundle, and the parity suite measures against the same bytes |
 | `crates/snuffler-web-core/` | shared session state and Pyodide bridge |
 | `crates/snuffler-web-render/` | toolkit-neutral drawing and SVG backend |
 | `crates/snuffler-web-egui/` | egui frontend, Trunk entry point, and frontend assets |
 | `crates/snuffler-web-proto/` | generated Rust protobuf crate |
+| `crates/accesskit-dom/`, `crates/egui-a11y/` | the AccessKit tree projected into a DOM overlay, for screen readers and browser agents |
+| `crates/snuffler-web-proxy/` | the local `/cors` + `/seedlink` proxy, built from the two crates beside it |
+| `qt/` | the upstream Qt snuffler as a native reference, with a headless driver |
+| `tests/` | browser suites and the Qt parity harness (`tests/parity/`) |
 | `pybuild/` | `setup.py` (the pyrocko wheel build def, used by `docker/pyodide-mt`) + `fetch-pyrocko.sh` + `protoc-gen-mypy` |
-| `docker/pyodide-mt/` | the custom Pyodide 314 build (runtime + both wheels): `build-all.sh` |
+| `docker/pyodide-mt/` | the custom Pyodide 314 build (runtime + wheels): `build-all.sh` |
 | `docker/web/` | the site image: Trunk build + unprivileged nginx, with its config and the build-time compressor |
 | `docker/proxy/` | the `snuffler-web-proxy` image |
 | `docker-compose.yaml` | both of the above on the ports micromux uses locally |
-| `dist-py/` | single-threaded CDN pyrocko wheel + `wheels.json` (served at `/py/`); gitignored, built by `build-all.sh` |
 | `sources/pyrocko/` | upstream pyrocko — **fetched on demand at a pinned commit, gitignored (not vendored)** |
 
 ## Notes & limitations
@@ -226,5 +228,5 @@ those stages run under emulation and are slow.
 - **Response deconvolution** (Options → Remove response) is wired through
   `trace.transfer` but is a no-op until response metadata (StationXML/RESP) is
   loaded — the demo data carries none.
-- Snufflings: a built-in amplitude-spectrum tool and the spectrogram are
-  provided; the full dynamic plugin framework is not ported.
+- Snufflings are ported one by one; user snuffling directories are not loaded,
+  because the browser page has none.

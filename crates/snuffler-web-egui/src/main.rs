@@ -18,12 +18,12 @@ fn main() {
         reason = "this is the browser application bootstrap, before an activity ledger exists"
     )]
     wasm_bindgen_futures::spawn_local(async {
-        // Bring up the rayon worker pool for the wasm frontend — a general-purpose
-        // parallelism primitive (the PNG export is the first user; compute-heavy
-        // loops can use it later) — but do NOT block startup on it: the egui app +
-        // Pyodide boot must not queue behind the worker spawn. Init runs in the
-        // background and flips a ready flag; until it is up (or with no cross-origin
-        // isolation, where the init promise rejects) callers run on the main thread.
+        // Bring up the rayon worker pool for the wasm frontend, but do not block
+        // startup on it: the egui app and the Pyodide boot must not queue behind
+        // the worker spawn.
+        // Init runs in the background and flips a ready flag; until it is up (or
+        // with no cross-origin isolation, where the init promise rejects) callers
+        // run on the main thread.
         #[cfg(feature = "threads")]
         {
             #[allow(
@@ -33,10 +33,9 @@ fn main() {
             )]
             let cores =
                 web_sys::window().map_or(0, |w| w.navigator().hardware_concurrency() as usize);
-            // Cap the pool: spawning one Worker per core (e.g. 48) at page load —
-            // each re-instantiating the wasm — costs far more than it buys for the
-            // workloads we run today, where 4 is ample. Raise the cap if a future
-            // workload actually needs wider parallelism.
+            // Cap the pool: spawning one Worker per core (e.g. 48) at page load,
+            // each re-instantiating the wasm, costs far more than it buys for the
+            // PNG and marker exports, where 4 is ample.
             let threads = cores.clamp(1, 4);
             #[expect(
                 clippy::disallowed_methods,

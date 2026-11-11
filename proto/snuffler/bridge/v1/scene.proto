@@ -2,11 +2,11 @@ syntax = "proto3";
 
 package snuffler.bridge.v1;
 
-// The loaded pile as the frontend needs it between views: its time bounds and
-// the aggregate track facts every consumer reads. Per-trace metadata (nslc,
-// label, spans) rides ViewMeta, which the view request pages; repeating it here
-// would serialize O(traces) of data on every load and live ingest for fields
-// nothing consumes.
+// The loaded pile as the frontend needs it between views: its time bounds and the
+// aggregate track facts every consumer reads.
+// Per-trace metadata (nslc, label, spans) rides ViewMeta, which the view request pages;
+// repeating it here would serialize O(traces) of data on every load and live ingest for
+// fields nothing consumes.
 message SceneMeta {
   double tmin = 1;
   // Also the latest trace's end time: the bound is computed as the maximum

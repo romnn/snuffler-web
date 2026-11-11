@@ -149,7 +149,7 @@ def assert_upstream_geometry() -> None:
             "upstream pyrocko changed the 3D vertical leg: "
             f"set_event_relative_data gave {qt_leg:.1f} m where "
             f"`event.depth - station.depth` is {expected:.1f} m ({which}).\n"
-            "web/bridge.py:_sort_distance deliberately mirrors the old formula — see "
+            "web/bridge.py:_sort_distance deliberately mirrors upstream's formula — see "
             "`vertical-leg-follows-qt` in tests/parity/known_gaps.toml. Follow upstream "
             "there and retire that entry, or pin pyrocko back."
         )
@@ -346,10 +346,11 @@ class QtViewer:
 
         view.set_tracks_range((0, max(1, view.ntracks)))
 
-        # Tier 1 is the wiggle pipeline. The waterfall diverges below the seam this
-        # oracle watches — Qt paints a QImage from `pile_viewer_waterfall`, the web
-        # returns normalized strips — so comparing them would be a pixel diff, which
-        # the plan rules out. See known_gaps.toml [[numeric]] "waterfall-pipeline".
+        # Tier 1 is the wiggle pipeline.
+        # The waterfall diverges below the seam this oracle watches (Qt paints a
+        # QImage from `pile_viewer_waterfall`, the web returns normalized strips), so
+        # comparing them would be a pixel diff.
+        # See known_gaps.toml [[manual]] "waterfall-pipeline".
         if state["mode"] != "wiggle":
             raise ValueError(
                 f"qt_oracle covers the wiggle pipeline only, not mode={state['mode']!r}"

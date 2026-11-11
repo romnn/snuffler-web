@@ -3,7 +3,7 @@ use egui::Align;
 pub use snuffler_web_core::snufflings::cake::Config;
 
 use super::Action;
-use super::widgets::param_row;
+use super::widgets::{checkbox_row, param_row};
 
 const LABEL_W: f32 = 160.0;
 
@@ -47,10 +47,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
     });
 
     param_row(ui, "Global shift [s]", &mut config.tshift, -20.0, 20.0);
-    ui.horizontal(|ui| {
-        ui.add_space(LABEL_W);
-        ui.checkbox(&mut config.use_station_depth, "Use station depth");
-    });
+    checkbox_row(ui, &mut config.use_station_depth, "Use station depth");
 
     ui.add_space(6.0);
     ui.label("Phases:");

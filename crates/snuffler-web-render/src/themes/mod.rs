@@ -196,8 +196,7 @@ mod tests {
         // The monochrome wiggle is what most data is read in, so it clears 7:1 on
         // every canvas.
         // Snuffler's aluminium5 sits at 7.3 and the web inks sit with it: a grey
-        // wiggle is what snuffler's light canvas reads like, and a near-black one
-        // was the thing that stopped it looking like snuffler.
+        // wiggle is what snuffler's light canvas reads like.
         // The ink and the boxes are coupled, since the wiggle has to read over
         // whatever it crosses, and snuffler resolves that by keeping its boxes pale:
         // 1.10-1.84, with its pen clearing 3.98 over the scarletred one.
@@ -413,8 +412,7 @@ mod tests {
     #[test]
     fn marker_kinds_stay_eight_distinguishable_colours() {
         // A kind is read off its colour, so the palette is only as good as its
-        // closest pair — snuffler's own shades manage 10.7, and the shades this
-        // replaced had fallen to 4.2, where orange and chocolate were one colour.
+        // closest pair; snuffler's own shades manage 10.7.
         // Both the idle and the lit set are palettes in their own right, since
         // several markers can be selected at once.
         for (wiggle, theme, pal) in web_palettes() {
