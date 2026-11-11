@@ -1,0 +1,10 @@
+apiVersion: v2
+name: common
+description: Templates the snuffler-web and snuffler-web-proxy charts share
+# A library renders nothing on its own, and travels inside each chart that depends on it, so
+# installing a chart never needs this one.
+# Each templates/_<resource>.tpl defines one resource for a chart's root context, which renders
+# nothing while that chart's values turn it off.
+# Each chart writes out its own Deployment and Service in full, so they read on their own.
+type: library
+version: 0.1.0

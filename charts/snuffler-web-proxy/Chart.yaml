@@ -1,0 +1,25 @@
+apiVersion: v2
+name: snuffler-web-proxy
+description: Allowlisted CORS and TCP-over-WebSocket proxy that lets snuffler-web reach FDSN data centers and live SeedLink servers
+type: application
+# Both versions follow the release; bumpversion updates them (.bumpversion.toml).
+version: 0.0.1
+appVersion: "0.0.1"
+kubeVersion: ">=1.23.0-0"
+home: https://github.com/romnn/snuffler-web
+icon: https://romnn.github.io/snuffler-web/favicon.png
+sources:
+  - https://github.com/romnn/snuffler-web
+keywords:
+  - seismology
+  - pyrocko
+  - snuffler
+  - seedlink
+  - fdsn
+maintainers:
+  - name: romnn
+    url: https://github.com/romnn
+dependencies:
+  - name: common
+    version: 0.1.0
+    repository: file://../common

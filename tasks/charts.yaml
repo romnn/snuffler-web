@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# The Helm charts under charts/: lint, schema generation, packaging and publishing.
+
+vars:
+  # The charts under charts/ that are published.
+  CHARTS: snuffler-web snuffler-web-proxy
+  # Where they are published, next to the images.
+  CHARTS_OCI: oci://ghcr.io/romnn/snuffler-web/charts
+
+tasks:
+  # The library chart renders only inside the two charts, so linting them covers it.
+  lint:charts:
+    desc: "lint the Helm charts against their generated values schemas"
+    deps: [charts:schema]
+    cmds:
+      - for: { var: CHARTS }
+        cmd: helm lint --strict charts/{{.ITEM}}
+      - for: { var: CHARTS }
+        cmd: helm lint --strict charts/{{.ITEM}} --values charts/{{.ITEM}}/ci/full-values.yaml
+
+  charts:schema:
+    desc: "generate each chart's values.schema.json from its values and templates"
+    cmds:
+      # helm-schema reads the library's templates from the vendored copy.
+      - for: { var: CHARTS }
+        cmd: helm dependency build charts/{{.ITEM}}
+      - for: { var: CHARTS }
+        cmd: helm-schema charts/{{.ITEM}} --profile lean --output charts/{{.ITEM}}/values.schema.json
+
+  charts:package:
+    desc: "package the Helm charts into dist-charts/"
+    deps: [charts:schema]
+    cmds:
+      # Only this version's packages, so `charts:push` finds exactly one per chart.
+      - rm -rf dist-charts
+      - for: { var: CHARTS }
+        cmd: helm package charts/{{.ITEM}} --destination dist-charts
+
+  # Pushing needs a login first, such as `helm registry login ghcr.io`.
+  charts:push:
+    desc: "push the packaged Helm charts in dist-charts/ to the OCI registry"
+    cmds:
+      - for: { var: CHARTS }
+        # The version follows the name, so `snuffler-web-[0-9]*` never matches the proxy's package.
+        cmd: helm push dist-charts/{{.ITEM}}-[0-9]*.tgz {{.CHARTS_OCI}}

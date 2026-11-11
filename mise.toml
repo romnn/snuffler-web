@@ -59,6 +59,11 @@ buf = "1.74.0"
 # The proto build script (prost) and buf generate both use it.
 protoc = "34.1"
 
+# Helm charts (charts/): `task lint:charts` lints them, and helm-schema generates each
+# chart's values.schema.json from its values and templates.
+helm = "latest"
+"github:romnn/helm-schema" = { version = "latest", minimum_release_age = "0" }
+
 # Cargo plugins
 "aqua:nextest-rs/nextest/cargo-nextest" = "latest"
 "github:romnn/cargo-feature-combinations" = { version = "latest", matching = "cargo-fc", minimum_release_age = "0" }  # provides `cargo fc`

@@ -14,3 +14,29 @@ filename = "Cargo.toml"
 search = "^version = \"{current_version}\""
 replace = "version = \"{new_version}\""
 regex = true
+
+# Both charts follow the release, as their own version and as the default image tag.
+# `^` keeps the search off the indented `version:` of the chart's dependency.
+[[tool.bumpversion.files]]
+filename = "charts/snuffler-web/Chart.yaml"
+search = "^version: {current_version}$"
+replace = "version: {new_version}"
+regex = true
+
+[[tool.bumpversion.files]]
+filename = "charts/snuffler-web/Chart.yaml"
+search = "^appVersion: \"{current_version}\"$"
+replace = "appVersion: \"{new_version}\""
+regex = true
+
+[[tool.bumpversion.files]]
+filename = "charts/snuffler-web-proxy/Chart.yaml"
+search = "^version: {current_version}$"
+replace = "version: {new_version}"
+regex = true
+
+[[tool.bumpversion.files]]
+filename = "charts/snuffler-web-proxy/Chart.yaml"
+search = "^appVersion: \"{current_version}\"$"
+replace = "appVersion: \"{new_version}\""
+regex = true

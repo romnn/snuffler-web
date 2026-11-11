@@ -1,0 +1,47 @@
+# Turns on everything the defaults leave off, so `task lint:charts` renders every template.
+allowHttpTargets:
+  - https://example.org/fdsnws/dataselect/1/query
+allowTcpTargets:
+  - seedlink.example.org:18000
+connectTimeoutMs: 5000
+log:
+  format: pretty
+  filter: info,cors_proxy=debug
+otel:
+  endpoint: http://otel-collector.observability:4317
+commonLabels:
+  team: seismology
+image:
+  tag: "0.0.1"
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+startupProbe:
+  enabled: true
+service:
+  type: NodePort
+  nodePort: 30081
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: proxy.snuffler.example
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: proxy-snuffler-example-tls
+      hosts:
+        - proxy.snuffler.example
+autoscaling:
+  enabled: true
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: null
+networkPolicy:
+  enabled: true

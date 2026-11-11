@@ -21,7 +21,7 @@ running **entirely in the browser, no server** (`task serve`).
 The real, unmodified PyQt5 snuffler is not shipped: Qt-for-Python has no WebAssembly
 build (see [ADR 2](adr/0002-upstream-qt-is-a-reference.md)).
 It runs natively instead, as the reference the parity tests measure the web app
-against: `task snuffler`, see [`qt/`](qt/).
+against: `task qt`, see [`qt/`](qt/).
 
 ## Architecture
 
@@ -57,8 +57,8 @@ Everything is pinned in `mise.toml` + `rust-toolchain.toml`. With
 ```sh
 mise install                    # node, bun, uv, trunk, binaryen, protoc (all pinned)
 task pyodide:fetch              # download the deployed custom Pyodide 314 into py-mt
-task serve                      # trunk serve → http://127.0.0.1:17683
-micromux                        # optional full local stack: proxy + trunk serve
+task serve                      # trunk serve → http://127.0.0.1:8000
+micromux                        # app + proxy → http://snuffler-web.localhost
 ```
 
 Mise installs and selects pinned dependencies.
@@ -78,8 +78,8 @@ The native Qt application and its parity tests use a separate locked Python 3.12
 project under `qt/`:
 
 ```sh
-task snuffler                         # fetch pinned pyrocko and launch its native GUI
-task snuffler:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
+task qt                               # fetch pinned pyrocko and launch its native GUI
+task qt:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
 uv sync --project qt                 # optional: prepare qt/.venv without launching
 task test:parity:unit
 task test:parity:bridge
@@ -129,14 +129,18 @@ additionally tagged `sha-<commit>`.
 Both images are published for `linux/amd64` and `linux/arm64`.
 
 ```sh
-docker compose up            # site on http://127.0.0.1:17683, proxy on :17684
+docker compose up            # site on http://127.0.0.1:8000, proxy on :9000
 docker compose up --build    # build both from this checkout instead
 ```
 
-The proxy is published on the **host's** 17684 for a reason: the app resolves it
-in the browser — `web/snuffler_bridge/fdsn.py` and `snuffler-web-core` both name
-`127.0.0.1:17684`, and only route through it when the page is on a localhost
-origin — so the two containers never talk to each other.
+The browser reaches the proxy itself, at the address the site's `config.js` names
+(`web/config.js` documents it), so the two containers never talk to each other:
+compose mounts a `config.js` naming the host's 9000. The GitHub Pages build
+points at `https://proxy.snuffler.romnn.com/`.
+
+Helm charts for both images are published to
+`oci://ghcr.io/romnn/snuffler-web/charts` on each release tag; see
+[docs/kubernetes.md](docs/kubernetes.md).
 
 ### Building them
 
@@ -204,7 +208,7 @@ those stages run under emulation and are slow.
 | `docker/pyodide-mt/` | the custom Pyodide 314 build (runtime + wheels): `build-all.sh` |
 | `docker/web/` | the site image: Trunk build + unprivileged nginx, with its config and the build-time compressor |
 | `docker/proxy/` | the `snuffler-web-proxy` image |
-| `docker-compose.yaml` | both of the above on the ports micromux uses locally |
+| `docker-compose.yaml` | both of the above, the site on 8000 and the proxy on 9000 |
 | `sources/pyrocko/` | upstream pyrocko — **fetched on demand at a pinned commit, gitignored (not vendored)** |
 
 ## Notes & limitations
@@ -215,11 +219,13 @@ those stages run under emulation and are slow.
 - The egui frontend is browser-only: run it with `task serve` or pass
   `--config crates/snuffler-web-egui/Trunk.toml` to Trunk,
   not `cargo run`.
-- For non-CORS FDSN endpoints or browser-accessible SeedLink/ringserver streams,
-  run `micromux` instead of plain `task serve`. It starts Trunk on
-  `127.0.0.1:17683` and `snuffler-web-proxy` on `127.0.0.1:17684`; local FDSN fetches
-  use `/cors` through that proxy when available, and the same process exposes
-  `/tcp` as a TCP-over-WebSocket tunnel for the SeedLink stream.
+- For non-CORS FDSN endpoints or live SeedLink streams, run `micromux` instead of
+  plain `task serve`. Each checkout or worktree runs as its own session named after
+  its directory: the app at `http://<checkout>.localhost` and `snuffler-web-proxy`
+  at `http://proxy.<checkout>.localhost`, on port 80, or 17680 where that is taken
+  (`micromux env` prints `MICROMUX_HOST_SUFFIX`). The app finds the proxy through
+  its `config.js`, which the build writes from `SNUFFLER_PROXY_URL`; plain
+  `task serve` sets none, so the app then fetches data centers directly.
 - `snuffler-web-proxy` is not an open proxy: `/cors` only forwards to the FDSN
   query endpoints the app uses, only permits `GET`/`HEAD`, and strips browser
   credential headers; `/tcp` only connects to the app's SeedLink servers. Both lists

@@ -1,0 +1,19 @@
+snuffler-web {{ .Chart.AppVersion }} is installed as {{ include "common.fullname" . }}.
+{{- if .Values.ingress.enabled }}
+
+Open it at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+
+Reach it from your machine with:
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "common.fullname" . }} 8080:{{ .Values.service.port }}
+and open http://localhost:8080/.
+{{- end }}
+{{- if not .Values.proxyUrl }}
+
+No proxyUrl is set, so the app reaches only the data centers that allow cross-origin requests,
+and cannot stream live SeedLink data.
+Install the snuffler-web-proxy chart and set proxyUrl to its address.
+{{- end }}

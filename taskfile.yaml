@@ -14,6 +14,7 @@ includes:
   python: { taskfile: ./tasks/python.yaml, dir: ./, flatten: true }
   typescript: { taskfile: ./tasks/typescript.yaml, dir: ./, flatten: true }
   parity: { taskfile: ./tasks/parity.yaml, dir: ./, flatten: true }
+  charts: { taskfile: ./tasks/charts.yaml, dir: ./, flatten: true }
   deps: { taskfile: ./tasks/deps.yaml, dir: ./, flatten: true }
 
 vars:

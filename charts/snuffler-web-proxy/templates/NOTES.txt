@@ -1,0 +1,12 @@
+snuffler-web-proxy {{ .Chart.AppVersion }} is installed as {{ include "common.fullname" . }}.
+{{- if .Values.ingress.enabled }}
+
+Point snuffler-web at it by setting the snuffler-web chart's proxyUrl to:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+
+Browsers reach the proxy directly, so expose it with `ingress.enabled`, then set the
+snuffler-web chart's proxyUrl to its address.
+{{- end }}

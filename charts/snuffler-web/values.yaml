@@ -1,0 +1,175 @@
+# yaml-language-server: $schema=values.schema.json
+
+# Where the app finds snuffler-web-proxy, such as `https://proxy.snuffler.example/`.
+# Live SeedLink streams go through it, and so do FDSN requests a browser cannot make directly,
+# such as to a data center that sends no CORS headers.
+# The page's `config.js` carries it; empty, the app reaches only the data centers that allow
+# cross-origin requests, and cannot stream live SeedLink data.
+proxyUrl: ""
+
+# Overrides the chart name in resource names and the `app.kubernetes.io/name` label.
+nameOverride: ""
+# Overrides the full resource name, which is otherwise the release name and the chart name.
+fullnameOverride: ""
+# Labels added to every resource.
+commonLabels: {}
+
+# Pod replicas; ignored while autoscaling is enabled.
+replicaCount: 1
+# Old ReplicaSets kept for `helm rollback`.
+revisionHistoryLimit: 10
+# The Deployment's update strategy, such as
+# `{type: RollingUpdate, rollingUpdate: {maxUnavailable: 0}}`.
+strategy: {}
+
+image:
+  repository: ghcr.io/romnn/snuffler-web/web
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Pins the image by digest, such as `sha256:…`, and wins over the tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  # Defaults to the full resource name when created, and to `default` otherwise.
+  name: ""
+  annotations: {}
+  # The server never calls the Kubernetes API.
+  automountServiceAccountToken: false
+
+deploymentAnnotations: {}
+podAnnotations: {}
+podLabels: {}
+
+# The image runs nginx as its `nginx` user, 101.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101
+  runAsGroup: 101
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+priorityClassName: ""
+runtimeClassName: ""
+terminationGracePeriodSeconds: 30
+hostAliases: []
+dnsPolicy: ""
+dnsConfig: {}
+
+# Requests and limits for the container; left to the deployment, since they depend on the
+# cluster and the traffic.
+resources: {}
+
+# The probes, each a Kubernetes probe plus `enabled`.
+# nginx answers `/health` itself, without touching the site's files.
+startupProbe:
+  enabled: false
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 2
+  failureThreshold: 30
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+# The emptyDir at /tmp, where nginx keeps its pid and temporary files under the read-only root
+# filesystem, such as `{medium: Memory, sizeLimit: 64Mi}`.
+tmpVolume: {}
+
+extraEnv: []
+envFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+initContainers: []
+# Sidecar containers, beside the server.
+extraContainers: []
+lifecycle: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+service:
+  type: ClusterIP
+  port: 80
+  # A fixed node port, for the `NodePort` and `LoadBalancer` types.
+  nodePort: null
+  clusterIP: ""
+  loadBalancerClass: ""
+  loadBalancerSourceRanges: []
+  externalTrafficPolicy: ""
+  annotations: {}
+  labels: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  labels: {}
+  hosts: []
+  #  - host: snuffler.example
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  tls: []
+  #  - secretName: snuffler-example-tls
+  #    hosts:
+  #      - snuffler.example
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  # Utilization targets need resource requests to measure against.
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: null
+  # More HorizontalPodAutoscaler metrics, as Kubernetes writes them.
+  metrics: []
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  # One budget applies: `minAvailable` when set, else `maxUnavailable`.
+  minAvailable: null
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: ""
+
+# Isolates the pods to exactly the listed NetworkPolicy rules.
+networkPolicy:
+  enabled: false
+  # Who may reach the server; by default anyone, on its HTTP port.
+  ingress:
+    - ports:
+        - port: http
+  # The server opens no connections, so it needs no egress.
+  egress: []
+
+# The `helm test` pod, which fetches the health endpoint through the Service.
+tests:
+  enabled: true
+  image: busybox:1.37
+  resources: {}

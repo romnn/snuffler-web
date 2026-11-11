@@ -25,6 +25,7 @@ jobs:
           cache: true
           env: false
       # protoc is for the snuffler-web-proto build script; python and uv for lint:py.
+      # prettier-ignore
       - run: >-
           mise install task python bun uv rg zig buf protoc
           github:romnn/cargo-feature-combinations github:rust-cross/cargo-zigbuild
@@ -102,3 +103,21 @@ jobs:
       - run: mise install task typos
       - name: Spellcheck
         run: task spellcheck
+
+  charts:
+    name: helm charts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: true
+          env: false
+      - run: mise install task helm github:romnn/helm-schema
+      - name: Lint the charts against their generated schemas
+        run: task lint:charts
+      # `lint:charts` regenerates the schemas, so a stale committed one shows up as a diff.
+      - name: Check the committed schemas are current
+        run: git diff --exit-code -- 'charts/*/values.schema.json'

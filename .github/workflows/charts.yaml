@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+name: Helm charts
+
+# Publish the Helm charts for a release tag, as OCI artifacts on ghcr.io next to the
+# images (`task charts:push`).
+on:
+  push:
+    # bumpversion tags releases as v<version> (.bumpversion.toml).
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Pushes the charts to ghcr.io.
+  packages: write
+
+env:
+  MISE_GITHUB_TOKEN: ${{ github.token }}
+  MISE_AUTO_INSTALL: "0"
+  MISE_HTTP_RETRIES: "12"
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
+          cache: true
+          env: false
+      - run: mise install task helm github:romnn/helm-schema
+
+      # The charts install the images this tag publishes, by their appVersion.
+      - name: Check the charts carry the tag's version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for chart in charts/snuffler-web charts/snuffler-web-proxy; do
+            grep -qx "version: $version" "$chart/Chart.yaml"
+            grep -qx "appVersion: \"$version\"" "$chart/Chart.yaml"
+          done
+
+      - name: Lint and package the charts
+        run: |
+          task lint:charts
+          task charts:package
+
+      - name: Push the charts to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          task charts:push

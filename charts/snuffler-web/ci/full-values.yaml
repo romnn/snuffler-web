@@ -1,0 +1,46 @@
+# Turns on everything the defaults leave off, so `task lint:charts` renders every template.
+proxyUrl: https://proxy.snuffler.example/
+commonLabels:
+  team: seismology
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+startupProbe:
+  enabled: true
+tmpVolume:
+  medium: Memory
+  sizeLimit: 64Mi
+extraEnv:
+  - name: EXAMPLE
+    value: "1"
+service:
+  type: LoadBalancer
+  nodePort: 30080
+  loadBalancerSourceRanges:
+    - 10.0.0.0/8
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: snuffler.example
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: snuffler-example-tls
+      hosts:
+        - snuffler.example
+autoscaling:
+  enabled: true
+  targetMemoryUtilizationPercentage: 80
+podDisruptionBudget:
+  enabled: true
+networkPolicy:
+  enabled: true

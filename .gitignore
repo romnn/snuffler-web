@@ -7,6 +7,11 @@
 # Trunk web build output
 /dist
 
+# Helm charts: the vendored library chart, which the chart tasks rebuild, and the packages
+# `task charts:package` writes
+/charts/*/charts/
+/dist-charts/
+
 # Rust + JS build artifacts
 /target
 /node_modules

@@ -1,0 +1,8 @@
+# Left out of the packaged chart.
+.DS_Store
+*.swp
+*.bak
+*.tmp
+.git/
+# Values `task lint:charts` lints the chart with.
+ci/
