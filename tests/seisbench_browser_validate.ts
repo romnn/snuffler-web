@@ -69,7 +69,7 @@ const manifest = JSON.parse(
   readFileSync(new URL("web/assets/seisbench_models.json", ROOT), "utf8")
 ) as { models: ModelSpec[] };
 
-const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
+const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:8000/";
 const MODEL_BASE_URL = process.env.SNUFFLER_ONNX_MODEL_BASE_URL || "assets/models/";
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
 

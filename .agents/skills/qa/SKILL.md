@@ -17,8 +17,13 @@ one invisible element per widget, carrying its role, name, and value.
 ## Always start here
 
 ```
-http://127.0.0.1:17683/?a11y=pointer
+http://$MICROMUX_HOST_SUFFIX/?a11y=pointer
 ```
+
+`micromux env` prints `MICROMUX_HOST_SUFFIX`: the checkout's own hostname, such as
+`snuffler-web.localhost:17680`, or `<worktree>.localhost:17680` in a worktree.
+Prefer it to the web service's own port, which micromux allocates per session and
+is 8000 only while it is free.
 
 **Without `?a11y=pointer` you cannot click anything by element.** The proxies are
 `pointer-events: none` on a normal visit, so a press falls through to the canvas
@@ -28,8 +33,8 @@ back — a press‑move‑release dies there, and dragging a slider, sweeping a
 selection, or hovering stops working for the human using the app. The flag turns
 hit-testing on for your session only.
 
-If the app is not running: `task run` (or the `web` service in `micromux.yaml`,
-port 17683; the CORS and TCP proxy on 17684 is a separate service).
+If the app is not running, start `micromux`: its `web` service is the app and its
+`proxy` service the CORS and TCP proxy.
 
 ## Waiting for readiness
 
@@ -95,7 +100,7 @@ is open.
 ## Running it, and knowing when a change is actually served
 
 The app runs under **micromux** (`micromux.yaml`): the `web` service is the Trunk
-dev server on 17683, `proxy` is the CORS and TCP proxy on 17684. Use the
+dev server, `proxy` is the CORS and TCP proxy. Use the
 micromux MCP tools — `list_services`, `get_health`, `get_logs`, `wait_for_log`,
 `restart_service` — rather than starting your own server on the same port; a
 second one collides with the service-worker namespace the COI headers rely on.
@@ -137,7 +142,7 @@ To check that the web app behaves and draws like the real PyQt5 snuffler, drive
 upstream headless with `qt/driver.py` and take the same steps in both:
 
 ```sh
-task snuffler:headless:example EXAMPLE=<slug>   # in the background; ?example=<slug> on the web side
+task qt:headless EXAMPLE=<slug>   # in the background; ?example=<slug> on the web side
 uv run --project qt python qt/driver.py time-range "2018-07-15 13:16:00" "2018-07-15 13:19:00"
 uv run --project qt python qt/driver.py set "Highpass [Hz]" 0.5
 uv run --project qt python qt/driver.py menu "Sorting/Sort by Distance"

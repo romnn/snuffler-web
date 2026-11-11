@@ -36,7 +36,7 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
-const DEFAULT_BIND: &str = "127.0.0.1:17684";
+const DEFAULT_BIND: &str = "127.0.0.1:9000";
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 
 /// Command-line configuration for the local proxy process.

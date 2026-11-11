@@ -5,7 +5,7 @@ draws the same thing: open the same example in both, take the same steps, and
 compare the screenshots and `state`.
 
 `serve` starts snuffler through its own command line, so it loads files exactly
-as `task snuffler` does, then takes commands on a Unix socket until `quit` or 30
+as `task qt` does, then takes commands on a Unix socket until `quit` or 30
 idle minutes.
 Every other subcommand sends one command and prints the JSON reply.
 

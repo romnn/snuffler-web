@@ -11,16 +11,16 @@ the parity oracle.
 `uv run` creates and updates `qt/.venv` automatically:
 
 ```sh
-task snuffler
-task snuffler -- example.mseed
-task snuffler:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
+task qt
+task qt -- example.mseed
+task qt:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
 ```
 
 An explicit `uv sync --project qt` is optional.
 The `parity` dependency group adds pytest and protobuf only when the oracle tests
 need them.
 Repository example directories also contain application metadata, an event
-catalogue, and StationXML files, so pass their slug to `snuffler:example` rather
+catalogue, and StationXML files, so pass their slug to `qt:example` rather
 than passing the whole directory as waveform input.
 On macOS, add `-- --no-opengl` to either Snuffler task if Qt's OpenGL paint warning
 causes visible rendering problems.
@@ -34,6 +34,6 @@ the browser; see [ADR 2](../adr/0002-upstream-qt-is-a-reference.md).
 agent can compare it with the web app step by step; see its `--help`.
 
 ```sh
-task snuffler:headless:example EXAMPLE=kilauea-2018-07-15-caldera-collapse
+task qt:headless EXAMPLE=kilauea-2018-07-15-caldera-collapse
 uv run --project qt python qt/driver.py screenshot snuffler.png
 ```

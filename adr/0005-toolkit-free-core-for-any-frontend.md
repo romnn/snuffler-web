@@ -74,4 +74,4 @@ reverse.
   (`Repaint`)
 - `crates/snuffler-web-render/src/draw.rs` (`DrawTarget`, `SvgTarget`)
 - `crates/snuffler-web-egui/src/view/draw.rs` (`EguiTarget`)
-- `taskfile.yaml` (`lint:boundaries`)
+- `tasks/rust.yaml` (`lint:boundaries`)

@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# The cargo workspace: checks, tests, formatting, dependency hygiene and docs.
+
+tasks:
+  check:rust:
+    desc: "check cargo workspace"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo c {{.HOST_CRATES}} --all-features --lib --tests {{.CLI_ARGS}}
+      - task: check:threads
+
+  # The cargo-fc matrix leaves out `threads`, because that build needs
+  # build-std; this keeps the real threaded build compiling.
+  check:threads:
+    desc: "type-check the threaded wasm build (the `threads` feature, excluded from the fc matrix)"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+    cmds:
+      # prettier-ignore
+      - >
+        cargo c -p snuffler-web-egui
+        --target wasm32-unknown-unknown
+        --features threads
+        {{.CLI_ARGS}}
+
+  check:fc:
+    desc: "check cargo workspace for all combinations of features"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo fc check --all-targets {{.CLI_ARGS}}
+      - task: check:py
+
+  lint:fix:
+    desc: "lint and fix cargo workspace"
+    aliases: [fix]
+    cmds:
+      - cargo fixit {{.HOST_CRATES}} --all-features --lib --tests {{.CLI_ARGS}}
+
+  # Only the egui-a11y bridge may know egui; accesskit-dom is toolkit-agnostic.
+  # `--target all` also resolves wasm32-only dependencies, which a host-only
+  # `cargo tree` would miss.
+  lint:boundaries:
+    desc: "keep the shared Rust crates free of every UI toolkit, so any frontend can build on them"
+    vars:
+      # ecolor and emath are plain colour and geometry types, so they stay allowed.
+      TOOLKITS: "egui[a-z_-]*|eframe|epaint|winit|glow|glutin|wgpu[a-z_-]*|gpui|leptos[a-z_-]*"
+    cmds:
+      - |
+        for crate in snuffler-web-core snuffler-web-render accesskit-dom; do
+          tree=$(cargo tree -p "$crate" -e normal --target all --prefix none) || exit 1
+          found=$(printf '%s\n' "$tree" | rg -o "^({{.TOOLKITS}}) v" | sort -u)
+          if [ -n "$found" ]; then
+            echo "$crate must stay toolkit-free (adr/0005), but depends on: $found"
+            exit 1
+          fi
+        done
+
+  test:
+    desc: "test cargo workspace"
+    cmds:
+      # prettier-ignore
+      - >
+        cargo nextest run {{.HOST_CRATES}}
+        --all-features --lib --tests
+        --no-tests warn
+        {{.CLI_ARGS}}
+
+  test:fc:
+    desc: "test native support crates for all combinations of features"
+    cmds:
+      # prettier-ignore
+      - >
+        cargo fc --no-targets nextest run {{.HOST_CRATES}}
+        --lib --tests
+        --no-tests warn
+        {{.CLI_ARGS}}
+
+  test:doc:
+    desc: "run doctests in cargo workspace"
+    cmds:
+      - cargo test --doc --workspace {{.CLI_ARGS}}
+
+  format:rust:
+    desc: "format cargo workspace"
+    cmds:
+      - cargo fmt --all {{.CLI_ARGS}}
+
+  # The flag sets live in the cargo aliases in .cargo/config.toml.
+  unused:
+    desc: "check for unused cargo workspace dependencies by scanning sources (cargo-shear)"
+    aliases: [unused-dependencies]
+    cmds:
+      - cargo unused {{.CLI_ARGS}}
+
+  unused:deep:
+    desc: "check for unused cargo workspace dependencies by compiling (cargo-udeps)"
+    cmds:
+      - cargo unused-deep {{.CLI_ARGS}}
+
+  audit:
+    desc: "audit cargo workspace dependencies"
+    cmds:
+      - cargo audit {{.CLI_ARGS}}
+
+  clean:
+    desc: "clean cargo workspace"
+    cmds:
+      - cargo clean {{.CLI_ARGS}}
+
+  docs:
+    desc: "open documentation preview"
+    env:
+      RUSTDOCFLAGS: "--cfg docsrs"
+    cmds:
+      - cargo watchdoc --all-features {{.CLI_ARGS}}

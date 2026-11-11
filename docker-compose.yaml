@@ -1,13 +1,8 @@
-# The local stack in containers: the site on 17683 and the proxy on 17684 — the
-# same two ports micromux uses, so a browser pointed at http://127.0.0.1:17683
-# behaves exactly as it does against `task serve`.
+# The local stack in containers: the site on http://127.0.0.1:8000 and the proxy on 9000.
 #
-# The ports are not cosmetic. web/snuffler_bridge/fdsn.py only routes FDSN requests through the
-# proxy when the page itself is on a localhost origin, and both it and
-# snuffler-web-core hardcode 127.0.0.1:17684 as the proxy — which the BROWSER
-# resolves, not the web container. So the proxy has to be published on the host's
-# 17684 for /cors and /tcp to be reachable at all; the two containers never
-# talk to each other.
+# The browser reaches the proxy itself, at the address the site's config.js names
+# (web/config.js documents it), so the two containers never talk to each other.
+# Here that is the host's 9000, where the proxy is published.
 #
 #   docker compose up --build        # build both images from this checkout
 #   docker compose up                # run the published images
@@ -19,7 +14,7 @@ services:
       context: .
       dockerfile: docker/web/Dockerfile
     ports:
-      - "127.0.0.1:17683:8080"
+      - "127.0.0.1:8000:8080"
     read_only: true
     # nginx.conf keeps the pid and every temp path under /tmp precisely so the
     # rest of the filesystem can be mounted read-only.
@@ -28,6 +23,9 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    configs:
+      - source: snuffler-config
+        target: /usr/share/nginx/html/config.js
 
   proxy:
     image: ghcr.io/romnn/snuffler-web/proxy:latest
@@ -35,7 +33,7 @@ services:
       context: .
       dockerfile: docker/proxy/Dockerfile
     ports:
-      - "127.0.0.1:17684:8080"
+      - "127.0.0.1:9000:8080"
     read_only: true
     tmpfs:
       - /tmp
@@ -50,3 +48,8 @@ services:
     #   SNUFFLER_PROXY_ALLOW_TCP_TARGETS: "example.org:18000"
     #   # Export traces, metrics and logs to an OpenTelemetry collector (OTLP gRPC).
     #   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+configs:
+  snuffler-config:
+    content: |
+      globalThis.snufflerConfig = {"proxyUrl": "http://127.0.0.1:9000/"};

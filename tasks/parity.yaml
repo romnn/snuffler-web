@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# Parity with upstream Qt snuffler (see tests/parity/README.md).
+#
+# Every tier runs pyrocko built from sources/ at the PYROCKO_REF pin, so the
+# Qt side only moves when the pin is bumped.
+
+tasks:
+  test:parity:
+    desc: "tier 1 parity: Qt snuffler's own paint output vs the Python bridge, plus the bridge snuffling tests; headless, no browser"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      # The harness self-test runs first, because every tier trusts it.
+      # CLI_ARGS is cleared for both, since it carries scenario names for the oracle.
+      - task: test:parity:unit
+        vars: { CLI_ARGS: "" }
+      - task: test:parity:bridge
+        vars: { CLI_ARGS: "" }
+      - uv run --project qt --group parity python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
+
+  test:parity:unit:
+    desc: "unit tests for the parity harness's own enforcement (gaps.evaluate, Register.load, the reload keep-list)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      # prettier-ignore
+      - >
+        uv run --project qt --only-group parity python -m pytest -q
+        tests/parity/test_gaps.py
+        tests/parity/test_reload_keep.py
+        {{.CLI_ARGS}}
+
+  test:parity:bridge:
+    desc: "bridge behaviour against real pyrocko, no browser: snuffling marker scope, aggregation, failure contracts, and the Adaptive visible length"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    cmds:
+      - buf generate
+      # prettier-ignore
+      - >
+        uv run --project qt --group parity python -m pytest -q
+        tests/parity/test_bridge_snufflings.py
+        tests/parity/test_adaptive_visible_length.py
+        tests/parity/test_view_span_order.py
+        {{.CLI_ARGS}}
+
+  test:parity:inventory:
+    desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:8000 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - uv run --project qt --group parity python tests/parity/run_inventory.py {{.CLI_ARGS}}
+
+  test:parity:scenarios:
+    desc: "tier 3 parity: one scenario through both GUIs (requires http://127.0.0.1:8000 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - buf generate
+      - uv run --project qt --group parity python tests/parity/run_scenarios.py {{.CLI_ARGS}}
+
+  render:parity:tier1:
+    desc: "render browserless Tier 1 web waveform artifacts from oracle output"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo run --quiet -p snuffler-web-render --example parity_artifacts -- {{.CLI_ARGS}}

@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# Upstream Qt snuffler, the parity reference (see qt/).
+
+tasks:
+  qt:
+    desc: "run the pinned native PyQt5 snuffler"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    cmds:
+      - uv run --project qt snuffler {{.CLI_ARGS}}
+
+  qt:example:
+    desc: "open a repository example in the native PyQt5 snuffler"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    requires:
+      vars: [EXAMPLE]
+    preconditions:
+      - sh: test -f "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+        msg: "unknown example: {{.EXAMPLE}}"
+      - sh: test -f "examples/{{.EXAMPLE}}/catalog.yaml"
+        msg: "example has no event catalog: {{.EXAMPLE}}"
+      - sh: test -d "examples/{{.EXAMPLE}}/meta"
+        msg: "example has no StationXML directory: {{.EXAMPLE}}"
+    cmds:
+      # prettier-ignore
+      - >
+        uv run --project qt snuffler {{.CLI_ARGS}}
+        --events "examples/{{.EXAMPLE}}/catalog.yaml"
+        --stationxml "examples/{{.EXAMPLE}}/meta/*.xml"
+        "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+
+  # Like qt:example, but without a display: qt/driver.py then takes
+  # commands such as `screenshot`, `menu` and `set` until it is told to `quit`.
+  qt:headless:
+    desc: "run the native snuffler headless on an example, driven by qt/driver.py"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    requires:
+      vars: [EXAMPLE]
+    preconditions:
+      - sh: test -f "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+        msg: "unknown example: {{.EXAMPLE}}"
+    cmds:
+      # prettier-ignore
+      - >
+        uv run --project qt python qt/driver.py serve --
+        --events "examples/{{.EXAMPLE}}/catalog.yaml"
+        --stationxml "examples/{{.EXAMPLE}}/meta/*.xml"
+        "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"

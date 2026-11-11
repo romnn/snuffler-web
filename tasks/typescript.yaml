@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# The TypeScript bridge glue and browser test suites: types and formatting.
+
+tasks:
+  check:ts:
+    desc: "typecheck the TypeScript bridge glue (incl. generated protobuf messages) and the browser test suites"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - buf generate
+      - bunx tsc --noEmit -p tsconfig.json
+      # The tests are a separate project: they need node globals the browser
+      # code must not see, and they run at full strictness.
+      - bunx tsc --noEmit -p tests/tsconfig.json
+      # Pure and synchronous, so the cancellation state machine is checked on
+      # every run, not only in the browser suites.
+      - bun tests/execution_control_validate.ts
+
+  format:js:
+    desc: "format JavaScript bridge code"
+    cmds:
+      # prettier-ignore
+      - >
+        bunx --bun prettier@3.6.2 --write
+        --cache --cache-location node_modules/.cache/prettier/.prettier-cache
+        web/*.ts
+        scripts/patch-trunk-loader.mjs scripts/screenshot-themes.ts
+        tests/*.ts tests/parity/*.ts
+        package.json
+        {{.CLI_ARGS}}

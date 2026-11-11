@@ -26,6 +26,7 @@ jobs:
           cache: true
           env: false
       # protoc is for the snuffler-web-proto build script.
+      # prettier-ignore
       - run: >-
           mise install task protoc aqua:nextest-rs/nextest/cargo-nextest
           github:romnn/cargo-feature-combinations

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 
 import { chromium, type Browser, type Page } from "playwright";
 
-export const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
+export const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:8000/";
 export const BOOT_TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";

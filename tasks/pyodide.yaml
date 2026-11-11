@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# pyrocko's sources and the threaded Pyodide runtime the app runs it in.
+
+tasks:
+  fetch:pyrocko:
+    desc: "clone pyrocko at the pinned commit into sources/ (gitignored)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mise exec -- ./pybuild/fetch-pyrocko.sh
+
+  pyodide:build:
+    desc: "build the custom threaded Pyodide 314 in Docker (about an hour)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    cmds:
+      - docker/pyodide-mt/build-all.sh
+
+  # Pages publishes the runtime that stage-web.sh assembles, so downloading it
+  # replaces the hour-long build unless you are changing the runtime itself.
+  pyodide:fetch:
+    desc: "download the deployed Pyodide 314 runtime"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker/pyodide-mt/fetch-web.sh

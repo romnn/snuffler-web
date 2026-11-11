@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# The container images and the stack docker-compose.yaml runs.
+
+tasks:
+  # The web image copies the prebuilt Pyodide runtime instead of building it.
+  docker:build:
+    desc: "build the snuffler-web and snuffler-proxy container images"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    preconditions:
+      - sh: test -d docker/pyodide-mt/served
+        msg: "docker/pyodide-mt/served is missing - run 'task pyodide:fetch' first"
+    cmds:
+      - docker build -f docker/web/Dockerfile -t snuffler-web .
+      - docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
+
+  docker:serve:
+    desc: "run the containerized stack on ports 8000 and 9000"
+    dir: "{{.ROOT_DIR}}"
+    interactive: true
+    cmds:
+      - docker compose up

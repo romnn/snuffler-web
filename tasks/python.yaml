@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# The Python bridge: types, lint and formatting.
+
+tasks:
+  check:py:
+    desc: "typecheck Python bridge"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - buf generate
+      - uv run python tests/codegen_missing_activity.py
+      - uv run mypy {{.CLI_ARGS}}
+
+  lint:py:
+    desc: "lint Python bridge with ruff"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - uv run ruff check --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
+
+  format:py:
+    desc: "format Python bridge code"
+    cmds:
+      - uv run ruff format --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}

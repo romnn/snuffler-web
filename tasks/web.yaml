@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+# The web app: serving and building it, its example bundles, and the browser test suites.
+
+vars:
+  TRUNK_CONFIG: crates/snuffler-web-egui/Trunk.toml
+
+tasks:
+  # `serve` uses the `serve` cargo profile: release-grade codegen without the
+  # fat LTO that would make every rebuild slow.
+  # Trunk wants NO_COLOR as a literal boolean, while Task exports NO_COLOR=1.
+  serve:
+    desc: "run the optimized, threaded web app"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko", "internal:dev-dirs"]
+    # Every Trunk task sets these two.
+    # The threaded wasm build rebuilds std with atomics, because the precompiled
+    # wasm32 std is single-threaded; host cargo commands must not do that.
+    # Subresource integrity is off because the post-build hook rewrites
+    # wasm-bindgen-rayon's worker import after Trunk has hashed it.
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+    interactive: true
+    cmds:
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk serve
+        --config {{.TRUNK_CONFIG}}
+        --cargo-profile serve
+        --features threads
+        {{.CLI_ARGS}}
+
+  build:
+    desc: "build the threaded web app for release"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+    cmds:
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk build
+        --config {{.TRUNK_CONFIG}}
+        --release
+        --features threads
+        {{.CLI_ARGS}}
+
+  # Lean builds leave out the SeisBench weights and fetch them from
+  # SNUFFLER_ONNX_MODEL_BASE_URL instead.
+  # SNUFFLER_EMBED_DATA=0 and --no-default-features must go together, or the
+  # app requests model files the build did not stage.
+  serve:lean:
+    desc: "run the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko", "internal:dev-dirs"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+      SNUFFLER_EMBED_DATA: "0"
+    interactive: true
+    cmds:
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk serve
+        --config {{.TRUNK_CONFIG}}
+        --no-default-features
+        --features gf,threads
+        {{.CLI_ARGS}}
+
+  build:lean:
+    desc: "build the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+      TRUNK_BUILD_NO_SRI: "true"
+      SNUFFLER_EMBED_DATA: "0"
+    cmds:
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk build
+        --config {{.TRUNK_CONFIG}}
+        --release
+        --no-default-features
+        --features gf,threads
+        {{.CLI_ARGS}}
+
+  # Trunk's watcher aborts when an ignored watch path is missing, and the
+  # Pyodide builder only creates this directory once it has run.
+  internal:dev-dirs:
+    internal: true
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mkdir -p docker/pyodide-mt/.work
+
+  build:examples:
+    desc: "pack examples/ into the dataset bundles the app fetches on demand"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - python3 scripts/build-examples.py {{.CLI_ARGS}}
+
+  test:seisbench:
+    desc: "validate exported SeisBench ONNX models against pinned seisbench"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      # prettier-ignore
+      - >
+        uv run --no-project
+        --with seisbench==0.11.7 --with torch --with obspy --with onnxruntime --with numpy
+        python tests/seisbench_validate.py
+        {{.CLI_ARGS}}
+
+  test:seisbench:browser:
+    desc: "validate SeisBench inference in the served wasm app (requires http://127.0.0.1:8000 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/seisbench_browser_validate.ts {{.CLI_ARGS}}
+
+  test:a11y:browser:
+    desc: "validate the accessibility overlay in the served wasm app (requires http://127.0.0.1:8000 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/a11y_browser_validate.ts {{.CLI_ARGS}}

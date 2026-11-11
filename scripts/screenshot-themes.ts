@@ -43,7 +43,7 @@ Comma-separated filters:
   --modes light,dark             --boxes on,off
   --traces on,off                --grouping grouped,separate
   --framing fitted,zoomed
-  --url <base URL>               Default: http://127.0.0.1:17683/
+  --url <base URL>               Default: http://127.0.0.1:8000/
   --output <directory>           Default: tests/parity/.artifacts/screenshots/themes (gitignored)
   SNUFFLER_BROWSER_HEADLESS=0    Show the capture browser (same as parity tests)
 

@@ -11,12 +11,9 @@ dist = "../../dist"
 # The GitHub Pages build still relies on coi-serviceworker, since Pages cannot set
 # response headers.
 # The headers do not evict a *foreign* service worker already controlling the
-# origin, so the server also uses a snuffler-unique port to avoid sharing the
-# origin with other dev servers in the first place.
-#
-# Port 17683: clear of the crowded dev range (3000-9100), below Linux's ephemeral
-# outbound range (32768-60999), not a registered service port, and mnemonic:
-# 7683 = "SNUF" on a phone keypad.
+# origin, which plain `trunk serve` on 8000 can share with other dev servers.
+# micromux avoids that: it serves each checkout at its own hostname, and passes the
+# session's own port in TRUNK_SERVE_PORT, which wins over this one.
 #
 # `Cache-Control: no-cache` means "always revalidate", not "never store": assets
 # stay in the browser cache and a reload turns into cheap conditional requests
@@ -29,7 +26,7 @@ dist = "../../dist"
 # after a rebuild; a stale workerHelpers.js then links fresh wasm against an old JS
 # shim and the rayon pool dies with a LinkError.
 [serve]
-port = 17683
+port = 8000
 headers = { "Cross-Origin-Opener-Policy" = "same-origin", "Cross-Origin-Embedder-Policy" = "credentialless", "Cache-Control" = "no-cache" }
 
 # The pre_build hook below generates code into the source tree (buf generate ->
@@ -119,7 +116,7 @@ bun build web/ort_worker.ts --outfile web/gen/ort_worker.js --format esm --targe
 # worker fails to load, and the rayon pool never comes up.
 # The hook rewrites it to the actual `snuffler-web-<hash>.js`, and is a no-op on
 # the non-threaded build (no workerHelpers).
-# The threaded build also passes --no-sri (see taskfile.yaml), so this edit does
+# The threaded build also passes --no-sri (see tasks/web.yaml), so this edit does
 # not trip Trunk's subresource-integrity hash for the snippet.
 #
 # The threaded Pyodide 314 runtime and wheels are staged into py-mt/, loaded by

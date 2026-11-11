@@ -8,7 +8,7 @@
 // So the checks here drive a real browser against the real app.
 import { chromium, type Page } from "playwright";
 
-const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
+const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:8000/";
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
 const TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 const OVERLAY = "#snuffler-a11y";

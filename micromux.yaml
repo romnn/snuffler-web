@@ -8,6 +8,26 @@ healthcheck:
   interval: "2s"
   timeout: "2s"
   retries: 30
+
+# Each checkout and worktree runs as its own session, named after its directory, so
+# parallel worktrees never share a port or a hostname.
+# The shared micromux proxy serves the app at http://<checkout>.localhost and the proxy
+# at http://proxy.<checkout>.localhost, on port 80, or 17680 where that is taken or
+# privileged; `micromux env` prints the session's MICROMUX_HOST_SUFFIX.
+# The services themselves also listen on their own ports, which are 8000 and 9000
+# whenever they are free.
+allocate_ports:
+  - { name: SNUFFLER_WEB_PORT, prefer: 8000 }
+  - { name: SNUFFLER_PROXY_PORT, prefer: 9000 }
+proxy:
+  port: 80
+  fallback_port: 17680
+routes:
+  - host: "*"
+    port: ${SNUFFLER_WEB_PORT}
+  - host: proxy
+    port: ${SNUFFLER_PROXY_PORT}
+
 services:
   proxy:
     name: FDSN + SeedLink proxy
@@ -19,13 +39,12 @@ services:
       - snuffler-web-proxy
       - --bin
       - snuffler-web-proxy
-      - --
-      - --bind
-      - 127.0.0.1:17684
+    environment:
+      SNUFFLER_PROXY_BIND: 127.0.0.1:${SNUFFLER_PROXY_PORT}
     ports:
-      - 17684
+      - ${SNUFFLER_PROXY_PORT}
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17684/health"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$SNUFFLER_PROXY_PORT/health"]
       # A debug binary is rescanned by macOS XProtect on its first exec after
       # every relink, which on a busy machine can stall the launch for minutes
       # before `main` runs. The default 30 retries (60s) expires first, and
@@ -39,10 +58,15 @@ services:
     command:
       - task
       - serve
+    environment:
+      TRUNK_SERVE_PORT: ${SNUFFLER_WEB_PORT}
+      # The app finds its proxy through config.js, which the build writes from this
+      # (scripts/trunk-post-build.sh), as every deployment names its own.
+      SNUFFLER_PROXY_URL: http://proxy.${MICROMUX_HOST_SUFFIX}/
     ports:
-      - 17683
+      - ${SNUFFLER_WEB_PORT}
     depends_on:
       - name: proxy
         condition: healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17683/"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$SNUFFLER_WEB_PORT/"]
