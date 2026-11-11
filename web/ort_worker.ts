@@ -1,45 +1,28 @@
-type MlDevice = "webgpu" | "wasm";
-
-type InferRequest = {
-  id: number;
-  type: "infer";
-  modelUrl: string;
-  input: ArrayBuffer;
-  dims: number[];
-  label: string;
-};
-
-type ProgressMessage = {
-  type: "progress";
-  id: number;
-  fraction: number;
-  label: string;
-};
-
-type InferResultMessage = {
-  id: number;
-  type: "result";
-  ok: true;
-  data: ArrayBuffer;
-  dims: number[];
-  device: MlDevice;
-};
-
-type InferErrorMessage = {
-  id: number;
-  type: "result";
-  ok: false;
-  error: string;
-  device: MlDevice;
-};
+// The onnxruntime-web worker: runs SeisBench's exported ONNX graphs for the
+// Pyodide worker's ORT client (web/ort_client.ts).
+// One worker per device, chosen by the `?device=` parameter, so the WebGPU build
+// and the wasm build never share a process.
+import {
+  SESSION_CREATING_FRACTION,
+  SESSION_READY_FRACTION,
+  type OrtDevice,
+  type OrtInferFailure,
+  type OrtInferRequest,
+  type OrtInferSuccess,
+  type OrtProgressMessage,
+} from "./ort_protocol.js";
 
 type OrtRuntime = typeof import("onnxruntime-web/webgpu");
 type OrtSession = Awaited<ReturnType<OrtRuntime["InferenceSession"]["create"]>>;
 
-const device: MlDevice =
+const device: OrtDevice =
   new URL(self.location.href).searchParams.get("device") === "webgpu" ? "webgpu" : "wasm";
+// Model sessions by url, created once per worker.
 const sessions = new Map<string, Promise<OrtSession>>();
 let ortRuntimePromise: Promise<OrtRuntime> | null = null;
+// ORT logs VerifyEachNodeIsAssignedToAnEp as an error whenever some nodes fall back
+// from WebGPU to the wasm provider.
+// That fallback is expected, so the message is demoted to a warning.
 const nativeConsoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => {
   const text = args.map((arg) => String(arg)).join(" ");
@@ -50,13 +33,13 @@ console.error = (...args: unknown[]) => {
   nativeConsoleError(...args);
 };
 
-function resolveUrl(path: string) {
+function resolveUrl(path: string): string {
   return new URL(path, self.location.href).href;
 }
 
 function postProgress(id: number, fraction: number, label: string) {
-  const msg: ProgressMessage = { type: "progress", id, fraction, label };
-  self.postMessage(msg);
+  const message: OrtProgressMessage = { type: "progress", id, fraction, label };
+  self.postMessage(message);
 }
 
 function responseContentLength(response: Response): number {
@@ -64,9 +47,9 @@ function responseContentLength(response: Response): number {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function progressFraction(start: number, end: number, loaded: number, total: number): number {
+function progressFraction(start: number, end: number, done: number, total: number): number {
   if (total <= 0) return start;
-  return start + (end - start) * Math.max(0, Math.min(1, loaded / total));
+  return start + (end - start) * Math.max(0, Math.min(1, done / total));
 }
 
 async function ortRuntime(): Promise<OrtRuntime> {
@@ -91,30 +74,43 @@ async function ortRuntime(): Promise<OrtRuntime> {
   return ortRuntimePromise;
 }
 
+// The model download's span of the progress bar.
+const DOWNLOAD_START_FRACTION = 0.04;
+const DOWNLOAD_END_FRACTION = 0.16;
+// Without a content-length the bar assumes a 16 MiB model and stops short of the
+// span's end.
+const ASSUMED_MODEL_BYTES = 16 * 1024 * 1024;
+
 async function fetchModelBytes(id: number, modelUrl: string, label: string): Promise<Uint8Array> {
-  postProgress(id, 0.04, `${label} · downloading model`);
+  postProgress(id, DOWNLOAD_START_FRACTION, `${label} · downloading model`);
   const response = await fetch(modelUrl);
   if (!response.ok) throw new Error(`fetch ${modelUrl}: ${response.status} ${response.statusText}`);
 
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    postProgress(id, 0.16, `${label} · model downloaded`);
+    postProgress(id, DOWNLOAD_END_FRACTION, `${label} · model downloaded`);
     return bytes;
   }
 
-  const total = responseContentLength(response);
+  const totalBytes = responseContentLength(response);
   const chunks: Uint8Array[] = [];
-  let loaded = 0;
-  let lastFraction = 0.04;
+  let loadedBytes = 0;
+  let lastFraction = DOWNLOAD_START_FRACTION;
   const report = () => {
     let fraction: number;
     let text: string;
-    if (total > 0) {
-      fraction = progressFraction(0.04, 0.16, loaded, total);
-      text = `${label} · downloading model ${Math.round((loaded / total) * 100)}%`;
+    if (totalBytes > 0) {
+      fraction = progressFraction(
+        DOWNLOAD_START_FRACTION,
+        DOWNLOAD_END_FRACTION,
+        loadedBytes,
+        totalBytes
+      );
+      text = `${label} · downloading model ${Math.round((loadedBytes / totalBytes) * 100)}%`;
     } else {
-      fraction = Math.min(0.15, 0.04 + 0.12 * Math.min(0.95, loaded / 16_777_216));
-      text = `${label} · downloading model ${(loaded / 1_048_576).toFixed(1)} MB`;
+      const assumedShare = Math.min(0.95, loadedBytes / ASSUMED_MODEL_BYTES);
+      fraction = Math.min(0.15, 0.04 + 0.12 * assumedShare);
+      text = `${label} · downloading model ${(loadedBytes / 1_048_576).toFixed(1)} MB`;
     }
     lastFraction = Math.max(lastFraction, fraction);
     postProgress(id, lastFraction, text);
@@ -126,20 +122,22 @@ async function fetchModelBytes(id: number, modelUrl: string, label: string): Pro
     if (done) break;
     if (!value) continue;
     chunks.push(value);
-    loaded += value.byteLength;
+    loadedBytes += value.byteLength;
     report();
   }
 
-  const bytes = new Uint8Array(loaded);
+  const bytes = new Uint8Array(loadedBytes);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  postProgress(id, 0.16, `${label} · model downloaded`);
+  postProgress(id, DOWNLOAD_END_FRACTION, `${label} · model downloaded`);
   return bytes;
 }
 
+// The model's session, created on first use; a failed creation is forgotten so the
+// next request retries it.
 async function session(id: number, modelUrl: string, label: string): Promise<OrtSession> {
   let pending = sessions.get(modelUrl);
   if (!pending) {
@@ -150,11 +148,11 @@ async function session(id: number, modelUrl: string, label: string): Promise<Ort
         `[ort-worker] SeisBench ORT session ${modelUrl} executionProviders=${providers.join(",")}`
       );
       const bytes = await fetchModelBytes(id, modelUrl, label);
-      postProgress(id, 0.18, `${label} · creating inference session`);
+      postProgress(id, SESSION_CREATING_FRACTION, `${label} · creating inference session`);
       const created = await ort.InferenceSession.create(bytes, {
         executionProviders: providers,
       });
-      postProgress(id, 0.2, `${label} · running inference`);
+      postProgress(id, SESSION_READY_FRACTION, `${label} · running inference`);
       return created;
     })().catch((e) => {
       sessions.delete(modelUrl);
@@ -165,35 +163,42 @@ async function session(id: number, modelUrl: string, label: string): Promise<Ort
   return pending;
 }
 
-async function infer(msg: InferRequest): Promise<InferResultMessage> {
+async function infer(request: OrtInferRequest): Promise<OrtInferSuccess> {
   const ort = await ortRuntime();
-  const modelSession = await session(msg.id, msg.modelUrl, msg.label || "SeisBench picker");
-  const inputData = new Float32Array(msg.input);
-  const tensor = new ort.Tensor("float32", inputData, msg.dims);
+  const modelSession = await session(
+    request.id,
+    request.modelUrl,
+    request.label || "SeisBench picker"
+  );
+  const inputData = new Float32Array(request.input);
+  const tensor = new ort.Tensor("float32", inputData, request.dims);
   const output = await modelSession.run({ [modelSession.inputNames[0]]: tensor });
-  const first = output[modelSession.outputNames[0]];
+  const firstOutput = output[modelSession.outputNames[0]];
   const data =
-    first.data instanceof Float32Array ? first.data : new Float32Array(first.data as any);
-  const out = new Float32Array(data.length);
-  out.set(data);
+    firstOutput.data instanceof Float32Array
+      ? firstOutput.data
+      : new Float32Array(firstOutput.data as any);
+  // Copied into a buffer of its own, which is then transferred to the caller.
+  const copy = new Float32Array(data.length);
+  copy.set(data);
   return {
-    id: msg.id,
+    id: request.id,
     type: "result",
     ok: true,
-    data: out.buffer,
-    dims: Array.from(first.dims),
+    data: copy.buffer,
+    dims: Array.from(firstOutput.dims),
     device,
   };
 }
 
 self.onmessage = (event) => {
-  const msg = event.data as InferRequest;
-  if (!msg || msg.type !== "infer") return;
-  infer(msg)
+  const request = event.data as OrtInferRequest;
+  if (!request || request.type !== "infer") return;
+  infer(request)
     .then((result) => self.postMessage(result, [result.data]))
     .catch((e) => {
-      const result: InferErrorMessage = {
-        id: msg.id,
+      const result: OrtInferFailure = {
+        id: request.id,
         type: "result",
         ok: false,
         error: e && e.message ? e.message : String(e),

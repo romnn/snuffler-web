@@ -11,8 +11,10 @@ use snuffler_web_core::state::AppState;
 /// (`pyrocko.gui.util.get_err_palette`).
 const ERROR_BG: egui::Color32 = egui::Color32::from_rgb(255, 200, 200);
 
-/// The error message and the text over that background. Dark enough to stay
-/// readable on the tinted field, which keeps its light background in both themes.
+/// The error message and the text over that background.
+///
+/// Dark enough to stay readable on the tinted field, which keeps its light background in both
+/// themes.
 const ERROR_FG: egui::Color32 = egui::Color32::from_rgb(0x8B, 0x1A, 0x1A);
 
 /// Draws the command line when it is open, returning true when the user
@@ -45,11 +47,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) -> bool {
     submitted
 }
 
-/// Applies snuffler's input-line bindings, returning true when Return was
-/// pressed. Each is taken out of the event queue before the input is built: a
-/// focused `TextEdit` would otherwise swallow Up/Down as cursor movement, and
-/// the traces below would read the Escape that closed the command line as a
-/// request to start picking.
+/// Applies snuffler's input-line bindings, returning true when Return was pressed.
+///
+/// Each is taken out of the event queue before the input is built: a focused `TextEdit` would
+/// otherwise swallow Up/Down as cursor movement, and the traces below would read the Escape
+/// that closed the command line as a request to start picking.
 fn handle_keys(ui: &egui::Ui, state: &mut AppState) -> bool {
     let (submit, abort, step) = ui.input_mut(|input| {
         let submit = input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);

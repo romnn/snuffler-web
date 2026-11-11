@@ -63,14 +63,14 @@ reverse.
   `wasm32`.
   A frontend in the browser (leptos, or gpui's web target) reuses it as is.
   A native desktop frontend additionally needs a native transport that runs the same
-  `web/bridge.py` against a host CPython; the protobuf contract and the Python side stay
+  `web/snuffler_bridge/` against a host CPython; the protobuf contract and the Python side stay
   unchanged.
 - Adding a dependency to core or render means checking that it is not a toolkit in disguise;
   the lint names the crate and the offending dependency when it is.
 
 ## References
 
-- `crates/snuffler-web-core/src/session.rs`, `crates/snuffler-web-core/src/bridge/mod.rs`
+- `crates/snuffler-web-core/src/session/mod.rs`, `crates/snuffler-web-core/src/bridge/mod.rs`
   (`Repaint`)
 - `crates/snuffler-web-render/src/draw.rs` (`DrawTarget`, `SvgTarget`)
 - `crates/snuffler-web-egui/src/view/draw.rs` (`EguiTarget`)

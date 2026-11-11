@@ -31,11 +31,15 @@ message FileBlob {
   string mime = 3;
 }
 
+// Worker events: what the worker reports between replies, polled once per frame.
+
+// How far the Pyodide boot has got.
 message BootProgress {
   double fraction = 1;
   string label = 2;
 }
 
+// The job has started running in Python.
 message OperationStarted {}
 
 message OperationCountProgress {
@@ -51,6 +55,7 @@ message OperationProgress {
   }
 }
 
+// A running job's lifecycle event, tagged with the ledger's job id.
 message OperationEvent {
   uint64 job_id = 1;
   oneof event {
@@ -59,6 +64,7 @@ message OperationEvent {
   }
 }
 
+// Where SeisBench inference runs.
 enum MlDevice {
   ML_DEVICE_UNSPECIFIED = 0;
   ML_DEVICE_WEBGPU = 1;
@@ -69,11 +75,13 @@ message MlDeviceStatus {
   MlDevice device = 1;
 }
 
+// Python failed to boot; the runtime is unusable until restarted.
 message RuntimeFailure {
   string kind = 1;
   string message = 2;
 }
 
+// The booted runtime's build, for the About window.
 message RuntimeInfo {
   bool threaded = 1;
   string python = 2;
@@ -83,6 +91,7 @@ message RuntimeInfo {
 }
 
 message WorkerEvent {
+  // Events from a previous worker are dropped; their jobs are already settled.
   oneof event {
     BootProgress boot = 1;
     MlDeviceStatus ml_device = 2;
@@ -97,8 +106,10 @@ message WorkerEvent {
 // out-of-band (MountGfStore's mounted directory).
 message Empty {}
 
+// Cancellation won before the dispatcher committed; nothing was applied.
 message Cancelled {}
 
+// The defensive session-generation check refused to commit a result.
 message Stale {
   uint64 expected_generation = 1;
   uint64 actual_generation = 2;
@@ -108,10 +119,14 @@ message CancelJobRequest {
   uint64 job_id = 1;
 }
 
+// What a cancel request did.
 enum CancelDisposition {
   CANCEL_DISPOSITION_UNSPECIFIED = 0;
+  // The job was still queued and is gone.
   CANCEL_DISPOSITION_QUEUED = 1;
+  // The running job was asked to stop.
   CANCEL_DISPOSITION_CANCELLING = 2;
+  // The job had already started committing, so its result stands.
   CANCEL_DISPOSITION_TOO_LATE = 3;
   CANCEL_DISPOSITION_NOT_FOUND = 4;
   CANCEL_DISPOSITION_NOT_CANCELLABLE = 5;
@@ -123,7 +138,7 @@ message CancelJobReply {
 
 // The envelope every bridge response is wrapped in: exactly one of `error` or a
 // concrete success payload.
-// bridge.py's single `call()` failsafe always returns one of these, and Rust
+// The bridge's single `service.call()` failsafe always returns one of these, and Rust
 // decodes it into a Result.
 // Each success variant carries a distinct message, which is how the generated
 // client binds an rpc to its variant.
@@ -152,13 +167,13 @@ message BridgeResult {
 }
 
 // The single source of truth for the bridge boundary.
-// bridge.py implements one handler per rpc (typed proto request -> typed proto
-// response), and the Rust client and Python dispatcher are generated from this,
-// so a method can never be wired to the wrong request or response type.
+// snuffler_bridge.service implements one handler per rpc (typed proto request ->
+// typed proto response), and the Rust client and Python dispatcher are generated
+// from this, so a method can never be wired to the wrong request or response type.
 // Responses cross the wire wrapped in BridgeResult (the matching oneof variant,
 // or BridgeError), and the generated glue unwraps that.
 //
-// The Pyodide worker relays every ordinary method to bridge.py.
+// The Pyodide worker relays every ordinary method to snuffler_bridge.service.
 // Network rpcs do their own HTTP in Python via pyodide-http's pyfetch.
 // MountGfStore is the one typed rpc with worker-side setup: the picked browser
 // directory handle rides beside the protobuf request (it cannot be serialized

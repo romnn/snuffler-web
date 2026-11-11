@@ -14,32 +14,32 @@ import numpy as np
 # Each row is an ordered family: three lead pigments, then four supporting tones.
 # The same order serves both canvases and both carriers of class identity.
 DESIGNS = {
-    "house": (
+    "fieldbook": (
         "Fieldbook",
         [255, 25, 145, 305, 85, 195, 355],
         [0.130, 0.130, 0.120, 0.110, 0.100, 0.090, 0.100],
     ),
-    "earthy": (
+    "kiln": (
         "Kiln",
         [40, 245, 145, 85, 5, 190, 310],
         [0.130, 0.120, 0.110, 0.100, 0.110, 0.080, 0.090],
     ),
-    "cool": (
+    "fjord": (
         "Fjord",
         [250, 55, 155, 295, 205, 355, 105],
         [0.120, 0.110, 0.115, 0.110, 0.095, 0.100, 0.100],
     ),
-    "sky": (
+    "daybreak": (
         "Daybreak",
         [280, 100, 15, 235, 170, 325, 60],
         [0.130, 0.110, 0.120, 0.110, 0.090, 0.105, 0.090],
     ),
-    "forest": (
+    "herbarium": (
         "Herbarium",
         [150, 10, 270, 195, 100, 325, 55],
         [0.125, 0.130, 0.120, 0.090, 0.100, 0.110, 0.100],
     ),
-    "sunset": (
+    "afterglow": (
         "Afterglow",
         [20, 265, 140, 320, 65, 205, 355],
         [0.130, 0.130, 0.100, 0.110, 0.110, 0.080, 0.100],
@@ -105,12 +105,12 @@ def appearances(rgb):
     return np.stack([lab(rgb), *simulated], axis=-2).reshape(-1, 12)
 
 
-def candidates(hue, chroma, dark, strokes, house):
+def candidates(hue, chroma, dark, strokes, fieldbook):
     if strokes:
         levels = np.linspace(0.70, 0.85, 41) if dark else np.linspace(0.40, 0.57, 45)
         chromas = np.linspace(max(0.065, chroma - 0.018), chroma + 0.018, 17)
         preferred = 0.77 if dark else 0.49
-        minimum = (8.0 if house else 7.0) if dark else (6.9 if house else 6.3)
+        minimum = (8.0 if fieldbook else 7.0) if dark else (6.9 if fieldbook else 6.3)
         maximum = 12.5 if dark else 11.0
     else:
         levels = np.linspace(0.27, 0.43, 41) if dark else np.linspace(0.83, 0.95, 41)
@@ -145,9 +145,9 @@ def candidates(hue, chroma, dark, strokes, house):
     return rgb, appearances(rgb), cost
 
 
-def fit(hues, chromas, strokes, house):
+def fit(hues, chromas, strokes, fieldbook):
     pools = [
-        candidates(h, c, dark, strokes, house)
+        candidates(h, c, dark, strokes, fieldbook)
         for dark in (False, True)
         for h, c in zip(hues, chromas, strict=True)
     ]
@@ -218,8 +218,8 @@ def main():
     updates = {}
     for module, (name, hues, chromas) in DESIGNS.items():
         print(name, flush=True)
-        strokes = fit(hues, chromas, True, module == "house")
-        fills = fit(hues, chromas, False, module == "house")
+        strokes = fit(hues, chromas, True, module == "fieldbook")
+        fills = fit(hues, chromas, False, module == "fieldbook")
         path = root / "crates/snuffler-web-render/src/themes" / f"{module}.rs"
         source = path.read_text()
         for carrier, palette in (("STROKES", strokes), ("FILLS", fills)):

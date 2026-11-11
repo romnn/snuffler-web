@@ -15,7 +15,7 @@ message MapStation {
 message MapEvent {
   double lat = 1;
   double lon = 2;
-  double mag = 3;
+  double magnitude = 3;
   double depth = 4; // metres (like pyrocko's map snuffling; popup divides by 1000)
   string name = 5;
   string time = 6;
@@ -56,7 +56,7 @@ message MapRequest {
 message SetActiveEventRequest {
   bool deactivate = 1; // 'E' — clear the active event
   optional string event_hash = 2; // identity of a loaded catalog/event marker
-  double t = 3; // marker time (identity fallback + hand-made-event origin time)
+  double time = 3; // marker time (identity fallback + hand-made-event origin time)
   Nslc nslc = 4; // single-station marker → Python derives lat/lon from _STATIONS
 }
 
@@ -78,18 +78,19 @@ message CommandRequest {
 
 message CommandResult {
   string action = 1;
-  optional double t = 2;
+  // For a `goto`, the time to centre the window on.
+  optional double time = 2;
   SceneMeta scene = 3;
   optional string message = 4;
   // For a `goto`, the window length (seconds) matching the date specificity typed
   // (snuffler: ':goto 2023' opens a year, a full date a day, etc.).
   // Absent = keep.
-  optional double tlen = 5;
+  optional double window_length_s = 5;
 }
 
 message LoadBytesRequest {
   string name = 1;
-  string fmt = 2;
+  string format = 2;
   bool append = 3;
   bytes content = 4; // the file bytes themselves (Python stages them on the Pyodide FS)
   // Stable identity of the on-disk source (File System Access handle) this load
@@ -109,7 +110,7 @@ message LoadBytesResult {
 
 message LoadUrlRequest {
   string url = 1;
-  string fmt = 2;
+  string format = 2;
 }
 
 message IngestMiniSeedRequest {
@@ -165,7 +166,7 @@ message LoadEventsRequest {
 }
 
 message BrowserFile {
-  string handle_id = 1;
+  string source_id = 1;
   string name = 2;
   bytes content = 3;
   uint64 last_modified = 4;
@@ -173,7 +174,7 @@ message BrowserFile {
 }
 
 message BrowserReadFailure {
-  string handle_id = 1;
+  string source_id = 1;
   string name = 2;
   string detail = 3;
 }
@@ -192,7 +193,7 @@ message BrowserFileLoadPageRequest {
 }
 
 message BrowserSourceAck {
-  string handle_id = 1;
+  string source_id = 1;
   uint64 last_modified = 2;
   bool bundle = 3;
 }
@@ -241,12 +242,12 @@ message CatalogRequest {
   string datacenter = 1;
   string start = 2;
   string end = 3;
-  double minmag = 4;
+  double min_magnitude = 4;
   // Fetch full QuakeML with moment tensors (format=quakeml&includeallorigins) instead of
   // the lightweight text summary, so event markers carry a focal mechanism (beachball +
   // Kagan angle).
   // Falls back to text when unset.
-  bool with_mt = 5;
+  bool with_moment_tensors = 5;
   MarkerBudget marker_budget = 6;
 }
 
@@ -262,7 +263,8 @@ message MarkerFileEntry {
   // Phase-pick time uncertainty (seconds), drawn as ± brackets; set by shift-drag.
   optional double uncertainty = 7;
   // Event-marker fields so events save as real EventMarkers (with origin + focal
-  // mechanism) rather than being downgraded to plain markers. depth is metres.
+  // mechanism) rather than being downgraded to plain markers.
+  // `depth` is in metres.
   bool is_event = 8;
   optional double magnitude = 9;
   optional double depth = 10;

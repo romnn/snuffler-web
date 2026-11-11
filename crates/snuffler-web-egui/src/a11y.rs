@@ -1,11 +1,11 @@
 //! App policy for the web accessibility layer.
 //!
-//! The mechanism lives in this workspace's generic crates: `accesskit-dom` projects
-//! egui's AccessKit tree into transparent DOM proxies over the canvas, and
-//! [`egui_a11y`] bridges the two directions between that projection and egui. What
-//! remains here is only what is snuffler-web's to decide: when the layer is on, what
-//! it is called in the DOM, the names of the wasm exports a test harness drives, and
-//! the single line of eframe wiring.
+//! The mechanism lives in this workspace's generic crates: `accesskit-dom` projects egui's
+//! AccessKit tree into transparent DOM proxies over the canvas, and [`egui_a11y`] bridges the
+//! two directions between that projection and egui.
+//! What remains here is only what is snuffler-web's to decide: when the layer is on, what it
+//! is called in the DOM, the names of the wasm exports a test harness drives, and the single
+//! line of eframe wiring.
 //!
 //! That wiring line is why the workspace pins a patched eframe in
 //! `[patch.crates-io]`: upstream's web backend drops the tree egui builds
@@ -101,8 +101,8 @@ pub fn install(ctx: &egui::Context) {
         return;
     }
     if matches!(flag().as_deref(), Some("tree")) {
-        // Profiling aid: egui builds its tree, nothing is projected. The difference
-        // against `?a11y=0` is what enabling AccessKit costs inside egui, and the
+        // Profiling aid: egui builds its tree, nothing is projected.
+        // The difference against `?a11y=0` is what enabling AccessKit costs inside egui, and the
         // difference against `?a11y=1` is what the projection costs on top.
         ctx.enable_accesskit();
         log::info!("a11y: tree enabled, projection off");
@@ -139,7 +139,8 @@ pub fn install(ctx: &egui::Context) {
 
 /// Hand this pass's queued accessibility input to egui.
 ///
-/// Call from [`eframe::App::raw_input_hook`]. A no-op while the layer is off.
+/// Call from [`eframe::App::raw_input_hook`].
+/// A no-op while the layer is off.
 pub fn drain(raw_input: &mut egui::RawInput) {
     A11Y.with_borrow(|a11y| {
         if let Some(a11y) = a11y.as_ref() {
@@ -155,10 +156,11 @@ pub fn drain(raw_input: &mut egui::RawInput) {
 /// control the projection deliberately does not make clickable, such as the
 /// waveform region.
 ///
-/// `node_id` is the decimal string an entry's `id` field carries, and `action` one
-/// of the names in its `actions` array. Returns `false` for an unparsable id, an
-/// unknown action, or while the layer is off; a well-formed request naming a node
-/// that no longer exists returns `true` and is dropped by egui on the next pass.
+/// `node_id` is the decimal string an entry's `id` field carries, and `action` one of the
+/// names in its `actions` array.
+/// Returns `false` for an unparsable id, an unknown action, or while the layer is off; a
+/// well-formed request naming a node that no longer exists returns `true` and is dropped by
+/// egui on the next pass.
 #[wasm_bindgen]
 #[must_use]
 pub fn snuffler_a11y_action(node_id: &str, action: &str) -> bool {
@@ -172,7 +174,7 @@ pub fn snuffler_a11y_action(node_id: &str, action: &str) -> bool {
         let Some(a11y) = a11y.as_ref() else {
             return false;
         };
-        a11y.request(ActionRequest {
+        a11y.request_action(ActionRequest {
             action,
             target_tree: TreeId::ROOT,
             target_node: NodeId(node_id),
@@ -184,9 +186,9 @@ pub fn snuffler_a11y_action(node_id: &str, action: &str) -> bool {
 
 /// What the DOM projection has cost so far, as JSON.
 ///
-/// The per-pass average is the honest measure of this layer; whole-page CPU
-/// comparisons drift by more between page loads than the layer itself uses. The
-/// write counts say whether a pass did real DOM work or only compared hashes.
+/// The per-pass average is the honest measure of this layer; whole-page CPU comparisons drift
+/// by more between page loads than the layer itself uses.
+/// The write counts say whether a pass did real DOM work or only compared hashes.
 /// All zeros while the layer is off.
 #[wasm_bindgen]
 #[must_use]
@@ -196,6 +198,6 @@ pub fn snuffler_a11y_stats() -> String {
         .unwrap_or_default();
     format!(
         "{{\"passes\":{},\"totalMs\":{:.3},\"described\":{},\"placed\":{}}}",
-        stats.passes, stats.total_ms, stats.described, stats.placed
+        stats.passes, stats.total_ms, stats.descriptions_written, stats.placements_written
     )
 }

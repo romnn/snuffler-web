@@ -1,14 +1,15 @@
 """Snapshot diffing with per-field tolerances.
 
-Each comparison yields :class:`Finding` objects tagged with a *check kind*. A kind
-is what ``known_gaps.toml`` keys its numeric entries on, so a divergence is either
-explained by a gap the scenario declared or it fails the run — there is no third
-state, and in particular no "loosen the tolerance until it passes".
+Each comparison yields :class:`Finding` objects tagged with a *check kind*.
+``known_gaps.toml`` keys its numeric entries on the kind, so a divergence is either
+explained by a gap the scenario declared or it fails the run.
+There is no third state, and in particular no "loosen the tolerance until it passes".
 
-Tolerances are scale-aware rather than element-wise. The web payload crosses the
-bridge as float32, so its intrinsic error is a fraction of the *trace peak*, not of
-each individual sample; an element-wise ``rtol`` would demand six-digit agreement on
-samples that happen to sit near a zero crossing and fail for no reason.
+Tolerances are scale-aware rather than element-wise.
+The web payload crosses the bridge as float32, so its intrinsic error is a fraction of
+the *trace peak*, not of each individual sample.
+An element-wise ``rtol`` would demand six-digit agreement on samples that happen to sit
+near a zero crossing and fail for no reason.
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ class Finding:
         return f"{self.kind}:{self.subject}" if self.subject else self.kind
 
 
-def _fmt(value: float) -> str:
+def _format_number(value: float) -> str:
     if value == 0.0:
         return "0"
     if not math.isfinite(value):
@@ -68,22 +69,23 @@ def _fmt(value: float) -> str:
     return f"{value:.3e}"
 
 
-def _nslc(ids: NslcId) -> str:
-    return ".".join(ids)
+def _format_nslc(nslc: NslcId) -> str:
+    return ".".join(nslc)
 
 
-def _row(members: Sequence[NslcId]) -> str:
+def _format_row(members: Sequence[NslcId]) -> str:
     """One track's membership, with a ``+`` between channels sharing the row."""
-    return "+".join(_nslc(nslc) for nslc in members) or "(empty)"
+    return "+".join(_format_nslc(nslc) for nslc in members) or "(empty)"
 
 
-def _by_nslc(segments: Sequence[Any]) -> Dict[NslcId, List[Any]]:
-    out: Dict[NslcId, List[Any]] = {}
+def _segments_by_nslc(segments: Sequence[Any]) -> Dict[NslcId, List[Any]]:
+    """Group segments per channel, each group in time order."""
+    groups: Dict[NslcId, List[Any]] = {}
     for segment in segments:
-        out.setdefault(segment.nslc, []).append(segment)
-    for group in out.values():
-        group.sort(key=lambda seg: seg.tmin)
-    return out
+        groups.setdefault(segment.nslc, []).append(segment)
+    for group in groups.values():
+        group.sort(key=lambda segment: segment.tmin)
+    return groups
 
 
 def compare_presence(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> List[Finding]:
@@ -96,9 +98,9 @@ def compare_presence(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> L
     if not ok:
         parts = []
         if missing:
-            parts.append("only in Qt: " + ", ".join(_nslc(i) for i in missing))
+            parts.append("only in Qt: " + ", ".join(_format_nslc(nslc) for nslc in missing))
         if extra:
-            parts.append("only in web: " + ", ".join(_nslc(i) for i in extra))
+            parts.append("only in web: " + ", ".join(_format_nslc(nslc) for nslc in extra))
         detail = "; ".join(parts)
     return [
         Finding(
@@ -116,9 +118,9 @@ def _pair_segments(
 ) -> List[Tuple[Optional[Any], Optional[Any]]]:
     """Pair the segments of one channel by which of them overlap in time.
 
-    Gaps make a single channel arrive as several traces, and the two sides may cut
-    them differently, so pairing by index would compare unrelated stretches of
-    signal. Greatest overlap is the only pairing that means anything.
+    Gaps make a single channel arrive as several traces, and the two sides may cut them
+    differently, so pairing by index would compare unrelated stretches of signal.
+    Greatest overlap is the only pairing that means anything.
     """
     pairs: List[Tuple[Optional[Any], Optional[Any]]] = []
     remaining = list(web_group)
@@ -132,16 +134,16 @@ def _pair_segments(
                 # first and last interleaved point.
                 if web_segment.y.size < 4:
                     continue
-                span = (
+                web_span = (
                     web_segment.tmin + float(web_segment.y[0]),
                     web_segment.tmin + float(web_segment.y[-2]),
                 )
             else:
-                span = (
+                web_span = (
                     web_segment.tmin,
                     web_segment.tmin + web_segment.deltat * web_segment.y.size,
                 )
-            overlap = min(qt_span[1], span[1]) - max(qt_span[0], span[0])
+            overlap = min(qt_span[1], web_span[1]) - max(qt_span[0], web_span[0])
             if overlap > best_overlap:
                 best, best_overlap = web_segment, overlap
         if best is not None:
@@ -157,14 +159,14 @@ def compare_samples(
     policy: Compare,
 ) -> List[Finding]:
     findings: List[Finding] = []
-    qt_groups = _by_nslc(qt.segments)
-    web_groups = _by_nslc(web.segments)
+    qt_groups = _segments_by_nslc(qt.segments)
+    web_groups = _segments_by_nslc(web.segments)
 
     for nslc in sorted(set(qt_groups) | set(web_groups)):
         for qt_segment, web_segment in _pair_segments(
             qt_groups.get(nslc, []), web_groups.get(nslc, [])
         ):
-            subject = _nslc(nslc)
+            subject = _format_nslc(nslc)
             if qt_segment is None or web_segment is None:
                 side = "web" if qt_segment is None else "Qt"
                 findings.append(
@@ -202,21 +204,23 @@ def _compare_pair(
             )
         ]
 
+    # Same sample rate
     findings: List[Finding] = []
-    dt_qt, dt_web = qt_segment.deltat, web_segment.deltat
-    dt_rel = abs(dt_qt - dt_web) / max(abs(dt_qt), 1e-30)
-    if dt_rel > 1e-9:
+    deltat_qt, deltat_web = qt_segment.deltat, web_segment.deltat
+    deltat_relative_error = abs(deltat_qt - deltat_web) / max(abs(deltat_qt), 1e-30)
+    if deltat_relative_error > 1e-9:
         return [
             Finding(
                 kind="geometry",
                 subject=subject,
                 ok=False,
-                detail=f"sample rate differs: Qt deltat={dt_qt!r}, web deltat={dt_web!r}",
-                metrics={"deltat_qt": dt_qt, "deltat_web": dt_web},
+                detail=f"sample rate differs: Qt deltat={deltat_qt!r}, web deltat={deltat_web!r}",
+                metrics={"deltat_qt": deltat_qt, "deltat_web": deltat_web},
             )
         ]
 
-    offset = (web_segment.tmin - qt_segment.tmin) / dt_qt
+    # Same sample grid
+    offset = (web_segment.tmin - qt_segment.tmin) / deltat_qt
     if abs(offset - round(offset)) > 0.01:
         return [
             Finding(
@@ -236,7 +240,7 @@ def _compare_pair(
             subject=subject,
             ok=True,
             metrics={
-                "deltat": dt_qt,
+                "deltat": deltat_qt,
                 "nsamples_qt": int(qt_segment.y.size),
                 "nsamples_web": int(web_segment.y.size),
                 "grid_offset_samples": int(round(offset)),
@@ -244,13 +248,14 @@ def _compare_pair(
         )
     )
 
-    trim = int(math.ceil(policy.edge_trim_s / dt_qt)) if policy.edge_trim_s else 0
+    # Overlapping samples, minus the trimmed edges
+    trim = int(math.ceil(policy.edge_trim_s / deltat_qt)) if policy.edge_trim_s else 0
     shift = int(round(offset))
     qt_start = max(0, shift)
     web_start = max(0, -shift)
-    n = min(qt_segment.y.size - qt_start, web_segment.y.size - web_start)
-    n -= 2 * trim
-    if n <= 0:
+    nsamples = min(qt_segment.y.size - qt_start, web_segment.y.size - web_start)
+    nsamples -= 2 * trim
+    if nsamples <= 0:
         return findings + [
             Finding(
                 kind="samples",
@@ -261,34 +266,39 @@ def _compare_pair(
             )
         ]
 
-    a = qt_segment.y[qt_start + trim : qt_start + trim + n]
-    b = web_segment.y[web_start + trim : web_start + trim + n]
-    delta = a - b
-    diff = np.abs(delta)
-    peak = float(np.max(np.abs(a))) if a.size else 0.0
-    rms_qt = float(np.sqrt(np.mean(a * a))) if a.size else 0.0
-    rms_diff = float(np.sqrt(np.mean(diff * diff))) if diff.size else 0.0
-    max_abs = float(np.max(diff)) if diff.size else 0.0
+    # Sample residual against the peak-scaled bound
+    qt_samples = qt_segment.y[qt_start + trim : qt_start + trim + nsamples]
+    web_samples = web_segment.y[web_start + trim : web_start + trim + nsamples]
+    delta = qt_samples - web_samples
+    abs_delta = np.abs(delta)
+    peak = float(np.max(np.abs(qt_samples))) if qt_samples.size else 0.0
+    rms_qt = float(np.sqrt(np.mean(qt_samples * qt_samples))) if qt_samples.size else 0.0
+    rms_delta = float(np.sqrt(np.mean(abs_delta * abs_delta))) if abs_delta.size else 0.0
+    max_abs = float(np.max(abs_delta)) if abs_delta.size else 0.0
     # The residual with its own mean removed.
     # A gap entry with `residual = "constant"` uses this to assert the excused
     # divergence really is a per-segment constant offset and nothing more; see
     # `gaps.evaluate`.
     max_abs_centered = float(np.max(np.abs(delta - np.mean(delta)))) if delta.size else 0.0
     bound = policy.atol + policy.rtol * peak
-    ok = bool(max_abs <= bound) and bool(np.all(np.isfinite(b)))
+    ok = bool(max_abs <= bound) and bool(np.all(np.isfinite(web_samples)))
 
     findings.append(
         Finding(
             kind="samples",
             subject=subject,
             ok=ok,
-            detail=("" if ok else f"max|Δ|={_fmt(max_abs)} exceeds atol+rtol*peak={_fmt(bound)}"),
+            detail=(
+                ""
+                if ok
+                else f"max|Δ|={_format_number(max_abs)} exceeds atol+rtol*peak={_format_number(bound)}"
+            ),
             metrics={
-                "n": int(n),
+                "n": int(nsamples),
                 "max_abs": max_abs,
                 "max_abs_centered": max_abs_centered,
                 "peak_qt": peak,
-                "rel_rms": (rms_diff / rms_qt) if rms_qt else (0.0 if not rms_diff else math.inf),
+                "rel_rms": (rms_delta / rms_qt) if rms_qt else (0.0 if not rms_delta else math.inf),
                 "bound": bound,
             },
         )
@@ -299,15 +309,15 @@ def _compare_pair(
 def compare_tracks(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> List[Finding]:
     """Compare the stacking order, not just the membership.
 
-    Every Qt track is considered, occupied or not: ``track_keys`` spans the whole
-    pile, and the web emits the same universe — a channel with no data in the
-    window keeps its labelled, empty row on both sides, so an empty row appearing
-    or vanishing *is* a layout difference.
+    Every Qt track is considered, occupied or not.
+    ``track_keys`` spans the whole pile and the web emits the same universe: a channel
+    with no data in the window keeps its labelled, empty row on both sides, so an empty
+    row appearing or vanishing *is* a layout difference.
     """
-    # Membership per row, not one flat list of channels: a row can legitimately
-    # carry several — the segments of a gapped channel, or every location of a
-    # channel under the "Grouped by Location" subsorts — and flattening would call
-    # a stack of two rows carrying two channels each the same as four rows of one.
+    # Membership per row, not one flat list of channels.
+    # A row can legitimately carry several: the segments of a gapped channel, or
+    # every location of a channel under the "Grouped by Location" subsorts.
+    # Flattening would call two rows of two channels the same as four rows of one.
     # An empty row contributes an empty entry, holding its place in the order.
     qt_sequence = [sorted(track.nslc_ids) for track in qt.tracks]
     web_sequence = list(web.track_members)
@@ -344,12 +354,12 @@ def compare_tracks(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> Lis
                 ok=False,
                 detail=(
                     f"first difference at position {first}: "
-                    f"Qt {_row(qt_sequence[first]) if first < len(qt_sequence) else '-'} "
-                    f"vs web {_row(web_sequence[first]) if first < len(web_sequence) else '-'}"
+                    f"Qt {_format_row(qt_sequence[first]) if first < len(qt_sequence) else '-'} "
+                    f"vs web {_format_row(web_sequence[first]) if first < len(web_sequence) else '-'}"
                 ),
                 metrics={
-                    "qt_head": [_row(i) for i in qt_sequence[:6]],
-                    "web_head": [_row(i) for i in web_sequence[:6]],
+                    "qt_head": [_format_row(members) for members in qt_sequence[:6]],
+                    "web_head": [_format_row(members) for members in web_sequence[:6]],
                 },
             )
         )
@@ -363,20 +373,21 @@ def compare_scales(
 ) -> List[Finding]:
     """Compare the y range each side is about to draw against, per span.
 
-    Per span rather than per track because snuffler projects per (track, scaling
-    key): two sensors sharing a location-grouped row are each drawn against their
-    own scale, so a per-row comparison could only check one of them.
+    Per span rather than per track because snuffler projects per (track, scaling key).
+    Two sensors sharing a location-grouped row are each drawn against their own scale,
+    so a per-row comparison could only check one of them.
 
-    The Qt value is not recomputed here: it is the ``(ymin, ymax, yinc)`` its own
-    ``AutoScaler`` produced during the paint, looked up by the data range the
-    painter handed it — ``(dymin/gain, dymax/gain)``, gain and all.
+    The Qt value is not recomputed here.
+    It is the ``(ymin, ymax, increment)`` its own ``AutoScaler`` produced during the paint,
+    looked up by the data range the painter handed it: ``(dymin/gain, dymax/gain)``,
+    gain and all.
     """
     gain = float(scenario.state["gain"])
     policy = scenario.compare
     findings: List[Finding] = []
 
     for nslc, (web_ymin, web_ymax, _web_yscale) in web.span_scales:
-        subject = _nslc(nslc)
+        subject = _format_nslc(nslc)
         # `None` is the scaling key of the "Common Scale" group, so absence needs a
         # sentinel of its own.
         key = qt.scaling_keys.get(nslc, _ABSENT)
@@ -404,11 +415,11 @@ def compare_scales(
             )
             continue
         qt_ymin, qt_ymax, _yinc = qt.scales[lookup]
-        span = max(abs(qt_ymax - qt_ymin), 1e-300)
-        dmin = abs(qt_ymin - web_ymin)
-        dmax = abs(qt_ymax - web_ymax)
-        bound = policy.atol + policy.scale_rtol * span
-        ok = dmin <= bound and dmax <= bound
+        qt_yrange = max(abs(qt_ymax - qt_ymin), 1e-300)
+        ymin_error = abs(qt_ymin - web_ymin)
+        ymax_error = abs(qt_ymax - web_ymax)
+        bound = policy.atol + policy.scale_rtol * qt_yrange
+        ok = ymin_error <= bound and ymax_error <= bound
         findings.append(
             Finding(
                 kind="scales",
@@ -418,15 +429,15 @@ def compare_scales(
                     ""
                     if ok
                     else (
-                        f"y range Qt [{_fmt(qt_ymin)}, {_fmt(qt_ymax)}] vs "
-                        f"web [{_fmt(web_ymin)}, {_fmt(web_ymax)}]"
+                        f"y range Qt [{_format_number(qt_ymin)}, {_format_number(qt_ymax)}] vs "
+                        f"web [{_format_number(web_ymin)}, {_format_number(web_ymax)}]"
                     )
                 ),
                 metrics={
                     "qt": [qt_ymin, qt_ymax],
                     "web": [web_ymin, web_ymax],
-                    "rel_ymin": dmin / span,
-                    "rel_ymax": dmax / span,
+                    "rel_ymin": ymin_error / qt_yrange,
+                    "rel_ymax": ymax_error / qt_yrange,
                 },
             )
         )
@@ -438,16 +449,16 @@ def compare_annotations(
 ) -> List[Finding]:
     """The sort value each track advertises, against the value Qt ordered it by.
 
-    Runs for every geo sort — distance, azimuth, backazimuth and the 12-block
-    sort — comparing the web's annotation against the string snuffler's own
-    formatter would print for Qt's geometry (`m_float`/`deg_float`/`sector_int`,
-    pile_viewer.py:75-140), so the check pins format and value at once.
+    Runs for every geo sort: distance, azimuth, backazimuth and the 12-block sort.
+    It compares the web's annotation against the string snuffler's own formatter would
+    print for Qt's geometry (`m_float`/`deg_float`/`sector_int`, pile_viewer.py:75-140),
+    so the check pins format and value at once.
     """
     sort = scenario.state["sort"]
     if sort not in ("distance", "azimuth", "backazimuth", "azimuth_blocks"):
         return []
 
-    def fmt_m_float(metres: float) -> str:
+    def format_m_float(metres: float) -> str:
         if abs(metres) >= 10000.0:
             return "%g km" % round(metres / 1000.0, 0)
         if abs(metres) >= 1000.0:
@@ -456,32 +467,32 @@ def compare_annotations(
 
     def expected_for(geometry: Dict[str, Optional[float]]) -> str:
         if sort == "distance":
-            return fmt_m_float(float(geometry["dist_m"]))
+            return format_m_float(float(geometry["dist_m"]))
         if sort == "azimuth":
             return "%4.0f" % float(geometry["azimuth"])
         if sort == "backazimuth":
             return "%4.0f" % float(geometry["backazimuth"])
         sector = "[%i]" % round((float(geometry["azimuth"]) + 15.0) / 30.0)
-        return "%s %s" % (sector, fmt_m_float(float(geometry["dist_m"])))
+        return "%s %s" % (sector, format_m_float(float(geometry["dist_m"])))
 
     findings: List[Finding] = []
     for index, nslc in enumerate(web.track_order):
         annotation = web.sort_annotations[index]
-        subject = _nslc(nslc)
+        subject = _format_nslc(nslc)
         # A row that merges over locations reports '*' and usually resolves to
-        # one shared value — but under the 3D sort, co-located instruments at
-        # different depths split into *identical-looking* rows whose sort values
-        # differ (Qt puts the value inside the gather key; scenario 44 is built
-        # on it). The patterns alone cannot say which split row is which
-        # borehole, so those rows are pinned to the *set* of the station's
-        # per-location values instead of to one arbitrary fallback.
+        # one shared value.
+        # Under the 3D sort, though, co-located instruments at different depths
+        # split into *identical-looking* rows whose sort values differ: Qt puts
+        # the value inside the gather key, and scenario 44 is built on it.
+        # The patterns alone cannot say which split row is which borehole, so
+        # those rows are pinned to the *set* of the station's per-location values.
         if nslc[2] == "*":
             candidates = {
-                expected_for(geom)
-                for key, geom in qt.station_geometry.items()
+                expected_for(geometry)
+                for key, geometry in qt.station_geometry.items()
                 if len(key) == 3
                 and (key[0], key[1]) == (nslc[0], nslc[1])
-                and geom["dist_m"] is not None
+                and geometry["dist_m"] is not None
             }
             if len(candidates) > 1:
                 ok = annotation in candidates
@@ -536,14 +547,15 @@ def compare_annotations(
 def compare_stability(run: web_oracle.WebRun) -> List[Finding]:
     """Drawing a view must be a pure function of the data, and must leave it alone.
 
-    Two checks, because either can pass while the other fails: degapping an already
-    degapped pile is idempotent, so a repeated request can return the identical
-    payload over data that the first request quietly rewrote.
+    Two checks, because either can pass while the other fails.
+    Degapping an already degapped pile is idempotent, so a repeated request can return
+    the identical payload over data that the first request quietly rewrote.
     """
     findings: List[Finding] = []
     if len(run.pile_before) != len(run.pile_after):
-        # A degapper that merges or splits traces changes the count, and that is a
-        # rewrite in itself — report it instead of tripping over an uneven zip.
+        # A degapper that merges or splits traces changes the count, which is a
+        # rewrite in itself.
+        # Report it instead of tripping over an uneven zip.
         findings.append(
             Finding(
                 kind="stability",
@@ -558,7 +570,7 @@ def compare_stability(run: web_oracle.WebRun) -> List[Finding]:
         )
     elif run.pile_before != run.pile_after:
         changed = [
-            f"{_nslc(before[0])} {before[3]}->{after[3]} samples"
+            f"{_format_nslc(before[0])} {before[3]}->{after[3]} samples"
             for before, after in zip(run.pile_before, run.pile_after, strict=True)
             if before != after
         ]
@@ -579,11 +591,11 @@ def compare_stability(run: web_oracle.WebRun) -> List[Finding]:
         return findings
     same_shape = first.raw_ys.shape == second.raw_ys.shape
     identical = same_shape and bool(np.array_equal(first.raw_ys, second.raw_ys))
-    order_same = first.track_order == second.track_order
-    ok = identical and order_same
+    is_same_order = first.track_order == second.track_order
+    ok = identical and is_same_order
     detail = ""
     if not ok:
-        if not order_same:
+        if not is_same_order:
             detail = "the second identical request produced a different track order"
         elif not same_shape:
             detail = (
@@ -592,7 +604,7 @@ def compare_stability(run: web_oracle.WebRun) -> List[Finding]:
             )
         else:
             delta = float(np.max(np.abs(first.raw_ys - second.raw_ys)))
-            detail = f"payload changed between identical requests, max|Δ|={_fmt(delta)}"
+            detail = f"payload changed between identical requests, max|Δ|={_format_number(delta)}"
     findings.append(Finding(kind="stability", subject="repeat-request", ok=ok, detail=detail))
     return findings
 
@@ -600,74 +612,84 @@ def compare_stability(run: web_oracle.WebRun) -> List[Finding]:
 def compare_boxes(qt: qt_oracle.QtSnapshot, web: web_oracle.WebSnapshot) -> List[Finding]:
     """The trace boxes both painters draw, compared in Qt's own pixels.
 
-    The web ships box *times* — the pile's coverage per row — while Qt records the
-    rects it filled. Projecting the times through the projection Qt painted with
-    puts both in one space, and the 1.5 px tolerance absorbs the two deliberate
-    sub-pixel differences: Qt clips the right edge one pixel inside the canvas
-    (`Projection.clipped` with `umax_pad=1`, `drawbox`, pile_viewer.py:2993), and
-    the web floors box width at one pixel where Qt strokes a zero-width rect.
+    The web ships box *times*, the pile's coverage per row, while Qt records the rects
+    it filled.
+    Projecting the times through the projection Qt painted with puts both in one space.
+    The 1.5 px tolerance absorbs the two deliberate sub-pixel differences:
 
-    This is the check that keeps a zoomed-far-out window honest. When
-    `min_deltat_allow` empties the fetch, presence, samples and scales all compare
-    nothing against nothing, and the boxes are the only painted geometry left —
-    exactly where the web once went blank while Qt kept its anchors.
+    - Qt clips the right edge one pixel inside the canvas (`Projection.clipped`
+      with `umax_pad=1`, `drawbox`, pile_viewer.py:2993).
+    - The web floors box width at one pixel where Qt strokes a zero-width rect.
+
+    This is the check that keeps a zoomed-far-out window honest.
+    When `min_deltat_allow` empties the fetch, presence, samples and scales all compare
+    nothing against nothing, and the boxes are the only painted geometry left.
     """
     if qt.box_projection is None:
         return []
     (xmin, xmax), (umin, umax) = qt.box_projection
 
-    def to_px(t: float) -> float:
+    def time_to_px(t: float) -> float:
         return min(umax, max(umin, umin + (t - xmin) * ((umax - umin) / (xmax - xmin))))
 
     tolerance_px = 1.5
-    bad: List[str] = []
+    mismatched_rows: List[str] = []
     total_qt = sum(len(row) for row in qt.boxes.values())
     total_web = 0
-    nrows = max(len(web.boxes), max(qt.boxes.keys(), default=-1) + 1)
+    row_count = max(len(web.boxes), max(qt.boxes.keys(), default=-1) + 1)
 
-    # Colour first, pixels second: co-located boxes on one row can sit within the
-    # pixel tolerance of each other, where a pixel-first sort pairs them
-    # differently on the two sides and reports a colour clash that is not there.
+    # Colour first, pixels second.
+    # Co-located boxes on one row can sit within the pixel tolerance of each
+    # other, where a pixel-first sort pairs them differently on the two sides and
+    # reports a colour clash that is not there.
     def order(box: Tuple[float, float, int]) -> Tuple[int, float, float]:
         return (box[2], box[0], box[1])
 
-    for row in range(nrows):
+    for row in range(row_count):
         qt_row = sorted(qt.boxes.get(row, []), key=order)
-        # Boxes wholly outside the window are skipped by the web painter, and the
-        # absolute style index only reaches pixels modulo the 7-slot `box_styles`
-        # palette, which is what Qt's fill-brush identity recovered.
+        # The web painter skips boxes wholly outside the window.
+        # Its absolute style index reaches pixels only modulo the 7-slot
+        # `box_styles` palette, which is what Qt's fill-brush identity recovered.
         web_row = sorted(
             (
-                (to_px(tmin), to_px(tmax), style % 7)
+                (time_to_px(tmin), time_to_px(tmax), style % 7)
                 for tmin, tmax, style in (web.boxes[row] if row < len(web.boxes) else [])
                 if tmax >= xmin and tmin <= xmax
             ),
             key=order,
         )
         total_web += len(web_row)
-        subject = _nslc(web.track_order[row]) if row < len(web.track_order) else f"row {row}"
+        subject = _format_nslc(web.track_order[row]) if row < len(web.track_order) else f"row {row}"
         if len(qt_row) != len(web_row):
-            bad.append(f"{subject}: {len(qt_row)} boxes in Qt, {len(web_row)} in web")
+            mismatched_rows.append(f"{subject}: {len(qt_row)} boxes in Qt, {len(web_row)} in web")
             continue
-        for (q0, q1, qcolor), (w0, w1, wcolor) in zip(qt_row, web_row, strict=True):
-            if qcolor != wcolor:
-                bad.append(f"{subject}: colour {qcolor} in Qt, {wcolor} in web")
+        for qt_box, web_box in zip(qt_row, web_row, strict=True):
+            qt_left_px, qt_right_px, qt_style = qt_box
+            web_left_px, web_right_px, web_style = web_box
+            if qt_style != web_style:
+                mismatched_rows.append(f"{subject}: colour {qt_style} in Qt, {web_style} in web")
                 break
-            if abs(q0 - w0) > tolerance_px or abs(q1 - w1) > tolerance_px:
-                bad.append(f"{subject}: Qt [{q0:.2f}, {q1:.2f}] px vs web [{w0:.2f}, {w1:.2f}] px")
+            if (
+                abs(qt_left_px - web_left_px) > tolerance_px
+                or abs(qt_right_px - web_right_px) > tolerance_px
+            ):
+                mismatched_rows.append(
+                    f"{subject}: Qt [{qt_left_px:.2f}, {qt_right_px:.2f}] px"
+                    f" vs web [{web_left_px:.2f}, {web_right_px:.2f}] px"
+                )
                 break
     detail = ""
-    if bad:
-        shown = "; ".join(bad[:3])
-        more = f" (+{len(bad) - 3} more rows)" if len(bad) > 3 else ""
+    if mismatched_rows:
+        shown = "; ".join(mismatched_rows[:3])
+        more = f" (+{len(mismatched_rows) - 3} more rows)" if len(mismatched_rows) > 3 else ""
         detail = shown + more
     return [
         Finding(
             kind="boxes",
             subject="",
-            ok=not bad,
+            ok=not mismatched_rows,
             detail=detail,
-            metrics={"qt": total_qt, "web": total_web, "rows": nrows},
+            metrics={"qt": total_qt, "web": total_web, "rows": row_count},
         )
     ]
 

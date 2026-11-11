@@ -15,6 +15,7 @@ pub struct BoxStyle {
     /// and opaque under the web themes, whose fills are fitted against their canvas.
     pub fill: Color32,
     /// The one-pixel outline, or `None`.
+    ///
     /// Only snuffler's own boxes carry one; the web themes are bare fills, since a
     /// border on every row is more line than the wiggle it frames.
     pub frame: Option<Color32>,
@@ -29,7 +30,7 @@ pub struct Palette {
     /// The canvas polarity this palette was fitted for.
     pub theme: Theme,
     /// Canvas background.
-    pub bg: Color32,
+    pub background: Color32,
     /// Default waveform stroke.
     pub trace: Color32,
     /// Time-grid lines.
@@ -39,14 +40,15 @@ pub struct Palette {
     /// Axis and tick labels.
     pub axis_text: Color32,
     /// Track separators.
-    pub sep: Color32,
+    pub separator: Color32,
     /// Background behind track labels.
-    pub label_bg: Color32,
-    /// Padding around a track label's text. Snuffler fills the text's own bounding
-    /// rect, unpadded (`draw_label`, gui/util.py:294), which is why the Qt theme
-    /// carries zero: a plate wider than its text reads as a box drawn over the
-    /// trace rather than as a backing the label sits on.
-    pub label_pad: f32,
+    pub label_background: Color32,
+    /// Padding around a track label's text.
+    ///
+    /// Snuffler fills the text's own bounding rect, unpadded (`draw_label`, gui/util.py:294),
+    /// which is why the Qt theme carries zero: a plate wider than its text reads as a box drawn
+    /// over the trace rather than as a backing the label sits on.
+    pub label_padding: f32,
     /// Corner radius of that plate — square for snuffler's, which draws a plain
     /// `fillRect`.
     pub label_rounding: f32,
@@ -67,7 +69,7 @@ pub struct Palette {
     /// The web themes paint it in their canvas colour instead: their marker shades
     /// are chosen against that canvas, and a white plate would erase a light
     /// marker on a dark one.
-    pub marker_label_bg: Color32,
+    pub marker_label_background: Color32,
 }
 
 impl Palette {
@@ -80,7 +82,7 @@ impl Palette {
             .get(style % self.boxes.len())
             .copied()
             .unwrap_or(BoxStyle {
-                fill: self.bg,
+                fill: self.background,
                 frame: None,
             })
     }
@@ -117,11 +119,11 @@ pub fn palette(theme: Theme, wiggle: WiggleTheme) -> Palette {
     let theme = canvas_theme(theme, wiggle);
     match wiggle {
         WiggleTheme::SnufflerQt => themes::snuffler_qt::palette(),
-        WiggleTheme::SnufflerWeb => themes::house::palette(theme),
-        WiggleTheme::SnufflerWeb1 => themes::earthy::palette(theme),
-        WiggleTheme::SnufflerWeb2 => themes::cool::palette(theme),
-        WiggleTheme::SnufflerWeb3 => themes::sky::palette(theme),
-        WiggleTheme::SnufflerWeb4 => themes::forest::palette(theme),
-        WiggleTheme::SnufflerWeb5 => themes::sunset::palette(theme),
+        WiggleTheme::Fieldbook => themes::fieldbook::palette(theme),
+        WiggleTheme::Kiln => themes::kiln::palette(theme),
+        WiggleTheme::Fjord => themes::fjord::palette(theme),
+        WiggleTheme::Daybreak => themes::daybreak::palette(theme),
+        WiggleTheme::Herbarium => themes::herbarium::palette(theme),
+        WiggleTheme::Afterglow => themes::afterglow::palette(theme),
     }
 }

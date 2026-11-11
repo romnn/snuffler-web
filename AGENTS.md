@@ -4,10 +4,10 @@
 
 - **All numerical/scientific work lives in pyrocko (Python, in Pyodide).** The
   Rust/egui frontend ONLY renders — it never does actual computation. If you find
-  yourself computing something in Rust, move it into `web/bridge.py`.
+  yourself computing something in Rust, move it into the Python bridge, `web/snuffler_bridge/`.
 
 - **All cross-boundary communication is protobuf — no text, no JSON.** Every DTO
-  exchanged between Rust ↔ `web/bridge.js`/`bridge_worker.js` ↔ `web/bridge.py`
+  exchanged between Rust ↔ `web/bridge.ts`/`bridge_worker.ts` ↔ `web/snuffler_bridge/`
   is a protobuf message serialized to bytes (schema in `proto/`). This is for
   performance (compact, zero-copy buffers for waveform data) and type safety
   (the same messages generate Rust structs + Python classes). Do not introduce
@@ -15,7 +15,7 @@
 
 - **The protobuf schema is internal — never keep wire compatibility.** `proto/`
   is a private boundary between parts of one artifact: the Rust/wasm client,
-  `web/*.ts`, and `web/bridge.py` all generate from the same schema in the same
+  `web/*.ts`, and `web/snuffler_bridge/` all generate from the same schema in the same
   build and ship together in a single deploy step. No third party speaks this
   schema, and protobuf bytes are never persisted (no localStorage/IndexedDB, no
   session files, no `eframe` state) — they only ever live in flight between the
@@ -23,12 +23,12 @@
   not a wire change: freely rename, renumber, retype, or delete fields, and fix
   every generated call site in the same commit. Never add `reserved` ranges,
   `[deprecated = true]`, "kept for older bundles" fields, or a scalar field left
-  beside its `repeated` successor — and never write compat shims in `bridge.py`
+  beside its `repeated` successor — and never write compat shims in the Python bridge
   that fall back from a new field to an old one. Reusing a retired field number
   is fine. There is no `buf breaking` check here, by design.
 
 - **Errors are protobuf too — never raise across the JS boundary.** Every bridge
-  response is wrapped in a `oneof { success | error }` envelope. `bridge.py`
+  response is wrapped in a `oneof { success | error }` envelope. The Python bridge
   catches exceptions and returns the **error variant**; it must never let a
   Python exception propagate out to the JS caller. Rust converts the envelope
   into a `Result`. Why this matters: on the threaded build the WASM heap is a

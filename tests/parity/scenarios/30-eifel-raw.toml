@@ -4,8 +4,9 @@ dataset = "eifel"
 tiers = [1]
 
 # The real-world baseline: 1061 traces of recorded MiniSEED, mixed 100/125/200 Hz,
-# through both pipelines untouched. The synthetic demo cannot carry the mess a real
-# deployment has — station counts, rate mixtures, whatever the datacenter wrote —
-# so this is the scenario that proves the pipelines agree on data nobody generated.
+# through both pipelines untouched.
+# The synthetic demo cannot carry the mess a real deployment has — station counts, rate
+# mixtures, whatever the datacenter wrote — so this is the scenario that proves the
+# pipelines agree on data nobody generated.
 [compare]
 reason = "identical recorded bytes, no processing, so only float32 transport separates them"

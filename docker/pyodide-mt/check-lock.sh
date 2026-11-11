@@ -6,13 +6,14 @@
 # its wheels) ends up incomplete, so loadPackage() throws "No known package" or
 # 404s a wheel at runtime, which a browser with a warm cache does not notice.
 #
-# loadPackage() resolves the TRANSITIVE dependency closure of the requested names
-# and fetches every wheel, so this guard validates that whole closure — names AND
-# the wheel files next to the lock — not just the top-level names. It runs in
-# stage-web.sh (local builds + every CI path) AND on the final deployed artifact in
-# the Pages workflow, so a broken lock can never reach users unnoticed.
+# loadPackage() resolves the transitive dependency closure of the requested names
+# and fetches every wheel.
+# So this guard validates that whole closure, names and the wheel files next to the
+# lock, not just the top-level names.
+# It runs in stage-web.sh (local builds and every CI path) and on the final deployed
+# artifact in the Pages workflow, so a broken lock can never reach users unnoticed.
 #
-# Keep `required` in sync with PYODIDE_PACKAGES in web/bridge_worker.ts.
+# Keep `required` in sync with PYODIDE_PACKAGES in web/pyodide_prefetch.ts.
 #
 # Usage:  check-lock.sh <path/to/pyodide-lock.json>
 set -euo pipefail
@@ -26,7 +27,7 @@ python3 - "$lock" $required <<'PY'
 import json, os, sys
 
 lock_path, required = sys.argv[1], sys.argv[2:]
-lockdir = os.path.dirname(os.path.abspath(lock_path))
+lock_dir = os.path.dirname(os.path.abspath(lock_path))
 try:
     packages = json.load(open(lock_path))["packages"]
 except (OSError, ValueError, KeyError) as e:
@@ -40,21 +41,21 @@ while stack:
     if name in closure:
         continue
     closure.add(name)
-    pkg = packages.get(name)
-    if pkg is None:
+    package = packages.get(name)
+    if package is None:
         missing_names.append(name)
         continue
-    stack.extend(pkg.get("depends", []))
+    stack.extend(package.get("depends", []))
 
 # Every closure member's wheel must actually be staged next to the lock.
 missing_files = []
 for name in sorted(closure):
-    pkg = packages.get(name)
-    if pkg is None:
+    package = packages.get(name)
+    if package is None:
         continue  # already counted in missing_names
-    fn = pkg.get("file_name")
-    if not fn or not os.path.exists(os.path.join(lockdir, fn)):
-        missing_files.append(fn or f"<no file_name for {name!r}>")
+    file_name = package.get("file_name")
+    if not file_name or not os.path.exists(os.path.join(lock_dir, file_name)):
+        missing_files.append(file_name or f"<no file_name for {name!r}>")
 
 print(
     f"{lock_path}: {len(packages)} packages in lock; "

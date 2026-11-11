@@ -13,14 +13,16 @@ for dir in "$staging_dir" "$dist_dir"; do
     fi
 done
 
-# Copy only what changed, so a rebuild does not re-copy the big staged payloads
-# (the ONNX weights, the ~54 MB Pyodide runtime). This is `cp -u` by hand because
-# that flag is GNU-only: the BSD cp on a macOS dev box rejects it outright.
-# Size is checked as well as mtime: `-nt` alone trusts the clock, and a source
-# that changed WITHOUT becoming newer — restored from a backup, checked out at an
-# older revision, or rewritten by a tool that preserves mtimes — would otherwise
-# leave the previous file in dist/. A stale py-mt wheel there does not fail loudly;
-# it hangs the app at boot, so the extra stat is worth it.
+# Copy only what changed, so a rebuild does not re-copy the big staged payloads (the
+# ONNX weights, the ~54 MB Pyodide runtime).
+# This is `cp -u` by hand because that flag is GNU-only: the BSD cp on a macOS dev box
+# rejects it outright.
+# Size is checked as well as mtime: `-nt` alone trusts the clock, and a source that
+# changed WITHOUT becoming newer — restored from a backup, checked out at an older
+# revision, or rewritten by a tool that preserves mtimes — would otherwise leave the
+# previous file in dist/.
+# A stale py-mt wheel there does not fail loudly; it hangs the app at boot, so the extra
+# stat is worth it.
 copy_if_newer() {
     local src="$1" dst="$2"
 
@@ -43,7 +45,7 @@ copy_tree_if_newer() {
 
 # The core crate's wasm externs import bridge.js through a crate-escaping module
 # path (#[wasm_bindgen(module = "/../../web/gen/bridge.js")] in
-# crates/snuffler-web-core/src/bridge/web/mod.rs).
+# crates/snuffler-web-core/src/bridge/web/js.rs).
 # wasm-bindgen cannot embed a file from outside the crate as a snippet, so the
 # emitted import resolves to web/gen/bridge.js under the site root; stage the
 # bundle there.
@@ -88,13 +90,13 @@ manifest_model_files() {
     '
 }
 
-# Staging the weights is OPT-OUT, because the cargo feature that makes the app ask
-# for them, `embed-data`, is on by DEFAULT.
+# Staging the weights is OPT-OUT, because the cargo feature that makes the app ask for
+# them, `embed-data`, is on by DEFAULT.
 # Only the lean build turns that feature off (and points the app at a remote
 # SNUFFLER_ONNX_MODEL_BASE_URL instead), so only the lean build sets
 # SNUFFLER_EMBED_DATA=0.
-# The polarity matters: a build that runs trunk directly, without the Task
-# workflow's env, must still ship the weights its default features request.
+# The polarity matters: a build that runs trunk directly, without the Task workflow's
+# env, must still ship the weights its default features request.
 # Getting it wrong the other way round only costs ~14 MB of unused files in dist.
 stage_seisbench_models() {
     local manifest="$repo_dir/web/assets/seisbench_models.json"
@@ -147,12 +149,12 @@ stage_seisbench_models() {
     echo "[seisbench] model weights staged"
 }
 
-# `-Oz` only buys download size, which no one is paying for over localhost, and it
-# is the single most expensive step of a rebuild (~60s on the app wasm) — it runs
-# on every save in trunk's watch loop, where it is pure latency. So it is skipped
-# for anything but a release build; `task serve` builds with the `serve` cargo
-# profile and TRUNK_PROFILE is `debug` there, while `task build` (and CI/Pages)
-# passes --release and still gets the fully optimized wasm.
+# `-Oz` only buys download size, which no one is paying for over localhost, and it is
+# the single most expensive step of a rebuild (~60s on the app wasm) — it runs on every
+# save in trunk's watch loop, where it is pure latency.
+# So it is skipped for anything but a release build; `task serve` builds with the
+# `serve` cargo profile and TRUNK_PROFILE is `debug` there, while `task build` (and
+# CI/Pages) passes --release and still gets the fully optimized wasm.
 optimize_app_wasm() {
     local optimized=()
 
@@ -183,16 +185,17 @@ optimize_app_wasm() {
 # and give the helper itself a per-build name.
 #
 # wasm-bindgen emits the helper at a path that is STABLE across builds, while the
-# rewrite below makes its contents build-SPECIFIC — a stable url serving changing
-# bytes, which is exactly what an HTTP cache is entitled to get wrong. GitHub Pages
-# serves everything with its own max-age and gives no way to override the headers,
-# so for a while after each deploy a returning browser can pair a cached helper
-# with a freshly hashed module. The result is worse than stale: wasm-bindgen-rayon
-# hands each worker the `WebAssembly.Module` already compiled on the main thread,
-# so the worker links current wasm against a previous build's JS shim and the whole
-# pool dies with a LinkError naming whichever import was added most recently.
-# Renaming the helper per build keeps its url changing in step with its contents,
-# which is the only thing a cache can be expected to honour.
+# rewrite below makes its contents build-SPECIFIC — a stable url serving changing bytes,
+# which is exactly what an HTTP cache is entitled to get wrong.
+# GitHub Pages serves everything with its own max-age and gives no way to override the
+# headers, so for a while after each deploy a returning browser can pair a cached helper
+# with a freshly hashed module.
+# The result is worse than stale: wasm-bindgen-rayon hands each worker the
+# `WebAssembly.Module` already compiled on the main thread, so the worker links current
+# wasm against a previous build's JS shim and the whole pool dies with a LinkError
+# naming whichever import was added most recently.
+# Renaming the helper per build keeps its url changing in step with its contents, which
+# is the only thing a cache can be expected to honour.
 #
 # Rewriting the already-hashed main module means its name no longer matches its
 # bytes, so this requires the --no-sri builds (see taskfile.yaml).
@@ -214,9 +217,10 @@ patch_rayon_worker_import() {
             rm -f "$snippet_dir"/workerHelpers-*.js
 
             # Edit through a temp file: `sed -i` takes no argument on GNU sed but
-            # requires a (possibly empty) backup suffix on the BSD sed shipped
-            # with macOS, so no single spelling works on both. The helper spawns
-            # itself by name, so that reference has to move with the file.
+            # requires a (possibly empty) backup suffix on the BSD sed shipped with
+            # macOS, so no single spelling works on both.
+            # The helper spawns itself by name, so that reference has to move with the
+            # file.
             sed -e "s#import('../../..')#import('../../../$main')#" \
                 -e "s#new URL('./workerHelpers.js'#new URL('./$helper'#" \
                 "$worker_helpers" > "$snippet_dir/$helper"
@@ -252,11 +256,13 @@ patch_trunk_loader_progress() {
     fi
 }
 
-# The example datasets behind `File ▸ Examples`, packed from examples/ into one
-# archive each. Staged like the SeisBench weights and for the same reason: the app
-# fetches them only when someone picks one, so they cost a page load nothing and
-# never enter the wasm bundle. The builder is deterministic and rewrites a bundle
-# only when its contents change, so copy_if_newer stays quiet across rebuilds.
+# The example datasets behind `File ▸ Examples`, packed from examples/ into one archive
+# each.
+# Staged like the SeisBench weights and for the same reason: the app fetches them only
+# when someone picks one, so they cost a page load nothing and never enter the wasm
+# bundle.
+# The builder is deterministic and rewrites a bundle only when its contents change, so
+# copy_if_newer stays quiet across rebuilds.
 stage_examples() {
     local built="$repo_dir/target/examples"
 

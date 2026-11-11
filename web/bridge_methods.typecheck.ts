@@ -1,6 +1,7 @@
-// Compile-time regression test (no runtime code; not bundled — bun only bundles
-// the bridge entrypoints). `task check:ts` (tsc) fails if any @ts-expect-error
-// below stops erroring, i.e. if the method-id type hole ever reopens.
+// Compile-time regression test: no runtime code, and never bundled, since bun only
+// bundles the bridge entrypoints.
+// `task check:ts` (tsc) fails if any @ts-expect-error below stops erroring, that is
+// if the method-id type hole ever reopens.
 import { call } from "./bridge.js";
 import { BridgeMethod } from "./proto/snuffler/bridge/v1/bridge_methods.js";
 import { rpc, type BridgeMethodId } from "./rpc.js";

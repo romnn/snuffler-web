@@ -49,7 +49,7 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
         .default_width(420.0)
         .show(ctx, |ui| {
             egui::ComboBox::from_label("Data center")
-                .selected_text(state.dl_datacenter.clone())
+                .selected_text(state.download_form.datacenter.clone())
                 .show_ui(ui, |ui| {
                     for datacenter in [
                         "geofon",
@@ -61,7 +61,7 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
                         "bgr",
                     ] {
                         ui.selectable_value(
-                            &mut state.dl_datacenter,
+                            &mut state.download_form.datacenter,
                             datacenter.to_owned(),
                             datacenter,
                         );
@@ -72,15 +72,15 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
                     ui.label("Custom base URL");
-                    ui.text_edit_singleline(&mut state.dl_base_url);
+                    ui.text_edit_singleline(&mut state.download_form.base_url);
                     ui.end_row();
                     for (label, value) in [
-                        ("Network", &mut state.dl_net),
-                        ("Station", &mut state.dl_sta),
-                        ("Location", &mut state.dl_loc),
-                        ("Channel", &mut state.dl_cha),
-                        ("Start (UTC)", &mut state.dl_start),
-                        ("End (UTC)", &mut state.dl_end),
+                        ("Network", &mut state.download_form.net),
+                        ("Station", &mut state.download_form.sta),
+                        ("Location", &mut state.download_form.loc),
+                        ("Channel", &mut state.download_form.cha),
+                        ("Start (UTC)", &mut state.download_form.start),
+                        ("End (UTC)", &mut state.download_form.end),
                     ] {
                         ui.label(label);
                         ui.text_edit_singleline(value);
@@ -91,10 +91,11 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
             // selected event's epicentre (download.py:28); the code selectors
             // above still narrow the result.
             ui.horizontal(|ui| {
-                ui.checkbox(&mut state.dl_around_event, "Around active event");
-                if state.dl_around_event {
+                ui.checkbox(&mut state.download_form.around_event, "Around active event");
+                if state.download_form.around_event {
                     ui.add(
-                        egui::Slider::new(&mut state.dl_radius_deg, 0.1..=30.0).text("radius [°]"),
+                        egui::Slider::new(&mut state.download_form.radius_deg, 0.1..=30.0)
+                            .text("radius [°]"),
                     );
                 }
             });
@@ -122,26 +123,32 @@ pub fn download(ctx: &egui::Context, state: &mut AppState) -> DownloadRequests {
         });
     state.show_download = open;
 
-    let datacenter = fdsn_datacenter(&state.dl_datacenter, &state.dl_base_url);
+    let datacenter = fdsn_datacenter(
+        &state.download_form.datacenter,
+        &state.download_form.base_url,
+    );
     let station_request = || StationRequest {
         datacenter: datacenter.clone(),
-        net: state.dl_net.clone(),
-        sta: state.dl_sta.clone(),
-        loc: state.dl_loc.clone(),
-        cha: state.dl_cha.clone(),
-        start: state.dl_start.clone(),
-        end: state.dl_end.clone(),
-        radius_deg: state.dl_around_event.then_some(state.dl_radius_deg),
+        net: state.download_form.net.clone(),
+        sta: state.download_form.sta.clone(),
+        loc: state.download_form.loc.clone(),
+        cha: state.download_form.cha.clone(),
+        start: state.download_form.start.clone(),
+        end: state.download_form.end.clone(),
+        radius_deg: state
+            .download_form
+            .around_event
+            .then_some(state.download_form.radius_deg),
     };
     DownloadRequests {
         waveforms: fetch_waveforms.then(|| WaveformDownloadRequest {
             datacenter: datacenter.clone(),
-            net: state.dl_net.clone(),
-            sta: state.dl_sta.clone(),
-            loc: state.dl_loc.clone(),
-            cha: state.dl_cha.clone(),
-            start: state.dl_start.clone(),
-            end: state.dl_end.clone(),
+            net: state.download_form.net.clone(),
+            sta: state.download_form.sta.clone(),
+            loc: state.download_form.loc.clone(),
+            cha: state.download_form.cha.clone(),
+            start: state.download_form.start.clone(),
+            end: state.download_form.end.clone(),
         }),
         stations: fetch_stations.then(station_request),
         responses: fetch_responses.then(station_request),
@@ -166,11 +173,11 @@ pub fn seedlink(ctx: &egui::Context, state: &mut AppState, active: bool) -> Opti
                 .spacing([8.0, 4.0])
                 .show(ui, |ui| {
                     for (label, value) in [
-                        ("Host", &mut state.live_seedlink_host),
-                        ("Port", &mut state.live_seedlink_port),
-                        ("Network", &mut state.live_seedlink_net),
-                        ("Station", &mut state.live_seedlink_sta),
-                        ("Selectors", &mut state.live_seedlink_selectors),
+                        ("Host", &mut state.seedlink_form.host),
+                        ("Port", &mut state.seedlink_form.port),
+                        ("Network", &mut state.seedlink_form.net),
+                        ("Station", &mut state.seedlink_form.sta),
+                        ("Selectors", &mut state.seedlink_form.selectors),
                     ] {
                         ui.label(label);
                         ui.text_edit_singleline(value);
@@ -181,13 +188,13 @@ pub fn seedlink(ctx: &egui::Context, state: &mut AppState, active: bool) -> Opti
                     // limit, so both numbers are on the form instead.
                     ui.label("Follow [s]");
                     ui.add(
-                        egui::DragValue::new(&mut state.live_seedlink_follow_s)
+                        egui::DragValue::new(&mut state.seedlink_form.follow_s)
                             .range(10.0..=86_400.0),
                     );
                     ui.end_row();
                     ui.label("Keep [s]");
                     ui.add(
-                        egui::DragValue::new(&mut state.live_seedlink_retain_s)
+                        egui::DragValue::new(&mut state.seedlink_form.retain_s)
                             .range(60.0..=86_400.0),
                     )
                     .on_hover_text(
@@ -202,13 +209,13 @@ pub fn seedlink(ctx: &egui::Context, state: &mut AppState, active: bool) -> Opti
                     .clicked()
                 {
                     intent = Some(SeedlinkIntent::Start(SeedlinkParams {
-                        host: state.live_seedlink_host.clone(),
-                        port: state.live_seedlink_port.clone(),
-                        net: state.live_seedlink_net.clone(),
-                        sta: state.live_seedlink_sta.clone(),
-                        selectors: state.live_seedlink_selectors.clone(),
-                        follow_s: state.live_seedlink_follow_s,
-                        retain_s: state.live_seedlink_retain_s,
+                        host: state.seedlink_form.host.clone(),
+                        port: state.seedlink_form.port.clone(),
+                        net: state.seedlink_form.net.clone(),
+                        sta: state.seedlink_form.sta.clone(),
+                        selectors: state.seedlink_form.selectors.clone(),
+                        follow_s: state.seedlink_form.follow_s,
+                        retain_s: state.seedlink_form.retain_s,
                     }));
                 }
                 if ui.add_enabled(active, egui::Button::new("Stop")).clicked() {
@@ -250,11 +257,11 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
         .default_width(380.0)
         .show(ctx, |ui| {
             egui::ComboBox::from_label("Catalog")
-                .selected_text(state.cat_datacenter.clone())
+                .selected_text(state.catalog_form.datacenter.clone())
                 .show_ui(ui, |ui| {
                     for datacenter in ["geofon", "usgs", "earthscope", "iris", "ingv"] {
                         ui.selectable_value(
-                            &mut state.cat_datacenter,
+                            &mut state.catalog_form.datacenter,
                             datacenter.to_owned(),
                             datacenter,
                         );
@@ -262,9 +269,9 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
                 });
             egui::Grid::new("cat_grid").num_columns(2).show(ui, |ui| {
                 for (label, value) in [
-                    ("Custom base URL", &mut state.cat_base_url),
-                    ("Start (UTC)", &mut state.cat_start),
-                    ("End (UTC)", &mut state.cat_end),
+                    ("Custom base URL", &mut state.catalog_form.base_url),
+                    ("Start (UTC)", &mut state.catalog_form.start),
+                    ("End (UTC)", &mut state.catalog_form.end),
                 ] {
                     ui.label(label);
                     ui.text_edit_singleline(value);
@@ -273,9 +280,12 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
             });
             // Qt's magnitude range runs to 10 (catalogs.py), so the largest events
             // stay reachable.
-            ui.add(egui::Slider::new(&mut state.cat_minmag, 0.0..=10.0).text("Min magnitude"));
+            ui.add(
+                egui::Slider::new(&mut state.catalog_form.min_magnitude, 0.0..=10.0)
+                    .text("Min magnitude"),
+            );
             ui.checkbox(
-                &mut state.cat_with_mt,
+                &mut state.catalog_form.with_moment_tensors,
                 "Fetch moment tensors (beachball / Kagan)",
             );
             submit = ui.button("Search").clicked();
@@ -284,12 +294,12 @@ pub fn catalog(ctx: &egui::Context, state: &mut AppState) -> Option<CatalogReque
     state.show_catalog = open;
 
     submit.then(|| CatalogRequest {
-        datacenter: fdsn_datacenter(&state.cat_datacenter, &state.cat_base_url),
-        start: state.cat_start.clone(),
-        end: state.cat_end.clone(),
-        minmag: state.cat_minmag,
-        with_mt: state.cat_with_mt,
-        marker_budget: Some(snuffler_web_core::marker_store::MarkerBudget::standard().into()),
+        datacenter: fdsn_datacenter(&state.catalog_form.datacenter, &state.catalog_form.base_url),
+        start: state.catalog_form.start.clone(),
+        end: state.catalog_form.end.clone(),
+        min_magnitude: state.catalog_form.min_magnitude,
+        with_moment_tensors: state.catalog_form.with_moment_tensors,
+        marker_budget: Some(snuffler_web_core::markers::MarkerBudget::standard().into()),
     })
 }
 

@@ -3,18 +3,21 @@ title = "Two broadbands at one site merged onto one row, 20 Hz beside 40"
 dataset = "tohoku-2011-03-11-m9.1-clipping"
 tiers = [1]
 
-# `bonin-subsort-grouped` covers grouping across six stations; this covers it where
-# the two sensors sharing a row disagree about sensitivity by a factor of 5.4 and one
-# of them saturates inside the window. The merged row's scale is then set by whichever
-# member reaches furthest, so a grouping that put the wrong traces together, or scaled
-# a row by one member instead of all of them, shows up here as a different picture.
+# `bonin-subsort-grouped` covers grouping across six stations; this covers it where the
+# two sensors sharing a row disagree about sensitivity by a factor of 5.4 and one of
+# them saturates inside the window.
+# The merged row's scale is then set by whichever member reaches furthest, so a grouping
+# that put the wrong traces together, or scaled a row by one member instead of all of
+# them, shows up here as a different picture.
 
-# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window
-# and `visible_length` — at the default budget every trace here is too finely sampled
-# for a window this long and Qt draws empty rows. That divergence is already what
-# `oddrate-coarse-window` is for; repeating it here would only hide the data. So the
-# budget is raised until Qt keeps every trace, and the scenario compares recordings
-# rather than a fetch policy. It is a Qt-side knob: the web decimates whatever it has.
+# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window and
+# `visible_length` — at the default budget every trace here is too finely sampled for a
+# window this long and Qt draws empty rows.
+# That divergence is already what `oddrate-coarse-window` is for; repeating it here
+# would only hide the data.
+# So the budget is raised until Qt keeps every trace, and the scenario compares
+# recordings rather than a fetch policy.
+# It is a Qt-side knob: the web decimates whatever it has.
 [state]
 visible_length = 60000
 subsort = "nsc_l"

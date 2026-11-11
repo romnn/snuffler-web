@@ -2,8 +2,9 @@
 
 The same widget the user clicks, driven the way the user drives it — menu actions
 triggered, keys delivered as real key events, picks placed through the real mouse
-handlers: double-click, swallowed release, press, release. After every step it emits one snapshot in the schema
-``scenario_web.ts`` also emits, and :mod:`run_scenarios` diffs the two.
+handlers: double-click, swallowed release, press, release.
+After every step it emits one snapshot in the schema ``scenario_web.ts`` also emits, and
+:mod:`run_scenarios` diffs the two.
 
 Writes JSON on stdout, or to ``--out``.
 """
@@ -90,9 +91,10 @@ class QtDriver:
         """Move a ``ValControl`` the way a user's edit does.
 
         ``set_value`` alone is the *programmatic* setter and deliberately mutes the
-        signal, so the viewer would never hear about it. Every user-facing path
-        (typing in the box, dragging the slider) ends by calling ``fire_valchange``,
-        which is what actually reaches ``lowpass_change`` / ``highpass_change``.
+        signal, so the viewer would never hear about it.
+        Every user-facing path (typing in the box, dragging the slider) ends by calling
+        ``fire_valchange``, which is what actually reaches ``lowpass_change`` /
+        ``highpass_change``.
         """
         control.set_value(value)
         control.fire_valchange()
@@ -107,28 +109,29 @@ class QtDriver:
         for stroke in [part.strip() for part in token.split(",") if part.strip()]:
             qw.QApplication.sendEvent(self.view, qt_oracle.key_event(stroke))
 
-    def pick(self, fx: float, fy: float) -> None:
+    def pick(self, x_fraction: float, y_fraction: float) -> None:
         """Place a marker the way a user's double-click does.
 
-        The real path, driven through the real handlers: ``mouseDoubleClickEvent``
-        arms picking and sets ``ignore_releases`` so the double-click's own release
-        is swallowed, then the next press records ``picking_down`` and its release
-        commits the pick through ``stop_picking``. ``start_picking`` reads the
-        position from the cursor, so the cursor is placed first.
+        The real path, driven through the real handlers: ``mouseDoubleClickEvent`` arms
+        picking and sets ``ignore_releases`` so the double-click's own release is
+        swallowed, then the next press records ``picking_down`` and its release commits
+        the pick through ``stop_picking``.
+        ``start_picking`` reads the position from the cursor, so the cursor is placed
+        first.
         """
         width, height = self.view.width(), self.view.height()
-        axis = self.view.ax_height
-        x = int(fx * width)
-        y = int(axis + fy * (height - 2 * axis))
-        pos = qc.QPoint(x, y)
-        gpos = self.view.mapToGlobal(pos)
-        qg.QCursor.setPos(gpos)
+        axis_height = self.view.ax_height
+        x = int(x_fraction * width)
+        y = int(axis_height + y_fraction * (height - 2 * axis_height))
+        position = qc.QPoint(x, y)
+        global_position = self.view.mapToGlobal(position)
+        qg.QCursor.setPos(global_position)
 
         def mouse_event(kind: Any) -> Any:
             return qg.QMouseEvent(
                 kind,
-                qc.QPointF(pos),
-                qc.QPointF(gpos),
+                qc.QPointF(position),
+                qc.QPointF(global_position),
                 qc.Qt.LeftButton,
                 qc.Qt.LeftButton,
                 qc.Qt.NoModifier,

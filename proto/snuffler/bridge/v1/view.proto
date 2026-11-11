@@ -5,12 +5,14 @@ package snuffler.bridge.v1;
 message ViewParams {
   double tmin = 1;
   double tmax = 2;
-  uint32 npx = 3;
+  // Horizontal bins each trace may come back with: one per physical pixel of the
+  // canvas width, capped so a tall stack stays affordable.
+  uint32 bins_per_trace = 3;
   optional double highpass = 4;
   optional double lowpass = 5;
   string sort = 6;
   string subsort = 7;
-  double rotate = 8;
+  double rotate_deg = 8;
   bool remove_response = 9;
   string mode = 10;
   bool demean = 11;
@@ -21,9 +23,9 @@ message ViewParams {
   bool distances_3d = 16;
   string scaling_base = 17;
   string scaling_group = 18;
-  bool wf_abs = 19;
-  bool wf_integrate = 20;
-  string wf_color_scale = 21;
+  bool waterfall_absolute_amplitudes = 19;
+  bool waterfall_integrate = 20;
+  string waterfall_color_scale = 21;
   uint64 track_offset = 22;
   uint64 track_count = 23;
   double gain = 24;
@@ -38,11 +40,10 @@ message ViewParams {
   // blits the RGBA (packed one pixel per ys float32); no hand-ported LUT.
   // Empty colormap = viridis.
   // These ride ViewParams so a change re-fetches.
-  string wf_colormap = 32;
-  double wf_clip_lo = 33;
-  double wf_clip_hi = 34;
-  bool wf_symmetry = 35;
-  bool wf_reverse = 36;
+  string waterfall_colormap = 32;
+  double waterfall_clip_low = 33;
+  double waterfall_clip_high = 34;
+  bool waterfall_reverse_colormap = 36;
   // Snuffler's `visible_length`: a target *sample count* per trace, not a time.
   // It bounds `min_deltat_allow` — channels sampled finer than the window can use are not
   // fetched at all (prepare_cutout2, pile_viewer.py:3597).
@@ -55,7 +56,7 @@ message ViewParams {
   bool liberal_fetch = 38;
   // This frontend's own 'Adaptive' visible length, which replaces the budget rather than
   // raising it: no `min_deltat_allow` floor, so no channel is ever refused, and what
-  // comes back is decimated to `npx` — a min/max envelope per bin, which is the
+  // comes back is decimated to `bins_per_trace` — a min/max envelope per bin, which is the
   // resolution the canvas can draw anyway.
   // `visible_length` is ignored while this is set, and is sent unset.
   bool adaptive_visible_length = 39;
@@ -70,10 +71,10 @@ message ViewParams {
 // Emitting a track per segment instead stacks a gapped channel several times over and
 // scales each piece on its own.
 message ViewSpan {
-  // Start of this run, relative to ViewParams.tmin.
-  double t0_rel = 1;
-  // Sample spacing for this run in the flat `ys` payload.
-  double dt = 2;
+  // Start of this run in seconds after ViewMeta.data_tmin.
+  double relative_start_s = 1;
+  // Sample spacing in seconds for this run in the flat `ys` payload.
+  double deltat = 2;
   // Number of uniform samples in the run.
   uint64 count = 3;
   // Where this run starts in the flat `ys` payload.
@@ -96,9 +97,10 @@ message ViewSpan {
   double yscale = 9;
   // AutoScaler's tick increment and label exponent for this scale, so 'Show
   // Scale Axes' can draw snuffler's ticks and numbers (pile_viewer.py:3357)
-  // without recomputing the scaler frontend-side. yinc 0 = no ticks.
-  double yinc = 10;
-  sint32 yexp = 11;
+  // without recomputing the scaler frontend-side.
+  // A `ytick_step` of 0 means no ticks.
+  double ytick_step = 10;
+  sint32 ytick_exponent = 11;
 }
 
 // Where data exists on a row, from the pile rather than the fetched cutout.
@@ -131,8 +133,8 @@ message ViewTrack {
   string cha = 4;
   string label = 5;
   // Waterfall frequency bins per column, shared by every span of the track.
-  // The time bins are per span: span.count / nf.
-  uint64 nf = 6;
+  // The time bins are per span: span.count / frequency_bin_count.
+  uint64 frequency_bin_count = 6;
   // What the active sort ordered this track by, when that is not evident from
   // the label: the distance in kilometres for a distance sort, or a note that
   // the station has no coordinates and therefore could not be placed.
@@ -148,8 +150,9 @@ message ViewTrack {
 }
 
 message ViewMeta {
-  double view_tmin = 1;
-  double view_tmax = 2;
+  // The requested ViewParams window, which every span's `relative_start_s` counts from.
+  double data_tmin = 1;
+  double data_tmax = 2;
   repeated ViewTrack tracks = 3;
   // Processing failures the view survived — a filter or restitution that threw, drawn
   // unprocessed.

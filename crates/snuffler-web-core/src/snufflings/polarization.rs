@@ -6,11 +6,11 @@ pub struct Config {
     /// Whether the rendered polarization window is open.
     show_plot: bool,
     /// Analysis-window length in seconds.
-    pub length: f64,
+    pub window_length_s: f64,
     /// Window offset as a fraction of its length.
-    pub offset: f64,
+    pub window_offset_fraction: f64,
     /// Horizontal rotation azimuth in degrees.
-    pub azimuth: f64,
+    pub azimuth_deg: f64,
     /// Optional high-pass cutoff in hertz.
     pub highpass: Option<f64>,
     /// Optional low-pass cutoff in hertz.
@@ -31,9 +31,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             show_plot: false,
-            length: 1.0,
-            offset: 0.0,
-            azimuth: 0.0,
+            window_length_s: 1.0,
+            window_offset_fraction: 0.0,
+            azimuth_deg: 0.0,
             highpass: None,
             lowpass: None,
             dot_position: 0.0,
@@ -66,16 +66,16 @@ impl Config {
     #[must_use]
     pub fn params(&self) -> PolarizationSnufflingParams {
         PolarizationSnufflingParams {
-            polarization_t_length: self.length,
-            polarization_ft_offset: self.offset,
-            polarization_azimuth: self.azimuth,
-            polarization_highpass: self.highpass,
-            polarization_lowpass: self.lowpass,
-            polarization_dot_position: self.dot_position,
-            polarization_rotate_to_rt: self.rotate_to_rt,
-            polarization_show_eigensystem_2d: self.show_eigensystem_2d,
-            polarization_show_eigensystem_3d: self.show_eigensystem_3d,
-            polarization_fix_scale: self.fix_scale,
+            window_length_s: self.window_length_s,
+            window_offset_fraction: self.window_offset_fraction,
+            azimuth_deg: self.azimuth_deg,
+            highpass: self.highpass,
+            lowpass: self.lowpass,
+            dot_position: self.dot_position,
+            rotate_to_rt: self.rotate_to_rt,
+            show_eigensystem_2d: self.show_eigensystem_2d,
+            show_eigensystem_3d: self.show_eigensystem_3d,
+            fix_scale: self.fix_scale,
         }
     }
 }

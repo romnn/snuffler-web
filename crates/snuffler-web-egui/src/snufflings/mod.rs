@@ -45,9 +45,10 @@ impl Panel {
 
 pub use snuffler_web_core::snufflings::Action;
 
-/// The set of open snuffling panels. Qt gives every snuffling its own dock
-/// widget alongside the others (snuffling.py:226), so panels coexist here too:
-/// opening one never closes another.
+/// The set of open snuffling panels.
+///
+/// Qt gives every snuffling its own dock widget alongside the others (snuffling.py:226), so
+/// panels coexist here too: opening one never closes another.
 #[derive(Default)]
 pub struct SnufflingPanels {
     open_panels: Vec<Panel>,
@@ -156,10 +157,10 @@ pub fn menu(
             ui.close();
         }
         ui.separator();
-        // Qt's `Reload Snufflings` menu item. Its Qt semantic — re-scanning the
-        // user's `snuffling_paths` by mtime — has nothing to reload here (a
-        // browser page carries no user snuffling directory), so the entry
-        // reloads the Python side the way Shift+R does.
+        // Qt's `Reload Snufflings` menu item.
+        // Its Qt semantic — re-scanning the user's `snuffling_paths` by mtime — has nothing to
+        // reload here (a browser page carries no user snuffling directory), so the entry reloads
+        // the Python side the way Shift+R does.
         if ui
             .button("Reload Snufflings")
             .on_hover_text("Reload the Python snuffling code (same as Shift+R).")
@@ -171,14 +172,14 @@ pub fn menu(
         // Qt's four one-click GEOFON event queries (`Get GEOFON Events`),
         // served over FDSN instead of the eqinfo scrape a browser cannot reach.
         ui.menu_button("Get GEOFON Events", |ui| {
-            for (label, minmag) in [
+            for (label, min_magnitude) in [
                 ("All events", 0.0),
                 ("Events, M ≥ 6", 6.0),
                 ("Events, M ≥ 7", 7.0),
                 ("Events, M ≥ 8", 8.0),
             ] {
                 if ui.button(label).clicked() {
-                    action = Some(Action::GeofonPreset(minmag));
+                    action = Some(Action::GeofonPreset(min_magnitude));
                     ui.close();
                 }
             }
@@ -197,11 +198,10 @@ pub fn menu(
             ui.close();
         }
         ui.separator();
-        // Qt files its panel togglers — Markers, Main Controls, every
-        // snuffling dock — under this same menu (`toggle_panel_menu`,
-        // pile_viewer.py:860 with snuffler_app.py:667): the two built-in
-        // panels are `add_panel` peers of the snuffling docks. Checkboxes
-        // rather than Qt's show-only actions: `m` and `c` still toggle.
+        // Qt files its panel togglers — Markers, Main Controls, every snuffling dock — under this
+        // same menu (`toggle_panel_menu`, pile_viewer.py:860 with snuffler_app.py:667): the two
+        // built-in panels are `add_panel` peers of the snuffling docks.
+        // Checkboxes rather than Qt's show-only actions: `m` and `c` still toggle.
         ui.checkbox(&mut state.show_controls, "Main Controls");
         ui.checkbox(&mut state.show_marker_editor, "Markers");
     });
@@ -217,8 +217,8 @@ pub fn show_panel(
     nyquist: Option<f64>,
     seisbench_runtime: &SeisbenchRuntimeStatus,
 ) -> Option<Action> {
-    // Every open panel draws, its own window each (Qt's tabified docks). One
-    // frame carries at most one click, so the first action is the only one.
+    // Every open panel draws, its own window each (Qt's tabified docks).
+    // One frame carries at most one click, so the first action is the only one.
     let mut action = None;
     panels.open_panels.retain(|&panel| {
         let mut open = true;
@@ -265,7 +265,7 @@ pub fn show_panel(
 }
 
 pub fn show_output(ctx: &egui::Context, state: &mut AppState) {
-    if !state.show_snuffling {
+    if !state.show_snuffling_text {
         return;
     }
     let mut open = true;
@@ -278,5 +278,5 @@ pub fn show_output(ctx: &egui::Context, state: &mut AppState) {
                 ui.monospace(text.as_str());
             });
         });
-    state.show_snuffling = open;
+    state.show_snuffling_text = open;
 }

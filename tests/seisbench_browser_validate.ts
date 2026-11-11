@@ -2,7 +2,7 @@
 // in the manifest is run against the synthetic example scene, on WebGPU where the
 // browser offers it and again on the CPU (wasm) fallback.
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import { readFileSync } from "node:fs";
 
 import {
@@ -73,8 +73,8 @@ const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:17683/";
 const MODEL_BASE_URL = process.env.SNUFFLER_ONNX_MODEL_BASE_URL || "assets/models/";
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
 
-/// `?demo=1` appended to whatever base URL was configured, which may already carry a
-/// query string.
+// `?demo=1` appended to whatever base URL was configured, which may already carry a
+// query string.
 function demoUrl(base: string): string {
   const url = new URL(base);
   url.searchParams.set("demo", "1");
@@ -90,7 +90,8 @@ const METHODS = {
   getView: "/snuffler.bridge.v1.BridgeService/GetView",
 };
 
-function bridgePayload(bytes: Uint8Array): number[] {
+// Bytes as a plain array, the form `page.evaluate` can carry across into the page.
+function serializableBytes(bytes: Uint8Array): number[] {
   return Array.from(bytes);
 }
 
@@ -99,26 +100,28 @@ function bridgeResult<C extends ResultCase>(
   label: string,
   expectedCase: C
 ): ResultValue<C> {
-  const env = fromBinary(BridgeResultSchema, new Uint8Array(bytes));
-  if (env.result.case === "error") {
-    const error = env.result.value;
+  const envelope = fromBinary(BridgeResultSchema, new Uint8Array(bytes));
+  if (envelope.result.case === "error") {
+    const error = envelope.result.value;
     throw new Error(`${label}: ${error.kind}: ${error.message}\n${error.traceback}`);
   }
-  if (env.result.case !== expectedCase) {
-    throw new Error(`${label}: expected ${expectedCase}, got ${env.result.case ?? "empty"}`);
+  if (envelope.result.case !== expectedCase) {
+    throw new Error(`${label}: expected ${expectedCase}, got ${envelope.result.case ?? "empty"}`);
   }
-  // The guard above proves the case matches; TypeScript cannot narrow a union by
-  // comparison against a generic parameter, so the cast carries the proof.
-  return env.result.value as ResultValue<C>;
+  // The guard above proves the case matches.
+  // TypeScript cannot narrow a union by comparison against a generic parameter, so
+  // the cast carries the proof.
+  return envelope.result.value as ResultValue<C>;
 }
 
-function requestFor(scene: Scene, spec: ModelSpec) {
+// A SeisBench run over a 200 s window of the synthetic scene.
+function seisbenchRequest(scene: Scene, spec: ModelSpec) {
   const centerTmin = scene.tmin + 145.0;
   const centerTmax = scene.tmin + 345.0;
   const view = create(ViewParamsSchema, {
     tmin: Math.max(scene.tmin, centerTmin),
     tmax: Math.min(scene.tmax, centerTmax),
-    npx: 1400,
+    binsPerTrace: 1400,
   });
   const seisbench = create(SeisbenchSnufflingParamsSchema, {
     model: spec.model,
@@ -146,9 +149,9 @@ function browserArgs(disableWebgpu: boolean): string[] {
     // WebGPU is stable in current Chromium, so the interface itself cannot be
     // removed (--disable-webgpu / --disable-features=WebGPU are silently ignored).
     // What the app actually branches on is `requestAdapter()` handing back an
-    // adapter, so deny the adapter instead:
-    // with the GPU process disabled it resolves null — in workers too, where
-    // the bridge makes its device choice — and the CPU (wasm) provider wins.
+    // adapter, so deny the adapter instead.
+    // With the GPU process disabled it resolves null, in workers too, where the
+    // bridge makes its device choice, and the CPU (wasm) provider wins.
     args.push("--disable-gpu");
     return args;
   }
@@ -164,10 +167,11 @@ function browserArgs(disableWebgpu: boolean): string[] {
 async function bridgeModuleUrl(page: Page): Promise<string> {
   return await page.evaluate(() => {
     // Prefer whatever the page itself preloads, but the plain path is a stable
-    // contract on its own: the wasm externs import the bundle by exactly this
-    // URL (see the module path notes in scripts/trunk-post-build.sh), so it is
-    // always staged there — while trunk only sometimes emits a modulepreload
-    // for it, depending on how it treats the snippet import.
+    // contract on its own.
+    // The wasm externs import the bundle by exactly this URL (see the module path
+    // notes in scripts/trunk-post-build.sh), so it is always staged there.
+    // Trunk only sometimes emits a modulepreload for it, depending on how it treats
+    // the snippet import.
     const links = Array.from(
       document.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')
     );
@@ -187,7 +191,7 @@ async function callBridge(
   const payload = {
     moduleUrl,
     method,
-    request: bridgePayload(requestBytes),
+    request: serializableBytes(requestBytes),
   };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -195,12 +199,12 @@ async function callBridge(
         async ({ moduleUrl: href, method: rpcMethod, request }) => {
           const bridge = (await import(href)) as BridgeModule;
           bridge.takeOperationEvents();
-          const out = await bridge.call(rpcMethod, new Uint8Array(request), 999n);
+          const reply = await bridge.call(rpcMethod, new Uint8Array(request), 999n);
           return {
-            result: Array.from(out.result),
+            result: Array.from(reply.result),
             device: Array.from(bridge.seisbenchDevice()),
-            // This harness stubs the egui module and owns the bridge alone, so
-            // draining here yields exactly the events this call produced.
+            // This harness stubs the egui module and owns the bridge alone.
+            // Draining here therefore yields exactly the events this call produced.
             events: bridge.takeOperationEvents().map((bytes) => Array.from(bytes)),
           };
         },
@@ -239,16 +243,18 @@ async function callBridge(
 async function webgpuAvailable(page: Page): Promise<boolean> {
   return await page.evaluate(async () => {
     try {
-      const nav = navigator as { gpu?: { requestAdapter(): Promise<unknown> } };
-      if (!nav.gpu) return false;
-      return Boolean(await nav.gpu.requestAdapter());
+      const gpuNavigator = navigator as { gpu?: { requestAdapter(): Promise<unknown> } };
+      if (!gpuNavigator.gpu) return false;
+      return Boolean(await gpuNavigator.gpu.requestAdapter());
     } catch {
       return false;
     }
   });
 }
 
-async function concurrentViewProbe(
+// Whether a view request completes while a SeisBench run still holds its job, which
+// proves the run yields the interpreter between batches.
+async function viewCompletesDuringRun(
   page: Page,
   moduleUrl: string,
   runRequest: Uint8Array,
@@ -271,10 +277,127 @@ async function concurrentViewProbe(
       href: moduleUrl,
       runMethod: METHODS.runSnuffling,
       viewMethod: METHODS.getView,
-      runBytes: bridgePayload(runRequest),
-      viewBytes: bridgePayload(viewRequest),
+      runBytes: serializableBytes(runRequest),
+      viewBytes: serializableBytes(viewRequest),
     }
   );
+}
+
+// Messages the page logged, all of them for the provider evidence and the errors to
+// fail the pass on.
+interface ConsoleLog {
+  entries: string[];
+  errors: string[];
+}
+
+async function openHarnessPage(browser: Browser, log: ConsoleLog): Promise<Page> {
+  const page = await browser.newPage();
+  // This harness drives the transport directly, so the egui app must not submit its
+  // own ledger-owned views into the same worker.
+  await page.route(/\/snuffler-web-egui-[^/]+\.js$/, async (route) => {
+    await route.fulfill({
+      contentType: "text/javascript",
+      body: "export default async function init() { return {}; }\n",
+    });
+  });
+  page.setDefaultTimeout(TIMEOUT_MS);
+  page.setDefaultNavigationTimeout(60_000);
+  page.on("console", (message) => {
+    const text = message.text();
+    log.entries.push(`[${message.type()}] ${text}`);
+    if (message.type() === "error") log.errors.push(text);
+  });
+  page.on("pageerror", (error) => {
+    log.errors.push(`pageerror: ${error.message}`);
+  });
+
+  // `?demo=1` keeps the boot load synthetic.
+  // The scene under test is built by calling MakeExample, so what the UI holds is
+  // irrelevant, but the app opens on a recorded dataset by default, and fetching
+  // megabytes of waveforms would take CPU away from the inference.
+  await page.goto(demoUrl(BASE_URL), { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("load");
+  await page.waitForTimeout(500);
+  return page;
+}
+
+// Run one model over the synthetic scene and check what came back.
+async function runModel(
+  page: Page,
+  moduleUrl: string,
+  spec: ModelSpec,
+  probeConcurrentView: boolean
+): Promise<ModelResult> {
+  const modelName = `${spec.model}/${spec.weights}`;
+
+  // Synthetic scene
+  const sceneReply = await callBridge(
+    page,
+    moduleUrl,
+    METHODS.makeExample,
+    toBinary(EmptySchema, create(EmptySchema))
+  );
+  const scene = bridgeResult(sceneReply.result, "MakeExample", "scene");
+  if (scene.trackCount < 18n) {
+    throw new Error(`MakeExample: expected at least 18 traces, got ${scene.trackCount}`);
+  }
+
+  // A view must not wait for the whole run
+  const request = seisbenchRequest(scene, spec);
+  if (probeConcurrentView) {
+    const view = request.params?.view;
+    if (!view) throw new Error("SeisBench request has no view params");
+    const viewFinishedFirst = await viewCompletesDuringRun(
+      page,
+      moduleUrl,
+      toBinary(NamedSnufflingRequestSchema, request),
+      toBinary(ViewParamsSchema, view)
+    );
+    if (!viewFinishedFirst) {
+      throw new Error("GetView did not complete while the SeisBench job yielded the interpreter");
+    }
+  }
+
+  // The run itself
+  const reply = await callBridge(
+    page,
+    moduleUrl,
+    METHODS.runSnuffling,
+    toBinary(NamedSnufflingRequestSchema, request)
+  );
+  const result = bridgeResult(reply.result, `${modelName} RunSnuffling`, "snuffling");
+  if (reply.progress < 0.99) {
+    throw new Error(
+      `${modelName}: final progress ${reply.progress}, label "${reply.progressLabel}", events ${reply.eventDebug.join(",")}`
+    );
+  }
+  if (!reply.progressLabel.includes("complete")) {
+    throw new Error(`${modelName}: final progress label did not complete: ${reply.progressLabel}`);
+  }
+  if (!reply.device || !["WebGPU", "CPU (wasm)"].includes(reply.device)) {
+    throw new Error(`${modelName}: invalid device label "${reply.device}"`);
+  }
+  if (result.text.includes("no ZNE data")) {
+    throw new Error(`${modelName}: did not run on the synthetic ZNE scene`);
+  }
+  const syntheticShouldProduceMarkers = spec.model === "PhaseNet";
+  if (syntheticShouldProduceMarkers && result.markers.length === 0) {
+    throw new Error(`${modelName}: no browser markers produced`);
+  }
+
+  const phases = result.markers.reduce<Record<string, number>>((counts, marker) => {
+    const phase = marker.phase || "?";
+    counts[phase] = (counts[phase] || 0) + 1;
+    return counts;
+  }, {});
+  return {
+    model: modelName,
+    markers: result.markers.length,
+    phases,
+    text: result.text,
+    device: reply.device,
+    progressLabel: reply.progressLabel,
+  };
 }
 
 async function runBrowserPass({
@@ -288,123 +411,27 @@ async function runBrowserPass({
     headless: HEADLESS,
     args: browserArgs(disableWebgpu),
   });
-  const consoleEntries: string[] = [];
-  const consoleErrors: string[] = [];
+  const log: ConsoleLog = { entries: [], errors: [] };
   const results: ModelResult[] = [];
   let hasWebgpu = false;
 
   try {
     for (const spec of models) {
-      const page = await browser.newPage();
-      // This harness drives the transport directly, so the egui app must not
-      // submit its own ledger-owned views into the same worker.
-      await page.route(/\/snuffler-web-egui-[^/]+\.js$/, async (route) => {
-        await route.fulfill({
-          contentType: "text/javascript",
-          body: "export default async function init() { return {}; }\n",
-        });
-      });
-      page.setDefaultTimeout(TIMEOUT_MS);
-      page.setDefaultNavigationTimeout(60_000);
-      page.on("console", (msg) => {
-        const text = msg.text();
-        consoleEntries.push(`[${msg.type()}] ${text}`);
-        if (msg.type() === "error") consoleErrors.push(text);
-      });
-      page.on("pageerror", (error) => {
-        consoleErrors.push(`pageerror: ${error.message}`);
-      });
+      const page = await openHarnessPage(browser, log);
       try {
-        // `?demo=1` keeps the boot load synthetic.
-        // The scene under test is built by calling MakeExample below, so what the UI
-        // holds is irrelevant, but the app opens on a recorded dataset by default, and
-        // fetching megabytes of waveforms would take CPU away from the inference.
-        await page.goto(demoUrl(BASE_URL), { waitUntil: "domcontentloaded" });
-        await page.waitForLoadState("load");
-        await page.waitForTimeout(500);
         const moduleUrl = await bridgeModuleUrl(page);
         hasWebgpu = (await webgpuAvailable(page)) || hasWebgpu;
-        const sceneReply = await callBridge(
-          page,
-          moduleUrl,
-          METHODS.makeExample,
-          toBinary(EmptySchema, create(EmptySchema))
-        );
-        const scene = bridgeResult(sceneReply.result, "MakeExample", "scene");
-        if (scene.trackCount < 18n) {
-          throw new Error(`MakeExample: expected at least 18 traces, got ${scene.trackCount}`);
-        }
-
-        const request = requestFor(scene, spec);
-        if (spec === models[0]) {
-          const view = request.params?.view;
-          if (!view) throw new Error("SeisBench request has no view params");
-          const viewFinishedFirst = await concurrentViewProbe(
-            page,
-            moduleUrl,
-            toBinary(NamedSnufflingRequestSchema, request),
-            toBinary(ViewParamsSchema, view)
-          );
-          if (!viewFinishedFirst) {
-            throw new Error(
-              "GetView did not complete while the SeisBench job yielded the interpreter"
-            );
-          }
-        }
-        const reply = await callBridge(
-          page,
-          moduleUrl,
-          METHODS.runSnuffling,
-          toBinary(NamedSnufflingRequestSchema, request)
-        );
-        const result = bridgeResult(
-          reply.result,
-          `${spec.model}/${spec.weights} RunSnuffling`,
-          "snuffling"
-        );
-        if (reply.progress < 0.99) {
-          throw new Error(
-            `${spec.model}/${spec.weights}: final progress ${reply.progress}, label "${reply.progressLabel}", events ${reply.eventDebug.join(",")}`
-          );
-        }
-        if (!reply.progressLabel.includes("complete")) {
-          throw new Error(
-            `${spec.model}/${spec.weights}: final progress label did not complete: ${reply.progressLabel}`
-          );
-        }
-        if (!reply.device || !["WebGPU", "CPU (wasm)"].includes(reply.device)) {
-          throw new Error(`${spec.model}/${spec.weights}: invalid device label "${reply.device}"`);
-        }
-        if (result.text.includes("no ZNE data")) {
-          throw new Error(`${spec.model}/${spec.weights}: did not run on the synthetic ZNE scene`);
-        }
-        const syntheticShouldProduceMarkers = spec.model === "PhaseNet";
-        if (syntheticShouldProduceMarkers && result.markers.length === 0) {
-          throw new Error(`${spec.model}/${spec.weights}: no browser markers produced`);
-        }
-        const phases = result.markers.reduce<Record<string, number>>((acc, marker) => {
-          const phase = marker.phase || "?";
-          acc[phase] = (acc[phase] || 0) + 1;
-          return acc;
-        }, {});
-        results.push({
-          model: `${spec.model}/${spec.weights}`,
-          markers: result.markers.length,
-          phases,
-          text: result.text,
-          device: reply.device,
-          progressLabel: reply.progressLabel,
-        });
+        results.push(await runModel(page, moduleUrl, spec, spec === models[0]));
       } finally {
         await page.close();
       }
     }
 
-    if (consoleErrors.length > 0) {
-      throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
+    if (log.errors.length > 0) {
+      throw new Error(`browser console errors:\n${log.errors.join("\n")}`);
     }
 
-    return { hasWebgpu, consoleEntries, results };
+    return { hasWebgpu, consoleEntries: log.entries, results };
   } finally {
     await browser.close();
   }

@@ -47,11 +47,11 @@ upstream outranks this rule (see ADR 2):
   subsort a reply was painted with.
 - These were checked and hold, so they need no re-examination: the reply pipeline cannot
   interleave (one view job in flight, `ViewData` swapped as one `Arc`, colours built from the
-  reply they paint), `t0_rel` arithmetic is exact, and pile chops are sorted by `full_id`
-  before the bridge sees them.
+  reply they paint), `relative_start_s` arithmetic is exact, and pile chops are sorted by
+  `full_id` before the bridge sees them.
 
 ## References
 
-- `web/bridge.py` (`_get_view_data`, `_display_envelope`, `_stable_bin_stride`)
-- `crates/snuffler-web-render/src/paint.rs`
+- `web/snuffler_bridge/view.py` (`get_view_data`, `_display_envelope`, `_stable_bin_stride`)
+- `crates/snuffler-web-render/src/paint/`
 - `tests/parity/test_view_span_order.py`, `tests/parity/known_gaps.toml`

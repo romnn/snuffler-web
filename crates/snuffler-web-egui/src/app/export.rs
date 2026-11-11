@@ -87,18 +87,18 @@ impl App {
 
         #[cfg(feature = "threads")]
         if crate::pool::ready() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (w, h) = (size.x, size.y);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let (width, height) = (size.x, size.y);
             #[expect(
                 clippy::disallowed_methods,
                 reason = "the ExportPng ledger job accepted above keeps this rasterization visible"
             )]
             rayon::spawn(move || {
-                let png = crate::view::raster::rasterize_svg(&svg, w, h, PNG_EXPORT_SCALE);
+                let png = crate::view::raster::rasterize_svg(&svg, width, height, PNG_EXPORT_SCALE);
                 crate::pool::record_worker_png_export();
-                let _ = tx.send(png);
+                let _ = sender.send(png);
             });
-            if let Some(displaced) = self.export_rx.take() {
+            if let Some(displaced) = self.pending_png_export.take() {
                 // Unreachable behind the one-export-at-a-time request guard,
                 // but a displaced receiver must not leak its ledger job as
                 // permanently running.
@@ -110,8 +110,8 @@ impl App {
                     )),
                 );
             }
-            self.export_rx = Some(PngExport {
-                receiver: rx,
+            self.pending_png_export = Some(PngExport {
+                receiver,
                 filename: export_filename("png"),
                 job,
             });
@@ -127,12 +127,12 @@ impl App {
     #[cfg(feature = "threads")]
     fn poll_png_export(&mut self, ctx: &egui::Context) {
         let status = self
-            .export_rx
+            .pending_png_export
             .as_ref()
             .map(|export| export.receiver.try_recv());
         match status {
             Some(Ok(png)) => {
-                if let Some(export) = self.export_rx.take() {
+                if let Some(export) = self.pending_png_export.take() {
                     self.complete_png_rasterization(export.job, png, export.filename);
                 }
             }
@@ -142,7 +142,7 @@ impl App {
                 ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                if let Some(export) = self.export_rx.take() {
+                if let Some(export) = self.pending_png_export.take() {
                     self.session.bridge.finish_local(
                         export.job,
                         Err(BridgeError::browser(
@@ -157,7 +157,7 @@ impl App {
     }
 
     pub(super) fn request_marker_export(&mut self, scope: MarkerExportScope) {
-        if self.marker_prepare.is_some()
+        if self.preparing_marker_export.is_some()
             || matches!(scope, MarkerExportScope::Selected)
                 && !self
                     .session
@@ -169,7 +169,7 @@ impl App {
             return;
         }
         #[cfg(feature = "threads")]
-        if self.marker_export_rx.is_some() {
+        if self.pending_marker_export.is_some() {
             return;
         }
         let submission = self.session.bridge.begin_local(
@@ -180,7 +180,7 @@ impl App {
             }),
         );
         if let Submission::Accepted(job) = submission {
-            self.marker_prepare = Some((job, scope));
+            self.preparing_marker_export = Some((job, scope));
         }
     }
 
@@ -196,11 +196,11 @@ impl App {
     pub(super) fn process_marker_export(&mut self, ctx: &egui::Context) {
         let _ = ctx;
         #[cfg(feature = "threads")]
-        if let Some(export) = self.marker_export_rx.as_ref() {
+        if let Some(export) = self.pending_marker_export.as_ref() {
             match export.receiver.try_recv() {
                 Ok(file) => {
                     let job = export.job;
-                    self.marker_export_rx = None;
+                    self.pending_marker_export = None;
                     self.complete_marker_serialization(job, file);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -208,7 +208,7 @@ impl App {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     let job = export.job;
-                    self.marker_export_rx = None;
+                    self.pending_marker_export = None;
                     self.session.bridge.finish_local(
                         job,
                         Err(BridgeError::browser(
@@ -221,7 +221,7 @@ impl App {
             return;
         }
 
-        let Some((job, scope)) = self.marker_prepare.take() else {
+        let Some((job, scope)) = self.preparing_marker_export.take() else {
             return;
         };
         let markers: Vec<Marker> = match scope {
@@ -238,15 +238,15 @@ impl App {
 
         #[cfg(feature = "threads")]
         if crate::pool::ready() {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (sender, receiver) = std::sync::mpsc::channel();
             #[expect(
                 clippy::disallowed_methods,
                 reason = "the SerializeMarkers ledger job accepted above owns this serialization"
             )]
             rayon::spawn(move || {
-                let _ = tx.send(markers_to_file(&markers));
+                let _ = sender.send(markers_to_file(&markers));
             });
-            self.marker_export_rx = Some(MarkerExport { receiver: rx, job });
+            self.pending_marker_export = Some(MarkerExport { receiver, job });
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
             return;
         }
@@ -303,11 +303,11 @@ impl App {
         }
         if std::mem::take(&mut self.png_request) {
             #[cfg(feature = "threads")]
-            let rasterizing = self.export_rx.is_some();
+            let rasterizing = self.pending_png_export.is_some();
             #[cfg(not(feature = "threads"))]
             let rasterizing = false;
             // One PNG export at a time: a second start while the first is
-            // preparing or rasterizing would overwrite `export_rx` and leak the
+            // preparing or rasterizing would overwrite `pending_png_export` and leak the
             // displaced ledger job as permanently running.
             if self.png_prepare_job.is_none() && !rasterizing {
                 let submission = self
@@ -326,13 +326,13 @@ impl App {
 /// A timestamped export name (`snuffler-20260816-142530.png`): a fixed name
 /// collides into `snuffler (1).png` on the second export, and the stamp says
 /// which session a file in the downloads folder came from.
-fn export_filename(ext: &str) -> String {
+fn export_filename(extension: &str) -> String {
     let now_s = js_sys::Date::now() / 1000.0;
-    let stamp: String = snuffler_web_core::timeaxis::format_full(now_s)
+    let stamp: String = snuffler_web_core::timeaxis::format_timestamp(now_s)
         .chars()
-        .take_while(|&c| c != '.')
-        .filter(|c| c.is_ascii_digit() || *c == ' ')
-        .map(|c| if c == ' ' { '-' } else { c })
+        .take_while(|&character| character != '.')
+        .filter(|character| character.is_ascii_digit() || *character == ' ')
+        .map(|character| if character == ' ' { '-' } else { character })
         .collect();
-    format!("snuffler-{stamp}.{ext}")
+    format!("snuffler-{stamp}.{extension}")
 }

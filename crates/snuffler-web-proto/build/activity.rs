@@ -79,12 +79,12 @@ impl ToTokens for Policy {
 
 /// Whether a running operation can be cancelled.
 #[derive(Clone, Copy)]
-enum Cancellation {
+enum CancellationCapability {
     NotSupported,
     Supported,
 }
 
-impl Cancellation {
+impl CancellationCapability {
     fn from_proto(value: &str) -> Option<Self> {
         match value {
             "CANCELLATION_SUPPORT_NOT_SUPPORTED" => Some(Self::NotSupported),
@@ -94,7 +94,7 @@ impl Cancellation {
     }
 }
 
-impl ToTokens for Cancellation {
+impl ToTokens for CancellationCapability {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.extend(match self {
             Self::NotSupported => quote!(CancellationCapability::NotSupported),
@@ -110,7 +110,7 @@ pub struct OperationActivity {
     lane: Lane,
     policy: Policy,
     secondary_feedback: bool,
-    cancellation: Cancellation,
+    cancellation: CancellationCapability,
     supersedes: bool,
     may_update_markers: bool,
     exclusive_across_lanes: bool,
@@ -123,7 +123,7 @@ struct LocalOperation {
     lane: Lane,
     policy: Policy,
     secondary_feedback: bool,
-    cancellation: Cancellation,
+    cancellation: CancellationCapability,
     may_update_markers: bool,
     exclusive_across_lanes: bool,
 }
@@ -157,7 +157,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Job,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::NotSupported,
+        cancellation: CancellationCapability::NotSupported,
         may_update_markers: false,
         exclusive_across_lanes: true,
     },
@@ -167,7 +167,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Job,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::Supported,
+        cancellation: CancellationCapability::Supported,
         may_update_markers: true,
         exclusive_across_lanes: false,
     },
@@ -177,7 +177,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Job,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::Supported,
+        cancellation: CancellationCapability::Supported,
         may_update_markers: true,
         exclusive_across_lanes: false,
     },
@@ -187,7 +187,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Job,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::Supported,
+        cancellation: CancellationCapability::Supported,
         may_update_markers: true,
         exclusive_across_lanes: false,
     },
@@ -197,7 +197,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Job,
         policy: Policy::Dedup,
         secondary_feedback: true,
-        cancellation: Cancellation::Supported,
+        cancellation: CancellationCapability::Supported,
         may_update_markers: true,
         exclusive_across_lanes: false,
     },
@@ -207,7 +207,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Local,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::NotSupported,
+        cancellation: CancellationCapability::NotSupported,
         may_update_markers: false,
         exclusive_across_lanes: false,
     },
@@ -217,7 +217,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Local,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::NotSupported,
+        cancellation: CancellationCapability::NotSupported,
         may_update_markers: false,
         exclusive_across_lanes: false,
     },
@@ -227,7 +227,7 @@ const LOCAL_OPERATIONS: [LocalOperation; 8] = [
         lane: Lane::Local,
         policy: Policy::Queue,
         secondary_feedback: false,
-        cancellation: Cancellation::NotSupported,
+        cancellation: CancellationCapability::NotSupported,
         may_update_markers: false,
         exclusive_across_lanes: false,
     },
@@ -286,7 +286,7 @@ fn rpc_operation(
         lane: activity.enum_value("lane", Lane::from_proto)?,
         policy: activity.enum_value("policy", Policy::from_proto)?,
         secondary_feedback: activity.bool("secondary_feedback")?,
-        cancellation: activity.enum_value("cancellation", Cancellation::from_proto)?,
+        cancellation: activity.enum_value("cancellation", CancellationCapability::from_proto)?,
         supersedes: activity.bool("supersedes")?,
         may_update_markers: activity.bool("may_update_markers")?,
         // Cross-lane exclusion is a local-operation concept with no field in the schema.
@@ -360,20 +360,29 @@ pub fn render(operations: &[OperationActivity]) -> TokenStream {
     let arms = operations.iter().map(render_match_arm);
 
     quote! {
+        /// The executor lane an operation runs on.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Lane {
+            /// Python work, one job at a time.
             Job,
+            /// `GetView` alone, beside the job lane.
             View,
+            /// Executor-owned work that never reaches Python.
             Local,
         }
 
+        /// How a new submission interacts with work already queued on its lane.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Policy {
+            /// Every submission runs.
             Queue,
+            /// An identical queued or running request is joined instead.
             Dedup,
+            /// A newer submission cancels the queued ones of the same operation.
             LatestWins,
         }
 
+        /// Whether a running operation can be cancelled.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum CancellationCapability {
             NotSupported,
@@ -383,13 +392,19 @@ pub fn render(operations: &[OperationActivity]) -> TokenStream {
         /// Scheduling metadata of one [`Operation`].
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct ActivityMeta {
+            /// What the activity readout calls the running job.
             pub label: &'static str,
             pub lane: Lane,
             pub policy: Policy,
+            /// Whether the job is lower-priority feedback that yields the readout to
+            /// foreground work.
             pub secondary_feedback: bool,
             pub cancellation: CancellationCapability,
+            /// Whether admitting the job cancels the job lane's running work.
             pub supersedes: bool,
+            /// Whether committing the job may replace marker output.
             pub may_update_markers: bool,
+            /// Whether the job runs only while the other Python lane is idle.
             pub exclusive_across_lanes: bool,
         }
 

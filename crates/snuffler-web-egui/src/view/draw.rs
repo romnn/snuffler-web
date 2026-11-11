@@ -24,6 +24,7 @@ impl<'a> EguiTarget<'a> {
         }
     }
 
+    /// The painter clipped to the innermost pushed clip rect.
     fn current(&self) -> &egui::Painter {
         self.clips.last().unwrap_or(&self.base)
     }
@@ -34,9 +35,9 @@ impl DrawTarget for EguiTarget<'_> {
         self.current().rect_filled(rect, rounding, fill);
     }
 
-    fn line(&mut self, a: Pos2, b: Pos2, width: f32, color: Color32) {
+    fn line(&mut self, from: Pos2, to: Pos2, width: f32, color: Color32) {
         self.current()
-            .line_segment([a, b], egui::Stroke::new(width, color));
+            .line_segment([from, to], egui::Stroke::new(width, color));
     }
 
     fn polyline(&mut self, points: Vec<Pos2>, width: f32, color: Color32) {

@@ -1,15 +1,16 @@
 """Tier 2: diff the two command surfaces and hold the difference to an allowlist.
 
 Both halves are *extracted*, never listed by hand — :mod:`inventory_qt` off a live
-offscreen widget tree, ``inventory_web.ts`` off the app's accessibility layer — so
-the answer to "does the web port have all the features and modes" updates itself when
-either side moves. A pinned pyrocko means the Qt half only moves when the pin does,
-and a pin bump then shows up here as a precise list of new things to implement or to
-justify.
+offscreen widget tree, ``inventory_web.ts`` off the app's accessibility layer — so the
+answer to "does the web port have all the features and modes" updates itself when either
+side moves.
+A pinned pyrocko means the Qt half only moves when the pin does, and a pin bump then
+shows up here as a precise list of new things to implement or to justify.
 
 The rule is one-directional and deliberately so: anything Qt offers, the web does not,
-and ``known_gaps.toml`` does not excuse, fails the build. Web-only entries are
-reported but never fail — the port is allowed to be more than a copy.
+and ``known_gaps.toml`` does not excuse, fails the build.
+Web-only entries are reported but never fail — the port is allowed to be more than a
+copy.
 
     python tests/parity/run_inventory.py            # regenerate both, then diff
     python tests/parity/run_inventory.py --no-web   # reuse the last web inventory
@@ -77,11 +78,13 @@ _RANGE = re.compile(r"^(.*?)\s*\.\.\.\s*(.*)$")
 def expand_keys(rows: Iterable[Dict[str, str]]) -> Dict[str, str]:
     """Turn help-table rows into one entry per key.
 
-    The tables collapse families — ``0 ... 7``, ``<f1> ... <f9>``, ``<up>, <down>`` —
-    and comparing collapsed rows compares the *notation*, not the bindings: Qt writing
-    ``0 ... 5`` where the web writes ``0 ... 7`` looks like two different rows when it
-    is really two keys the web has and Qt's page forgot to mention. Expanded, the diff
-    is per key, which is the thing that either exists or does not.
+    The tables collapse families — ``0 ...
+    7``, ``<f1> ... <f9>``, ``<up>, <down>`` — and comparing collapsed rows compares the
+    *notation*, not the bindings: Qt writing ``0 ...
+    5`` where the web writes ``0 ...
+    7`` looks like two different rows when it is really two keys the web has and Qt's
+    page forgot to mention.
+    Expanded, the diff is per key, which is the thing that either exists or does not.
     """
     out: Dict[str, str] = {}
     for row in rows:
@@ -112,12 +115,13 @@ def _range_tokens(low: str, high: str) -> List[str]:
 def diff_keys(qt: Dict[str, Any], web: Dict[str, Any], aliases: gaps.AliasMap) -> Dict[str, Any]:
     """Match Qt's live key bindings against what the web binds.
 
-    Qt's side is what the widget answers to, not what its help page claims. The web's
-    side is two sources at once, because neither alone is enough: the app's own help
-    window says what it means to bind, and the behavioural probe says what actually did
-    something when pressed. A key counts as present if either says so — and the report
-    calls out the ones where only one of them does, because a key that is documented
-    and inert, or live and undocumented, is worth a look either way.
+    Qt's side is what the widget answers to, not what its help page claims.
+    The web's side is two sources at once, because neither alone is enough: the app's
+    own help window says what it means to bind, and the behavioural probe says what
+    actually did something when pressed.
+    A key counts as present if either says so — and the report calls out the ones where
+    only one of them does, because a key that is documented and inert, or live and
+    undocumented, is worth a look either way.
     """
     qt_keys = {str(entry["key"]): entry for entry in qt.get("keys", [])}
     documented = expand_keys(web.get("help", {}).get("Key", []))
@@ -140,7 +144,7 @@ def diff_keys(qt: Dict[str, Any], web: Dict[str, Any], aliases: gaps.AliasMap) -
         else:
             missing.append(token)
 
-    extra = sorted(set(documented) - {aliases.get(k, k) for k in qt_keys})
+    extra = sorted(set(documented) - {aliases.get(key, key) for key in qt_keys})
     return {
         "section": "keys",
         "matched": [(token, token) for token in matched],
@@ -177,10 +181,11 @@ def diff_section(
 ) -> Dict[str, Any]:
     """Match Qt entries to web entries and split them three ways.
 
-    ``match_leaf`` lets an item match on its own name when its menu path differs —
-    the web moved several commands between menus (Catalog Search lives under Data, the
-    snufflings are not behind a 'Run Snuffling' submenu), and where a command sits is
-    a layout decision, not a missing feature. Where it lands is still reported.
+    ``match_leaf`` lets an item match on its own name when its menu path differs — the
+    web moved several commands between menus (Catalog Search lives under Data, the
+    snufflings are not behind a 'Run Snuffling' submenu), and where a command sits is a
+    layout decision, not a missing feature.
+    Where it lands is still reported.
     """
     qt_index = _index(qt_entries, key)
     web_index = _index(web_entries, key)
@@ -220,9 +225,10 @@ def diff_section(
 def state_differences(result: Dict[str, Any]) -> List[str]:
     """Where the two agree on the command but not on how it presents itself.
 
-    Reported, never fatal. The interesting case is a Qt radio group whose web
-    counterpart publishes no selected state at all: the command is there, but an
-    assistive technology cannot tell which of the options is active.
+    Reported, never fatal.
+    The interesting case is a Qt radio group whose web counterpart publishes no selected
+    state at all: the command is there, but an assistive technology cannot tell which of
+    the options is active.
     """
     out: List[str] = []
     for qt_path, web_path in result["matched"] + result["moved"]:

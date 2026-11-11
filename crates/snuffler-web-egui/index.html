@@ -43,12 +43,13 @@
 
     <!-- runtime assets fetched by web/bridge.js (the py-mt Pyodide runtime +
          wheels are staged into py-mt/ by Trunk.toml's post_build hook) -->
-    <link data-trunk rel="copy-file" href="../../web/bridge.py" />
+    <!-- the Python bridge package; the worker fetches its modules one by one -->
+    <link data-trunk rel="copy-dir" href="../../web/snuffler_bridge" data-target-path="snuffler_bridge" />
     <!-- SeisBench picker pre/post-processing; ONNX Runtime and model assets are
          staged by Trunk.toml post_build hooks. -->
     <link data-trunk rel="copy-file" href="../../web/seisbench_infer.py" />
     <!-- Python side of the worker's boot: defers pyrocko's module-scope scipy
-         imports and reports import progress (imported before bridge.py) -->
+         imports and reports import progress (imported before the bridge) -->
     <link data-trunk rel="copy-file" href="../../web/bootstrap.py" />
     <link data-trunk rel="copy-file" href="../../web/gen/bridge_worker.js" />
     <link data-trunk rel="copy-file" href="../../web/gen/ort_worker.js" />

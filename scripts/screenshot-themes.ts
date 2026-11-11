@@ -84,8 +84,8 @@ const overlay = "#snuffler-a11y";
 async function activate(page: Page, name: string): Promise<void> {
   // Synthetic activation uses the AccessKit action without a canvas press leaking
   // through when the overlay rebuilds between pointer-down and pointer-up.
-  await page.locator(`${overlay} [aria-label=${JSON.stringify(name)}]`).evaluate((el) => {
-    (el as HTMLElement).click();
+  await page.locator(`${overlay} [aria-label=${JSON.stringify(name)}]`).evaluate((element) => {
+    (element as HTMLElement).click();
   });
   await waitForAppReady(page);
 }
@@ -145,7 +145,9 @@ async function main(): Promise<void> {
         await activate(page, "View");
         const labels = await page
           .locator(`${overlay} [aria-label]`)
-          .evaluateAll((els) => els.map((el) => el.getAttribute("aria-label") ?? ""));
+          .evaluateAll((elements) =>
+            elements.map((element) => element.getAttribute("aria-label") ?? "")
+          );
         const themeNames = labels.slice(
           labels.indexOf("Snuffler Qt"),
           labels.indexOf("Clip traces")

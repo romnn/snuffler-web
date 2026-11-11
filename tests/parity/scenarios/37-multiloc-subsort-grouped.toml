@@ -3,9 +3,10 @@ title = "Co-located sensors share one track"
 dataset = "multiloc"
 tiers = [1]
 
-# Snuffler's "Grouped by Location": the track key drops the location, so every
-# sensor at a site draws on the row of its channel. CO01 and CO02 each collapse
-# three rows out of six; CO03 has one location and collapses nothing.
+# Snuffler's "Grouped by Location": the track key drops the location, so every sensor at
+# a site draws on the row of its channel.
+# CO01 and CO02 each collapse three rows out of six; CO03 has one location and collapses
+# nothing.
 [state]
 subsort = "nsc_l"
 

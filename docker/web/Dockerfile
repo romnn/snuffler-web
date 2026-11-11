@@ -4,17 +4,20 @@
 # by an unprivileged nginx alongside the threaded Pyodide 314 runtime the app
 # boots into.
 #
-# TWO INPUTS ARE NOT BUILT HERE. They are prepared on the host (CI does it in the
-# step before `docker build`) and read out of the build context, because building
-# them from scratch means an emscripten toolchain and about an hour:
+# TWO INPUTS ARE NOT BUILT HERE.
+# They are prepared on the host (CI does it in the step before `docker build`) and
+# read out of the build context, because building them from scratch means an
+# emscripten toolchain and about an hour:
 #
 #   task pyodide:fetch  -> docker/pyodide-mt/served/   (~70 MB: the relinked
 #       pthread + OpenMP + SIMD runtime and every wheel, already precompiled to
-#       bytecode. docker/pyodide-mt/build-all.sh is what produces one from source.)
+#       bytecode.
+#       docker/pyodide-mt/build-all.sh is what produces one from source.)
 #   task fetch:pyrocko  -> sources/pyrocko/            (only two paths are
 #       read: the cake earthmodels and the map's plate boundaries, both staged
-#       into the site by crates/snuffler-web-egui/index.html. pyrocko itself
-#       reaches the browser as a wheel inside the runtime above, not from here.)
+#       into the site by crates/snuffler-web-egui/index.html.
+#       pyrocko itself reaches the browser as a wheel inside the runtime above,
+#       not from here.)
 #
 # Everything else — the wasm app, the bundled TS glue, the protobuf code, the
 # example dataset bundles — is built in this file.
@@ -26,10 +29,10 @@
 #
 #   docker build -f docker/web/Dockerfile -t snuffler-web .
 #
-# CARGO_PROFILE picks the Cargo profile of the wasm app. Release images use the
-# default, which is optimized and run through wasm-opt; CI builds every untagged
-# commit with `dev`, which compiles much faster and is still enough for the smoke
-# test.
+# CARGO_PROFILE picks the Cargo profile of the wasm app.
+# Release images use the default, which is optimized and run through wasm-opt; CI
+# builds every untagged commit with `dev`, which compiles much faster and is still
+# enough for the smoke test.
 #
 #   docker build -f docker/web/Dockerfile --build-arg CARGO_PROFILE=dev .
 
@@ -37,8 +40,9 @@ ARG RUST_IMAGE=rust:1-trixie
 ARG NGINX_IMAGE=nginx:1.29-alpine
 ARG ALPINE_IMAGE=alpine:3.23
 ARG CARGO_CHEF_VERSION=0.1.78
-# github.com/google/ngx_brotli @ master, 2023-10-09. Pinned by commit: the
-# repository publishes no release the module's own docs point at.
+# github.com/google/ngx_brotli @ master, 2023-10-09.
+# Pinned by commit: the repository publishes no release the module's own docs
+# point at.
 ARG NGX_BROTLI_REF=a71f9312c2deb28875acc7bacfdd5695a111aa53
 
 # Every compile stage runs on linux/amd64 whatever the image targets, for two
@@ -46,14 +50,15 @@ ARG NGX_BROTLI_REF=a71f9312c2deb28875acc7bacfdd5695a111aa53
 #   - what they emit is architecture-independent — a wasm module, a JS bundle, a
 #     zip — so a linux/arm64 image is the same site bytes under a different
 #     nginx, and building it twice would buy nothing;
-#   - the toolchain is only pinned for amd64. mise.lock declares linux-x64 and
-#     macos-arm64, and the binaryen that the wasm-opt hook runs through mise
-#     (aqua:WebAssembly/binaryen) has no linux/arm64 entry in aqua's registry at
-#     all, so a native arm64 build cannot get the pinned wasm-opt.
+#   - the toolchain is only pinned for amd64.
+#     mise.lock declares linux-x64 and macos-arm64, and the binaryen that the
+#     wasm-opt hook runs through mise (aqua:WebAssembly/binaryen) has no
+#     linux/arm64 entry in aqua's registry at all, so a native arm64 build cannot
+#     get the pinned wasm-opt.
 # On an amd64 host — GitHub's runners included — this is native for BOTH output
-# architectures, so no part of the wasm build is ever emulated. On an arm64 host
-# it is emulated and slow; override BUILDER_PLATFORM if you have a native amd64
-# builder node to point it at.
+# architectures, so no part of the wasm build is ever emulated.
+# On an arm64 host it is emulated and slow; override BUILDER_PLATFORM if you have
+# a native amd64 builder node to point it at.
 ARG BUILDER_PLATFORM=linux/amd64
 FROM --platform=${BUILDER_PLATFORM} ${RUST_IMAGE} AS toolchain
 
@@ -87,8 +92,9 @@ RUN curl -fsSL https://mise.run | sh
 
 WORKDIR /src
 
-# Only the tools this build actually runs. Notably absent: node (bun bundles the
-# glue), zig and the cargo plugins (lint/test tooling), typos, actionlint.
+# Only the tools this build actually runs.
+# Notably absent: node (bun bundles the glue), zig and the cargo plugins
+# (lint/test tooling), typos, actionlint.
 #
 # The GitHub token is optional and passed as a secret so it never lands in a
 # layer: mise resolves the trunk/binaryen/buf/protoc releases through the GitHub
@@ -131,13 +137,14 @@ FROM toolchain AS builder
 ARG CARGO_PROFILE=release
 
 # Compile the dependency graph — every crate the app pulls in, plus the std
-# rebuild `-Z build-std` forces — against a skeleton workspace. This is by far
-# the most expensive layer and it is invalidated only by Cargo.toml/Cargo.lock.
+# rebuild `-Z build-std` forces — against a skeleton workspace.
+# This is by far the most expensive layer and it is invalidated only by
+# Cargo.toml/Cargo.lock.
 # The wasm rustflags (atomics, shared memory, the TLS symbol exports) come from
 # .cargo/config.toml, so it has to be in place before the cook, not after.
-# The cargo registry is left in the layer rather than on a cache mount on
-# purpose: a cache mount is invisible to registry/GHA layer caching, so in CI it
-# would start empty every run and the restored layers would re-download the index.
+# The cargo registry is left in the layer rather than on a cache mount on purpose:
+# a cache mount is invisible to registry/GHA layer caching, so in CI it would
+# start empty every run and the restored layers would re-download the index.
 ENV CARGO_UNSTABLE_BUILD_STD=std,panic_abort
 COPY .cargo .cargo
 COPY --from=planner /src/recipe.json recipe.json
@@ -175,13 +182,15 @@ COPY sources/pyrocko/src/gui/snuffler/snufflings/map/plates.kml \
      sources/pyrocko/src/gui/snuffler/snufflings/map/plates.kml
 
 # Declared here, immediately before the build, so a new commit stamp invalidates
-# nothing above it. The app reads both with `option_env!` (see
+# nothing above it.
+# The app reads both with `option_env!` (see
 # crates/snuffler-web-egui/src/view/about.rs) and shows them in its About window;
 # leaving them unset builds a stamp-less app, which is what a local build gets.
 ARG SNUFFLER_BUILD_DATE=""
 ARG SNUFFLER_GIT_COMMIT=""
-# Where the site will be mounted. Anything but "/" also needs the matching
-# subdirectory under nginx's root, which the final stage handles.
+# Where the site will be mounted.
+# Anything but "/" also needs the matching subdirectory under nginx's root, which
+# the final stage handles.
 ARG PUBLIC_URL="/"
 
 # Driven directly rather than through `task build`, so every knob that workflow
@@ -202,9 +211,9 @@ RUN if [ "${CARGO_PROFILE}" = release ]; then set -- --release; fi \
 # see docker/web/precompress.sh for what is compressed and why brotli + gzip is
 # the whole set.
 #
-# The two trees are compressed in SEPARATE stages so they cache separately. The
-# Pyodide runtime is 70 MB that changes when the runtime is rebuilt — a few times
-# a year — while the app changes every commit; sharing a layer would mean
+# The two trees are compressed in SEPARATE stages so they cache separately.
+# The Pyodide runtime is 70 MB that changes when the runtime is rebuilt — a few
+# times a year — while the app changes every commit; sharing a layer would mean
 # recompressing the runtime for every source edit.
 FROM --platform=$BUILDPLATFORM ${ALPINE_IMAGE} AS compressor
 RUN apk add --no-cache brotli gzip findutils
@@ -219,12 +228,12 @@ COPY docker/pyodide-mt/served/ /site/py-mt/
 RUN precompress /site/py-mt
 
 # nginx serves the precompressed files through brotli_static, which the official
-# image has no module for. Modules are built against the exact nginx source and
-# `--with-compat`, which is how the upstream image is configured, so the .so
-# loads into the stock binary.
+# image has no module for.
+# Modules are built against the exact nginx source and `--with-compat`, which is
+# how the upstream image is configured, so the .so loads into the stock binary.
 # This is the one stage that must run on the TARGET platform — a shared object is
-# architecture-specific — but it is keyed only on the nginx version and the
-# module pin, so it is built about as often as those change.
+# architecture-specific — but it is keyed only on the nginx version and the module
+# pin, so it is built about as often as those change.
 FROM ${NGINX_IMAGE} AS nginx-modules
 ARG NGX_BROTLI_REF
 RUN <<'EOF'

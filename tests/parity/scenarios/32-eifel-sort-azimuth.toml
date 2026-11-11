@@ -4,10 +4,10 @@ dataset = "eifel"
 tiers = [1]
 load = ["events", "responses"]
 
-# The Eifel networks surround their events, so the azimuth ring is fully
-# populated and every wrap, tie-break and no-coordinates placement choice is
-# exercised at once. The sample data itself still has to match: sorting decides
-# where a track goes, never what is drawn on it.
+# The Eifel networks surround their events, so the azimuth ring is fully populated and
+# every wrap, tie-break and no-coordinates placement choice is exercised at once.
+# The sample data itself still has to match: sorting decides where a track goes, never
+# what is drawn on it.
 [state]
 sort = "azimuth"
 

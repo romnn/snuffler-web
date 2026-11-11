@@ -1,32 +1,41 @@
 #!/usr/bin/env python3
-"""buf plugin: generate a typed `BridgeServicer` Protocol + `dispatch()` for the
-Pyodide bridge, from the `BridgeService` defined in the .proto.
+"""buf plugin: generate the typed bridge plumbing from the `BridgeService` in the .proto.
 
-The output imports no grpc runtime (grpcio is not in Pyodide), so it loads in the
-worker. `dispatch()` parses each request into its typed message, calls the typed
-servicer method (proto in, proto out), packs the matching `BridgeResult` oneof
-variant — the variant is read from the BridgeResult descriptor, not hardcoded —
-and wraps everything in the error-as-proto failsafe. bridge.py implements the
-`BridgeServicer` methods; there is no hand-written dispatch table.
+It writes two files:
+
+- `bridge_dispatch.py`: a typed `BridgeServicer` Protocol and `dispatch()`.
+  `dispatch()` parses each request into its typed message, calls the typed
+  servicer method (proto in, proto out), packs the matching `BridgeResult` oneof
+  variant, and wraps everything in the error-as-proto failsafe.
+  The variant is read from the BridgeResult descriptor, not hardcoded.
+  It imports no grpc runtime (grpcio is not in Pyodide), so it loads in the worker.
+  `snuffler_bridge.service` implements the `BridgeServicer` methods; there is no
+  hand-written dispatch table.
+- `bridge_methods.ts`: the rpc ids as a closed TypeScript union, with each rpc's
+  activity lane.
 """
 
 import sys
+from typing import Any
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.compiler import plugin_pb2
 
-# Responses paired with the out-of-band zero-copy float32 buffer (same convention
-# the Rust ServiceGenerator uses): the handler returns (message, ys).
-BUFFER_RESPONSES = {"ViewMeta"}
+# Responses paired with the out-of-band zero-copy float32 sample buffer (the same
+# convention the Rust ServiceGenerator uses): the handler returns (message, ys).
+SAMPLE_BUFFER_RESPONSES = {"ViewMeta"}
+
+# The activity fields that must not be left UNSPECIFIED on any rpc.
+REQUIRED_ACTIVITY_FIELDS = ("label", "lane", "policy", "session_access", "cancellation")
 
 
 def camel_to_snake(name: str) -> str:
-    out = []
-    for i, ch in enumerate(name):
-        if ch.isupper() and i > 0:
-            out.append("_")
-        out.append(ch.lower())
-    return "".join(out)
+    snake = []
+    for index, char in enumerate(name):
+        if char.isupper() and index > 0:
+            snake.append("_")
+        snake.append(char.lower())
+    return "".join(snake)
 
 
 def lower_camel(name: str) -> str:
@@ -35,10 +44,15 @@ def lower_camel(name: str) -> str:
     return name[:1].lower() + name[1:]
 
 
-def activity_options(req: plugin_pb2.CodeGeneratorRequest) -> tuple[object, object]:
+def activity_options(request: plugin_pb2.CodeGeneratorRequest) -> tuple[object, object]:
+    """The MethodOptions class and the `snuffler.bridge.v1.activity` extension.
+
+    Both come from a pool built from the request's own files, so the extension
+    resolves without importing the generated activity module.
+    """
     pool = descriptor_pool.DescriptorPool()
     pool.AddSerializedFile(descriptor_pb2.DESCRIPTOR.serialized_pb)
-    for proto in req.proto_file:
+    for proto in request.proto_file:
         if proto.name == "google/protobuf/descriptor.proto":
             continue
         pool.AddSerializedFile(proto.SerializeToString())
@@ -53,88 +67,91 @@ def enum_name(message: object, field: str) -> str:
     return descriptor.values_by_number[getattr(message, field)].name
 
 
-def main() -> None:
-    req = plugin_pb2.CodeGeneratorRequest.FromString(sys.stdin.buffer.read())
-    resp = plugin_pb2.CodeGeneratorResponse()
-    resp.supported_features = plugin_pb2.CodeGeneratorResponse.FEATURE_PROTO3_OPTIONAL
+def bridge_methods(
+    request: plugin_pb2.CodeGeneratorRequest,
+) -> tuple[str, list[dict[str, Any]], set[str]] | None:
+    """Every BridgeService rpc, described for both generators.
 
-    # Fully-qualified message name -> (module alias, class name).
-    msg_module: dict[str, str] = {}
-    msg_class: dict[str, str] = {}
+    Returns the proto package, one dict per rpc, and the `_pb2` modules the
+    Python dispatch must import; None when the request holds no BridgeService.
+    Exits with an error for an rpc without a complete activity option, or whose
+    response has no BridgeResult variant.
+    """
+    # Fully qualified message name -> its `_pb2` module and class name.
+    message_module: dict[str, str] = {}
+    message_class: dict[str, str] = {}
     service = None
     service_file = None
     bridge_result = None
-    for f in req.proto_file:
-        stem = f.name.rsplit("/", 1)[-1]
-        if stem.endswith(".proto"):
-            stem = stem[:-6]
-        alias = stem + "_pb2"
-        prefix = ("." + f.package) if f.package else ""
-        for m in f.message_type:
-            fq = f"{prefix}.{m.name}"
-            msg_module[fq] = alias
-            msg_class[fq] = m.name
-            if m.name == "BridgeResult":
-                bridge_result = m
-        for s in f.service:
-            if s.name == "BridgeService":
-                service = s
-                service_file = f
+    for proto_file in request.proto_file:
+        stem = proto_file.name.rsplit("/", 1)[-1].removesuffix(".proto")
+        module = stem + "_pb2"
+        prefix = ("." + proto_file.package) if proto_file.package else ""
+        for message in proto_file.message_type:
+            full_name = f"{prefix}.{message.name}"
+            message_module[full_name] = module
+            message_class[full_name] = message.name
+            if message.name == "BridgeResult":
+                bridge_result = message
+        for candidate in proto_file.service:
+            if candidate.name == "BridgeService":
+                service = candidate
+                service_file = proto_file
 
     if service is None or bridge_result is None or service_file is None:
-        sys.stdout.buffer.write(resp.SerializeToString())
-        return
+        return None
 
-    pkg = service_file.package
-    pkg_path = pkg.replace(".", "/")
-    options_class, activity_extension = activity_options(req)
+    package = service_file.package
+    options_class, activity_extension = activity_options(request)
 
     # Response message class -> BridgeResult oneof field, read from the descriptor.
-    variant_field: dict[str, str] = {}
-    for fld in bridge_result.field:
-        if fld.type_name and fld.type_name in msg_class:
-            variant_field[msg_class[fld.type_name]] = fld.name
+    result_variant: dict[str, str] = {}
+    for field in bridge_result.field:
+        if field.type_name and field.type_name in message_class:
+            result_variant[message_class[field.type_name]] = field.name
 
     methods = []
     used_modules = {"bridge_pb2"}  # BridgeResult / BridgeError / Empty live here
-    for m in service.method:
-        options = options_class.FromString(m.options.SerializeToString())
+    for method in service.method:
+        # Activity option
+        options = options_class.FromString(method.options.SerializeToString())
         if not options.HasExtension(activity_extension):
-            raise SystemExit(f"BridgeService.{m.name}: missing required activity option")
+            raise SystemExit(f"BridgeService.{method.name}: missing required activity option")
         activity = options.Extensions[activity_extension]
-        empty_fields = [
-            field
-            for field in ("label", "lane", "policy", "session_access", "cancellation")
-            if not getattr(activity, field)
-        ]
+        empty_fields = [field for field in REQUIRED_ACTIVITY_FIELDS if not getattr(activity, field)]
         if empty_fields:
             raise SystemExit(
-                f"BridgeService.{m.name}: activity has empty/UNSPECIFIED "
+                f"BridgeService.{method.name}: activity has empty/UNSPECIFIED "
                 + ", ".join(empty_fields)
             )
-        req_mod, req_cls = msg_module[m.input_type], msg_class[m.input_type]
-        resp_mod, resp_cls = msg_module[m.output_type], msg_class[m.output_type]
-        variant = variant_field.get(resp_cls)
+
+        # Request and response types
+        request_module = message_module[method.input_type]
+        response_module = message_module[method.output_type]
+        response_class = message_class[method.output_type]
+        variant = result_variant.get(response_class)
         if variant is None:
-            raise SystemExit(f"BridgeService.{m.name}: {resp_cls} has no BridgeResult variant")
-        used_modules.add(req_mod)
-        used_modules.add(resp_mod)
+            raise SystemExit(
+                f"BridgeService.{method.name}: {response_class} has no BridgeResult variant"
+            )
+        used_modules.add(request_module)
+        used_modules.add(response_module)
+
         methods.append(
             {
-                "snake": camel_to_snake(m.name),
-                # protoc-gen-es localName — the key the TS BridgeMethod map uses.
-                "local": lower_camel(m.name),
-                # Canonical gRPC method id /package.Service/Method — the same
+                "python_name": camel_to_snake(method.name),
+                # protoc-gen-es localName: the key the TS BridgeMethod map uses.
+                "ts_name": lower_camel(method.name),
+                # Canonical gRPC method id /package.Service/Method: the same
                 # string the Rust client generates and the JS worker relays.
-                "wire": f"/{pkg}.{service.name}/{m.name}",
-                "req": f"{req_mod}.{req_cls}",
-                "resp": f"{resp_mod}.{resp_cls}",
-                "variant": variant,
-                "buffer": resp_cls in BUFFER_RESPONSES,
-                # Only the fields this language consumes are emitted (Python:
-                # the dispatcher's lane branch and mutating-session decision;
-                # TS: the worker's lane assertions). Every field was validated
-                # non-UNSPECIFIED above regardless.
+                "method_id": f"/{package}.{service.name}/{method.name}",
+                "request_type": f"{request_module}.{message_class[method.input_type]}",
+                "response_type": f"{response_module}.{response_class}",
+                "result_variant": variant,
+                "has_sample_buffer": response_class in SAMPLE_BUFFER_RESPONSES,
+                # Only the fields a generated file consumes: Python's lane branch
+                # and mutating-session decision, TS's lane assertions.
+                # Every field was validated non-UNSPECIFIED above regardless.
                 "activity": {
                     "lane": enum_name(activity, "lane").removeprefix("ACTIVITY_LANE_"),
                     "session_access": enum_name(activity, "session_access").removeprefix(
@@ -143,12 +160,19 @@ def main() -> None:
                 },
             }
         )
+    return package, methods, used_modules
 
+
+def python_dispatch(package: str, methods: list[dict[str, Any]], used_modules: set[str]) -> str:
+    """The source of `bridge_dispatch.py`."""
     out = []
+
+    # Header and imports
     out.append("# @generated by protoc-gen-snuffler-py from BridgeService. DO NOT EDIT.")
-    out.append("# A typed servicer Protocol + dispatch for the Pyodide bridge. No grpc runtime")
-    out.append("# (grpcio is not in Pyodide), so this imports cleanly in the worker. bridge.py")
-    out.append("# implements BridgeServicer; there is no hand-written dispatch table.")
+    out.append("# A typed servicer Protocol + dispatch for the Pyodide bridge.")
+    out.append("# No grpc runtime (grpcio is not in Pyodide), so this imports cleanly in the worker.")
+    out.append("# snuffler_bridge.service implements BridgeServicer; there is no hand-written")
+    out.append("# dispatch table.")
     out.append("from __future__ import annotations")
     out.append("")
     out.append("import inspect")
@@ -157,11 +181,13 @@ def main() -> None:
         "from typing import Any, Awaitable, Dict, Literal, NamedTuple, Protocol, Tuple, Union"
     )
     out.append("")
-    out.append(f"from {pkg} import {', '.join(sorted(used_modules))}")
+    out.append(f"from {package} import {', '.join(sorted(used_modules))}")
     out.append("")
     out.append("")
-    lane_values = sorted({mm["activity"]["lane"] for mm in methods})
-    access_values = sorted({mm["activity"]["session_access"] for mm in methods})
+
+    # Activity table
+    lane_values = sorted({method["activity"]["lane"] for method in methods})
+    access_values = sorted({method["activity"]["session_access"] for method in methods})
     out.append(f"ActivityLaneName = Literal[{', '.join(map(repr, lane_values))}]")
     out.append(f"SessionAccessName = Literal[{', '.join(map(repr, access_values))}]")
     out.append("")
@@ -172,15 +198,17 @@ def main() -> None:
     out.append("")
     out.append("")
     out.append("ACTIVITY_BY_METHOD: Dict[str, ActivityMeta] = {")
-    for mm in methods:
-        activity = mm["activity"]
+    for method in methods:
+        activity = method["activity"]
         out.append(
-            f'    "{mm["wire"]}": ActivityMeta({activity["lane"]!r}, '
+            f'    "{method["method_id"]}": ActivityMeta({activity["lane"]!r}, '
             f'{activity["session_access"]!r}),'
         )
     out.append("}")
     out.append("")
     out.append("")
+
+    # Servicer protocol
     out.append("class BridgeServicer(Protocol):")
     out.append('    """One method per BridgeService rpc: typed proto request in, typed proto')
     out.append("    response out. A handler may be sync or async (network rpcs fetch via")
@@ -189,12 +217,18 @@ def main() -> None:
     out.append("    None.")
     out.append('    """')
     out.append("")
-    for mm in methods:
-        base = f"Tuple[{mm['resp']}, Any]" if mm["buffer"] else mm["resp"]
-        ret = f"Union[{base}, Awaitable[{base}]]"
-        out.append(f"    def {mm['snake']}(self, request: {mm['req']}, data: Any) -> {ret}: ...")
+    for method in methods:
+        response = method["response_type"]
+        base = f"Tuple[{response}, Any]" if method["has_sample_buffer"] else response
+        returns = f"Union[{base}, Awaitable[{base}]]"
+        out.append(
+            f"    def {method['python_name']}(self, request: {method['request_type']}, "
+            f"data: Any) -> {returns}: ..."
+        )
     out.append("")
     out.append("")
+
+    # Result envelopes
     out.append("def cancelled_result() -> Dict[str, Any]:")
     out.append("    result = bridge_pb2.BridgeResult()")
     out.append("    result.cancelled.SetInParent()")
@@ -209,6 +243,8 @@ def main() -> None:
     out.append('    return {"result": result.SerializeToString()}')
     out.append("")
     out.append("")
+
+    # Dispatch
     out.append("async def dispatch(")
     out.append("    servicer: BridgeServicer, method: str, request: bytes, data: Any")
     out.append(") -> Dict[str, Any]:")
@@ -219,27 +255,26 @@ def main() -> None:
     out.append('    """')
     out.append("    result = bridge_pb2.BridgeResult()")
     out.append("    try:")
-    for i, mm in enumerate(methods):
-        kw = "if" if i == 0 else "elif"
-        parse = f"{mm['req']}.FromString(request)"
-        # Distinct `<snake>_out` per method: a shared name would make mypy unify
+    for index, method in enumerate(methods):
+        keyword = "if" if index == 0 else "elif"
+        name = method["python_name"]
+        parse = f"{method['request_type']}.FromString(request)"
+        # Distinct variable names per method: a shared name would make mypy unify
         # the (different) message types across the if/elif branches and reject it.
-        out_var = f"{mm['snake']}_out"
-        out.append(f'        {kw} method == "{mm["wire"]}":')
-        out.append(f"            {out_var} = servicer.{mm['snake']}({parse}, data)")
-        out.append(f"            if inspect.isawaitable({out_var}):")
-        out.append(f"                {out_var} = await {out_var}")
-        if mm["buffer"]:
-            # Distinct names per buffer method: a shared one would make mypy unify
-            # the (different) message types across the if/elif branches.
-            msg_var, ys_var = f"{mm['snake']}_msg", f"{mm['snake']}_ys"
-            out.append(f"            {msg_var}, {ys_var} = {out_var}")
-            out.append(f"            result.{mm['variant']}.CopyFrom({msg_var})")
+        reply_var = f"{name}_out"
+        out.append(f'        {keyword} method == "{method["method_id"]}":')
+        out.append(f"            {reply_var} = servicer.{name}({parse}, data)")
+        out.append(f"            if inspect.isawaitable({reply_var}):")
+        out.append(f"                {reply_var} = await {reply_var}")
+        if method["has_sample_buffer"]:
+            message_var, samples_var = f"{name}_msg", f"{name}_ys"
+            out.append(f"            {message_var}, {samples_var} = {reply_var}")
+            out.append(f"            result.{method['result_variant']}.CopyFrom({message_var})")
             out.append(
-                f'            return {{"result": result.SerializeToString(), "buffer": {ys_var}}}'
+                f'            return {{"result": result.SerializeToString(), "buffer": {samples_var}}}'
             )
         else:
-            out.append(f"            result.{mm['variant']}.CopyFrom({out_var})")
+            out.append(f"            result.{method['result_variant']}.CopyFrom({reply_var})")
             out.append('            return {"result": result.SerializeToString()}')
     out.append('        raise KeyError("unknown bridge method: " + method)')
     out.append("    except KeyboardInterrupt:")
@@ -247,16 +282,17 @@ def main() -> None:
     out.append("    except Exception as exc:  # noqa: BLE001 — the whole point is to catch all")
     out.append("        return failure_result(exc)")
     out.append("")
+    return "\n".join(out)
 
-    f = resp.file.add()
-    f.name = f"{pkg_path}/bridge_dispatch.py"
-    f.content = "\n".join(out)
 
-    # Second output: the canonical gRPC method ids as a closed TS union, so the
-    # TypeScript bridge seam can type method params as BridgeMethodId instead of
-    # `string`. protoc-gen-es types the descriptor's typeName/name as plain
-    # `string`, so the literal ids can't be recovered from it — they must be
-    # generated here (the same source the Rust client and Python dispatch use).
+def typescript_methods(methods: list[dict[str, Any]]) -> str:
+    """The source of `bridge_methods.ts`.
+
+    protoc-gen-es types the descriptor's typeName/name as plain `string`, so the
+    literal ids cannot be recovered from its output.
+    They are generated here instead, from the same source the Rust client and
+    the Python dispatch use.
+    """
     ts = [
         "// @generated by pybuild/snuffler_py_plugin.py from BridgeService. DO NOT EDIT.",
         "// Canonical gRPC method ids (`/package.Service/Method`) for every BridgeService",
@@ -266,7 +302,7 @@ def main() -> None:
         "",
         "export const BridgeMethod = {",
     ]
-    ts += [f'  {mm["local"]}: "{mm["wire"]}",' for mm in methods]
+    ts += [f'  {method["ts_name"]}: "{method["method_id"]}",' for method in methods]
     ts += [
         "} as const;",
         "",
@@ -279,9 +315,9 @@ def main() -> None:
         "",
         "export const BridgeActivity = {",
     ]
-    for mm in methods:
-        activity = mm["activity"]
-        ts.append(f"  [BridgeMethod.{mm['local']}]: {{ lane: {activity['lane']!r} }},")
+    for method in methods:
+        lane = method["activity"]["lane"]
+        ts.append(f"  [BridgeMethod.{method['ts_name']}]: {{ lane: {lane!r} }},")
     ts += [
         "} as const;",
         "",
@@ -290,11 +326,30 @@ def main() -> None:
         "export type ActivityMeta = (typeof BridgeActivity)[BridgeMethodId];",
         "",
     ]
-    tf = resp.file.add()
-    tf.name = f"{pkg_path}/bridge_methods.ts"
-    tf.content = "\n".join(ts)
+    return "\n".join(ts)
 
-    sys.stdout.buffer.write(resp.SerializeToString())
+
+def main() -> None:
+    request = plugin_pb2.CodeGeneratorRequest.FromString(sys.stdin.buffer.read())
+    response = plugin_pb2.CodeGeneratorResponse()
+    response.supported_features = plugin_pb2.CodeGeneratorResponse.FEATURE_PROTO3_OPTIONAL
+
+    described = bridge_methods(request)
+    if described is not None:
+        package, methods, used_modules = described
+        package_path = package.replace(".", "/")
+
+        dispatch_file = response.file.add()
+        dispatch_file.name = f"{package_path}/bridge_dispatch.py"
+        dispatch_file.content = python_dispatch(package, methods, used_modules)
+
+        # The rpc ids as a closed TS union, so the TypeScript bridge seam can type
+        # method params as BridgeMethodId instead of `string`.
+        methods_file = response.file.add()
+        methods_file.name = f"{package_path}/bridge_methods.ts"
+        methods_file.content = typescript_methods(methods)
+
+    sys.stdout.buffer.write(response.SerializeToString())
 
 
 if __name__ == "__main__":

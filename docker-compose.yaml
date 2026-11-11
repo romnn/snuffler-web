@@ -2,7 +2,7 @@
 # same two ports micromux uses, so a browser pointed at http://127.0.0.1:17683
 # behaves exactly as it does against `task serve`.
 #
-# The ports are not cosmetic. web/bridge.py only routes FDSN requests through the
+# The ports are not cosmetic. web/snuffler_bridge/fdsn.py only routes FDSN requests through the
 # proxy when the page itself is on a localhost origin, and both it and
 # snuffler-web-core hardcode 127.0.0.1:17684 as the proxy — which the BROWSER
 # resolves, not the web container. So the proxy has to be published on the host's

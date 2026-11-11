@@ -1,17 +1,17 @@
 """``known_gaps.toml``, loaded, validated, and enforced.
 
-The register is the one file every tier answers to, and this module is the one
-reader it has. It loads all four entry kinds — ``[[numeric]]`` and ``[[defect]]``
-for the tier-1/3 divergence excuses, ``[[feature]]`` for the tier-2 allowlist,
-``[[alias]]`` for the vocabulary map — and owns the two judgments the runners
-share: :func:`evaluate`, which holds a scenario's findings against the entries it
-named, and :class:`Allowlist`, which excuses missing commands and fails stale
-excuses.
+The register is the one file every tier answers to, and this module is the one reader it
+has.
+It loads all four entry kinds — ``[[numeric]]`` and ``[[defect]]`` for the tier-1/3
+divergence excuses, ``[[feature]]`` for the tier-2 allowlist, ``[[alias]]`` for the
+vocabulary map — and owns the two judgments the runners share: :func:`evaluate`, which
+holds a scenario's findings against the entries it named, and :class:`Allowlist`, which
+excuses missing commands and fails stale excuses.
 
 The rule both judgments enforce is the same: an entry has to keep applying.
-A divergence nobody wrote down fails the run, and so does a documented
-divergence that stopped happening — that second half is what keeps the register
-describing the present instead of rotting into folklore.
+A divergence nobody wrote down fails the run, and so does a documented divergence that
+stopped happening — that second half is what keeps the register describing the present
+instead of rotting into folklore.
 """
 
 from __future__ import annotations
@@ -36,10 +36,11 @@ def normalize(text: str) -> str:
     """Reduce a label to the command it names.
 
     The two frontends were written years apart by different people, so they differ in
-    ellipsis character, trailing colon, capitalisation and Qt's '&' accelerators
-    without differing in what the command *is*. Everything past that — 'Open waveform
-    files...' against 'Open files…' — is a real wording choice, and belongs in the
-    alias table where a human decided it, not in a regex.
+    ellipsis character, trailing colon, capitalisation and Qt's '&' accelerators without
+    differing in what the command *is*.
+    Everything past that — 'Open waveform files...' against 'Open files…' — is a real
+    wording choice, and belongs in the alias table where a human decided it, not in a
+    regex.
     """
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("…", "...").replace("&", "")
@@ -61,8 +62,8 @@ class AliasMap(Dict[str, str]):
 
     An alias that no diff ever applies is dead weight that silently stops describing
     anything, so :mod:`run_inventory` reports the unused remainder after its run.
-    Only hits are recorded — a miss falling back to the key itself is the normal
-    case, not a use.
+    Only hits are recorded — a miss falling back to the key itself is the normal case,
+    not a use.
     """
 
     def __init__(self, entries: Dict[str, str]) -> None:
@@ -83,11 +84,12 @@ class Allowlist:
     """The ``[[feature]]`` half of the register: excuses, and how to spend them.
 
     An entry names either one exact Qt path or, with ``qt_prefix``, every path that
-    starts with it — a whole submenu, or a family of sibling commands that differ
-    only by a suffix. The per-snuffling help pages are twenty near-identical entries
-    sharing one reason, and writing them out twenty times would obscure rather than
-    document. Either way an entry has to be *used*: one that stops matching anything
-    is stale and fails the run, which is what keeps the list describing the present.
+    starts with it — a whole submenu, or a family of sibling commands that differ only
+    by a suffix.
+    The per-snuffling help pages are twenty near-identical entries sharing one reason,
+    and writing them out twenty times would obscure rather than document.
+    Either way an entry has to be *used*: one that stops matching anything is stale and
+    fails the run, which is what keeps the list describing the present.
     """
 
     def __init__(self, entries: List[Dict[str, Any]]) -> None:
@@ -120,10 +122,11 @@ class Register:
     """Everything ``known_gaps.toml`` declares, parsed once and validated.
 
     An entry anywhere in the register is either signed off — the ``why`` carries a
-    justification for the difference — or marked ``todo = true``: open work the
-    diff excuses without mistaking it for a decision. ``manual`` entries describe
-    differences no tier can observe yet; nothing enforces them, which is why they
-    live in their own kind instead of rotting inside an enforced one.
+    justification for the difference — or marked ``todo = true``: open work the diff
+    excuses without mistaking it for a decision.
+    ``manual`` entries describe differences no tier can observe yet; nothing enforces
+    them, which is why they live in their own kind instead of rotting inside an enforced
+    one.
     """
 
     def __init__(
@@ -219,10 +222,11 @@ class Register:
 
         :func:`evaluate` only ever looks at the entries a scenario listed in its
         ``expect_divergence``, so an entry nothing names is inert: it excuses no
-        divergence and never fails when the divergence stops happening. That is
-        indistinguishable from an entry that has quietly rotted, and it is exactly
-        what ``[[manual]]`` exists to hold instead. Meaningful only over a full
-        run, where ``named`` really is every scenario's declaration.
+        divergence and never fails when the divergence stops happening.
+        That is indistinguishable from an entry that has quietly rotted, and it is
+        exactly what ``[[manual]]`` exists to hold instead.
+        Meaningful only over a full run, where ``named`` really is every scenario's
+        declaration.
         """
         claimed = set(named)
         return sorted(key for key in self.entries if key not in claimed)
@@ -251,7 +255,8 @@ def evaluate(
     """Hold one scenario's findings against the entries it named.
 
     Returns ``(problems, defects_hit)``; an empty ``problems`` means the scenario
-    behaves exactly as documented. Judged finding by finding, in both directions:
+    behaves exactly as documented.
+    Judged finding by finding, in both directions:
 
     * every failing finding needs a named entry that covers it — its kind, and its
       subject where the entry scopes one — or the divergence is unexplained;
@@ -267,8 +272,8 @@ def evaluate(
     The excuse then asserts a *shape*, not just an existence: every failing sample
     finding the entry covers must vanish once the per-segment constant offset is
     removed, so a second, unrelated sample defect cannot hide behind the entry.
-    Scoping and shape both aim at the suite's own recorded failure mode — an
-    entry masking every other difference in the checks it claims.
+    Scoping and shape both aim at the suite's own recorded failure mode — an entry
+    masking every other difference in the checks it claims.
     """
     findings = list(findings)
     problems: List[str] = []

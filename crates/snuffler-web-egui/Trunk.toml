@@ -23,8 +23,8 @@ dist = "../../dist"
 # answered with 304, which matters for the ~54 MB py-mt runtime.
 # Several assets have a stable URL but build-specific contents:
 # `snippets/.../workerHelpers.js` has the hashed wasm module name baked into it by
-# scripts/trunk-post-build.sh, and bridge_worker.js, ort_worker.js and bridge.py
-# are regenerated in place.
+# scripts/trunk-post-build.sh, and bridge_worker.js, ort_worker.js and the Python
+# bridge package (web/snuffler_bridge/) are regenerated in place.
 # Trunk sends no cache validators, so heuristic freshness could reuse an old copy
 # after a rebuild; a stale workerHelpers.js then links fresh wasm against an old JS
 # shim and the rayon pool dies with a LinkError.
@@ -80,45 +80,56 @@ stage = "pre_build"
 command = "bash"
 command_arguments = [
     "-c",
-    "set -eu; cd \"$TRUNK_SOURCE_DIR/../..\"; buf generate; bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser; bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser; bun build web/ort_worker.ts --outfile web/gen/ort_worker.js --format esm --target browser",
+    '''
+set -eu
+cd "$TRUNK_SOURCE_DIR/../.."
+buf generate
+bun build web/bridge.ts --outfile web/gen/bridge.js --format esm --target browser
+bun build web/bridge_worker.ts --outfile web/gen/bridge_worker.js --format esm --target browser
+bun build web/ort_worker.ts --outfile web/gen/ort_worker.js --format esm --target browser
+''',
 ]
 
-# The post-build work is kept in one ordered hook because Trunk runs multiple
-# same-stage hooks concurrently. The script stages onnxruntime-web's WebGPU/JSEP
-# runtime and the tiny SeisBench manifest, stages the model weights the default
-# embed-data build fetches locally, optimizes the fresh app wasm from the staging
-# directory, patches wasm-bindgen-rayon's worker import, and stages the optional
-# threaded Pyodide runtime.
+# The post-build work is kept in one ordered hook, because Trunk runs multiple
+# same-stage hooks concurrently.
+# The script, in order:
 #
-# wasm-opt runs as a post-build hook rather than Trunk's built-in pass: the
-# edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory, sign-ext,
-# …) and wasm-opt must be told to accept them with `-all`, which Trunk's built-in
-# invocation does not pass. binaryen is pinned via mise
-# (aqua:WebAssembly/binaryen in mise.toml) for reproducibility, and invoked
+# - stages onnxruntime-web's WebGPU/JSEP runtime and the tiny SeisBench manifest;
+# - stages the model weights the default embed-data build fetches locally;
+# - optimizes the fresh app wasm from the staging directory;
+# - patches wasm-bindgen-rayon's worker import;
+# - stages the optional threaded Pyodide runtime.
+#
+# wasm-opt runs here rather than as Trunk's built-in pass.
+# The edition-2024 rustc emits post-MVP WebAssembly features (bulk-memory,
+# sign-ext, …), and wasm-opt must be told to accept them with `-all`, which
+# Trunk's built-in invocation does not pass.
+# binaryen is pinned via mise (aqua:WebAssembly/binaryen in mise.toml), and invoked
 # through `mise exec` because the emsdk-provided wasm-opt on PATH is far too old.
-# `-Oz` optimizes the wasm for size (download size matters more than CPU here —
-# all heavy computation runs in Pyodide). It runs for release builds only; the
-# script skips it otherwise, since it is ~60s of pure latency in the serve watch
-# loop for a size win nobody downloads over localhost.
+# `-Oz` optimizes for size: download size matters more than CPU here, since all
+# heavy computation runs in Pyodide.
+# It runs for release builds only, since it is ~60s of pure latency in the serve
+# watch loop for a size win nobody downloads over localhost.
 #
-# Point wasm-bindgen-rayon's worker at the real (hashed) main JS module. Its
-# workerHelpers.js does `import('../../..')`, which assumes a wasm-pack `pkg/`
-# layout where that resolves to the package's main module; under Trunk's flat,
-# hashed layout it resolves to the site root (index.html) and the worker fails to
-# load, so the rayon pool never comes up.
-# The hook rewrites it to the actual `snuffler-web-<hash>.js`.
-# No-op on the non-threaded build (no workerHelpers).
-# The threaded build also passes --no-sri (see taskfile.yaml) so this edit doesn't
-# trip Trunk's subresource-integrity hash for the snippet.
+# The worker patch points wasm-bindgen-rayon's worker at the real (hashed) main JS
+# module.
+# Its workerHelpers.js does `import('../../..')`, which assumes a wasm-pack `pkg/`
+# layout where that resolves to the package's main module.
+# Under Trunk's flat, hashed layout it resolves to the site root (index.html), the
+# worker fails to load, and the rayon pool never comes up.
+# The hook rewrites it to the actual `snuffler-web-<hash>.js`, and is a no-op on
+# the non-threaded build (no workerHelpers).
+# The threaded build also passes --no-sri (see taskfile.yaml), so this edit does
+# not trip Trunk's subresource-integrity hash for the snippet.
 #
-# The threaded Pyodide 314 runtime + wheels are staged into py-mt/ (loaded by
-# web/bridge_worker.js, which has no other runtime to fall back to). This is a
-# post-build copy rather than a `copy-dir` asset because the ~54 MB directory is a
-# gitignored build artifact (docker/pyodide-mt/stage-web.sh) and so is absent on a
-# fresh checkout — where the build still succeeds but the app cannot boot past
-# "Downloading Python runtime…" until `task pyodide:fetch` has downloaded the
-# deployed runtime (or build-all.sh has built one). The copy is skipped per file
-# when unchanged, to keep rebuilds cheap.
+# The threaded Pyodide 314 runtime and wheels are staged into py-mt/, loaded by
+# web/bridge_worker.js, which has no other runtime to fall back to.
+# This is a post-build copy rather than a `copy-dir` asset because the ~54 MB
+# directory is a gitignored build artifact (docker/pyodide-mt/stage-web.sh).
+# On a fresh checkout it is absent: the build still succeeds, but the app cannot
+# boot past "Downloading Python runtime…" until `task pyodide:fetch` has
+# downloaded the deployed runtime (or build-all.sh has built one).
+# The copy is skipped per file when unchanged, to keep rebuilds cheap.
 [[hooks]]
 stage = "post_build"
 command = "bash"

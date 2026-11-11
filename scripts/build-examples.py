@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """Pack ``examples/<slug>/`` into the bundles the app fetches on demand.
 
-One zip per dataset plus an ``examples.json`` index, written where the trunk
-post-build hook can stage them into ``assets/examples/``. Nothing here is bundled
-into the wasm: the index is a few hundred bytes fetched when the Examples menu is
-first opened, and a dataset's bytes cross the network only when someone asks for
-that dataset.
+One zip per dataset plus an ``examples.json`` index, written where the trunk post-build
+hook can stage them into ``assets/examples/``.
+Nothing here is bundled into the wasm: the index is a few hundred bytes fetched when the
+Examples menu is first opened, and a dataset's bytes cross the network only when someone
+asks for that dataset.
 
-Why a zip rather than the loose files. A dataset is never one file — waveforms plus
-per-network StationXML plus an event catalogue — so eifel would be thirteen fetches
-to load one example. It also compresses: eifel's 44 MB of files ship as 20 MB,
-almost all of it wrung out of the StationXML. And a bundle is a thing a lecturer can
-hand out, which is why the loader accepts any zip of data files, not only these.
+Why a zip rather than the loose files.
+A dataset is never one file — waveforms plus per-network StationXML plus an event
+catalogue — so eifel would be thirteen fetches to load one example.
+It also compresses: eifel's 44 MB of files ship as 20 MB, almost all of it wrung out of
+the StationXML.
+And a bundle is a thing a lecturer can hand out, which is why the loader accepts any zip
+of data files, not only these.
 
-The output is deterministic — fixed member timestamps, fixed permissions, sorted
-member order — so rebuilding from unchanged inputs produces byte-identical zips and
-nothing downstream re-uploads or re-downloads. Files are only rewritten when their
-contents actually change, so the staging hook's copy-if-newer stays quiet too.
+The output is deterministic — fixed member timestamps, fixed permissions, sorted member
+order — so rebuilding from unchanged inputs produces byte-identical zips and nothing
+downstream re-uploads or re-downloads.
+Files are only rewritten when their contents actually change, so the staging hook's
+copy-if-newer stays quiet too.
 
     python3 scripts/build-examples.py [--out DIR] [--force]
 """
@@ -42,9 +45,9 @@ DEFAULT_OUT = ROOT / "target" / "examples"
 # the dataset, not data for whoever loads it.
 NOT_DATA = frozenset({"example.toml"})
 
-# The zip epoch. Member mtimes are the one thing that would otherwise make two
-# builds of identical bytes differ, and a dataset's real timestamps are already
-# recorded in the data itself.
+# The zip epoch.
+# Member mtimes are the one thing that would otherwise make two builds of identical
+# bytes differ, and a dataset's real timestamps are already recorded in the data itself.
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 
 # rw-r--r--, as a zip external attribute.
@@ -107,9 +110,10 @@ def _write_if_changed(path: Path, payload: bytes) -> bool:
 def _up_to_date(target: Path, directory: Path, members: List[Path]) -> bool:
     """Whether an existing bundle is newer than everything that goes into it.
 
-    Compressing 44 MB of eifel at level 9 costs two and a half seconds, and this
-    runs from the trunk post-build hook — on every rebuild in the watch loop, where
-    that is pure latency. Deciding on mtimes turns it into a few file stats.
+    Compressing 44 MB of eifel at level 9 costs two and a half seconds, and this runs
+    from the trunk post-build hook — on every rebuild in the watch loop, where that is
+    pure latency.
+    Deciding on mtimes turns it into a few file stats.
 
     Mtimes can lie (a checkout of an older revision, a tool that preserves them),
     so `--force` repacks unconditionally; the deterministic output means a needless
@@ -122,7 +126,7 @@ def _up_to_date(target: Path, directory: Path, members: List[Path]) -> bool:
 
 
 def build(out: Path, force: bool = False) -> List[Dict[str, Any]]:
-    directories = sorted(p for p in EXAMPLES.iterdir() if p.is_dir())
+    directories = sorted(path for path in EXAMPLES.iterdir() if path.is_dir())
     if not directories:
         raise SystemExit(f"no example datasets under {EXAMPLES.relative_to(ROOT)}")
 
@@ -140,9 +144,9 @@ def build(out: Path, force: bool = False) -> List[Dict[str, Any]]:
             "blurb": str(meta["blurb"]).strip(),
             "characteristics": [str(item) for item in meta.get("characteristics", [])],
             "citation": str(meta.get("citation", "")).strip(),
-            # The view that shows this dataset's point, applied on load. Only the
-            # bundle carries it — the index describes what an example is, not how
-            # to open it.
+            # The view that shows this dataset's point, applied on load.
+            # Only the bundle carries it — the index describes what an example is, not
+            # how to open it.
             "state": dict(meta.get("state", {})),
             "files": [str(rel) for rel in members],
         }

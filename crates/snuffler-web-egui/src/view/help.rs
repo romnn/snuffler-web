@@ -9,7 +9,7 @@ const HELP_KEY_ROWS: &[(&str, &str)] = &[
     ),
     (
         "R",
-        "Reload the Python snuffling code (bridge.py), keeping the loaded pile",
+        "Reload the Python snuffling code, keeping the loaded pile",
     ),
     ("f", "Toggle full screen mode"),
     ("_", "Toggle Demean"),

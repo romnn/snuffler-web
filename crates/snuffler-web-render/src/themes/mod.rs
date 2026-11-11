@@ -41,13 +41,13 @@
 //! The first three hues are designed as distinct lead pigments, with four supporting
 //! colours completing the family rather than an evenly spaced colour wheel.
 
-pub mod cool;
-pub mod earthy;
-pub mod forest;
-pub mod house;
-pub mod sky;
+pub mod afterglow;
+pub mod daybreak;
+pub mod fieldbook;
+pub mod fjord;
+pub mod herbarium;
+pub mod kiln;
 pub mod snuffler_qt;
-pub mod sunset;
 
 use ecolor::Color32;
 use snuffler_web_core::markers::MarkerPalette;
@@ -78,12 +78,12 @@ pub(crate) fn boxes(fills: [Rgb; 7]) -> [BoxStyle; 7] {
 /// palette's own ([`Self::with_ink`]) and supplies everything coloured.
 pub(crate) struct WebCanvas {
     theme: Theme,
-    bg: Rgb,
+    background: Rgb,
     trace: Rgb,
     grid: Rgb,
     zero: Rgb,
     axis_text: Rgb,
-    sep: Rgb,
+    separator: Rgb,
 }
 
 /// The shared canvas for a polarity: white or near-black, with neutral chrome held
@@ -93,21 +93,21 @@ pub(crate) const fn canvas(theme: Theme) -> WebCanvas {
     match theme {
         Theme::Light => WebCanvas {
             theme,
-            bg: (255, 255, 255),
+            background: (255, 255, 255),
             trace: (24, 26, 32),
             grid: (228, 230, 235),
             zero: (196, 200, 208),
             axis_text: (52, 56, 66),
-            sep: (206, 210, 218),
+            separator: (206, 210, 218),
         },
         Theme::Dark => WebCanvas {
             theme,
-            bg: (18, 19, 24),
+            background: (18, 19, 24),
             trace: (232, 234, 240),
             grid: (40, 43, 52),
             zero: (62, 66, 78),
             axis_text: (170, 176, 190),
-            sep: (52, 56, 66),
+            separator: (52, 56, 66),
         },
     }
 }
@@ -129,24 +129,24 @@ impl WebCanvas {
             Theme::Light => (MarkerPalette::SNUFFLER_WEB_LIGHT, 46),
             Theme::Dark => (MarkerPalette::SNUFFLER_WEB_DARK, 52),
         };
-        let (bg_r, bg_g, bg_b) = self.bg;
+        let (bg_r, bg_g, bg_b) = self.background;
         let (ink_r, ink_g, ink_b) = self.trace;
         Palette {
             theme: self.theme,
-            bg: rgb(self.bg),
+            background: rgb(self.background),
             trace: rgb(self.trace),
             grid: rgb(self.grid),
             zero: rgb(self.zero),
             axis_text: rgb(self.axis_text),
-            sep: rgb(self.sep),
-            label_bg: Color32::from_rgba_unmultiplied(bg_r, bg_g, bg_b, 214),
-            label_pad: 3.0,
+            separator: rgb(self.separator),
+            label_background: Color32::from_rgba_unmultiplied(bg_r, bg_g, bg_b, 214),
+            label_padding: 3.0,
             label_rounding: 3.0,
             cursor: Color32::from_rgba_unmultiplied(ink_r, ink_g, ink_b, cursor_alpha),
             strokes: ramp.map(rgb),
             boxes,
             markers,
-            marker_label_bg: rgb(self.bg),
+            marker_label_background: rgb(self.background),
         }
     }
 }
@@ -208,11 +208,11 @@ mod tests {
         for wiggle in WiggleTheme::ALL {
             for theme in Theme::ALL {
                 let pal = palette(theme, wiggle);
-                let ink = contrast(pal.trace, pal.bg);
+                let ink = contrast(pal.trace, pal.background);
                 assert!(ink >= 7.0, "{wiggle:?}/{theme:?}: ink is {ink:.2}");
                 for (index, style) in pal.boxes.iter().enumerate() {
-                    let fill = over(style.fill, pal.bg);
-                    let tint = contrast(fill, pal.bg);
+                    let fill = over(style.fill, pal.background);
+                    let tint = contrast(fill, pal.background);
                     assert!(
                         (1.08..2.6).contains(&tint),
                         "{wiggle:?}/{theme:?}: box {index} fill is {tint:.2}"
@@ -262,20 +262,20 @@ mod tests {
                     chroma >= 0.06,
                     "{wiggle:?}/{theme:?}: stroke {index} lost its colour: {chroma:.3}"
                 );
-                let ink = contrast(*stroke, pal.bg);
+                let ink = contrast(*stroke, pal.background);
                 assert!(
                     ink >= 4.5,
                     "{wiggle:?}/{theme:?}: stroke {index} is {ink:.2}"
                 );
                 // Ink is darker than a light canvas and lighter than a dark one.
-                let darker = relative_luminance(*stroke) < relative_luminance(pal.bg);
+                let darker = relative_luminance(*stroke) < relative_luminance(pal.background);
                 assert_eq!(
                     darker,
                     theme == Theme::Light,
                     "{wiggle:?}/{theme:?}: stroke {index} is not ink"
                 );
                 for style in &pal.boxes {
-                    let through = contrast(*stroke, over(style.fill, pal.bg));
+                    let through = contrast(*stroke, over(style.fill, pal.background));
                     assert!(
                         through >= over_fill_floor,
                         "{wiggle:?}/{theme:?}: stroke {index} over a box is {through:.2}"
@@ -302,7 +302,7 @@ mod tests {
             let fills: Vec<Color32> = pal
                 .boxes
                 .iter()
-                .map(|style| over(style.fill, pal.bg))
+                .map(|style| over(style.fill, pal.background))
                 .collect();
             let boxes = worst_pair(&fills);
             assert!(
@@ -348,12 +348,15 @@ mod tests {
         // The zero line is a data reference and reads at every step; the separator
         // and grid are decoration and only have to be there; axis text is read.
         for (wiggle, theme, pal) in web_palettes() {
-            let zero = contrast(pal.zero, pal.bg);
-            let sep = contrast(pal.sep, pal.bg);
-            let grid = contrast(pal.grid, pal.bg);
-            let axis = contrast(pal.axis_text, pal.bg);
+            let zero = contrast(pal.zero, pal.background);
+            let separator = contrast(pal.separator, pal.background);
+            let grid = contrast(pal.grid, pal.background);
+            let axis = contrast(pal.axis_text, pal.background);
             assert!(zero >= 1.3, "{wiggle:?}/{theme:?}: zero line is {zero:.2}");
-            assert!(sep >= 1.2, "{wiggle:?}/{theme:?}: separator is {sep:.2}");
+            assert!(
+                separator >= 1.2,
+                "{wiggle:?}/{theme:?}: separator is {separator:.2}"
+            );
             assert!(grid >= 1.1, "{wiggle:?}/{theme:?}: grid is {grid:.2}");
             assert!(axis >= 4.5, "{wiggle:?}/{theme:?}: axis text is {axis:.2}");
         }
@@ -444,8 +447,8 @@ mod tests {
             for kind in 0..8u8 {
                 let idle = pal.markers.kind(kind, false);
                 let lit = pal.markers.kind(kind, true);
-                let idle_contrast = contrast(idle, pal.bg);
-                let lit_contrast = contrast(lit, pal.bg);
+                let idle_contrast = contrast(idle, pal.background);
+                let lit_contrast = contrast(lit, pal.background);
                 assert!(
                     idle_contrast >= idle_floor,
                     "{wiggle:?}/{theme:?}: idle kind {kind} is {idle_contrast:.2}"
@@ -469,7 +472,7 @@ mod tests {
         // frames in snuffler's box_styles order, and aluminium5 for the pen — on
         // white whichever polarity is asked for, since the theme pins its canvas.
         let pal = palette(Theme::Dark, WiggleTheme::SnufflerQt);
-        assert_eq!(pal.bg, Color32::WHITE);
+        assert_eq!(pal.background, Color32::WHITE);
         assert_eq!(pal.trace, Color32::from_rgb(85, 87, 83));
         assert_eq!(pal.strokes.first(), Some(&Color32::from_rgb(204, 0, 0)));
         assert_eq!(pal.strokes.last(), Some(&Color32::from_rgb(237, 212, 0)));

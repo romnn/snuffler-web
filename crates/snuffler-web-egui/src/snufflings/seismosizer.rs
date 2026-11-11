@@ -39,7 +39,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
             [160.0, 0.0],
             egui::Label::new("GF Store").halign(egui::Align::Max),
         );
-        egui::ComboBox::from_id_salt("seis_store")
+        egui::ComboBox::from_id_salt("seismosizer_store")
             .selected_text(if config.store.is_empty() {
                 "<none>"
             } else {
@@ -96,7 +96,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
     // shared fields under another type's bounds must not clamp them away.
     config.switch_source(&selected_source);
     let source = config.source_type.as_str();
-    param_row(ui, "Time [s]", &mut config.time, -50.0, 50.0);
+    param_row(ui, "Time [s]", &mut config.time_s, -50.0, 50.0);
     param_row(ui, "North shift [km]", &mut config.north_km, -50.0, 50.0);
     param_row(ui, "East shift [km]", &mut config.east_km, -50.0, 50.0);
     // Qt's point sources go 100 km above the datum — an elevated source is a
@@ -122,9 +122,9 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
         source,
         "DCSource" | "RectangularSource" | "PseudoDynamicRupture"
     ) {
-        param_row(ui, "Strike", &mut config.strike, -180.0, 180.0);
-        param_row(ui, "Dip", &mut config.dip, 0.0, 90.0);
-        param_row(ui, "Rake", &mut config.rake, -180.0, 180.0);
+        param_row(ui, "Strike", &mut config.strike_deg, -180.0, 180.0);
+        param_row(ui, "Dip", &mut config.dip_deg, 0.0, 90.0);
+        param_row(ui, "Rake", &mut config.rake_deg, -180.0, 180.0);
     }
     if source == "MTSource" {
         // Qt's relative components; scaled to the magnitude's moment in the
@@ -166,16 +166,16 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
         param_row(
             ui,
             "Rupture velocity [m/s]",
-            &mut config.velocity,
+            &mut config.rupture_velocity_m_s,
             0.0,
             5000.0,
         );
     }
     if source == "PseudoDynamicRupture" {
-        param_row(ui, "Slip [m]", &mut config.slip, 0.0, 20.0);
+        param_row(ui, "Slip [m]", &mut config.slip_m, 0.0, 20.0);
         param_row(ui, "Gamma", &mut config.gamma, 0.1, 1.5);
-        let mut nx = f64::from(config.nx);
-        let mut ny = f64::from(config.ny);
+        let mut nx = f64::from(config.patches_along_strike);
+        let mut ny = f64::from(config.patches_down_dip);
         param_row(ui, "nx", &mut nx, 1.0, 20.0);
         param_row(ui, "ny", &mut ny, 1.0, 20.0);
         #[expect(
@@ -184,8 +184,8 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
             reason = "slider-bounded 1..=20 whole patch counts"
         )]
         {
-            config.nx = nx.round() as u32;
-            config.ny = ny.round() as u32;
+            config.patches_along_strike = nx.round() as u32;
+            config.patches_down_dip = ny.round() as u32;
         }
         checkbox_row(ui, &mut config.tapered, "Tapered tractions");
     }
@@ -200,7 +200,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
     param_row(
         ui,
         "STF duration [s]",
-        &mut config.stf_duration,
+        &mut config.stf_duration_s,
         0.0,
         stf_max,
     );

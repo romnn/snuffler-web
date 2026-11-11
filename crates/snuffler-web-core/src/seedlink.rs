@@ -1,7 +1,10 @@
 //! `SeedLink` selector normalization and incremental packet framing.
 
+/// A `SeedLink` 3 packet: an 8-byte `SLnnnnnn` header and one 512-byte record.
 const V3_PACKET_BYTES: usize = 520;
 const V3_RECORD_OFFSET: usize = 8;
+/// A `SeedLink` 4 header: `SE`, format, subformat, payload length, sequence number
+/// and the station-id length; the station id and the payload follow.
 const V4_FIXED_HEADER_BYTES: usize = 17;
 /// Maximum incomplete packet retained between WebSocket messages.
 pub const MAX_FRAME_BUFFER_BYTES: usize = 8 * 1024 * 1024;
@@ -93,6 +96,7 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
     let mut records = Vec::new();
     let mut cursor = 0_usize;
     loop {
+        // Find the next header, skipping garbage
         let bytes = buffer.get(cursor..).unwrap_or_default();
         let bytes = if is_v3_header(bytes) || is_v4_header(bytes) {
             bytes
@@ -106,6 +110,7 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
             break;
         };
         if is_v3_header(bytes) {
+            // SeedLink 3 packet
             if bytes.len() < V3_PACKET_BYTES {
                 break;
             }
@@ -122,6 +127,7 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
             }
             cursor = cursor.saturating_add(V3_PACKET_BYTES);
         } else {
+            // SeedLink 4 packet
             let Some(length_bytes) = bytes
                 .get(4..8)
                 .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
@@ -149,6 +155,7 @@ pub fn drain_records(buffer: &mut Vec<u8>) -> Result<Vec<u8>, FrameError> {
             if bytes.len() < packet_len {
                 break;
             }
+            // Only miniSEED 2 and 3 data packets (`2D`, `3D`) carry records.
             if matches!(bytes.get(2), Some(b'2' | b'3')) && bytes.get(3) == Some(&b'D') {
                 let payload_start = V4_FIXED_HEADER_BYTES + station_len;
                 if let Some(payload) = bytes.get(payload_start..packet_len) {

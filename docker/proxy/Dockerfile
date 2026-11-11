@@ -1,21 +1,22 @@
 # syntax=docker/dockerfile:1
 
 # snuffler-web-proxy: the allowlisted CORS + WebSocket-to-TCP proxy the app talks
-# to for non-CORS FDSN endpoints and for SeedLink/ringserver streams. Same binary
-# micromux runs locally on 127.0.0.1:17684.
+# to for non-CORS FDSN endpoints and for SeedLink/ringserver streams.
+# Same binary micromux runs locally on 127.0.0.1:17684.
 #
 # Caching is cargo-chef's: the dependency graph is compiled against a skeleton
 # workspace in a layer keyed only on Cargo.toml/Cargo.lock, so editing the proxy
-# recompiles the proxy and nothing else. The cargo registry is left in the layer
-# rather than on a cache mount on purpose — a cache mount is invisible to
-# registry/GHA layer caching, so in CI it would start empty on every run and the
-# restored layers would re-download the whole index.
+# recompiles the proxy and nothing else.
+# The cargo registry is left in the layer rather than on a cache mount on purpose
+# — a cache mount is invisible to registry/GHA layer caching, so in CI it would
+# start empty on every run and the restored layers would re-download the whole
+# index.
 #
 #   docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
 #
-# CARGO_PROFILE picks the Cargo profile. Release images use the default; CI builds
-# every untagged commit with `dev`, which compiles much faster and is still enough
-# for the smoke test.
+# CARGO_PROFILE picks the Cargo profile.
+# Release images use the default; CI builds every untagged commit with `dev`,
+# which compiles much faster and is still enough for the smoke test.
 #
 #   docker build -f docker/proxy/Dockerfile --build-arg CARGO_PROFILE=dev .
 
@@ -97,7 +98,8 @@ RUN apt-get update \
 COPY --from=builder /usr/local/bin/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
 
 # The binary defaults to 127.0.0.1, which inside a container is reachable by
-# nothing. Everything else keeps its default; the allowlists are extended with
+# nothing.
+# Everything else keeps its default; the allowlists are extended with
 # SNUFFLER_PROXY_ALLOW_HTTP_TARGETS / SNUFFLER_PROXY_ALLOW_TCP_TARGETS.
 ENV SNUFFLER_PROXY_BIND=0.0.0.0:17684
 

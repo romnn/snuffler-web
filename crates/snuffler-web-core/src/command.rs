@@ -9,8 +9,11 @@
 //! Snuffler decides the post-run behaviour synchronously, from the
 //! `(clearit, hideit, error)` triple `inputline_finished` returns.
 //! Here the commands that reach pyrocko are asynchronous, so a submitted line stays
-//! pending — and the input stays open — until [`CommandLine::resolve`] applies the same
+//! pending, and the input stays open, until [`CommandLine::resolve`] applies the same
 //! rules to the answer.
+//!
+//! The one command answered in Rust is `:markers`, which only touches Rust-owned
+//! markers; [`parse_markers_command`] recognizes it.
 
 /// Commands whose input line snuffler clears once they have run (`clearit`), so
 /// the blacklist edit does not stay in the box ready to be re-submitted.
@@ -68,7 +71,7 @@ pub struct CommandLine {
     /// Cursor into `history` for Up/Down.
     /// `history.len()` is the empty slot past the newest entry, which is where a fresh
     /// input starts.
-    hist_ind: usize,
+    history_cursor: usize,
     /// Whether the stored history has been read yet (snuffler loads the history
     /// file the first time the input is shown).
     history_loaded: bool,
@@ -85,7 +88,7 @@ impl CommandLine {
         if !self.history_loaded {
             self.history = load_history();
             self.history_loaded = true;
-            self.hist_ind = self.history.len();
+            self.history_cursor = self.history.len();
         }
         self.visible = true;
         self.focus_request = Some(FocusRequest::SelectAll);
@@ -97,7 +100,7 @@ impl CommandLine {
         self.visible = false;
         self.pending = None;
         self.focus_request = None;
-        self.hist_ind = self.history.len();
+        self.history_cursor = self.history.len();
     }
 
     /// Toggles the input (the menu bar's ':' button).
@@ -129,11 +132,15 @@ impl CommandLine {
     /// input rather than sticking to the oldest or newest command.
     pub fn step_history(&mut self, step: HistoryStep) {
         let slots = self.history.len() + 1;
-        self.hist_ind = match step {
-            HistoryStep::Older => (self.hist_ind + slots - 1) % slots,
-            HistoryStep::Newer => (self.hist_ind + 1) % slots,
+        self.history_cursor = match step {
+            HistoryStep::Older => (self.history_cursor + slots - 1) % slots,
+            HistoryStep::Newer => (self.history_cursor + 1) % slots,
         };
-        self.text = self.history.get(self.hist_ind).cloned().unwrap_or_default();
+        self.text = self
+            .history
+            .get(self.history_cursor)
+            .cloned()
+            .unwrap_or_default();
     }
 
     /// Accepts the line for execution and returns it (snuffler's Return).
@@ -175,7 +182,7 @@ impl CommandLine {
             self.text = self.quick_filter_line.clone().unwrap_or_default();
         }
 
-        self.hist_ind = self.history.len();
+        self.history_cursor = self.history.len();
         match error {
             Some(message) => {
                 self.error = Some(message);
@@ -215,6 +222,42 @@ fn has_argument(line: &str) -> bool {
     line.split_whitespace().nth(1).is_some()
 }
 
+/// Result of parsing a `:markers ...` command line.
+pub enum MarkersCommand {
+    /// Set the visible marker kinds (empty = hide all).
+    Set(Vec<u8>),
+    /// Recognised as a `markers` command but with no effect (e.g. too many args).
+    NoChange,
+}
+
+/// Parse a `:markers ...` command, mirroring snuffler `pile_viewer.py`'s `markers` arm:
+/// `markers all` shows kinds 0..=7; `markers <digits>` shows exactly the digit-kinds in
+/// the single token; bare `markers` hides all; anything else is a no-op.
+/// Returns `None` when the line is not a `markers` command.
+pub fn parse_markers_command(line: &str) -> Option<MarkersCommand> {
+    let mut tokens = line.split_whitespace();
+    let command = tokens.next()?;
+    if !command.eq_ignore_ascii_case("markers") {
+        return None;
+    }
+    let argument = tokens.next();
+    // A `markers` command takes at most one argument; more tokens are a no-op.
+    if tokens.next().is_some() {
+        return Some(MarkersCommand::NoChange);
+    }
+    Some(match argument {
+        None => MarkersCommand::Set(Vec::new()),
+        Some("all") => MarkersCommand::Set((0u8..=7).collect()),
+        Some(kinds) => MarkersCommand::Set(
+            kinds
+                .bytes()
+                .filter(u8::is_ascii_digit)
+                .map(|digit| digit - b'0')
+                .collect(),
+        ),
+    })
+}
+
 /// Where the browser keeps the command history.
 /// Snuffler writes `$HOME/.pyrocko/.snuffler_history`; `localStorage` is its counterpart
 /// for an app with no filesystem of its own.
@@ -248,8 +291,11 @@ fn load_history() -> Vec<String> {
 
 #[cfg(target_arch = "wasm32")]
 fn save_history(history: &[String]) {
-    if let Some(storage) = history_storage() {
-        let _ = storage.set_item(HISTORY_KEY, &history.join("\n"));
+    // A refused write (quota, private mode) only costs the history across reloads.
+    if let Some(storage) = history_storage()
+        && let Err(err) = storage.set_item(HISTORY_KEY, &history.join("\n"))
+    {
+        log::warn!("saving the command history failed: {err:?}");
     }
 }
 

@@ -21,9 +21,9 @@ ROOT = HERE.parent.parent
 ARTIFACTS = HERE / ".artifacts"
 
 # pyrocko reads its config directory once, at import time, and `PileViewerMain`
-# constructs `config.config('snuffler')` — which would both pick up the developer's
-# own snuffler preferences as scenario defaults and write into their home. Point it
-# at a scratch directory before anything imports pyrocko.
+# constructs `config.config('snuffler')` — which would both pick up the developer's own
+# snuffler preferences as scenario defaults and write into their home.
+# Point it at a scratch directory before anything imports pyrocko.
 os.environ.setdefault("PYROCKO_DIR", str(ARTIFACTS / "pyrocko-home"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # The bridge and the generated protobuf package are not installed, they are read
@@ -33,9 +33,10 @@ for _extra in (ROOT / "web", ROOT / "web" / "proto", HERE):
         sys.path.insert(0, str(_extra))
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
-# `task` passes the terminal through, so isatty covers the normal run. FORCE_COLOR is the
-# escape hatch for where it lies: piping into `less -R`, or a CI log viewer that renders
-# ANSI itself. NO_COLOR and TERM=dumb still win over it — an explicit "off" should stay off.
+# `task` passes the terminal through, so isatty covers the normal run.
+# FORCE_COLOR is the escape hatch for where it lies: piping into `less -R`, or a CI log
+# viewer that renders ANSI itself.
+# NO_COLOR and TERM=dumb still win over it — an explicit "off" should stay off.
 _forced = os.environ.get("FORCE_COLOR", "") not in ("", "0")
 if (
     os.environ.get("NO_COLOR")

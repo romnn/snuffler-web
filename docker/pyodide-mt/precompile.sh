@@ -2,33 +2,37 @@
 #
 # Precompile the staged runtime's Python sources to bytecode, in place.
 #
-# Pyodide runs with sys.dont_write_bytecode=True and the wheels + python_stdlib.zip
-# ship sources only, so EVERY boot recompiles every module it imports from source.
+# Pyodide runs with sys.dont_write_bytecode=True and the wheels +
+# python_stdlib.zip ship sources only, so EVERY boot recompiles every module it
+# imports from source.
 # For this app's import graph (numpy -> scipy -> matplotlib -> pyrocko, ~1000
 # modules) that is ~3.3 s of the boot, measured in the browser: 2.5 s for the
-# wheels and 0.8 s for the stdlib. Shipping .pyc alongside the sources replaces
-# that compile with a marshal.loads, which costs ~0.08 s.
+# wheels and 0.8 s for the stdlib.
+# Shipping .pyc alongside the sources replaces that compile with a marshal.loads,
+# which costs ~0.08 s.
 #
 # The bytecode is written with UNCHECKED_HASH invalidation: the import system then
 # trusts the .pyc without stat-ing the source for an mtime/size match, which is
 # what makes it survive being repacked into a wheel and unpacked at a fresh mtime.
 #
-# WHICH LAYOUT depends on whether the source stays. PEP 3147's
-# __pycache__/<mod>.cpython-314.pyc is a CACHE for an existing <mod>.py: drop the
-# source and the path finder stops seeing the module entirely (a package whose
-# __init__.py is gone reads as an empty namespace package). Sourceless imports need
-# compileall's legacy -b layout instead — <mod>.pyc exactly where <mod>.py was — so:
+# WHICH LAYOUT depends on whether the source stays.
+# PEP 3147's __pycache__/<mod>.cpython-314.pyc is a CACHE for an existing
+# <mod>.py: drop the source and the path finder stops seeing the module entirely
+# (a package whose __init__.py is gone reads as an empty namespace package).
+# Sourceless imports need compileall's legacy -b layout instead — <mod>.pyc
+# exactly where <mod>.py was — so:
 #   - stripping sources  -> legacy layout, for wheels and the stdlib zip alike
 #   - keeping sources    -> __pycache__ for wheels; the stdlib zip stays legacy
 #     either way, because zipimport knows nothing about __pycache__
 #
 # By default the .py a .pyc supersedes is DROPPED (STRIP_SOURCES=keep to keep it).
 # Bytecode compresses worse than source, so keeping both would put ~21 MB on the
-# download to save 3.3 s of CPU; replacing sources instead costs ~10 MB. What that
-# buys back is paid on every boot, and what it costs is paid once per cache
-# lifetime. The price is that library frames in a traceback lose their source line
-# (and inspect.getsource stops working) for the archives rewritten here — our own
-# bridge.py is staged separately as source and keeps both.
+# download to save 3.3 s of CPU; replacing sources instead costs ~10 MB.
+# What that buys back is paid on every boot, and what it costs is paid once per
+# cache lifetime.
+# The price is that library frames in a traceback lose their source line (and
+# inspect.getsource stops working) for the archives rewritten here — our own
+# snuffler_bridge package is staged separately as source and keeps both.
 #
 # Rewriting a wheel invalidates the sha256 the lock records for it, so the lock is
 # updated in the same pass.
@@ -49,7 +53,8 @@ out="${1:-$here/served}"
 # The interpreter that writes the bytecode must be the same CPython minor version
 # as the one in the browser; the magic number (and with it the bytecode format)
 # changes between minor versions, and a mismatched .pyc is silently ignored at
-# best. mise pins the host python to 3.14 for exactly this.
+# best.
+# mise pins the host python to 3.14 for exactly this.
 want="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["info"]["python"])' "$out/pyodide-lock.json")"
 minor="${want%.*}"
 host="$(command -v "python${minor}" || true)"

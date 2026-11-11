@@ -123,8 +123,9 @@ impl App {
         // The status line is the one place the app tells you that something
         // finished, failed, or is still running, and none of it is tied to a
         // widget you would be focused on — so it is announced as it changes.
-        let (runtime, jobs) = self.session.bridge.activity_snapshot();
-        let jobs: &[(JobHandle, JobRecord)] = &jobs;
+        let snapshot = self.session.bridge.activity_snapshot();
+        let runtime = snapshot.runtime;
+        let jobs: &[(JobHandle, JobRecord)] = &snapshot.jobs;
         let now_s = js_sys::Date::now() / 1000.0;
         if let Some(delay) = next_activity_reveal_delay(jobs, now_s) {
             ctx.request_repaint_after(delay);
@@ -145,10 +146,11 @@ impl App {
             };
             crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Urgent);
         }
-        // Processing failures the view survived (a filter or restitution that
-        // threw, drawn unprocessed). Snuffler lets these exceptions reach the
-        // user; here the bridge sends them with the view they affected, and the
-        // status line is where the user is told rather than the worker console.
+        // Processing failures the view survived (a filter or restitution that threw, drawn
+        // unprocessed).
+        // Snuffler lets these exceptions reach the user; here the bridge sends them with the view
+        // they affected, and the status line is where the user is told rather than the worker
+        // console.
         let notices = self
             .session
             .bridge
@@ -242,9 +244,9 @@ impl App {
                 .x
         };
         let gap = ui.spacing().item_spacing.x;
-        // Reserved for the widest rate rather than the current one, so the status
-        // beside it does not resize when the first measurement lands or the number
-        // gains a digit. `6.0` is the width egui gives a vertical separator.
+        // Reserved for the widest rate rather than the current one, so the status beside it does
+        // not resize when the first measurement lands or the number gains a digit.
+        // `6.0` is the width egui gives a vertical separator.
         let rate = text_width(FRAME_STATS_WIDEST.to_owned()) + gap * 2.0;
         let stamp = text_width(crate::view::about::build_stamp()) + 6.0 + gap * 2.0;
         // What the menus and the status keep no matter what: below it the readout
@@ -313,7 +315,7 @@ impl App {
         let time = self.session.state.tmin
             + fraction * (self.session.state.tmax - self.session.state.tmin);
         ui.separator();
-        ui.monospace(snuffler_web_core::timeaxis::format_full(time));
+        ui.monospace(snuffler_web_core::timeaxis::format_timestamp(time));
     }
 }
 
@@ -371,10 +373,10 @@ fn unresolved_failure(jobs: &[(JobHandle, JobRecord)]) -> Option<&JobError> {
         .map(|(_, error)| error)
 }
 
-/// A partial or lost terminal outcome no later submission superseded. These are
-/// not failures — committed work remains installed — but staying silent about
-/// them would leave the user with 3 of 400 files and a status line that says
-/// only "Ready".
+/// A partial or lost terminal outcome no later submission superseded.
+///
+/// These are not failures — committed work remains installed — but staying silent about them
+/// would leave the user with 3 of 400 files and a status line that says only "Ready".
 fn unresolved_stop_notice(jobs: &[(JobHandle, JobRecord)]) -> Option<String> {
     newest_per_operation(jobs)
         .into_iter()

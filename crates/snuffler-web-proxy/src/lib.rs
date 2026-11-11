@@ -1,4 +1,10 @@
 //! Local allowlisted proxy combining the HTTP CORS and `SeedLink` endpoints.
+//!
+//! Routes:
+//!
+//! - `/health`: liveness probe.
+//! - `/cors?url=…`: FDSN requests, through [`snuffler_web_cors_proxy`].
+//! - `/seedlink?host=…&port=…`: live streams, through [`snuffler_web_tcp_ws_proxy`].
 
 use std::future::pending;
 use std::net::SocketAddr;
@@ -37,7 +43,8 @@ pub struct Args {
     /// Extra allowed HTTP target URLs, including exact path.
     ///
     /// Defaults already include snuffler-web's known FDSN dataselect, event and
-    /// station query endpoints. Repeat this flag, or set a comma-separated
+    /// station query endpoints.
+    /// Repeat this flag, or set a comma-separated
     /// `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS`, to add deployment-specific endpoints.
     #[arg(
         long = "allow-http-target",
@@ -49,7 +56,8 @@ pub struct Args {
     /// Extra allowed TCP targets in `host:port` form.
     ///
     /// Defaults already include the SeedLink/ringserver targets used by local
-    /// snuffler-web development. Repeat this flag, or set a comma-separated
+    /// snuffler-web development.
+    /// Repeat this flag, or set a comma-separated
     /// `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`, to add deployment-specific streams.
     #[arg(
         long = "allow-tcp-target",
@@ -97,10 +105,11 @@ pub enum RunError {
     Serve(#[source] std::io::Error),
 }
 
+/// The two proxies the routes share.
 #[derive(Clone)]
-struct AppState {
+struct ProxyState {
     cors: snuffler_web_cors_proxy::Proxy,
-    tcp_ws: snuffler_web_tcp_ws_proxy::Proxy,
+    seedlink: snuffler_web_tcp_ws_proxy::Proxy,
 }
 
 /// Parses command-line arguments and runs the local proxy until shutdown.
@@ -120,57 +129,30 @@ pub async fn run_from_env() -> Result<(), RunError> {
 /// Returns a [`RunError`] variant naming the step that failed: client setup, an allowlist
 /// entry, binding the listen address, or serving.
 pub async fn run(args: Args) -> Result<(), RunError> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "snuffler_web_proxy=info,tower_http=warn".into()),
-        )
-        .init();
+    init_tracing();
 
     let connect_timeout = Duration::from_millis(args.connect_timeout_ms);
-    let http = reqwest::Client::builder()
+    let http_client = reqwest::Client::builder()
         .connect_timeout(connect_timeout)
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(32)
         .build()
         .map_err(RunError::HttpClient)?;
 
-    // Extend the built-in allowlists with the configured targets
-    let http_allowlist = snuffler_web_cors_proxy::Allowlist::with_default_rules(
-        args.allow_http_targets
-            .iter()
-            .map(|target| {
-                snuffler_web_cors_proxy::AllowedHttpTarget::parse(target).map_err(|source| {
-                    RunError::HttpTarget {
-                        target: target.clone(),
-                        source,
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-    );
-    let tcp_allowlist = snuffler_web_tcp_ws_proxy::Allowlist::with_default_targets(
-        args.allow_tcp_targets
-            .iter()
-            .map(|target| {
-                snuffler_web_tcp_ws_proxy::AllowedTcpTarget::parse(target).map_err(|source| {
-                    RunError::TcpTarget {
-                        target: target.clone(),
-                        source,
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-    );
-
-    let state = Arc::new(AppState {
-        cors: snuffler_web_cors_proxy::Proxy::new(http, http_allowlist),
-        tcp_ws: snuffler_web_tcp_ws_proxy::Proxy::new(connect_timeout, tcp_allowlist),
+    let state = Arc::new(ProxyState {
+        cors: snuffler_web_cors_proxy::Proxy::new(
+            http_client,
+            http_allowlist(&args.allow_http_targets)?,
+        ),
+        seedlink: snuffler_web_tcp_ws_proxy::Proxy::new(
+            connect_timeout,
+            tcp_allowlist(&args.allow_tcp_targets)?,
+        ),
     });
     let app = Router::new()
         .route("/health", get(health))
-        .route("/cors", any(cors_proxy))
-        .route("/seedlink", get(tcp_ws_proxy))
+        .route("/cors", any(handle_cors))
+        .route("/seedlink", get(handle_seedlink))
         .with_state(state);
 
     let listener = TcpListener::bind(args.bind)
@@ -186,22 +168,78 @@ pub async fn run(args: Args) -> Result<(), RunError> {
         .map_err(RunError::Serve)
 }
 
+/// Logs at `info` for this crate unless `RUST_LOG` says otherwise.
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "snuffler_web_proxy=info,tower_http=warn".into()),
+        )
+        .init();
+}
+
+/// The built-in FDSN endpoints plus every `--allow-http-target`.
+fn http_allowlist(
+    extra_targets: &[String],
+) -> Result<snuffler_web_cors_proxy::Allowlist, RunError> {
+    let extra_rules = extra_targets
+        .iter()
+        .map(|target| {
+            snuffler_web_cors_proxy::AllowedHttpTarget::parse(target).map_err(|source| {
+                RunError::HttpTarget {
+                    target: target.clone(),
+                    source,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(snuffler_web_cors_proxy::Allowlist::with_default_rules(
+        extra_rules,
+    ))
+}
+
+/// The built-in `SeedLink` servers plus every `--allow-tcp-target`.
+fn tcp_allowlist(
+    extra_targets: &[String],
+) -> Result<snuffler_web_tcp_ws_proxy::Allowlist, RunError> {
+    let extra_rules = extra_targets
+        .iter()
+        .map(|target| {
+            snuffler_web_tcp_ws_proxy::AllowedTcpTarget::parse(target).map_err(|source| {
+                RunError::TcpTarget {
+                    target: target.clone(),
+                    source,
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(snuffler_web_tcp_ws_proxy::Allowlist::with_default_targets(
+        extra_rules,
+    ))
+}
+
 async fn health() -> &'static str {
     "ok\n"
 }
 
-async fn cors_proxy(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response<Body> {
-    state.cors.handle(req).await
-}
-
-async fn tcp_ws_proxy(
-    State(state): State<Arc<AppState>>,
-    ws: WebSocketUpgrade,
-    req: Request<Body>,
+async fn handle_cors(
+    State(state): State<Arc<ProxyState>>,
+    request: Request<Body>,
 ) -> Response<Body> {
-    state.tcp_ws.handle(ws, &req)
+    state.cors.handle(request).await
 }
 
+async fn handle_seedlink(
+    State(state): State<Arc<ProxyState>>,
+    upgrade: WebSocketUpgrade,
+    request: Request<Body>,
+) -> Response<Body> {
+    state.seedlink.handle(upgrade, &request)
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM where there is one.
+///
+/// A handler that cannot be installed never resolves, leaving the other one in charge.
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {

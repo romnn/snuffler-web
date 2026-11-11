@@ -4,12 +4,13 @@ dataset = "bonin-2015-05-30-m7.8-multiloc"
 tiers = [1]
 load = ["events", "responses"]
 
-# Distance sorting over rows that hold more than one sensor. Co-located instruments
-# share a latitude and longitude, so in two dimensions every member of a row sorts to
-# the same distance and the row survives the sort intact — which is what makes this
-# the control for `bonin-grouped-distance-3d`, where the vertical term pulls them
-# apart. The station coordinates come from the same per-network StationXML both
-# frontends load, and the comparison covers the track order and every printed "N.N km".
+# Distance sorting over rows that hold more than one sensor.
+# Co-located instruments share a latitude and longitude, so in two dimensions every
+# member of a row sorts to the same distance and the row survives the sort intact —
+# which is what makes this the control for `bonin-grouped-distance-3d`, where the
+# vertical term pulls them apart.
+# The station coordinates come from the same per-network StationXML both frontends load,
+# and the comparison covers the track order and every printed "N.N km".
 [state]
 sort = "distance"
 subsort = "nsc_l"

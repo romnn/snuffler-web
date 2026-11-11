@@ -7,110 +7,115 @@ import "snuffler/bridge/v1/scene.proto";
 import "snuffler/bridge/v1/view.proto";
 
 message SpectrumSnufflingParams {
-  bool spec_smoothing = 1;
-  double spec_smoothing_bandwidth = 2;
+  bool smoothing = 1;
+  double smoothing_bandwidth = 2;
 }
 
 message StaltaSnufflingParams {
-  optional double stalta_highpass = 1;
-  optional double stalta_lowpass = 2;
-  double stalta_swin = 3;
-  double stalta_ratio = 4;
-  double stalta_level = 5;
-  bool stalta_show_level_traces = 6;
-  string stalta_variant = 7;
-  string stalta_scalingmethod = 8;
-  bool stalta_apply_to_sum = 9;
+  optional double highpass = 1;
+  optional double lowpass = 2;
+  double short_window_s = 3;
+  // The long window is this many short windows.
+  double long_to_short_window_ratio = 4;
+  double trigger_level = 5;
+  bool show_level_traces = 6;
+  string variant = 7;
+  string scaling_method = 8;
+  bool apply_to_sum = 9;
 }
 
 message PolarizationSnufflingParams {
-  double polarization_t_length = 1;
-  double polarization_ft_offset = 2;
-  double polarization_azimuth = 3;
-  optional double polarization_highpass = 4;
-  optional double polarization_lowpass = 5;
-  double polarization_dot_position = 6;
-  bool polarization_rotate_to_rt = 7;
-  bool polarization_show_eigensystem_2d = 8;
-  bool polarization_show_eigensystem_3d = 9;
-  bool polarization_fix_scale = 10;
+  double window_length_s = 1;
+  // Window offset as a fraction of its length.
+  double window_offset_fraction = 2;
+  double azimuth_deg = 3;
+  optional double highpass = 4;
+  optional double lowpass = 5;
+  double dot_position = 6;
+  bool rotate_to_rt = 7;
+  bool show_eigensystem_2d = 8;
+  bool show_eigensystem_3d = 9;
+  bool fix_scale = 10;
 }
 
 message RmsSnufflingParams {
-  optional double rms_highpass = 1;
-  optional double rms_lowpass = 2;
-  double rms_block = 3;
-  bool rms_group = 4;
-  bool rms_log = 5;
+  optional double highpass = 1;
+  optional double lowpass = 2;
+  double block_length_s = 3;
+  bool group_components = 4;
+  bool logarithmic = 5;
 }
 
 message CakeSnufflingParams {
-  string cake_model = 1;
-  repeated string cake_phases = 2;
-  double cake_tshift = 3;
-  bool cake_use_station_depth = 4;
-  string cake_mode = 5;
+  string model = 1;
+  repeated string phases = 2;
+  double time_shift_s = 3;
+  bool use_station_depth = 4;
+  string mode = 5;
 }
 
 message SpectrogramSnufflingParams {
-  double spectrogram_twin = 1;
-  double spectrogram_overlap = 2;
-  string spectrogram_taper = 3;
-  optional double spectrogram_fmin = 4;
-  optional double spectrogram_fmax = 5;
-  string spectrogram_color_scale = 6;
-  string spectrogram_color_table = 7;
+  double window_length_s = 1;
+  double overlap_percent = 2;
+  string taper = 3;
+  optional double fmin = 4;
+  optional double fmax = 5;
+  string color_scale = 6;
+  string color_table = 7;
 }
 
 // A double-couple point source for synthetic seismograms (pyrocko.gf.DCSource),
 // generated through a mounted Green's-functions store — snufflings/seismosizer.py.
 message SeismosizerSnufflingParams {
-  string seis_store = 1; // "GF Store: <id>" of a mounted store
-  string seis_waveform_type = 2; // Displacement/Velocity/Acceleration [m|nm ...]
-  double seis_time = 3; // time shift relative to the active event [s]
-  double seis_north_km = 4;
-  double seis_east_km = 5;
-  double seis_depth_km = 6;
-  double seis_magnitude = 7;
-  double seis_strike = 8;
-  double seis_dip = 9;
-  double seis_rake = 10;
-  double seis_stf_duration = 11; // source-time-function duration [s]
+  string store = 1; // "GF Store: <id>" of a mounted store
+  string waveform_type = 2; // Displacement/Velocity/Acceleration [m|nm ...]
+  double time_s = 3; // time shift relative to the active event
+  double north_km = 4;
+  double east_km = 5;
+  double depth_km = 6;
+  double magnitude = 7;
+  double strike_deg = 8;
+  double dip_deg = 9;
+  double rake_deg = 10;
+  double stf_duration_s = 11; // source-time-function duration
   // Qt's four STF choices (seismosizer.py:35): "half sin" (default), "triangular",
   // "boxcar", "None".
   // Empty = "half sin".
   // A zero duration still passes a zero-duration STF object, exactly as Qt's `get_stf`
   // does.
-  string seis_stf_type = 12;
+  string stf_type = 12;
   // Which of Qt's five Seismosizer source snufflings this run is
   // (seismosizer.py:280-560): "DCSource" (default when empty), "MTSource", "SFSource",
   // "RectangularSource", "PseudoDynamicRupture".
   // The fields below belong to the non-DC sources and are read per type.
-  string seis_source_type = 13;
+  string source_type = 13;
   // MTSource: relative moment-tensor components, normalized then scaled to the
   // magnitude's moment (`get_m6`, seismosizer.py:385).
-  double seis_rmnn = 14;
-  double seis_rmee = 15;
-  double seis_rmdd = 16;
-  double seis_rmne = 17;
-  double seis_rmnd = 18;
-  double seis_rmed = 19;
-  // SFSource: force components [N].
-  double seis_fn = 20;
-  double seis_fe = 21;
-  double seis_fd = 22;
+  double relative_mnn = 14;
+  double relative_mee = 15;
+  double relative_mdd = 16;
+  double relative_mne = 17;
+  double relative_mnd = 18;
+  double relative_med = 19;
+  // SFSource: force components in newtons, north/east/down.
+  double force_north_n = 20;
+  double force_east_n = 21;
+  double force_down_n = 22;
   // RectangularSource / PseudoDynamicRupture geometry.
-  double seis_length_km = 23;
-  double seis_width_km = 24;
-  double seis_nucleation_x = 25;
-  double seis_nucleation_y = 26;
-  double seis_velocity = 27; // rupture velocity [m/s]
+  double length_km = 23;
+  double width_km = 24;
+  // Relative nucleation point along strike and down dip, -1..1.
+  double nucleation_x = 25;
+  double nucleation_y = 26;
+  double rupture_velocity_m_s = 27;
   // PseudoDynamicRupture.
-  double seis_slip = 28;
-  double seis_gamma = 29;
-  uint32 seis_nx = 30;
-  uint32 seis_ny = 31;
-  bool seis_tapered = 32;
+  double slip_m = 28;
+  // Rupture velocity as a fraction of the shear velocity.
+  double gamma = 29;
+  // Patch counts, pyrocko's `nx` and `ny`.
+  uint32 patches_along_strike = 30;
+  uint32 patches_down_dip = 31;
+  bool tapered = 32;
 }
 
 message SeisbenchSnufflingParams {
@@ -159,7 +164,7 @@ message SnufflingSpan {
 }
 
 message SnufMarker {
-  double t = 1;
+  double tmin = 1;
   optional double tmax = 2;
   optional string phase = 3;
   uint32 kind = 4;

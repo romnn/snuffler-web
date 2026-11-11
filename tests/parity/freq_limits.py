@@ -1,10 +1,10 @@
 """Property test for the one pair that documents itself as a copy.
 
-``bridge._decon_freq_limits`` says it computes the deconvolution taper limits
-"exactly as snuffler's ``PileViewer.get_freq_limits``". A stated contract like that
-is worth checking over a grid rather than at the single point some scenario happens
-to reach, because the two disagree only in the corners: near Nyquist, at very short
-traces, with one corner set and not the other.
+``processing.decon_freq_limits`` says it computes the deconvolution taper limits
+"exactly as snuffler's ``PileViewer.get_freq_limits``".
+A stated contract like that is worth checking over a grid rather than at the single
+point some scenario happens to reach, because the two disagree only in the corners: near
+Nyquist, at very short traces, with one corner set and not the other.
 
 Run through :mod:`run_oracle` (``task test:parity -- decon-freq-limits`` alone).
 """
@@ -16,7 +16,7 @@ import harness  # noqa: F401 — imported for its side effects  # isort: skip
 
 from typing import Iterator, List, Optional, Tuple
 
-import bridge
+from snuffler_bridge import processing
 
 Limits = Tuple[float, float, float, float]
 
@@ -57,7 +57,7 @@ def run(view: object) -> Tuple[int, List[str]]:
             if data_len == 0:
                 continue
             raise
-        actual = bridge._decon_freq_limits(deltat, data_len, highpass, lowpass)
+        actual = processing.decon_freq_limits(deltat, data_len, highpass, lowpass)
         points += 1
         if any(
             abs(a - b) > 1e-12 * max(1.0, abs(b)) for a, b in zip(actual, expected, strict=True)

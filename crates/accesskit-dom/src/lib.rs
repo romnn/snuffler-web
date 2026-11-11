@@ -25,17 +25,17 @@ use accesskit::Action;
 // The planning half is pure and unit-tested on the host, but outside of tests its only
 // consumer is the wasm-only DOM projection.
 #[cfg(any(target_arch = "wasm32", test))]
-mod tree;
+mod plan;
 
 #[cfg(target_arch = "wasm32")]
-mod dom;
+mod adapter;
 #[cfg(target_arch = "wasm32")]
 mod metrics;
 #[cfg(all(target_arch = "wasm32", feature = "tree-json"))]
 mod tree_json;
 
 #[cfg(target_arch = "wasm32")]
-pub use dom::Adapter;
+pub use adapter::Adapter;
 #[cfg(all(target_arch = "wasm32", feature = "metrics"))]
 pub use metrics::Stats;
 
@@ -72,8 +72,12 @@ pub struct Options {
     /// synthetic clicks.
     pub pointer_proxies: bool,
 
-    /// How far left of a nameless control the text naming it may sit, in tree coordinates.
-    pub label_gap: f64,
+    /// How far the text naming a nameless control may overlap the control's left edge, in
+    /// tree coordinates.
+    ///
+    /// Text further right never names it, so a control does not take its right-hand
+    /// neighbour's caption.
+    pub label_gap_points: f64,
 
     /// Window global to publish the tree JSON on, e.g. `"__myAppA11y"`; `None` publishes
     /// nothing.
@@ -91,7 +95,7 @@ impl Default for Options {
             z_index: 5,
             region_area_fraction: 0.25,
             pointer_proxies: false,
-            label_gap: 16.0,
+            label_gap_points: 16.0,
             #[cfg(feature = "tree-json")]
             tree_json_global: None,
         }

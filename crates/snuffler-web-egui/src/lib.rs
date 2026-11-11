@@ -1,7 +1,8 @@
 //! snuffler-web: pyrocko's snuffler seismic waveform inspector in the browser.
 //!
 //! A Rust/egui (wasm) frontend that drives real pyrocko + numpy + scipy via
-//! Pyodide. Rust renders; all computation happens in Python (see `web/bridge.py`).
+//! Pyodide.
+//! Rust renders; all computation happens in Python (see `web/snuffler_bridge/`).
 
 // Web accessibility layer: app policy over the workspace's generic `accesskit-dom`
 // and `egui-a11y` crates; needs the patched eframe (see the `[patch.crates-io]`
@@ -36,10 +37,11 @@ pub use app::App;
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-/// Whether the rayon worker pool came up (it needs cross-origin isolation, so it
-/// is absent on the plain, non-isolated load). `main` sets it after attempting
-/// [`init_thread_pool`]; callers read it to decide between the pooled (off-thread)
-/// and the inline (main-thread) path.
+/// Whether the rayon worker pool came up (it needs cross-origin isolation, so it is absent on
+/// the plain, non-isolated load).
+///
+/// `main` sets it after attempting [`init_thread_pool`]; callers read it to decide between
+/// the pooled (off-thread) and the inline (main-thread) path.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod pool {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

@@ -1,8 +1,8 @@
 """The Python half of the worker's boot: what to defer, and what to report.
 
 ``web/bridge_worker.ts`` imports this module before the bridge, keeping two
-boot-time concerns out of ``bridge.py``: which third-party imports are deferred,
-and how import progress reaches the loading bar.
+boot-time concerns out of the ``snuffler_bridge`` package: which third-party
+imports are deferred, and how import progress reaches the loading bar.
 Deferring changes only when pyrocko's own dependencies execute, never pyrocko
 itself.
 """
@@ -69,8 +69,9 @@ def defer(names: Sequence[str] = DEFERRED) -> List[str]:
 def warm(names: Sequence[str] = DEFERRED) -> List[str]:
     """Execute the deferred modules now, so the first real use does not pay for it.
 
-    Called once the app is interactive. Touching any attribute is what forces a
-    lazy module to execute; ``__name__`` is enough and is defined on every module.
+    Called once the app is interactive.
+    Touching any attribute is what forces a lazy module to execute; ``__name__``
+    is enough and is defined on every module.
     """
     warmed: List[str] = []
     for name in names:
@@ -83,7 +84,10 @@ def warm(names: Sequence[str] = DEFERRED) -> List[str]:
 
 
 def import_bridge(progress: Callable[[int], None]) -> ModuleType:
-    """Import ``bridge`` (and with it pyrocko), reporting modules as they load.
+    """Import the bridge (and with it pyrocko), reporting modules as they load.
+
+    Returns ``snuffler_bridge.service``, whose ``call`` the worker dispatches every
+    rpc through.
 
     The import is by far the longest stretch of the boot with nothing to show for
     it, so `progress` is called with the running count of modules imported.
@@ -116,7 +120,7 @@ def import_bridge(progress: Callable[[int], None]) -> ModuleType:
 
     builtins.__import__ = counting
     try:
-        module = importlib.import_module("bridge")
+        module = importlib.import_module("snuffler_bridge.service")
     finally:
         builtins.__import__ = original
     progress(count)

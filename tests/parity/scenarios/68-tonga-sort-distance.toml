@@ -4,19 +4,21 @@ dataset = "tonga-2022-01-15-air-wave"
 tiers = [1]
 load = ["events", "responses"]
 
-# The distance sort where the coordinates come from channels of two different kinds
-# at the same site: the seismometer at location 00 and the barometer at 31, which
-# StationXML places metres apart in elevation. Both frontends take station positions
-# from the channel epochs rather than the station element, so a site contributing two
-# positions is exactly the case that has to land on one distance per instrument and
-# still order the five sites the same way.
+# The distance sort where the coordinates come from channels of two different kinds at
+# the same site: the seismometer at location 00 and the barometer at 31, which
+# StationXML places metres apart in elevation.
+# Both frontends take station positions from the channel epochs rather than the station
+# element, so a site contributing two positions is exactly the case that has to land on
+# one distance per instrument and still order the five sites the same way.
 
-# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window
-# and `visible_length` — at the default budget every trace here is too finely sampled
-# for a window this long and Qt draws empty rows. That divergence is already what
-# `oddrate-coarse-window` is for; repeating it here would only hide the data. So the
-# budget is raised until Qt keeps every trace, and the scenario compares recordings
-# rather than a fetch policy. It is a Qt-side knob: the web decimates whatever it has.
+# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window and
+# `visible_length` — at the default budget every trace here is too finely sampled for a
+# window this long and Qt draws empty rows.
+# That divergence is already what `oddrate-coarse-window` is for; repeating it here
+# would only hide the data.
+# So the budget is raised until Qt keeps every trace, and the scenario compares
+# recordings rather than a fetch policy.
+# It is a Qt-side knob: the web decimates whatever it has.
 [state]
 visible_length = 120000
 sort = "distance"

@@ -11,36 +11,36 @@ use egui::accesskit::{ActionRequest, TreeUpdate};
 
 use crate::keys;
 
-/// Input queued by the DOM listeners (via [`Bridge`]) and [`A11y::request`] for
-/// [`A11y::drain`].
-struct Queue {
+/// Input queued by the DOM listeners (via [`ProxyInputHandler`]) and
+/// [`A11y::request_action`] for [`A11y::drain`].
+struct InputQueue {
     /// Kept so queued input can wake an idle app, since egui only repaints on demand.
     ctx: egui::Context,
-    pending: RefCell<Vec<egui::Event>>,
+    events: RefCell<Vec<egui::Event>>,
     /// Whether DOM focus currently sits on one of the proxies.
-    holds_focus: Cell<bool>,
+    proxy_has_focus: Cell<bool>,
 }
 
-impl Queue {
+impl InputQueue {
     fn push(&self, event: egui::Event) {
-        self.pending.borrow_mut().push(event);
+        self.events.borrow_mut().push(event);
         self.ctx.request_repaint();
     }
 }
 
-/// Feeds proxy events from the adapter into the egui event queue.
-struct Bridge {
-    queue: Rc<Queue>,
+/// Feeds proxy input from the adapter into the [`InputQueue`].
+struct ProxyInputHandler {
+    queue: Rc<InputQueue>,
 }
 
-impl accesskit_dom::Handler for Bridge {
+impl accesskit_dom::Handler for ProxyInputHandler {
     fn action_request(&mut self, request: ActionRequest) {
         self.queue
             .push(egui::Event::AccessKitActionRequest(request));
     }
 
     fn key_event(&mut self, event: &accesskit_dom::KeyEvent, pressed: bool) -> bool {
-        let wanted = keys::translate(event, pressed, &mut self.queue.pending.borrow_mut());
+        let wanted = keys::translate(event, pressed, &mut self.queue.events.borrow_mut());
         if wanted {
             self.queue.ctx.request_repaint();
         }
@@ -48,7 +48,7 @@ impl accesskit_dom::Handler for Bridge {
     }
 
     fn focus_changed(&mut self, focus_within: bool) {
-        if self.queue.holds_focus.replace(focus_within) != focus_within {
+        if self.queue.proxy_has_focus.replace(focus_within) != focus_within {
             self.queue.ctx.request_repaint();
         }
     }
@@ -60,7 +60,7 @@ impl accesskit_dom::Handler for Bridge {
 /// The overlay lives as long as any clone does.
 #[derive(Clone)]
 pub struct A11y {
-    queue: Rc<Queue>,
+    queue: Rc<InputQueue>,
     adapter: Rc<RefCell<accesskit_dom::Adapter>>,
 }
 
@@ -79,15 +79,15 @@ pub fn install(
     options: accesskit_dom::Options,
 ) -> Result<A11y, accesskit_dom::Error> {
     ctx.enable_accesskit();
-    let queue = Rc::new(Queue {
+    let queue = Rc::new(InputQueue {
         ctx: ctx.clone(),
-        pending: RefCell::new(Vec::new()),
-        holds_focus: Cell::new(false),
+        events: RefCell::new(Vec::new()),
+        proxy_has_focus: Cell::new(false),
     });
-    let bridge = Bridge {
+    let handler = ProxyInputHandler {
         queue: Rc::clone(&queue),
     };
-    let adapter = accesskit_dom::Adapter::new(canvas, options, bridge)?;
+    let adapter = accesskit_dom::Adapter::new(canvas, options, handler)?;
     Ok(A11y {
         queue,
         adapter: Rc::new(RefCell::new(adapter)),
@@ -106,14 +106,13 @@ impl A11y {
     /// Call from the web runner's raw-input hook (eframe:
     /// [`raw_input_hook`](https://docs.rs/eframe/latest/eframe/trait.App.html#method.raw_input_hook)).
     pub fn drain(&self, raw_input: &mut egui::RawInput) {
-        if self.queue.holds_focus.get() {
+        if self.queue.proxy_has_focus.get() {
             // The runner derives `focused` from the canvas, which has no DOM focus while a
-            // proxy does; uncorrected, egui would hide the text cursor while the user types.
+            // proxy does.
+            // Uncorrected, egui would hide the text cursor while the user types.
             raw_input.focused = true;
         }
-        raw_input
-            .events
-            .append(&mut self.queue.pending.borrow_mut());
+        raw_input.events.append(&mut self.queue.events.borrow_mut());
     }
 
     /// Queues an AccessKit action request as if a proxy had raised it.
@@ -121,7 +120,7 @@ impl A11y {
     /// The escape hatch for a caller that already has a node id, such as a harness reading
     /// the tree JSON.
     /// egui drops a request naming a node that no longer exists.
-    pub fn request(&self, request: ActionRequest) {
+    pub fn request_action(&self, request: ActionRequest) {
         self.queue
             .push(egui::Event::AccessKitActionRequest(request));
     }

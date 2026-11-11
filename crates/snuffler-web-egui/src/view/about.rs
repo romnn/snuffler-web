@@ -3,19 +3,23 @@
 use snuffler_web_core::bridge::RuntimeInfo;
 use snuffler_web_core::state::AppState;
 
-/// When the published build was built — Berlin time to the minute, naming its
-/// own zone — and the commit it came from. Both are baked in from the
-/// environment by the deploy workflow, which is where the format lives.
+/// When the published build was built — Berlin time to the minute, naming its own zone — and
+/// the commit it came from.
 ///
-/// Read with `option_env!` rather than produced by a build script on purpose: a
-/// script that stamped the current time would have to re-run — and so relink the
-/// wasm — on every local edit, and a local build's timestamp identifies nothing
-/// anyway. Unset means "built from a working tree", which is the honest answer.
+/// Both are baked in from the environment by the deploy workflow, which is where the format
+/// lives.
+///
+/// Read with `option_env!` rather than produced by a build script on purpose: a script that
+/// stamped the current time would have to re-run — and so relink the wasm — on every local
+/// edit, and a local build's timestamp identifies nothing anyway.
+/// Unset means "built from a working tree", which is the honest answer.
 const BUILD_DATE: Option<&str> = option_env!("SNUFFLER_BUILD_DATE");
 const GIT_COMMIT: Option<&str> = option_env!("SNUFFLER_GIT_COMMIT");
 
-/// The stamp for the top bar. Labelled, because a bare timestamp in a row that
-/// also carries the cursor clock reads as just another time.
+/// The stamp for the top bar.
+///
+/// Labelled, because a bare timestamp in a row that also carries the cursor clock reads as
+/// just another time.
 pub fn build_stamp() -> String {
     BUILD_DATE.map_or_else(|| "dev build".to_owned(), |date| format!("built on {date}"))
 }
@@ -42,14 +46,16 @@ fn profile() -> &'static str {
     }
 }
 
-/// What this is made of: the projects that end up in the shipped bundle, and the
-/// toolchains that produce it. Ordered by role — languages, the wasm toolchain,
-/// the scientific stack, the UI, the pickers, the plumbing, the typefaces — so
-/// the list reads as something more than an alphabet.
+/// What this is made of: the projects that end up in the shipped bundle, and the toolchains
+/// that produce it.
 ///
-/// pyrocko is deliberately absent: it is the project this one serves, and it has
-/// its own link above. Pure orchestration (mise, Task, micromux) is absent too —
-/// it never touches the artifact.
+/// Ordered by role — languages, the wasm toolchain, the scientific stack, the UI, the
+/// pickers, the plumbing, the typefaces — so the list reads as something more than an
+/// alphabet.
+///
+/// pyrocko is deliberately absent: it is the project this one serves, and it has its own link
+/// above.
+/// Pure orchestration (mise, Task, micromux) is absent too — it never touches the artifact.
 const ACKNOWLEDGED: &[(&str, &str)] = &[
     ("Rust", "https://www.rust-lang.org"),
     ("CPython", "https://www.python.org"),
@@ -93,9 +99,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, runtime: Option<&RuntimeI
         // cut off, so this only has to be close, not exact.
         .default_size([500.0, 555.0])
         .show(ctx, |ui| {
-            // One scroll area over the whole window, so nothing inside it scrolls
-            // on its own. `auto_shrink` off keeps the window at the size above
-            // instead of collapsing onto its content.
+            // One scroll area over the whole window, so nothing inside it scrolls on its own.
+            // `auto_shrink` off keeps the window at the size above instead of collapsing onto its
+            // content.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| contents(ui, runtime));

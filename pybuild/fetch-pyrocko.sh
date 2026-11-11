@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # `task fetch:pyrocko` — fetch the pyrocko source on demand.
 #
-# pyrocko is NOT vendored in this repo (sources/ is gitignored). This clones the
-# exact, known-good commit (PYROCKO_REF) of pyrocko into sources/pyrocko, which
-# the wheel build (docker/pyodide-mt/build-pyrocko.sh) and the bundled data assets (the cake
-# earthmodels and the map's plate boundaries, both referenced by index.html)
-# need. The pin lives in mise.toml ([env]); the Task workflow enters that
-# environment before invoking this script.
+# pyrocko is NOT vendored in this repo (sources/ is gitignored).
+# This clones the exact, known-good commit (PYROCKO_REF) of pyrocko into
+# sources/pyrocko, which the wheel build (docker/pyodide-mt/build-pyrocko.sh) and
+# the bundled data assets (the cake earthmodels and the map's plate boundaries,
+# both referenced by index.html) need.
+# The pin lives in mise.toml ([env]); the Task workflow enters that environment
+# before invoking this script.
 #
 # Idempotent: a no-op once the pinned commit is already checked out.
 set -euo pipefail
@@ -28,9 +29,9 @@ git -C "$DEST" init -q
 git -C "$DEST" remote add origin "$REPO" 2>/dev/null \
   || git -C "$DEST" remote set-url origin "$REPO"
 
-# GitHub allows fetching an unadvertised commit shallowly (allowAnySHA1InWant),
-# so we grab just that one commit (~27 MB) instead of the full history. Fall back
-# to a full main fetch for a host that does not permit it.
+# GitHub allows fetching an unadvertised commit shallowly (allowAnySHA1InWant), so
+# we grab just that one commit (~27 MB) instead of the full history.
+# Fall back to a full main fetch for a host that does not permit it.
 if git -C "$DEST" fetch -q --depth 1 origin "$REF"; then
   git -C "$DEST" checkout -q --force "$REF"
 else

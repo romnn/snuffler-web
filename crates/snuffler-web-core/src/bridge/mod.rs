@@ -5,7 +5,14 @@
 //! compiled to WASM) and returns protobuf metadata plus raw sample buffers.
 //!
 //! `proto/snuffler/bridge/v1/*.proto` is the boundary contract.
-//! The Rust structs below are the app-facing decoded representation.
+//! The decoded protobuf messages are the app-facing model; there is no parallel
+//! hand-written layer.
+//!
+//! Layout:
+//!
+//! - this module: [`Bridge`], its shared state, and the snapshots the frontend polls;
+//! - `install`: how each Python reply becomes bridge state;
+//! - `web`: the wasm-only transport and every operation that submits Python work.
 #![cfg_attr(
     not(target_arch = "wasm32"),
     allow(
@@ -15,40 +22,42 @@
 )]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::activity::{
     ActivityLedger, CancelRequest, JobError, JobHandle, JobRecord, Operation, Outcome,
-    RuntimeState, Submission,
+    RuntimeEpoch, Submission,
 };
 #[cfg(target_arch = "wasm32")]
-use crate::activity::{JobState, Progress};
+use crate::activity::{JobState, Progress, RuntimeState};
 
 mod error;
-mod jobs;
+mod install;
+mod live;
 mod proto;
-mod runtime;
+mod results;
+mod tiles;
 
 pub use error::{
     BridgeError, MarshalError, ReloadError, ReloadFailureReason, ReloadSourceError, SeedlinkError,
 };
-pub use jobs::{CommandOutcome, FigureData, ReadyTile, TileRequest, ViewData};
-use jobs::{FigureSlot, TileState};
+use live::LiveState;
+pub use live::{LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, SeedlinkParams};
 #[cfg(target_arch = "wasm32")]
-use jobs::{TILE_BATCH, TILE_BATCHES_IN_FLIGHT};
-pub use runtime::{
-    LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, SeedlinkParams,
-    SeisbenchProgress,
+use live::{LiveIngestBatch, LiveIngestMailbox, LiveIngestState, LiveSessionEpoch, StreamId};
+use results::FigureSlot;
+pub use results::{
+    ActivitySnapshot, CommandOutcome, FigureData, GotoTarget, SeisbenchProgress, SeisbenchStatus,
+    ViewData,
 };
-#[cfg(target_arch = "wasm32")]
-use runtime::{LiveIngestBatch, SessionEpoch, StreamId};
-use runtime::{LiveIngestMailbox, LiveIngestState};
 pub use snuffler_web_proto::{CallError, RemoteError, TransportError};
+use tiles::TileCache;
+pub use tiles::{ReadyTile, TileRequest};
+#[cfg(target_arch = "wasm32")]
+use tiles::{TILE_BATCH_SIZE, TILE_BATCHES_IN_FLIGHT, TileKey, TileState};
 
-// The decoded protobuf messages ARE the app-facing domain model — no parallel
-// hand-written structs, no conversion layer. prost generates these from
-// proto/snuffler/bridge/v1/*.proto; the bridge passes them straight to the frontend.
 pub use proto::pb::{
     ActiveEventResult, BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest,
     CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest, MapData, MapRequest,
@@ -59,8 +68,7 @@ pub use proto::pb::{
     SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, TraceBox, ViewMeta, ViewParams,
     ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
-// Wire shapes only the wasm bridge implementation touches; not part of the
-// crate's app-facing surface.
+// Wire shapes only the wasm bridge implementation touches.
 #[cfg(target_arch = "wasm32")]
 pub(crate) use proto::pb::{
     BrowserFileLoadPage, BrowserSourceAck, BrowserSourceAckList, IngestMiniSeedRequest,
@@ -70,113 +78,122 @@ pub(crate) use proto::pb::{
 /// recognized wherever one can arrive.
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
-/// The job list shared with the per-frame activity UI.
-type ActivityJobs = Rc<Vec<(JobHandle, JobRecord)>>;
-
+/// The bridge's shared state: the activity ledger plus the latest result of every kind
+/// of Python work, each with the generation counter its consumer polls.
 #[derive(Default)]
 struct Inner {
     activity: ActivityLedger,
-    /// The last runtime epoch observed by [`web::sync_runtime`].
+    /// The last runtime epoch observed by the per-frame sync.
     /// A change with no RPC in flight is the only evidence of an idle worker death, so
-    /// the sync poll compares against this to report the loss exactly once.
-    runtime_epoch: Option<crate::activity::RuntimeEpoch>,
+    /// the sync compares against this to report the loss exactly once.
+    runtime_epoch: Option<RuntimeEpoch>,
     /// The record snapshot handed to the per-frame activity UI, keyed by the
     /// ledger revision it was built from, so idle frames share one allocation.
-    activity_cache: Option<(u64, ActivityJobs)>,
+    activity_cache: Option<ActivityCache>,
     /// Latest recoverable failure that should remain visible without making the
     /// bridge operationally unavailable.
     diagnostic: Option<BridgeError>,
+
     scene: Option<SceneMeta>,
-    /// Incremented every time a new scene is loaded, so the frontend can reset its
-    /// view window when (and only when) the data actually changes.
-    scene_gen: u64,
+    /// Bumped every time a new scene is loaded, so the frontend can reset its view
+    /// window when (and only when) the data actually changes.
+    scene_generation: u64,
     view: Option<Arc<ViewData>>,
-    /// Incremented whenever new view data lands (for texture caching).
+    /// Bumped whenever new view data lands, for texture caching.
     view_epoch: u64,
+    view_requests: ViewRequests,
+    /// Whether the first drawn view has already asked Python to import the
+    /// scientific stack, which every later analysis needs.
+    scientific_tools_requested: bool,
+
     /// Latest render of each open figure window (amplitude spectrum, cake, …), keyed by
     /// figure kind.
-    /// See [`FigureSlot`].
-    figures: std::collections::HashMap<String, FigureSlot>,
+    figures: HashMap<String, FigureSlot>,
     snuffling: Option<SnufflingResult>,
-    snuffling_gen: u64,
+    snuffling_generation: u64,
     /// A custom model name the user just uploaded ("Add Model"), for the frontend to
     /// add to the Cake Phase dropdown and select.
     pending_cake_model: Option<String>,
-    map: Option<MapData>,
-    map_request: Option<MapRequest>,
-    map_request_gen: u64,
-    map_job: Option<JobHandle>,
-    /// Bumped whenever Python returns a canonical event-state projection.
-    active_event_gen: u64,
-    event_state: Option<ActiveEventResult>,
-    tiles: std::collections::HashMap<(u8, u32, u32), TileState>,
-    /// Bumped by [`Bridge::clear_tiles`].
-    /// Tiles are keyed by `(z, x, y)` alone, so a fetch still in flight when the basemap
-    /// changes would otherwise land in the cleared map under the same key as its
-    /// replacement.
-    tile_epoch: u64,
-    /// Wanted tiles that no batch has started yet, ordered by priority.
-    /// Replaced wholesale on every [`Bridge::request_tiles`], which is what lets a zoom
-    /// or a pan abandon the tiles it just moved away from instead of fetching them.
-    tile_queue: Vec<TileRequest>,
-    /// How many batches are out; see [`TILE_BATCHES_IN_FLIGHT`].
-    tile_batches: usize,
-    view_job: Option<(JobHandle, ViewParams)>,
-    view_retry_after_s: f64,
-    next_view_sequence: u64,
-    python_session_generation: u64,
-    desired: Option<ViewParams>,
-    applied: Option<ViewParams>,
-    view_request_gen: u64,
     /// A pending `goto <time>` target the session should jump the view to.
-    pending_goto: Option<(f64, Option<f64>)>,
+    pending_goto: Option<GotoTarget>,
     /// How the last ':' command dispatched to pyrocko went, for the command line
     /// to close itself or show the error.
     command_outcome: Option<CommandOutcome>,
-    live_seedlink_started_at: Option<f64>,
-    session_epoch: u64,
-    next_stream_id: u64,
-    live_ingest: LiveIngestState,
-    ingest_job: Option<JobHandle>,
-    ingest_mailbox: LiveIngestMailbox,
-    /// Follow-viewport width of the active live session, from its start form
-    /// (0.0 while no session runs; readers fall back to the default).
-    live_seedlink_follow_s: f64,
+
+    /// Python's canonical event registry.
+    event_state: Option<ActiveEventResult>,
+    /// Bumped whenever Python returns a new event registry.
+    active_event_generation: u64,
+    map: Option<MapData>,
+    map_request: Option<MapRequest>,
+    /// Bumped per map request, so a superseded reply is dropped.
+    map_request_generation: u64,
+    map_job: Option<JobHandle>,
+    tiles: TileCache,
+
+    live: LiveState,
+
     /// The datasets `File ▸ Examples` offers, fetched the first time that menu is opened
-    /// rather than compiled in — so a deployment can gain an example without a new wasm
+    /// rather than compiled in, so a deployment can gain an example without a new wasm
     /// build.
     /// `None` until it has been asked for.
     examples: Option<Result<Vec<ExampleDataset>, BridgeError>>,
     examples_job: Option<JobHandle>,
-    scientific_tools_requested: bool,
-    /// The view a just-loaded bundle asked for, for the frontend to apply — the
-    /// bridge does not own the sort state, so it parks it here the way a fetched
+    /// The view a just-loaded bundle asked for, for the frontend to apply.
+    /// The bridge does not own the sort state, so it parks it here the way a fetched
     /// cake model waits in `pending_cake_model`.
     pending_view: Option<BundleView>,
-    /// What the loaded dataset says about itself, paired with the scene generation
-    /// it arrived with.
-    ///
-    /// Unlike the view, this is not spent on arrival — `Help ▸ About this dataset`
-    /// shows it again later — so it needs invalidating, and the generation does
-    /// that on its own: any later load bumps `scene_gen`, and prose about the
-    /// previous pile stops being about what is on screen without a single call
-    /// site having to remember to clear it.
-    dataset_note: Option<(u64, BundleAbout)>,
+    /// What the loaded dataset says about itself.
+    /// Unlike the view, this is not spent on arrival: `Help ▸ About this dataset` shows
+    /// it again later.
+    dataset_note: Option<DatasetNote>,
     /// Whether that note has yet to be put on screen.
-    /// A dataset introduces itself once, when it arrives — which is a fact known here, at
-    /// the arrival, rather than something the frontend should have to infer by watching
-    /// for the generation to change.
+    /// A dataset introduces itself once, when it arrives, which is a fact known here
+    /// rather than something the frontend should infer from a generation change.
     dataset_note_unseen: bool,
 }
 
-fn install_bundle_presentation(
-    inner: &mut Inner,
-    view: Option<BundleView>,
-    about: Option<BundleAbout>,
-) {
-    inner.pending_view = view;
-    inner.dataset_note_unseen = about.is_some();
-    inner.dataset_note = about.map(|about| (inner.scene_gen, about));
+/// The shared activity snapshot and the ledger revision it was built from.
+struct ActivityCache {
+    revision: u64,
+    jobs: Rc<Vec<(JobHandle, JobRecord)>>,
+}
+
+/// What the loaded dataset says about itself, stamped with the scene it describes.
+///
+/// Any later load bumps the scene generation, so prose about the previous pile stops
+/// being shown without a single call site having to clear it.
+struct DatasetNote {
+    scene_generation: u64,
+    about: BundleAbout,
+}
+
+/// The coalescing state of the view lane: at most one `GetView` is in flight, and the
+/// newest wanted window waits in `desired_params` until it returns.
+#[derive(Default)]
+struct ViewRequests {
+    /// The request in flight, with the params it was issued for.
+    in_flight: Option<InFlightView>,
+    /// The window the frontend wants next; `None` once it is applied or in flight.
+    desired_params: Option<ViewParams>,
+    /// The params of the view on screen.
+    applied_params: Option<ViewParams>,
+    /// Bumped by every invalidation, so a reply to a forgotten request is dropped.
+    generation: u64,
+    /// The sequence number of the last issued request; Python echoes it back.
+    last_sequence: u64,
+    /// The newest Python session generation a reply carried.
+    /// An older one means the reply predates a reload and is stale.
+    python_session_generation: u64,
+    /// Browser time before which a failed request is not retried, in epoch seconds.
+    retry_after_s: f64,
+}
+
+/// The one `GetView` the view lane runs.
+struct InFlightView {
+    job: JobHandle,
+    /// The canonical params, without the per-request sequence number.
+    params: ViewParams,
 }
 
 /// Schedules frontend redraws after asynchronous bridge work completes.
@@ -216,6 +233,18 @@ pub struct Bridge {
     repaint: Repaint,
 }
 
+/// Browser time in epoch seconds; 0.0 on the host, where nothing runs.
+fn now_s() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() / 1000.0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0.0
+    }
+}
+
 impl Bridge {
     /// Creates an empty transport handle using the frontend's repaint scheduler.
     #[must_use]
@@ -229,34 +258,40 @@ impl Bridge {
     /// Returns runtime health and a shared snapshot of all visible jobs,
     /// rebuilt only when the ledger revision moved since the previous frame.
     #[must_use]
-    pub fn activity_snapshot(&self) -> (RuntimeState, ActivityJobs) {
+    pub fn activity_snapshot(&self) -> ActivitySnapshot {
         #[cfg(target_arch = "wasm32")]
         web::sync_runtime(&self.inner);
+
         let mut borrow = self.inner.borrow_mut();
         let state = &mut *borrow;
         let revision = state.activity.revision();
-        if state
+        let cached_jobs = state
             .activity_cache
             .as_ref()
-            .is_none_or(|(cached, _)| *cached != revision)
-        {
-            let jobs: Vec<(JobHandle, JobRecord)> = state
-                .activity
-                .records()
-                .map(|(handle, record)| (handle, record.clone()))
-                .collect();
-            state.activity_cache = Some((revision, Rc::new(jobs)));
+            .filter(|cache| cache.revision == revision)
+            .map(|cache| Rc::clone(&cache.jobs));
+        let jobs = cached_jobs.unwrap_or_else(|| {
+            let jobs: Rc<Vec<_>> = Rc::new(
+                state
+                    .activity
+                    .records()
+                    .map(|(handle, record)| (handle, record.clone()))
+                    .collect(),
+            );
+            state.activity_cache = Some(ActivityCache {
+                revision,
+                jobs: Rc::clone(&jobs),
+            });
+            jobs
+        });
+        ActivitySnapshot {
+            runtime: state.activity.runtime().clone(),
+            jobs,
         }
-        let jobs = state
-            .activity_cache
-            .as_ref()
-            .map(|(_, jobs)| Rc::clone(jobs))
-            .unwrap_or_default();
-        (state.activity.runtime().clone(), jobs)
     }
 
     /// Whether any queued or executing job will replace marker output when it
-    /// commits — the window in which a destructive marker edit would appear to
+    /// commits: the window in which a destructive marker edit would appear to
     /// be undone by the commit landing after it.
     #[must_use]
     pub fn marker_update_active(&self) -> bool {
@@ -267,14 +302,10 @@ impl Bridge {
 
     /// Registers executor-owned local work before it leaves the render loop.
     pub fn begin_local(&self, operation: Operation, detail: Option<String>) -> Submission {
-        #[cfg(target_arch = "wasm32")]
-        let now_s = js_sys::Date::now() / 1000.0;
-        #[cfg(not(target_arch = "wasm32"))]
-        let now_s = 0.0;
         self.inner
             .borrow_mut()
             .activity
-            .submit_local(operation, detail, now_s)
+            .submit_local(operation, detail, now_s())
     }
 
     /// Records the sole terminal result for executor-owned local work.
@@ -290,38 +321,34 @@ impl Bridge {
     /// Requests cancellation without allowing repeated UI actions to resubmit work.
     #[must_use]
     pub fn cancel(&self, handle: JobHandle) -> proto::pb::CancelDisposition {
-        #[cfg(target_arch = "wasm32")]
-        let now_s = js_sys::Date::now() / 1000.0;
-        #[cfg(not(target_arch = "wasm32"))]
-        let now_s = 0.0;
+        use proto::pb::CancelDisposition;
+
         let request = self
             .inner
             .borrow_mut()
             .activity
-            .request_cancel(handle, now_s);
+            .request_cancel(handle, now_s());
         let disposition = match request {
-            CancelRequest::Cancelled => proto::pb::CancelDisposition::Queued,
+            CancelRequest::Cancelled => CancelDisposition::Queued,
+            // Running work: ask the worker to interrupt it
             CancelRequest::Interrupt | CancelRequest::AlreadyCancelling => {
                 #[cfg(target_arch = "wasm32")]
                 {
-                    match web::cancel_job(handle) {
-                        Ok(disposition) => disposition,
-                        Err(error) => {
-                            self.inner.borrow_mut().diagnostic = Some(error);
-                            proto::pb::CancelDisposition::Cancelling
-                        }
-                    }
+                    web::cancel_job(handle).unwrap_or_else(|error| {
+                        self.inner.borrow_mut().diagnostic = Some(error);
+                        CancelDisposition::Cancelling
+                    })
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    proto::pb::CancelDisposition::Cancelling
+                    CancelDisposition::Cancelling
                 }
             }
-            CancelRequest::TooLate => proto::pb::CancelDisposition::TooLate,
-            CancelRequest::NotFound => proto::pb::CancelDisposition::NotFound,
-            CancelRequest::NotCancellable => proto::pb::CancelDisposition::NotCancellable,
+            CancelRequest::TooLate => CancelDisposition::TooLate,
+            CancelRequest::NotFound => CancelDisposition::NotFound,
+            CancelRequest::NotCancellable => CancelDisposition::NotCancellable,
         };
-        if disposition == proto::pb::CancelDisposition::TooLate {
+        if disposition == CancelDisposition::TooLate {
             self.inner
                 .borrow_mut()
                 .activity
@@ -371,10 +398,10 @@ impl Bridge {
         }
     }
 
-    /// Returns the current inference device and optional `SeisBench` progress.
+    /// Returns the current inference device and the running `SeisBench` picker's progress.
     #[cfg(target_arch = "wasm32")]
     #[must_use]
-    pub fn seisbench_runtime(&self) -> (String, Option<SeisbenchProgress>) {
+    pub fn seisbench_status(&self) -> SeisbenchStatus {
         let progress = self
             .inner
             .borrow()
@@ -398,7 +425,10 @@ impl Bridge {
                     label: phase.to_string(),
                 })
             });
-        (web::seisbench_device(), progress)
+        SeisbenchStatus {
+            device: web::seisbench_device(),
+            progress,
+        }
     }
 
     /// Returns the latest scene metadata snapshot.
@@ -409,35 +439,32 @@ impl Bridge {
 
     /// Generation counter that increments on each new scene load.
     #[must_use]
-    pub fn scene_gen(&self) -> u64 {
-        self.inner.borrow().scene_gen
+    pub fn scene_generation(&self) -> u64 {
+        self.inner.borrow().scene_generation
     }
 
     /// Current `SeedLink` session metadata, if live acquisition is active.
     #[must_use]
     pub fn live_seedlink_session(&self) -> Option<LiveSeedlinkSession> {
         let inner = self.inner.borrow();
-        inner
-            .live_seedlink_started_at
-            .map(|started_at| LiveSeedlinkSession {
-                started_at,
-                follow_seconds: if inner.live_seedlink_follow_s > 0.0 {
-                    inner.live_seedlink_follow_s
-                } else {
-                    LIVE_FOLLOW_SECONDS
-                },
-            })
+        let follow_seconds = if inner.live.follow_s > 0.0 {
+            inner.live.follow_s
+        } else {
+            LIVE_FOLLOW_SECONDS
+        };
+        inner.live.started_at.map(|started_at| LiveSeedlinkSession {
+            started_at,
+            follow_seconds,
+        })
     }
 
-    /// Take a pending `goto` (time, optional window length) set by a ':' command for the
-    /// session to apply.
-    /// A window length zooms to match the date specificity.
+    /// Takes a pending `goto` set by a ':' command for the session to apply.
     #[must_use]
-    pub fn take_goto(&self) -> Option<(f64, Option<f64>)> {
+    pub fn take_goto(&self) -> Option<GotoTarget> {
         self.inner.borrow_mut().pending_goto.take()
     }
 
-    /// Take how the last ':' command dispatched to pyrocko turned out.
+    /// Takes how the last ':' command dispatched to pyrocko turned out.
     #[must_use]
     pub fn take_command_outcome(&self) -> Option<CommandOutcome> {
         self.inner.borrow_mut().command_outcome.take()
@@ -452,7 +479,7 @@ impl Bridge {
     /// Generation of the latest render for a figure kind (0 = never rendered), so
     /// the frontend decodes the PNG only when it actually changes.
     #[must_use]
-    pub fn figure_gen(&self, kind: &str) -> u64 {
+    pub fn figure_generation(&self, kind: &str) -> u64 {
         self.inner
             .borrow()
             .figures
@@ -480,14 +507,14 @@ impl Bridge {
             .map(|slot| slot.data.clone())
     }
 
-    /// Generation counter for snuffling results (so the session applies each once).
+    /// Generation counter for snuffling results, so the session applies each once.
     #[must_use]
-    pub fn snuffling_gen(&self) -> u64 {
-        self.inner.borrow().snuffling_gen
+    pub fn snuffling_generation(&self) -> u64 {
+        self.inner.borrow().snuffling_generation
     }
 
     /// Takes the latest marker/text result produced by a snuffling request.
-    /// Its sole consumer is gated on [`Self::snuffling_gen`], so moving the
+    /// Its sole consumer is gated on [`Self::snuffling_generation`], so moving the
     /// result out (up to a full marker budget) beats cloning it.
     #[must_use]
     pub fn take_snuffling(&self) -> Option<SnufflingResult> {
@@ -513,15 +540,15 @@ impl Bridge {
         std::mem::take(&mut self.inner.borrow_mut().dataset_note_unseen)
     }
 
-    /// Whether the dataset now on screen says anything about itself — for the
-    /// menu entry that only needs to exist or not, without cloning the prose.
+    /// Whether the dataset now on screen says anything about itself, for the menu
+    /// entry that only needs to exist or not, without cloning the prose.
     #[must_use]
     pub fn has_dataset_note(&self) -> bool {
         let inner = self.inner.borrow();
         inner
             .dataset_note
             .as_ref()
-            .is_some_and(|(described, _)| *described == inner.scene_gen)
+            .is_some_and(|note| note.scene_generation == inner.scene_generation)
     }
 
     /// What the dataset now on screen says about itself, if it says anything.
@@ -531,8 +558,8 @@ impl Bridge {
         inner
             .dataset_note
             .as_ref()
-            .filter(|(described, _)| *described == inner.scene_gen)
-            .map(|(_, about)| about.clone())
+            .filter(|note| note.scene_generation == inner.scene_generation)
+            .map(|note| note.about.clone())
     }
 
     /// Returns the latest station and event coordinates for the map.
@@ -549,66 +576,14 @@ impl Bridge {
 
     /// Generation counter bumped on each active-event change.
     #[must_use]
-    pub fn active_event_gen(&self) -> u64 {
-        self.inner.borrow().active_event_gen
+    pub fn active_event_generation(&self) -> u64 {
+        self.inner.borrow().active_event_generation
     }
 
     /// Returns Python's latest canonical event-registry projection.
     #[must_use]
     pub fn event_state(&self) -> Option<ActiveEventResult> {
         self.inner.borrow().event_state.clone()
-    }
-
-    /// Take every tile that has finished decoding, each exactly once, for the view
-    /// to upload as a texture.
-    ///
-    /// Draining all of them — rather than asking per key — matters because the
-    /// view moves on: a tile that lands after a zoom has left its level would
-    /// otherwise sit here holding a megabyte of RGBA that nobody ever asks for.
-    #[must_use]
-    pub fn take_ready_tiles(&self) -> Vec<ReadyTile> {
-        let mut i = self.inner.borrow_mut();
-        let ready: Vec<(u8, u32, u32)> = i
-            .tiles
-            .iter()
-            .filter(|(_, state)| matches!(state, TileState::Ready(..)))
-            .map(|(key, _)| *key)
-            .collect();
-        ready
-            .into_iter()
-            .filter_map(|key| match i.tiles.insert(key, TileState::Consumed) {
-                Some(TileState::Ready(width, height, rgba)) => Some(ReadyTile {
-                    z: key.0,
-                    x: key.1,
-                    y: key.2,
-                    width,
-                    height,
-                    rgba,
-                }),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Forget a tile so a later request fetches it again.
-    ///
-    /// The view calls this when it evicts a texture: a tile it has already
-    /// consumed is remembered here as fetched, so without this the evicted tile
-    /// could never be asked for a second time.
-    pub fn forget_tile(&self, z: u8, x: u32, y: u32) {
-        self.inner.borrow_mut().tiles.remove(&(z, x, y));
-    }
-
-    /// Discard every cached, in-flight, and failed tile so later requests refetch.
-    ///
-    /// The frontend calls this when the basemap provider changes: tile keys carry
-    /// no provider, so without a reset the already-fetched tiles would keep
-    /// showing the previous basemap while only new keys use the new one.
-    pub fn clear_tiles(&self) {
-        let mut i = self.inner.borrow_mut();
-        i.tiles.clear();
-        i.tile_queue.clear();
-        i.tile_epoch = i.tile_epoch.wrapping_add(1);
     }
 
     /// Returns an owned snapshot of the current view (decimated waveforms).
@@ -623,8 +598,10 @@ impl Bridge {
     /// Whether the current view is drawable and has no replacement queued or in flight.
     #[must_use]
     pub fn view_is_settled(&self) -> bool {
-        let i = self.inner.borrow();
-        i.view.is_some() && i.desired.is_none() && i.view_job.is_none()
+        let inner = self.inner.borrow();
+        inner.view.is_some()
+            && inner.view_requests.desired_params.is_none()
+            && inner.view_requests.in_flight.is_none()
     }
 }
 
@@ -636,20 +613,16 @@ mod web;
 mod tests {
     use std::sync::Arc;
 
-    use super::{
-        Bridge, BundleAbout, BundleView, Inner, Operation, Repaint, ViewData,
-        install_bundle_presentation,
-    };
+    use super::{Bridge, BundleAbout, BundleView, Inner, Operation, Repaint, ViewData};
 
     #[test]
     fn bundle_presentation_uses_the_installed_scene_generation() {
         let mut inner = Inner {
-            scene_gen: 7,
+            scene_generation: 7,
             ..Default::default()
         };
 
-        install_bundle_presentation(
-            &mut inner,
+        inner.install_bundle_presentation(
             Some(BundleView {
                 sort: "distance".to_owned(),
                 subsort: "grouped".to_owned(),
@@ -660,6 +633,8 @@ mod tests {
             }),
         );
 
+        // The view waits for the frontend, and the note is stamped with the scene
+        // it arrived with.
         assert_eq!(
             inner.pending_view.as_ref().map(|view| view.sort.as_str()),
             Some("distance")
@@ -669,7 +644,7 @@ mod tests {
             inner
                 .dataset_note
                 .as_ref()
-                .map(|(generation, about)| (*generation, about.title.as_str())),
+                .map(|note| (note.scene_generation, note.about.title.as_str())),
             Some((7, "Changed bundle"))
         );
     }

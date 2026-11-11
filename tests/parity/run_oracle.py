@@ -1,13 +1,14 @@
-"""Tier 1: oracle parity. Qt snuffler and web/bridge.py, same inputs, same process.
+"""Tier 1: oracle parity. Qt snuffler and web/snuffler_bridge, same inputs, same process.
 
-Runs every tier-1 scenario through both implementations and diffs the numbers. No
-browser, no server, no VNC, no Docker — an offscreen ``QApplication`` on one side
-and a direct ``import bridge`` on the other.
+Runs every tier-1 scenario through both implementations and diffs the numbers.
+No browser, no server, no VNC, no Docker — an offscreen ``QApplication`` on one side and
+a direct import of ``snuffler_bridge`` on the other.
 
 A scenario passes when every check either matches or diverges in exactly the way
-``known_gaps.toml`` says it should. A divergence nobody wrote down fails the run,
-and so does a documented divergence that stopped happening — the second is how the
-allowlist avoids rotting into a list of things that used to be true.
+``known_gaps.toml`` says it should.
+A divergence nobody wrote down fails the run, and so does a documented divergence that
+stopped happening — the second is how the allowlist avoids rotting into a list of things
+that used to be true.
 
     QT_QPA_PLATFORM=offscreen PYTHONPATH=web/proto:web python tests/parity/run_oracle.py
 """
@@ -76,7 +77,7 @@ def worst_metrics(findings: List[compare.Finding]) -> Dict[str, float]:
 
 
 def run_grid() -> bool:
-    """Run the ``_decon_freq_limits`` property grid; return True when it agrees."""
+    """Run the ``processing.decon_freq_limits`` property grid; return True when it agrees."""
     probe = qt_oracle.QtViewer([corpus_build.path("oddrate.mseed")])
     try:
         points, failures = freq_limits.run(probe.view)

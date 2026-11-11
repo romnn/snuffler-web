@@ -1,6 +1,8 @@
-//! What is painted on top of the basemap: plate boundaries, stations, events,
-//! and the small furniture in the corners — the zoom buttons, the gesture hint,
-//! and the provider attribution the tile sources ask for.
+//! What is painted on top of the basemap: plate boundaries, stations, events, and
+//! the small furniture in the corners.
+//!
+//! That furniture is the zoom buttons, the gesture hint, and the provider
+//! attribution the tile sources ask for.
 
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Shape, Stroke, Ui, Vec2, vec2};
 
@@ -8,37 +10,40 @@ use snuffler_web_core::bridge::MapData;
 use snuffler_web_render::map::{Camera, World};
 
 /// Side of one square zoom button.
-const BUTTON: f32 = 26.0;
+const BUTTON_SIZE_PX: f32 = 26.0;
 
 /// Inset of the corner furniture from the map's edges.
-const MARGIN: f32 = 8.0;
+const MARGIN_PX: f32 = 8.0;
 
-/// How opaque the footer pills are. Dimmed, because they sit over the map
-/// permanently and are there to be read when looked for, not to compete with the
-/// stations and events above them.
+/// How opaque the footer pills are.
+///
+/// Dimmed, because they sit over the map permanently and are there to be read when
+/// looked for, not to compete with the stations and events above them.
 const FOOTER_ALPHA: f32 = 0.75;
 
 /// Markers this far outside the viewport are still drawn, so one sitting on the
 /// edge keeps its label instead of vanishing a few points early.
-const CULL_SLACK: f32 = 96.0;
+const CULL_SLACK_PX: f32 = 96.0;
 
 /// How close the pointer has to be to a station triangle to count as over it.
+///
 /// Comfortably larger than the triangle, because these are small targets and a
 /// double-click that misses by a point is worse than one that is slightly loose.
-const STATION_REACH: f32 = 10.0;
+const STATION_REACH_PX: f32 = 10.0;
 
 /// The same slack around an event's circle, on top of its own radius.
-const EVENT_REACH: f32 = 3.0;
+const EVENT_REACH_PX: f32 = 3.0;
 
 /// How much a hovered station's triangle grows, so the pointer being on target is
 /// obvious without the marker jumping somewhere else.
 const HOVER_GROWTH: f32 = 1.3;
 
-/// Gap between a station's position and the start of its label. Fixed rather than
-/// scaled with [`HOVER_GROWTH`], so hovering cannot nudge the text sideways — a
-/// label that shifts under the pointer reads as a glitch. Wide enough to clear
-/// the grown triangle as well as the resting one.
-const LABEL_GAP: f32 = 9.0;
+/// Gap between a station's position and the start of its label.
+///
+/// Fixed rather than scaled with [`HOVER_GROWTH`], so hovering cannot nudge the
+/// text sideways: a label that shifts under the pointer reads as a glitch.
+/// Wide enough to clear the grown triangle as well as the resting one.
+const LABEL_GAP_PX: f32 = 9.0;
 
 /// A station or event the pointer is over.
 ///
@@ -74,25 +79,30 @@ impl Hit {
 /// radius from the magnitude normalised against the largest, and a colour from
 /// the depth against the deepest.
 struct EventScale {
-    magmax: f64,
-    depthmax: f64,
+    max_magnitude: f64,
+    max_depth_m: f64,
 }
 
 impl EventScale {
     fn of(data: &MapData) -> Self {
         Self {
-            magmax: data
+            max_magnitude: data
                 .events
                 .iter()
-                .map(|e| e.mag.max(0.0))
+                .map(|event| event.magnitude.max(0.0))
                 .fold(0.0_f64, f64::max),
-            depthmax: data.events.iter().map(|e| e.depth).fold(10.0_f64, f64::max),
+            max_depth_m: data
+                .events
+                .iter()
+                .map(|event| event.depth)
+                .fold(10.0_f64, f64::max),
         }
     }
 
-    fn radius(&self, mag: f64) -> f32 {
-        let radius = if self.magmax > 0.0 {
-            2.0 + (2.0 * mag.max(0.0) / self.magmax).exp()
+    /// The symbol radius in screen points for a magnitude.
+    fn radius(&self, magnitude: f64) -> f32 {
+        let radius = if self.max_magnitude > 0.0 {
+            2.0 + (2.0 * magnitude.max(0.0) / self.max_magnitude).exp()
         } else {
             8.0
         };
@@ -104,10 +114,10 @@ impl EventScale {
         points
     }
 
-    /// Depth as `0..=1`, shallow to deep.
-    fn depth_fraction(&self, depth: f64) -> f64 {
-        if self.depthmax > 10.0 {
-            ((depth - 10.0) / (self.depthmax - 10.0)).clamp(0.0, 1.0)
+    /// A depth in metres as `0..=1`, shallow to deep.
+    fn depth_fraction(&self, depth_m: f64) -> f64 {
+        if self.max_depth_m > 10.0 {
+            ((depth_m - 10.0) / (self.max_depth_m - 10.0)).clamp(0.0, 1.0)
         } else {
             0.5
         }
@@ -122,19 +132,22 @@ impl EventScale {
 pub fn hit_test(data: &MapData, pointer: Pos2, project: &impl Fn(f64, f64) -> Pos2) -> Option<Hit> {
     let scale = EventScale::of(data);
     let event = data.events.iter().position(|event| {
-        pointer.distance(project(event.lat, event.lon)) <= scale.radius(event.mag) + EVENT_REACH
+        pointer.distance(project(event.lat, event.lon))
+            <= scale.radius(event.magnitude) + EVENT_REACH_PX
     });
     if let Some(index) = event {
         return Some(Hit::Event(index));
     }
     data.stations
         .iter()
-        .position(|station| pointer.distance(project(station.lat, station.lon)) <= STATION_REACH)
+        .position(|station| pointer.distance(project(station.lat, station.lon)) <= STATION_REACH_PX)
         .map(Hit::Station)
 }
 
-/// The ring drawn around whatever the pointer is over. Dark under light so it
-/// reads on any basemap, and on the red triangles and blue-to-red circles alike.
+/// The ring drawn around whatever the pointer is over.
+///
+/// Dark under light so it reads on any basemap, and on the red triangles and
+/// blue-to-red circles alike.
 fn hover_ring(painter: &egui::Painter, at: Pos2, radius: f32) {
     painter.circle_stroke(
         at,
@@ -145,7 +158,7 @@ fn hover_ring(painter: &egui::Painter, at: Pos2, radius: f32) {
 }
 
 /// Type size of a station label.
-const LABEL_SIZE: f32 = 11.0;
+const LABEL_SIZE_PT: f32 = 11.0;
 
 /// Where a haloed label is stamped around its own position, in screen points.
 ///
@@ -169,7 +182,9 @@ pub struct LabelStyle {
     /// Colour of the glyphs themselves.
     pub ink: Color32,
     /// Colour stamped around the glyphs, for imagery too varied for flat ink to
-    /// win against. `None` on a basemap with a consistent enough tone.
+    /// win against.
+    ///
+    /// `None` on a basemap with a consistent enough tone.
     pub halo: Option<Color32>,
 }
 
@@ -210,7 +225,7 @@ pub fn plate_boundaries(
 /// Station triangles with their NSLC labels.
 ///
 /// The labels sit straight on the tiles with nothing behind them, so `style` has
-/// to come from the basemap in use — see `Basemap::label_style`.
+/// to come from the basemap in use (see `Basemap::label_style`).
 pub fn stations(
     painter: &egui::Painter,
     data: &MapData,
@@ -219,7 +234,7 @@ pub fn stations(
     hit: Option<Hit>,
     project: impl Fn(f64, f64) -> Pos2,
 ) {
-    let visible = rect.expand(CULL_SLACK);
+    let visible = rect.expand(CULL_SLACK_PX);
     for (index, station) in data.stations.iter().enumerate() {
         let at = project(station.lat, station.lon);
         if !visible.contains(at) {
@@ -227,7 +242,7 @@ pub fn stations(
         }
         let hovered = hit == Some(Hit::Station(index));
         if hovered {
-            hover_ring(painter, at, STATION_REACH);
+            hover_ring(painter, at, STATION_REACH_PX);
         }
         let grow = if hovered { HOVER_GROWTH } else { 1.0 };
         painter.add(Shape::convex_polygon(
@@ -241,7 +256,7 @@ pub fn stations(
         ));
         label(
             painter,
-            egui::pos2(at.x + LABEL_GAP, at.y),
+            egui::pos2(at.x + LABEL_GAP_PX, at.y),
             &station.label,
             style,
         );
@@ -254,7 +269,7 @@ pub fn stations(
 /// than a plate behind them: a plate would hide the ground the station sits on,
 /// which on satellite imagery is often the reason to be looking.
 fn label(painter: &egui::Painter, at: Pos2, text: &str, style: LabelStyle) {
-    let font = FontId::proportional(LABEL_SIZE);
+    let font = FontId::proportional(LABEL_SIZE_PT);
     // Laid out once and stamped many times; egui caches galleys, so the repeats
     // cost a draw call each rather than a re-layout.
     let ink = painter.layout_no_wrap(text.to_owned(), font.clone(), style.ink);
@@ -271,9 +286,10 @@ fn label(painter: &egui::Painter, at: Pos2, text: &str, style: LabelStyle) {
 /// Event circles, plus the hover popup for whichever one is under the pointer.
 ///
 /// Magnitude→radius and depth→colour are faithful to the Qt map snuffling's
-/// *rendered* values (magmin=0, depthmin=10 m, magshift=0 — how `map_osm.html`
-/// actually feeds `map_util.js`): radius = 2+exp(2·mag/magmax), and depth ramps
-/// blue (shallow) → red (deep) over (depth−10)/(depthmax−10).
+/// *rendered* values: magmin=0, depthmin=10 m and magshift=0, which is how
+/// `map_osm.html` actually feeds `map_util.js`.
+/// The radius is 2+exp(2·mag/magmax), and the depth ramps blue (shallow) to red
+/// (deep) over (depth−10)/(depthmax−10).
 pub fn events(
     painter: &egui::Painter,
     data: &MapData,
@@ -281,7 +297,7 @@ pub fn events(
     hit: Option<Hit>,
     project: impl Fn(f64, f64) -> Pos2,
 ) {
-    let visible = rect.expand(CULL_SLACK);
+    let visible = rect.expand(CULL_SLACK_PX);
     let scale = EventScale::of(data);
 
     for (index, event) in data.events.iter().enumerate() {
@@ -289,7 +305,7 @@ pub fn events(
         if !visible.contains(at) {
             continue;
         }
-        let radius = scale.radius(event.mag);
+        let radius = scale.radius(event.magnitude);
         let depth = scale.depth_fraction(event.depth);
         #[expect(
             clippy::cast_possible_truncation,
@@ -299,7 +315,7 @@ pub fn events(
         let (red, blue) = ((255.0 * depth) as u8, (255.0 * (1.0 - depth)) as u8);
         let hovered = hit == Some(Hit::Event(index));
         if hovered {
-            hover_ring(painter, at, radius + EVENT_REACH);
+            hover_ring(painter, at, radius + EVENT_REACH_PX);
         }
         painter.circle(
             at,
@@ -316,7 +332,7 @@ pub fn events(
             };
             let text = format!(
                 "{name}  M{:.1}\n{}\ndepth {:.1} km",
-                event.mag,
+                event.magnitude,
                 event.time,
                 event.depth / 1000.0,
             );
@@ -350,10 +366,10 @@ pub fn zoom_buttons(ui: &mut Ui, rect: Rect) -> f64 {
         let row = index as f32;
         let slot = Rect::from_min_size(
             egui::pos2(
-                rect.right() - MARGIN - BUTTON,
-                row.mul_add(BUTTON + 1.0, rect.top() + MARGIN),
+                rect.right() - MARGIN_PX - BUTTON_SIZE_PX,
+                row.mul_add(BUTTON_SIZE_PX + 1.0, rect.top() + MARGIN_PX),
             ),
-            egui::Vec2::splat(BUTTON),
+            egui::Vec2::splat(BUTTON_SIZE_PX),
         );
         let clicked = ui
             .put(
@@ -371,25 +387,27 @@ pub fn zoom_buttons(ui: &mut Ui, rect: Rect) -> f64 {
 }
 
 /// The bottom strip: the gesture hint on the left, provider attribution on the
-/// right. Both are painted, not laid out as widgets, so they never take a click
-/// away from the map.
+/// right.
+///
+/// Both are painted, not laid out as widgets, so they never take a click away
+/// from the map.
 ///
 /// The hint stays up for the life of the window rather than retiring once the
 /// user has zoomed: the gestures it names are not all discoverable, and the map
 /// is visited rarely enough that having done it once is no guarantee of
 /// remembering next time.
 pub fn footer(painter: &egui::Painter, rect: Rect, attribution: &str) {
-    let baseline = rect.bottom() - MARGIN;
+    let baseline = rect.bottom() - MARGIN_PX;
     pill(
         painter,
-        egui::pos2(rect.left() + MARGIN, baseline),
+        egui::pos2(rect.left() + MARGIN_PX, baseline),
         Align2::LEFT_BOTTOM,
         "Scroll to zoom  ·  drag to pan  ·  double-click a station or event",
         FOOTER_ALPHA,
     );
     pill(
         painter,
-        egui::pos2(rect.right() - MARGIN, baseline),
+        egui::pos2(rect.right() - MARGIN_PX, baseline),
         Align2::RIGHT_BOTTOM,
         attribution,
         FOOTER_ALPHA,
@@ -407,7 +425,7 @@ pub fn notice(painter: &egui::Painter, rect: Rect, text: &str) {
 /// Where the camera puts a geographic coordinate on screen, as the closure the
 /// overlay painters project through.
 pub fn projector(camera: Camera, rect: Rect) -> impl Fn(f64, f64) -> Pos2 {
-    move |lat, lon| camera.screen_of(rect, World::from_lat_lon(lat, lon))
+    move |lat, lon| camera.world_to_screen(rect, World::from_lat_lon(lat, lon))
 }
 
 /// A rounded, dimmed label anchored at a corner.

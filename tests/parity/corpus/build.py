@@ -8,7 +8,7 @@ numbers every parity run is measured against.
 
 Determinism is the whole point. Only the ``demo`` dataset uses an RNG, and only
 because it has to: it is byte-for-byte the dataset
-``bridge._make_example_scene`` synthesizes, so the corpus really is "the demo both
+``snuffler_bridge.waveforms.make_example_scene`` synthesizes, so the corpus really is "the demo both
 frontends already show". Everything else is analytic and stable under any numpy.
 
 The real recordings are the exception to generation. They live in the repository's
@@ -62,7 +62,7 @@ def _sha256(path: Path) -> str:
 def build_demo(out: Path) -> List[Path]:
     """The synthetic demo: 6 stations x 3 components, 50 Hz, 600 s.
 
-    Kept character-for-character in step with ``bridge._make_example_scene`` —
+    Kept character-for-character in step with ``snuffler_bridge.waveforms.make_example_scene`` —
     this is that dataset, written to a file so both sides can load identical bytes.
     """
     deltat = 0.02

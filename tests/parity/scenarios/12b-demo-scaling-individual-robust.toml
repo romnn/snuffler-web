@@ -3,9 +3,10 @@ title = "Robust min/max with the default per-trace grouping"
 dataset = "demo"
 tiers = [1]
 
-# The combination the other scaling scenarios miss: a non-minmax base with the
-# grouping the app starts in. Every other pairing goes down a branch that computes
-# data ranges; this one goes down neither.
+# The combination the other scaling scenarios miss: a non-minmax base with the grouping
+# the app starts in.
+# Every other pairing goes down a branch that computes data ranges; this one goes down
+# neither.
 [state]
 scaling_base = "robust"
 

@@ -6,7 +6,7 @@
 
 use accesskit_dom::KeyEvent;
 
-fn modifiers(event: &KeyEvent) -> egui::Modifiers {
+fn egui_modifiers(event: &KeyEvent) -> egui::Modifiers {
     egui::Modifiers {
         alt: event.alt,
         ctrl: event.ctrl,
@@ -21,7 +21,7 @@ fn modifiers(event: &KeyEvent) -> egui::Modifiers {
 ///
 /// On `false` the caller leaves the browser's own handling alone.
 pub fn translate(event: &KeyEvent, pressed: bool, out: &mut Vec<egui::Event>) -> bool {
-    let modifiers = modifiers(event);
+    let modifiers = egui_modifiers(event);
     let mut wanted = false;
 
     if let Some(key) = egui::Key::from_name(&event.key) {
@@ -41,10 +41,10 @@ pub fn translate(event: &KeyEvent, pressed: bool, out: &mut Vec<egui::Event>) ->
     // Chords are shortcuts rather than text and must not be typed out.
     if pressed && !modifiers.command && !modifiers.alt {
         let mut chars = event.key.chars();
-        if let (Some(ch), None) = (chars.next(), chars.next())
-            && !ch.is_control()
+        if let (Some(character), None) = (chars.next(), chars.next())
+            && !character.is_control()
         {
-            out.push(egui::Event::Text(ch.to_string()));
+            out.push(egui::Event::Text(character.to_string()));
             wanted = true;
         }
     }

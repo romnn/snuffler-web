@@ -37,6 +37,7 @@ fn oklab(color: Color32) -> (f32, f32, f32) {
 }
 
 /// Hue angle in `OKLab`, in degrees.
+///
 /// Channel ordering is not a usable proxy: an olive sits exactly where red and
 /// green cross, so two shades of the same hue can order their channels
 /// differently.
@@ -53,6 +54,7 @@ pub(crate) fn oklab_chroma(color: Color32) -> f32 {
 
 /// Perceptual distance between two colours: `OKLab` ΔE, scaled by 100 so the
 /// numbers read on the familiar scale.
+///
 /// About 2 is the smallest difference the eye catches on two large flat areas, and
 /// 10 is comfortably "a different colour" at a glance.
 pub(crate) fn delta_e(a: Color32, b: Color32) -> f32 {
@@ -83,8 +85,8 @@ pub(crate) fn hue_drift(a: f32, b: f32) -> f32 {
     raw.min(360.0 - raw)
 }
 
-/// `fill` composited over `bg` by its alpha, the colour the eye actually sees.
-pub(crate) fn over(fill: Color32, bg: Color32) -> Color32 {
+/// `fill` composited over `background` by its alpha, the colour the eye actually sees.
+pub(crate) fn over(fill: Color32, background: Color32) -> Color32 {
     let [r, g, b, a] = fill.to_srgba_unmultiplied();
     // Integer arithmetic, rounded: an 8-bit blend needs no float and no cast.
     let mix = |ink: u8, ground: u8| {
@@ -92,5 +94,9 @@ pub(crate) fn over(fill: Color32, bg: Color32) -> Color32 {
             (u32::from(ink) * u32::from(a) + u32::from(ground) * (255 - u32::from(a)) + 127) / 255;
         u8::try_from(blend).unwrap_or(u8::MAX)
     };
-    Color32::from_rgb(mix(r, bg.r()), mix(g, bg.g()), mix(b, bg.b()))
+    Color32::from_rgb(
+        mix(r, background.r()),
+        mix(g, background.g()),
+        mix(b, background.b()),
+    )
 }

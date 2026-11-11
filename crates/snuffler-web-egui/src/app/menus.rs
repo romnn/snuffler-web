@@ -95,10 +95,11 @@ impl App {
 
     /// `File ▸ Examples`: real recorded datasets, each one fetch away.
     ///
-    /// Nothing here ships in the app. The index is fetched when this submenu is
-    /// first opened and a dataset's bytes only when someone picks it, so a menu
-    /// full of examples costs a page load nothing — which is the point, since the
-    /// people who most need example data are the ones who have none of their own.
+    /// Nothing here ships in the app.
+    /// The index is fetched when this submenu is first opened and a dataset's bytes only when
+    /// someone picks it, so a menu full of examples costs a page load nothing — which is the
+    /// point, since the people who most need example data are the ones who have none of their
+    /// own.
     fn file_examples_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Examples", |ui| {
             // A submenu sizes itself to its content, and these labels are a title
@@ -312,13 +313,17 @@ impl App {
             let waterfall = self.session.state.view_mode == ViewMode::Waterfall;
             ui.label("Visible length");
             ui.add_enabled_ui(!waterfall, |ui| {
-                for vl in VisibleLength::ALL {
-                    // A target sample count, not a time cap: picking one never moves
-                    // the window. It feeds `min_deltat_allow` in the bridge, exactly
-                    // as snuffler's radio group feeds `prepare_cutout2` — except for
-                    // Adaptive, which is this frontend's own and feeds it nothing.
-                    ui.selectable_value(&mut self.session.state.visible_length, vl, vl.label())
-                        .on_hover_text(vl.hint());
+                for length in VisibleLength::ALL {
+                    // A target sample count, not a time cap: picking one never moves the window.
+                    // It feeds `min_deltat_allow` in the bridge, exactly as snuffler's radio group
+                    // feeds `prepare_cutout2` — except for Adaptive, which is this frontend's own
+                    // and feeds it nothing.
+                    ui.selectable_value(
+                        &mut self.session.state.visible_length,
+                        length,
+                        length.label(),
+                    )
+                    .on_hover_text(length.hint());
                 }
             });
             ui.separator();
@@ -454,16 +459,17 @@ impl App {
 
     fn sorting_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Sorting", |ui| {
-            for m in [
+            for mode in [
                 SortMode::Name,
                 SortMode::Distance,
                 SortMode::Azimuth,
                 SortMode::AzimuthBlocks,
                 SortMode::Backazimuth,
             ] {
-                let r = ui.selectable_value(&mut self.session.state.sort, m, m.label());
-                if m.needs_coords() {
-                    r.on_hover_text(
+                let response =
+                    ui.selectable_value(&mut self.session.state.sort, mode, mode.label());
+                if mode.needs_coords() {
+                    response.on_hover_text(
                         "Needs station coordinates + an active event; \
                          falls back to name order without them.",
                     );
@@ -471,7 +477,7 @@ impl App {
             }
             ui.separator();
             ui.label("Subsort / grouping");
-            for ss in [
+            for subsort in [
                 Subsort::Nslc,
                 Subsort::Nscl,
                 Subsort::Sncl,
@@ -480,7 +486,7 @@ impl App {
                 Subsort::NscGroupL,
                 Subsort::SncGroupL,
             ] {
-                ui.selectable_value(&mut self.session.state.subsort, ss, ss.label());
+                ui.selectable_value(&mut self.session.state.subsort, subsort, subsort.label());
             }
         });
     }
@@ -498,9 +504,9 @@ impl App {
                 self.session.state.show_snuffling_help = true;
                 ui.close();
             }
-            // Only for a dataset that came with a description — the shipped
-            // examples, and any bundle whose author wrote one. Waveforms opened
-            // from disk have nothing to say about themselves, and an entry that
+            // Only for a dataset that came with a description — the shipped examples, and any
+            // bundle whose author wrote one.
+            // Waveforms opened from disk have nothing to say about themselves, and an entry that
             // opened an empty window would be worse than no entry.
             if self.session.bridge.has_dataset_note()
                 && ui
@@ -531,8 +537,8 @@ fn download_size(bytes: u64) -> String {
 
 /// Tooltip for one example: what it is, then what it is worth opening for.
 ///
-/// Only the blurb's opening paragraph — enough to choose by. The whole thing is
-/// shown after the load, in a window that has room for it.
+/// Only the blurb's opening paragraph — enough to choose by.
+/// The whole thing is shown after the load, in a window that has room for it.
 fn example_hover(example: &ExampleDataset) -> String {
     let mut text = example
         .blurb

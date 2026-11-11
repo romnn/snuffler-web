@@ -1,11 +1,13 @@
 //! The basemap's raster tiles: what is on the GPU, what to ask for next, and how
 //! a tile arrives on screen.
 //!
-//! Two things here make a zoom feel continuous rather than staged. A tile that is
-//! not decoded yet is drawn from the nearest ancestor already in the cache,
-//! sampled through the sub-rectangle it occupies inside it — so the ground under
-//! the cursor is always *something*, blurry at worst, never a grey hole. And a
-//! tile that has just landed fades in over that ancestor instead of popping.
+//! Two things here make a zoom feel continuous rather than staged:
+//!
+//! - A tile that is not decoded yet is drawn from the nearest ancestor already in
+//!   the cache, sampled through the sub-rectangle it occupies inside it.
+//!   So the ground under the cursor is always *something*, blurry at worst, never a
+//!   grey hole.
+//! - A tile that has just landed fades in over that ancestor instead of popping.
 
 use std::collections::BTreeMap;
 
@@ -17,26 +19,31 @@ use snuffler_web_render::map::{TileGrid, ease_out};
 /// `(zoom, column, row)`, the address of one tile.
 type TileKey = (u8, u32, u32);
 
-/// How long a freshly decoded tile takes to fade in over its parent.
-const FADE_SECONDS: f64 = 0.22;
+/// How long a freshly decoded tile takes to fade in over its parent, in seconds.
+const FADE_DURATION_S: f64 = 0.22;
 
-/// How many zoom levels up to look for a stand-in while a tile loads. Five levels
-/// is a 32x magnification — past that the parent carries no usable detail, and
-/// the flat background reads better than a smear.
+/// How many zoom levels up to look for a stand-in while a tile loads.
+///
+/// Five levels is a 32x magnification; past that the parent carries no usable
+/// detail, and the flat background reads better than a smear.
 const FALLBACK_DEPTH: u8 = 5;
 
-/// Textures kept on the GPU. A screenful is a few dozen; the rest are ancestors
-/// and recently-left levels worth keeping so zooming back out is instant. At
-/// 256 KiB of RGBA each this is a ~48 MiB ceiling.
+/// Textures kept on the GPU.
+///
+/// A screenful is a few dozen; the rest are ancestors and recently left levels
+/// worth keeping so zooming back out is instant.
+/// At 256 KiB of RGBA each this is a ~48 MiB ceiling.
 const CACHE_CAPACITY: usize = 192;
 
-/// Tile rectangles are grown by this much before painting. Two rectangles that
-/// share an edge at a fractional scale each antialias their own half of it and
-/// leave a hairline of background between them; overlapping by a fraction of a
-/// point costs nothing visible and closes the seam.
+/// Tile rectangles are grown by this much before painting.
+///
+/// Two rectangles that share an edge at a fractional scale each antialias their own
+/// half of it and leave a hairline of background between them.
+/// Overlapping by a fraction of a point costs nothing visible and closes the seam.
 const SEAM_OVERLAP: f32 = 0.5;
 
-struct Entry {
+/// One decoded tile on the GPU.
+struct CachedTile {
     texture: TextureHandle,
     /// When the tile was uploaded, for the fade-in.
     ready_at: f64,
@@ -47,7 +54,7 @@ struct Entry {
 /// The decoded-tile cache for one map window.
 #[derive(Default)]
 pub struct TileCache {
-    entries: BTreeMap<TileKey, Entry>,
+    entries: BTreeMap<TileKey, CachedTile>,
 }
 
 impl TileCache {
@@ -65,7 +72,7 @@ impl TileCache {
             );
             self.entries.insert(
                 (tile.z, tile.x, tile.y),
-                Entry {
+                CachedTile {
                     texture,
                     ready_at: now,
                     used_at: now,
@@ -74,9 +81,10 @@ impl TileCache {
         }
     }
 
-    /// Paints every tile in `grid`, standing in with ancestors where a tile has
-    /// not landed or is still fading. Returns whether a fade is still running, in
-    /// which case the frame owes itself a repaint.
+    /// Paints every tile in `grid`, standing in with ancestors where a tile has not landed or is
+    /// still fading.
+    ///
+    /// Returns whether a fade is still running, in which case the frame owes itself a repaint.
     pub fn paint(&mut self, painter: &Painter, grid: &TileGrid, now: f64) -> bool {
         let mut fading = false;
         for (x, y) in grid.tiles() {
@@ -87,7 +95,7 @@ impl TileCache {
                 reason = "the eased fraction is clamped to 0..=1 before it becomes an alpha"
             )]
             let alpha = self.entries.get(&key).map_or(0.0, |entry| {
-                ease_out((now - entry.ready_at) / FADE_SECONDS) as f32
+                ease_out((now - entry.ready_at) / FADE_DURATION_S) as f32
             });
             if alpha < 1.0 {
                 self.paint_ancestor(painter, key, rect, now);

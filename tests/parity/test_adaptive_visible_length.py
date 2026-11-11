@@ -1,11 +1,11 @@
 """The Adaptive visible length, the one policy tier 1 cannot compare against Qt.
 
-Snuffler has four fixed sample-count budgets and spends them by refusing
-channels; this frontend adds a fifth entry that refuses none and decimates the
-payload instead (`known_gaps.toml`, `adaptive-visible-length-default`). Nothing
-upstream answers the same question, so there is no oracle — what these tests hold
-it to is its own two claims: everything is drawn, and what is drawn is what the
-raw samples would have drawn.
+Snuffler has four fixed sample-count budgets and spends them by refusing channels; this
+frontend adds a fifth entry that refuses none and decimates the payload instead
+(`known_gaps.toml`, `adaptive-visible-length-default`).
+Nothing upstream answers the same question, so there is no oracle — what these tests
+hold it to is its own two claims: everything is drawn, and what is drawn is what the raw
+samples would have drawn.
 
     task test:parity:bridge
 
@@ -21,10 +21,11 @@ import harness  # isort: skip # noqa: F401
 
 from typing import Dict, Iterator, List, Tuple
 
-import bridge
 import numpy as np
 import pytest
 from pyrocko import trace as ptrace
+from snuffler.bridge.v1 import view_pb2
+from snuffler_bridge import state, view
 
 # Wide enough that a 100 Hz channel is far past every fixed budget, and coarse
 # enough that a 1 Hz one is inside all of them.
@@ -38,13 +39,13 @@ def trace_of(cha: str, deltat: float, y: np.ndarray) -> ptrace.Trace:
     )
 
 
-def view(
+def draw(
     *, adaptive: bool, visible_length: float = 20_000.0
-) -> Tuple[bridge.view_pb2.ViewMeta, np.ndarray]:
-    req = bridge.view_pb2.ViewParams(
+) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
+    req = view_pb2.ViewParams(
         tmin=WINDOW[0],
         tmax=WINDOW[1],
-        npx=NPX,
+        bins_per_trace=NPX,
         sort="name",
         subsort="nslc",
         mode="wiggle",
@@ -57,11 +58,11 @@ def view(
     )
     if not adaptive:
         req.visible_length = visible_length
-    meta, ys = bridge._get_view_data(req)
+    meta, ys = view.get_view_data(req)
     return meta, ys
 
 
-def payloads(meta: bridge.view_pb2.ViewMeta, ys: np.ndarray) -> Dict[str, List[np.ndarray]]:
+def payloads(meta: view_pb2.ViewMeta, ys: np.ndarray) -> Dict[str, List[np.ndarray]]:
     """Every track's spans, by channel, as the samples the painter would draw."""
     out: Dict[str, List[np.ndarray]] = {}
     for track in meta.tracks:
@@ -73,37 +74,37 @@ def payloads(meta: bridge.view_pb2.ViewMeta, ys: np.ndarray) -> Dict[str, List[n
 
 @pytest.fixture(autouse=True)
 def clean_session() -> Iterator[None]:
-    bridge._TRACES[:] = []
-    bridge._HIDDEN[:] = []
-    bridge._VIEW_NOTICES.clear()
+    state.traces[:] = []
+    state.hidden_patterns[:] = []
+    state.view_notices.clear()
     # The cutout cache is keyed on the pile generation, but these tests ask the
     # same window over and over with different policies; clearing it keeps a
     # failure about the policy rather than about a stale cache.
-    bridge._CUTOUT_VEC = None
-    bridge._CUTOUT_TRACES = None
-    bridge._mark_traces_changed()
+    state.cutout_key = None
+    state.cutout_traces = None
+    state.mark_traces_changed()
     yield
-    bridge._TRACES[:] = []
-    bridge._CUTOUT_VEC = None
-    bridge._CUTOUT_TRACES = None
-    bridge._mark_traces_changed()
+    state.traces[:] = []
+    state.cutout_key = None
+    state.cutout_traces = None
+    state.mark_traces_changed()
 
 
 def test_a_fixed_budget_refuses_the_fine_channel_and_adaptive_draws_it() -> None:
     rng = np.random.default_rng(7)
     coarse = trace_of("LHZ", 1.0, rng.normal(size=3600))
     fine = trace_of("HNZ", 0.01, rng.normal(size=360_000))
-    bridge._TRACES[:] = [coarse, fine]
-    bridge._mark_traces_changed()
+    state.traces[:] = [coarse, fine]
+    state.mark_traces_changed()
 
-    # Short is upstream's default and this window is an hour: min_deltat_allow
-    # lands well above 0.01 s, so the 100 Hz channel is not fetched at all. The
-    # row survives — snuffler still stacks it — but it carries nothing to draw.
-    short = payloads(*view(adaptive=False, visible_length=20_000.0))
+    # Short is upstream's default and this window is an hour: min_deltat_allow lands
+    # well above 0.01 s, so the 100 Hz channel is not fetched at all.
+    # The row survives — snuffler still stacks it — but it carries nothing to draw.
+    short = payloads(*draw(adaptive=False, visible_length=20_000.0))
     assert short["LHZ"], "the 1 Hz channel is inside every fixed budget"
     assert not short["HNZ"], "the 100 Hz channel is what a fixed budget refuses"
 
-    adaptive = payloads(*view(adaptive=True))
+    adaptive = payloads(*draw(adaptive=True))
     assert adaptive["LHZ"]
     assert adaptive["HNZ"], "Adaptive refuses nothing"
 
@@ -113,10 +114,10 @@ def test_adaptive_keeps_the_peak_a_subsample_would_step_over() -> None:
     # envelope and disappears under any stride that does not land on it.
     y = np.zeros(360_000)
     y[123_457] = 42.0
-    bridge._TRACES[:] = [trace_of("HNZ", 0.01, y)]
-    bridge._mark_traces_changed()
+    state.traces[:] = [trace_of("HNZ", 0.01, y)]
+    state.mark_traces_changed()
 
-    runs = payloads(*view(adaptive=True))["HNZ"]
+    runs = payloads(*draw(adaptive=True))["HNZ"]
     assert runs
     drawn = np.concatenate(runs)
     assert drawn.max() == pytest.approx(42.0, rel=1e-6), "the spike is what the envelope is for"
@@ -126,13 +127,13 @@ def test_adaptive_keeps_the_peak_a_subsample_would_step_over() -> None:
 def test_the_adaptive_payload_carries_the_extremes_of_the_samples_it_replaces() -> None:
     rng = np.random.default_rng(11)
     y = np.cumsum(rng.normal(size=360_000))
-    bridge._TRACES[:] = [trace_of("HNZ", 0.01, y)]
-    bridge._mark_traces_changed()
+    state.traces[:] = [trace_of("HNZ", 0.01, y)]
+    state.mark_traces_changed()
 
     # Extra long is 600000 samples, which this hour of 100 Hz is inside, so the
     # same channel comes back at its native rate — the raw answer to compare to.
-    raw = np.concatenate(payloads(*view(adaptive=False, visible_length=600_000.0))["HNZ"])
-    drawn = np.concatenate(payloads(*view(adaptive=True))["HNZ"])
+    raw = np.concatenate(payloads(*draw(adaptive=False, visible_length=600_000.0))["HNZ"])
+    drawn = np.concatenate(payloads(*draw(adaptive=True))["HNZ"])
 
     assert drawn.size < raw.size / 10
     # Both ends: an envelope that clipped the range would fail the first, and one
@@ -145,20 +146,20 @@ def test_a_fixed_budget_still_hands_over_raw_samples_at_the_trace_rate() -> None
     # The four Qt entries are untouched by any of this: unset means upstream's
     # 20000, and what comes back is the samples themselves at the trace's own
     # deltat, which is what tier 1 compares against a painted PileViewerMain.
-    bridge._TRACES[:] = [trace_of("LHZ", 1.0, np.arange(3600, dtype=float))]
-    bridge._mark_traces_changed()
+    state.traces[:] = [trace_of("LHZ", 1.0, np.arange(3600, dtype=float))]
+    state.mark_traces_changed()
 
-    meta, _ys = view(adaptive=False)
+    meta, _ys = draw(adaptive=False)
     spans = [span for track in meta.tracks for span in track.spans]
     assert spans
     for span in spans:
-        assert span.dt == pytest.approx(1.0)
+        assert span.deltat == pytest.approx(1.0)
 
 
 def test_the_scenario_default_is_a_qt_comparable_budget() -> None:
-    # Tier 1 must never compare Adaptive against Qt, which has no counterpart for
-    # it. The knob being a float is what makes that structural rather than a
-    # convention, and this is the test that says so out loud.
+    # Tier 1 must never compare Adaptive against Qt, which has no counterpart for it.
+    # The knob being a float is what makes that structural rather than a convention, and
+    # this is the test that says so out loud.
     import scenario
 
     assert isinstance(scenario.DEFAULTS["visible_length"], float)

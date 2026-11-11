@@ -1,9 +1,9 @@
 """Tier 3: the same scenario through both GUIs, one normalized snapshot each step.
 
-Thin by design. Only what genuinely needs a GUI lives here — menu and
-keyboard toggles, the control strip, marker creation and editing — because anything
-that is really a question about numbers belongs in tier 1, where it runs a thousand
-times faster and cannot flake.
+Thin by design.
+Only what genuinely needs a GUI lives here — menu and keyboard toggles, the control
+strip, marker creation and editing — because anything that is really a question about
+numbers belongs in tier 1, where it runs a thousand times faster and cannot flake.
 
 Two things are deliberately *not* compared:
 
@@ -158,8 +158,8 @@ def compare_step(
         )
     )
 
-    qt_markers = sorted(marker_identity(m) for m in qt["markers"])
-    web_markers = sorted(marker_identity(m) for m in web["markers"])
+    qt_markers = sorted(marker_identity(marker) for marker in qt["markers"])
+    web_markers = sorted(marker_identity(marker) for marker in web["markers"])
     qt_selected = int(qt.get("selected_count", 0))
     web_selected = int(web.get("selected_count", 0))
     same = qt_markers == web_markers and qt_selected == web_selected
@@ -179,8 +179,12 @@ def compare_step(
                 "web_count": len(web_markers),
                 "qt_selected": qt_selected,
                 "web_selected": web_selected,
-                "qt_placement": [(m.get("time"), m.get("nslc")) for m in qt["markers"]],
-                "web_placement": [(m.get("time"), m.get("nslc")) for m in web["markers"]],
+                "qt_placement": [
+                    (marker.get("time"), marker.get("nslc")) for marker in qt["markers"]
+                ],
+                "web_placement": [
+                    (marker.get("time"), marker.get("nslc")) for marker in web["markers"]
+                ],
             },
         )
     )
@@ -213,7 +217,7 @@ def run(args: argparse.Namespace) -> int:
                 "--screenshots",
                 str(SCREENSHOTS),
             ]
-            + [s.name for s in scenarios],
+            + [scenario.name for scenario in scenarios],
             check=True,
             cwd=ROOT,
         )

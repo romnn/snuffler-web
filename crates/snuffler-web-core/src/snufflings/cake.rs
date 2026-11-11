@@ -1,6 +1,7 @@
 //! Theoretical Cake phase parameters and figure visibility.
 use crate::bridge::CakeSnufflingParams;
 
+/// The phases the Cake panel lists before the user adds any.
 const PHASE_NAMES: &[&str] = &[
     "~P", "Pg", "Sg", "pP", "p", "P", "Pdiff", "PKP", "PcP", "PcS", "PKIKP", "pPKIKP", "SSP",
     "PPS", "SPP", "PSP", "SP", "PS", "~PS", "~SP", "Pn", "s", "S", "Sn", "PP", "PPP", "ScS",
@@ -35,11 +36,11 @@ pub struct Config {
     /// The leading `~` is kept; Python interprets it.
     pub phases: Vec<(String, bool)>,
     /// Available built-in, uploaded, and Green's-function earth models.
-    pub models: Vec<String>,
+    pub available_models: Vec<String>,
     /// Model selected for the next Cake request.
-    pub chosen_model: String,
+    pub model: String,
     /// Global arrival-time shift in seconds.
-    pub tshift: f64,
+    pub time_shift_s: f64,
     /// Whether station depths participate in travel-time calculations.
     pub use_station_depth: bool,
     /// Editable custom phase expression awaiting insertion.
@@ -55,13 +56,14 @@ impl Default for Config {
         let phases = PHASE_NAMES
             .iter()
             .enumerate()
-            .map(|(i, name)| ((*name).to_owned(), i == 0))
+            // Only the first phase starts enabled.
+            .map(|(index, name)| ((*name).to_owned(), index == 0))
             .collect();
         Self {
             phases,
-            models: MODELS.iter().map(|m| (*m).to_owned()).collect(),
-            chosen_model: "ak135-f-continental.m".to_owned(),
-            tshift: 0.0,
+            available_models: MODELS.iter().map(|model| (*model).to_owned()).collect(),
+            model: "ak135-f-continental.m".to_owned(),
+            time_shift_s: 0.0,
             use_station_depth: false,
             new_phase: String::new(),
             show_model_plot: false,
@@ -75,16 +77,16 @@ impl Config {
     #[must_use]
     pub fn params(&self) -> CakeSnufflingParams {
         CakeSnufflingParams {
-            cake_model: self.chosen_model.clone(),
-            cake_phases: self
+            model: self.model.clone(),
+            phases: self
                 .phases
                 .iter()
-                .filter(|(_, on)| *on)
+                .filter(|(_, enabled)| *enabled)
                 .map(|(name, _)| name.clone())
                 .collect(),
-            cake_tshift: self.tshift,
-            cake_use_station_depth: self.use_station_depth,
-            cake_mode: String::new(),
+            time_shift_s: self.time_shift_s,
+            use_station_depth: self.use_station_depth,
+            mode: String::new(),
         }
     }
 
@@ -122,9 +124,9 @@ impl Config {
 
     /// Register a custom `.nd` model uploaded via "Add Model" and select it.
     pub fn add_model(&mut self, name: String) {
-        if !self.models.contains(&name) {
-            self.models.push(name.clone());
+        if !self.available_models.contains(&name) {
+            self.available_models.push(name.clone());
         }
-        self.chosen_model = name;
+        self.model = name;
     }
 }

@@ -17,6 +17,7 @@ use crate::palette::{BoxStyle, Palette};
 
 /// `graph_colors`: scarletred2, skyblue3, chameleon3, orange2, plum2, chocolate2,
 /// butter2, in that order.
+///
 /// Past the seventh key `pyrocko.plot.color` returns black rather than wrapping,
 /// which the painter applies from `WiggleTheme::mirrors_qt_coloring`.
 const GRAPH_COLORS: [Rgb; 7] = [
@@ -51,7 +52,7 @@ pub fn palette() -> Palette {
     let aluminium5 = rgb((85, 87, 83));
     Palette {
         theme: Theme::Light,
-        bg: Color32::WHITE,
+        background: Color32::WHITE,
         trace: aluminium5,
         // The zero line is a data reference and the grid is decoration, so the zero
         // line always carries at least the grid's contrast.
@@ -60,11 +61,11 @@ pub fn palette() -> Palette {
         grid: rgb((236, 236, 236)),
         zero: aluminium5,
         axis_text: aluminium5,
-        sep: rgb((214, 214, 214)),
+        separator: rgb((214, 214, 214)),
         // The white-at-alpha-100 label brush (`pile_viewer.py:3230`), unpadded and
         // square as `draw_label` fills it.
-        label_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
-        label_pad: 0.0,
+        label_background: Color32::from_rgba_unmultiplied(255, 255, 255, 100),
+        label_padding: 0.0,
         label_rounding: 0.0,
         cursor: Color32::from_rgba_unmultiplied(0, 0, 0, 40),
         strokes: GRAPH_COLORS.map(rgb),
@@ -75,6 +76,6 @@ pub fn palette() -> Palette {
         markers: MarkerPalette::SNUFFLER_QT,
         // Qt's `draw_label` paints a marker label on white whatever lies beneath
         // (`QColor(255, 255, 255)`, gui/util.py:293).
-        marker_label_bg: Color32::WHITE,
+        marker_label_background: Color32::WHITE,
     }
 }

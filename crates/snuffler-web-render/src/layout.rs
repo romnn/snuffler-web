@@ -2,10 +2,10 @@
 
 use emath::{Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewTrack};
-use snuffler_web_core::state::{AppState, DEFAULT_NTRACKS_SHOWN, MIN_TRACK_H};
+use snuffler_web_core::state::{AppState, DEFAULT_NTRACKS_SHOWN, MIN_TRACK_HEIGHT_PX};
 
 /// Height reserved below the track rows for the shared time axis.
-pub const AXIS_H: f32 = 52.0;
+pub const AXIS_HEIGHT: f32 = 52.0;
 
 /// Geometry of one waveform frame, derived from the view and canvas rectangle.
 pub struct Layout<'a> {
@@ -19,40 +19,64 @@ pub struct Layout<'a> {
     pub view_tmin: f64,
     /// Right edge of the visible time window.
     pub view_tmax: f64,
-    /// Duration of the visible time window.
-    pub window: f64,
+    /// Duration of the visible time window in seconds, never zero.
+    pub window_duration: f64,
     /// Tracks intersecting the visible vertical window.
-    pub visible: &'a [ViewTrack],
+    pub visible_tracks: &'a [ViewTrack],
     /// Index of the first visible track.
-    pub off: usize,
-    /// Number of tracks included in the layout.
-    pub n_shown: usize,
+    pub first_row: usize,
+    /// Number of rows drawn, which is the length of [`Self::visible_tracks`].
+    pub rows_drawn: usize,
     /// Resolved height of one row in logical points.
-    pub row_h: f32,
+    pub row_height: f32,
     /// Top edge of the first row, which may be above the clipped track area.
-    pub top0: f32,
+    pub first_row_top: f32,
+}
+
+impl Layout<'_> {
+    /// Projects an absolute time onto the canvas's x axis.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "one pixel coordinate at the end of an f64 time projection"
+    )]
+    pub fn time_to_x(&self, time: f64) -> f32 {
+        self.rect.left()
+            + ((time - self.view_tmin) / self.window_duration) as f32 * self.rect.width()
+    }
+
+    /// The top edge of the visible row at `index`, counted from the first visible row.
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a visible row index is a few hundred at most"
+    )]
+    pub fn row_top(&self, index: usize) -> f32 {
+        self.first_row_top + index as f32 * self.row_height
+    }
 }
 
 /// Vertical row geometry resolved from track-height, snapping, and scroll state.
-pub struct TrackGeom {
+pub struct TrackGeometry {
     /// Resolved height of one row in logical points.
-    pub row_h: f32,
+    pub row_height: f32,
     /// Index of the first row to draw.
-    pub off: usize,
+    pub first_row: usize,
     /// Number of rows needed to cover the track area.
-    pub n_draw: usize,
-    /// Rows a FULL page shows — `n_draw` before the clamp to the rows that
-    /// remain past the offset. The view request and the per-track payload
-    /// budget size themselves on this, not on `n_draw`: a partial last page
-    /// must not change the horizontal resolution (and with it the request
-    /// identity) of a purely vertical scroll.
-    pub n_page: usize,
+    pub rows_drawn: usize,
+    /// Rows a full page shows: `rows_drawn` before the clamp to the rows that
+    /// remain past the first row.
+    ///
+    /// The view request and the per-track payload budget size themselves on this.
+    /// A partial last page must not change the horizontal resolution, and with it
+    /// the request identity, of a purely vertical scroll.
+    pub rows_per_page: usize,
     /// Portion of the first row clipped above the track area.
-    pub top_shift: f32,
+    pub first_row_clipped: f32,
     /// Clamped fractional row offset.
     pub scroll: f32,
     /// Track height to retain, or zero while automatic fitting remains active.
-    pub height: f32,
+    pub track_height: f32,
 }
 
 /// Resolves vertical track controls into concrete row geometry.
@@ -63,50 +87,52 @@ pub struct TrackGeom {
     clippy::cast_precision_loss,
     reason = "bounded row counts and logical pixel sizes are converted between indices and f32 geometry"
 )]
-pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom {
-    let area = area_h.max(1.0);
-    let total_f = total.max(1) as f32;
+pub fn track_geometry(state: &AppState, track_count: usize, area_height: f32) -> TrackGeometry {
+    let area = area_height.max(1.0);
+    let track_count_f = track_count.max(1) as f32;
     let automatic = state.track_height <= 0.0;
     let mut height = if automatic {
         area / DEFAULT_NTRACKS_SHOWN as f32
     } else {
         state.track_height
     };
-    height = height.clamp(MIN_TRACK_H, area.max(MIN_TRACK_H));
+    height = height.clamp(MIN_TRACK_HEIGHT_PX, area.max(MIN_TRACK_HEIGHT_PX));
 
     if state.snap_tracks {
-        let n = (area / height).round().clamp(1.0, total_f) as usize;
-        let row_h = area / n as f32;
-        let max_off = total.saturating_sub(n);
-        let scroll = state.track_scroll.clamp(0.0, max_off as f32);
-        let off = scroll.round().clamp(0.0, max_off as f32) as usize;
-        let n_draw = n.min(total.saturating_sub(off));
-        TrackGeom {
-            row_h,
-            off,
-            n_draw,
-            n_page: n,
-            top_shift: 0.0,
+        // Snapped: a whole number of rows stretched to fill the area exactly
+        let rows_per_page = (area / height).round().clamp(1.0, track_count_f) as usize;
+        let row_height = area / rows_per_page as f32;
+        let max_first_row = track_count.saturating_sub(rows_per_page);
+        let scroll = state.track_scroll.clamp(0.0, max_first_row as f32);
+        let first_row = scroll.round().clamp(0.0, max_first_row as f32) as usize;
+        let rows_drawn = rows_per_page.min(track_count.saturating_sub(first_row));
+        TrackGeometry {
+            row_height,
+            first_row,
+            rows_drawn,
+            rows_per_page,
+            first_row_clipped: 0.0,
             scroll,
-            height: if automatic { 0.0 } else { row_h },
+            track_height: if automatic { 0.0 } else { row_height },
         }
     } else {
-        let row_h = height;
-        let visible_f = area / row_h;
-        let max_scroll = (total_f - visible_f).max(0.0);
+        // Continuous: rows keep their height and the first one may be cut off
+        let row_height = height;
+        let rows_in_area = area / row_height;
+        let max_scroll = (track_count_f - rows_in_area).max(0.0);
         let scroll = state.track_scroll.clamp(0.0, max_scroll);
-        let off = scroll.floor() as usize;
-        let top_shift = (scroll - off as f32) * row_h;
-        let n_page = ((top_shift + area) / row_h).ceil() as usize;
-        let n_draw = n_page.min(total.saturating_sub(off));
-        TrackGeom {
-            row_h,
-            off,
-            n_draw,
-            n_page,
-            top_shift,
+        let first_row = scroll.floor() as usize;
+        let first_row_clipped = (scroll - first_row as f32) * row_height;
+        let rows_per_page = ((first_row_clipped + area) / row_height).ceil() as usize;
+        let rows_drawn = rows_per_page.min(track_count.saturating_sub(first_row));
+        TrackGeometry {
+            row_height,
+            first_row,
+            rows_drawn,
+            rows_per_page,
+            first_row_clipped,
             scroll,
-            height: if automatic { 0.0 } else { height },
+            track_height: if automatic { 0.0 } else { height },
         }
     }
 }
@@ -115,26 +141,25 @@ pub fn track_geometry(state: &AppState, total: usize, area_h: f32) -> TrackGeom 
 #[must_use]
 pub fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> Layout<'a> {
     let meta = &view.meta;
-    let track_area = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - AXIS_H));
-    let window = (state.tmax - state.tmin).max(1e-9);
-    let total = meta.tracks.len();
-    let geometry = track_geometry(state, total, track_area.height());
-    let visible = meta
+    let track_area = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - AXIS_HEIGHT));
+    let track_count = meta.tracks.len();
+    let geometry = track_geometry(state, track_count, track_area.height());
+    let visible_tracks = meta
         .tracks
-        .get(geometry.off..(geometry.off + geometry.n_draw).min(total))
+        .get(geometry.first_row..(geometry.first_row + geometry.rows_drawn).min(track_count))
         .unwrap_or(&[]);
     Layout {
         rect,
         track_area,
-        data_tmin: meta.view_tmin,
+        data_tmin: meta.data_tmin,
         view_tmin: state.tmin,
         view_tmax: state.tmax,
-        window,
-        visible,
-        off: geometry.off,
-        n_shown: geometry.n_draw,
-        row_h: geometry.row_h,
-        top0: track_area.top() - geometry.top_shift,
+        window_duration: (state.tmax - state.tmin).max(1e-9),
+        visible_tracks,
+        first_row: geometry.first_row,
+        rows_drawn: geometry.rows_drawn,
+        row_height: geometry.row_height,
+        first_row_top: track_area.top() - geometry.first_row_clipped,
     }
 }
 
@@ -152,9 +177,9 @@ mod tests {
             ..AppState::default()
         };
         let geometry = track_geometry(&state, 20, 205.0);
-        assert_eq!(geometry.n_draw, 5);
-        assert!((geometry.row_h - 41.0).abs() < f32::EPSILON);
-        assert!(geometry.top_shift.abs() < f32::EPSILON);
+        assert_eq!(geometry.rows_drawn, 5);
+        assert!((geometry.row_height - 41.0).abs() < f32::EPSILON);
+        assert!(geometry.first_row_clipped.abs() < f32::EPSILON);
     }
 
     #[test]
@@ -166,9 +191,9 @@ mod tests {
             ..AppState::default()
         };
         let geometry = track_geometry(&state, 20, 100.0);
-        assert_eq!(geometry.off, 2);
-        assert_eq!(geometry.n_draw, 3);
-        assert!((geometry.top_shift - 10.0).abs() < f32::EPSILON);
+        assert_eq!(geometry.first_row, 2);
+        assert_eq!(geometry.rows_drawn, 3);
+        assert!((geometry.first_row_clipped - 10.0).abs() < f32::EPSILON);
     }
 
     /// A transient one-track view cannot turn automatic fitting into a one-track preference.
@@ -176,11 +201,11 @@ mod tests {
     fn automatic_height_survives_a_transient_one_track_view() {
         let mut state = AppState::default();
         let transient = track_geometry(&state, 1, 480.0);
-        state.track_height = transient.height;
+        state.track_height = transient.track_height;
 
         let loaded = track_geometry(&state, 100, 480.0);
 
         assert!(state.track_height.abs() < f32::EPSILON);
-        assert_eq!(loaded.n_draw, DEFAULT_NTRACKS_SHOWN);
+        assert_eq!(loaded.rows_drawn, DEFAULT_NTRACKS_SHOWN);
     }
 }

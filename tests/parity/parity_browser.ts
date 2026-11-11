@@ -8,6 +8,13 @@ export const BOOT_TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_
 
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
 
+// The served app's URL with the given query parameters set.
+export function appUrl(params: Record<string, string>): string {
+  const target = new URL(BASE_URL);
+  for (const [key, value] of Object.entries(params)) target.searchParams.set(key, value);
+  return target.toString();
+}
+
 export async function launchParityBrowser(): Promise<Browser> {
   if (!HEADLESS) return chromium.launch({ headless: false });
 

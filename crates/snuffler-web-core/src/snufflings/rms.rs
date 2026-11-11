@@ -8,11 +8,11 @@ pub struct Config {
     /// Optional low-pass cutoff in hertz.
     pub lowpass: Option<f64>,
     /// RMS block length in seconds.
-    pub block: f64,
+    pub block_length_s: f64,
     /// Whether channels are grouped before RMS calculation.
-    pub group: bool,
+    pub group_components: bool,
     /// Whether RMS output is logarithmic.
-    pub log: bool,
+    pub logarithmic: bool,
 }
 
 impl Default for Config {
@@ -20,9 +20,9 @@ impl Default for Config {
         Self {
             highpass: None,
             lowpass: None,
-            block: 100.0,
-            group: true,
-            log: false,
+            block_length_s: 100.0,
+            group_components: true,
+            logarithmic: false,
         }
     }
 }
@@ -32,11 +32,11 @@ impl Config {
     #[must_use]
     pub fn params(&self) -> RmsSnufflingParams {
         RmsSnufflingParams {
-            rms_highpass: self.highpass,
-            rms_lowpass: self.lowpass,
-            rms_block: self.block,
-            rms_group: self.group,
-            rms_log: self.log,
+            highpass: self.highpass,
+            lowpass: self.lowpass,
+            block_length_s: self.block_length_s,
+            group_components: self.group_components,
+            logarithmic: self.logarithmic,
         }
     }
 }

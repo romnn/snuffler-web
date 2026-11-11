@@ -1,20 +1,19 @@
 //! Settings that survive a reload, snuffler's `~/.pyrocko/snuffler.pf`.
 //!
 //! Qt reads a handful of user-editable settings at every start (`SnufflerConfig`,
-//! config.py:33) and writes them back on change. `localStorage` is the browser's
-//! `snuffler.pf` — the ':' command history already lives there — so the same
-//! settings persist here, one key per setting exactly as a `.pf` holds one line
-//! per setting. The set matches Qt's: demean, the two scale annotations, the
-//! scaling mode, show boxes, clip traces, and the chosen visible length (Qt
-//! persists the visible-length *table*; the web's entries are fixed, so the
-//! choice is what there is to keep).
+//! config.py:33) and writes them back on change.
+//! `localStorage` is the browser's `snuffler.pf` — the ':' command history already lives
+//! there — so the same settings persist here, one key per setting exactly as a `.pf` holds
+//! one line per setting.
+//! The set matches Qt's: demean, the two scale annotations, the scaling mode, show boxes,
+//! clip traces, and the chosen visible length (Qt persists the visible-length *table*; the
+//! web's entries are fixed, so the choice is what there is to keep).
 //!
-//! Two settings have no counterpart in the `.pf` because Qt has nowhere to put
-//! them: the wiggle theme, and the light/dark preference the frontend is drawn
-//! in. Both are choices about *this* app's appearance, and an appearance that
-//! resets on reload is the one thing a user notices immediately — so they are
-//! kept here rather than in eframe's own storage, alongside everything else the
-//! reload restores.
+//! Two settings have no counterpart in the `.pf` because Qt has nowhere to put them: the
+//! wiggle theme, and the light/dark preference the frontend is drawn in.
+//! Both are choices about *this* app's appearance, and an appearance that resets on reload is
+//! the one thing a user notices immediately — so they are kept here rather than in eframe's
+//! own storage, alongside everything else the reload restores.
 
 use snuffler_web_core::state::{AppState, ScalingBase, ScalingGroup, VisibleLength};
 use snuffler_web_core::theme::WiggleTheme;
@@ -63,8 +62,10 @@ impl Snapshot {
     }
 }
 
-/// The stored spelling of a light/dark preference. Lowercase words rather than
-/// egui's `Debug`, so the store stays readable and survives an egui rename.
+/// The stored spelling of a light/dark preference.
+///
+/// Lowercase words rather than egui's `Debug`, so the store stays readable and survives an
+/// egui rename.
 fn theme_key(preference: egui::ThemePreference) -> &'static str {
     match preference {
         egui::ThemePreference::Dark => "dark",
@@ -111,8 +112,9 @@ fn read_bool(storage: &web_sys::Storage, key: &str, value: &mut bool) {
     }
 }
 
-/// Applies the stored settings over the defaults, at boot. A key that is
-/// missing or unreadable leaves its default alone, so a first visit (and a
+/// Applies the stored settings over the defaults, at boot.
+///
+/// A key that is missing or unreadable leaves its default alone, so a first visit (and a
 /// stale store from an older build) behaves exactly like Qt's defaults.
 pub fn restore(state: &mut AppState) -> Restored {
     // Following the system is what a browser app does absent a choice, but the

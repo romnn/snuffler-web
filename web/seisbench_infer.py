@@ -1,8 +1,9 @@
 """SeisBench ONNX inference in Pyodide, driven by onnxruntime-web.
 
-The exported ONNX graph runs in JavaScript (`web/bridge_worker.ts`) so it can use
-the browser's WebGPU implementation. This module keeps the SeisBench pre/post
-pipeline in Python/numpy because torch and seisbench do not import in Pyodide.
+The exported ONNX graph runs in JavaScript (`web/ort_client.ts`, `web/ort_worker.ts`) so it can use
+the browser's WebGPU implementation.
+This module keeps the SeisBench pre/post pipeline in Python/numpy, because torch
+and seisbench do not import in Pyodide.
 The functions below are ports from SeisBench 0.11.7 and cite the source function
 they mirror.
 """
@@ -22,12 +23,12 @@ SEISBENCH_VERSION = "0.11.7"
 _MANIFEST: dict[str, Any] | None = None
 
 
-async def _await_external_operation(awaitable: Any) -> Any:
-    # Import lazily because bridge imports this module while it is still
+async def _await_external(awaitable: Any) -> Any:
+    # Imported lazily, because the bridge imports this module while it is still
     # establishing the per-request operation context.
-    import bridge
+    from snuffler_bridge import operation
 
-    return await bridge._await_external_operation(awaitable)
+    return await operation.await_external(awaitable)
 
 
 class Annotation(NamedTuple):
@@ -43,12 +44,10 @@ async def load_manifest() -> dict[str, Any]:
         from pyodide.http import pyfetch
 
         url = str(js.URL.new("assets/seisbench_models.json", js.location.href).href)
-        resp = await _await_external_operation(pyfetch(url))
+        resp = await _await_external(pyfetch(url))
         if not resp.ok:
             raise RuntimeError("fetch %s: HTTP %s" % (url, resp.status))
-        _MANIFEST = cast(
-            dict[str, Any], json.loads(str(await _await_external_operation(resp.string())))
-        )
+        _MANIFEST = cast(dict[str, Any], json.loads(str(await _await_external(resp.string()))))
         if _MANIFEST.get("seisbench_version") != SEISBENCH_VERSION:
             raise RuntimeError(
                 "SeisBench manifest version %r does not match runtime port %r"
@@ -304,7 +303,7 @@ async def _ort_forward(
     import js
 
     contiguous = np.ascontiguousarray(batch, dtype=np.float32)
-    result = await _await_external_operation(
+    result = await _await_external(
         js.__snufflerOrtInfer(
             model_url,
             contiguous.reshape(-1),

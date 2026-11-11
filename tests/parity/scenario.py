@@ -1,11 +1,11 @@
 """The one scenario format both parity tiers read.
 
-A scenario is a *side-neutral* description of what the viewer is showing: which
-corpus dataset is loaded, which time window is on screen, and the value of every
-knob that changes the numbers. The two drivers translate it — ``qt_oracle`` into
-menu actions and attributes on a live ``PileViewerMain``, ``web_oracle`` into a
-``ViewParams`` message — and neither is allowed to invent state the scenario did
-not name.
+A scenario is a *side-neutral* description of what the viewer is showing: which corpus
+dataset is loaded, which time window is on screen, and the value of every knob that
+changes the numbers.
+The two drivers translate it — ``qt_oracle`` into menu actions and attributes on a live
+``PileViewerMain``, ``web_oracle`` into a ``ViewParams`` message — and neither is
+allowed to invent state the scenario did not name.
 
 That is why :data:`DEFAULTS` spells out every field instead of letting each side
 fall back to its own defaults: Qt's viewer boots with ``Allow Downsampling`` and
@@ -15,9 +15,10 @@ defaults rather than the code. (The web *app* sets its boot state to snuffler's
 config defaults on purpose — ``state.rs`` — which tier 3 verifies; the seams the
 oracles drive do not.)
 
-Parsing is strict for the same reason. A misspelt key would not break anything;
-it would silently measure the defaults instead of the scenario, and the suite
-would go on passing. Every unknown key is therefore an error.
+Parsing is strict for the same reason.
+A misspelt key would not break anything; it would silently measure the defaults instead
+of the scenario, and the suite would go on passing.
+Every unknown key is therefore an error.
 """
 
 from __future__ import annotations
@@ -33,10 +34,11 @@ SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 #
 # `visible_length` is Qt's `PileViewerMain.visible_length`, which despite the name
 # `prepare_cutout2` uses as a target *sample count* (`nmax`) when it decides which
-# sampling rates are worth fetching. 20000 is the upstream default. A float is all
-# it can be: the frontend's own Adaptive policy — its boot default, and no part of
-# snuffler — is deliberately unreachable from here, because there is nothing on the
-# Qt side to compare it against (`known_gaps.toml`,
+# sampling rates are worth fetching.
+# 20000 is the upstream default.
+# A float is all it can be: the frontend's own Adaptive policy, its boot default and no
+# part of snuffler, is deliberately unreachable from here.
+# There is nothing on the Qt side to compare it against (`known_gaps.toml`,
 # `adaptive-visible-length-default`).
 DEFAULTS: Dict[str, Any] = {
     "highpass": None,
@@ -60,7 +62,7 @@ DEFAULTS: Dict[str, Any] = {
     "distances_3d": False,
     "visible_length": 20_000.0,
     "mode": "wiggle",
-    "npx": 1_200,
+    "bins_per_trace": 1_200,
 }
 
 
@@ -68,11 +70,11 @@ DEFAULTS: Dict[str, Any] = {
 class Dataset:
     """One corpus dataset: the waveform file and the side-files it carries.
 
-    Paths are relative to the corpus directory, resolved through
-    ``corpus.build.path`` — generated datasets live under ``corpus/data``, the
-    checked-in real-world ones next to it. ``responses`` is a tuple because a real
-    deployment hands StationXML over one file per network or station, and both
-    frontends accept them as a batch.
+    Paths are relative to the corpus directory, resolved through ``corpus.build.path`` —
+    generated datasets live under ``corpus/data``, the checked-in real-world ones next
+    to it.
+    ``responses`` is a tuple because a real deployment hands StationXML over one file
+    per network or station, and both frontends accept them as a batch.
     """
 
     waveforms: str
@@ -96,9 +98,10 @@ DATASETS: Dict[str, Dataset] = {
     ),
     "multiloc": Dataset(waveforms="multiloc.mseed"),
     "oddrate": Dataset(waveforms="oddrate.mseed"),
-    # Real recordings of a small Eifel event: 354 stations across six networks at
-    # three sampling rates, a yaml event catalog, and per-network StationXML with
-    # full responses. Checked in rather than generated — realness is the point.
+    # Real recordings of a small Eifel event: 354 stations across six networks at three
+    # sampling rates, a yaml event catalog, and per-network StationXML with full
+    # responses.
+    # Checked in rather than generated — realness is the point.
     "eifel": Dataset(
         waveforms="eifel/eifel.mseed",
         events="eifel/catalog.yaml",
@@ -117,11 +120,12 @@ DATASETS: Dict[str, Dataset] = {
         ),
     ),
     # The GSN recording the 2015-05-30 Bonin Islands Mww 7.8 at 664 km depth: six
-    # stations that carry the same channel at two or three location codes, which is
-    # the one shape "Grouped by Location" can be observed on. Real co-location brings
-    # what the synthetic `multiloc` cannot — 20 Hz beside 40 Hz on one row, gains an
-    # order of magnitude apart, sensor depths that differ where the coordinates do
-    # not. Checked in rather than generated, for the same reason `eifel` is.
+    # stations that carry the same channel at two or three location codes, which is the
+    # one shape "Grouped by Location" can be observed on.
+    # Real co-location brings what the synthetic `multiloc` cannot — 20 Hz beside 40 Hz
+    # on one row, gains an order of magnitude apart, sensor depths that differ where the
+    # coordinates do not.
+    # Checked in rather than generated, for the same reason `eifel` is.
     "bonin-2015-05-30-m7.8-multiloc": Dataset(
         waveforms="bonin-2015-05-30-m7.8-multiloc/bonin-2015-05-30-m7.8-multiloc.mseed",
         events="bonin-2015-05-30-m7.8-multiloc/catalog.yaml",
@@ -130,19 +134,19 @@ DATASETS: Dict[str, Dataset] = {
             "bonin-2015-05-30-m7.8-multiloc/meta/IU.xml",
         ),
     ),
-    # One site recording the 2011 Tohoku Mww 9.1 three times over: a broadband, a
-    # second broadband five times as sensitive and off scale through the strongest
-    # shaking, and an accelerometer. Three sampling rates on one row when grouped,
-    # and — where every other dataset here deconvolves velocity sensors — a response
-    # in m/s² beside two in m/s.
+    # One site recording the 2011 Tohoku Mww 9.1 three times over: a broadband, a second
+    # broadband five times as sensitive and off scale through the strongest shaking, and
+    # an accelerometer.
+    # Three sampling rates on one row when grouped, and — where every other dataset here
+    # deconvolves velocity sensors — a response in m/s² beside two in m/s.
     "tohoku-2011-03-11-m9.1-clipping": Dataset(
         waveforms="tohoku-2011-03-11-m9.1-clipping/tohoku-2011-03-11-m9.1-clipping.mseed",
         events="tohoku-2011-03-11-m9.1-clipping/catalog.yaml",
         responses=("tohoku-2011-03-11-m9.1-clipping/meta/IU.xml",),
     ),
-    # Six hours of the 2004 Sumatra-Andaman Mw 9.1 at 1 Hz. The slow end of the
-    # corpus: LH channels where everything else is 20 Hz and up, and 21600 samples
-    # per trace decimated into a 1200 px view.
+    # Six hours of the 2004 Sumatra-Andaman Mw 9.1 at 1 Hz.
+    # The slow end of the corpus: LH channels where everything else is 20 Hz and up, and
+    # 21600 samples per trace decimated into a 1200 px view.
     "sumatra-2004-12-26-m9.1-surface-waves": Dataset(
         waveforms="sumatra-2004-12-26-m9.1-surface-waves/sumatra-2004-12-26-m9.1-surface-waves.mseed",
         events="sumatra-2004-12-26-m9.1-surface-waves/catalog.yaml",
@@ -160,18 +164,20 @@ DATASETS: Dict[str, Dataset] = {
         responses=("ridgecrest-2019-07-06-m7.1-local/meta/CI.xml",),
     ),
     # The 2022 Hunga Tonga eruption on five GSN stations, each with a seismometer and
-    # the barometer beside it. Two things nothing else in the corpus has: pressure
-    # channels — a non-seismic instrument that still has to sort, scale and draw like
-    # any other — and a 22.5-hour window, four times the longest span here.
+    # the barometer beside it.
+    # Two things nothing else in the corpus has: pressure channels — a non-seismic
+    # instrument that still has to sort, scale and draw like any other — and a 22.5-hour
+    # window, four times the longest span here.
     "tonga-2022-01-15-air-wave": Dataset(
         waveforms="tonga-2022-01-15-air-wave/tonga-2022-01-15-air-wave.mseed",
         events="tonga-2022-01-15-air-wave/catalog.yaml",
         responses=("tonga-2022-01-15-air-wave/meta/IU.xml",),
     ),
     # An hour at the Kilauea summit in 2018, three components at 100 Hz on three
-    # stations, ending with the caldera floor dropping as a Mw 5.3. The corpus's
-    # widest dynamic range inside one trace: dozens of small events at a few thousand
-    # counts and then twenty million, which is what per-trace scaling has to survive.
+    # stations, ending with the caldera floor dropping as a Mw 5.3.
+    # The corpus's widest dynamic range inside one trace: dozens of small events at a
+    # few thousand counts and then twenty million, which is what per-trace scaling has
+    # to survive.
     "kilauea-2018-07-15-caldera-collapse": Dataset(
         waveforms="kilauea-2018-07-15-caldera-collapse/kilauea-2018-07-15-caldera-collapse.mseed",
         events="kilauea-2018-07-15-caldera-collapse/catalog.yaml",
@@ -194,12 +200,12 @@ class CorpusFiles:
 class Compare:
     """Per-scenario comparison policy.
 
-    ``edge_trim_s`` exists because the two pipelines choose different amounts of
-    context to filter over: Qt filters a ``tpad``-padded chop of the requested
-    window, the web filters the whole trace once and slices. Inside the window the
-    difference is a filter transient at the edges and nothing else, so a scenario
-    that filters a sub-window says how much of each edge is transient rather than
-    inflating the tolerance until the middle passes too.
+    ``edge_trim_s`` exists because the two pipelines choose different amounts of context
+    to filter over: Qt filters a ``tpad``-padded chop of the requested window, the web
+    filters the whole trace once and slices.
+    Inside the window the difference is a filter transient at the edges and nothing
+    else, so a scenario that filters a sub-window says how much of each edge is
+    transient rather than inflating the tolerance until the middle passes too.
     """
 
     rtol: float = 1e-6
@@ -247,9 +253,9 @@ class Scenario:
     tiers: List[int]
     source: Path
     steps: List[Step]
-    # Which menus the tier-3 snapshot reads checkable state out of. Reading them all
-    # after every step means opening eight menus in a browser per step; the ones a
-    # scenario actually touches are the ones worth watching.
+    # Which menus the tier-3 snapshot reads checkable state out of.
+    # Reading them all after every step means opening eight menus in a browser per step;
+    # the ones a scenario actually touches are the ones worth watching.
     watch_menus: List[str]
 
     def window(self, data_tmin: float, data_tmax: float) -> tuple[float, float]:
@@ -261,9 +267,9 @@ class Scenario:
         return tmin, tmin + self.length_s
 
 
-# What a scenario file may contain, per table. Anything else is a typo, and a typo
-# here would not fail — it would quietly measure something other than what the
-# file claims to measure.
+# What a scenario file may contain, per table.
+# Anything else is a typo, and a typo here would not fail — it would quietly measure
+# something other than what the file claims to measure.
 _TOP_LEVEL_KEYS = frozenset(
     {
         "name",
@@ -360,11 +366,11 @@ def _load_one(path: Path) -> Scenario:
 def load_all(tier: Optional[int] = None, only: Optional[List[str]] = None) -> List[Scenario]:
     scenarios = [_load_one(path) for path in sorted(SCENARIO_DIR.glob("*.toml"))]
     if tier is not None:
-        scenarios = [s for s in scenarios if tier in s.tiers]
+        scenarios = [scenario for scenario in scenarios if tier in scenario.tiers]
     if only:
         wanted = set(only)
-        unknown = wanted - {s.name for s in scenarios}
+        unknown = wanted - {scenario.name for scenario in scenarios}
         if unknown:
             raise SystemExit(f"no such scenario: {', '.join(sorted(unknown))}")
-        scenarios = [s for s in scenarios if s.name in wanted]
+        scenarios = [scenario for scenario in scenarios if scenario.name in wanted]
     return scenarios

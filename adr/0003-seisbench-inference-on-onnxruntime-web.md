@@ -57,6 +57,6 @@ manifest that carries its windowing, normalisation and threshold parameters.
 
 ## References
 
-- `web/ort_worker.ts`, `web/bridge_worker.ts`, `web/seisbench_infer.py`
+- `web/ort_client.ts`, `web/ort_worker.ts`, `web/seisbench_infer.py`
 - `pybuild/export_seisbench_models.py`, `web/assets/seisbench_models.json`
 - `tests/seisbench_validate.py`, `tests/seisbench_browser_validate.ts`

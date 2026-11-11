@@ -1,11 +1,11 @@
 """Unit tests for the register's own enforcement.
 
-The parity tiers trust ``gaps.evaluate`` to hold findings against
-``known_gaps.toml`` in both directions, and ``gaps.Register.load`` to reject a
-malformed register before anything runs. That machinery is the one place a bug
-would not show up as a failing scenario — it would show up as a scenario passing
-for the wrong reason — so its edge cases are pinned here instead of being
-exercised only by whichever divergences the corpus happens to produce.
+The parity tiers trust ``gaps.evaluate`` to hold findings against ``known_gaps.toml`` in
+both directions, and ``gaps.Register.load`` to reject a malformed register before
+anything runs.
+That machinery is the one place a bug would not show up as a failing scenario — it would
+show up as a scenario passing for the wrong reason — so its edge cases are pinned here
+instead of being exercised only by whichever divergences the corpus happens to produce.
 
     task test:parity:unit
 """

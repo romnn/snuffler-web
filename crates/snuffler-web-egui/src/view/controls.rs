@@ -1,16 +1,47 @@
-//! The "Main Controls" panel: filters, gain, rotation, track height, marker
-//! kind, and the waterfall colorbar — mirroring snuffler's bottom control strip
-//! (`pile_viewer.py` `controls()` + `ColorbarControl`). View mode, wiggle theme,
-//! scaling and sorting are not repeated here; the menu bar owns them.
+//! The "Main Controls" panel: filters, gain, rotation, track height, marker kind,
+//! and the waterfall colorbar.
+//!
+//! It mirrors snuffler's bottom control strip (`pile_viewer.py` `controls()` and
+//! `ColorbarControl`).
+//! View mode, wiggle theme, scaling and sorting are not repeated here; the menu bar
+//! owns them.
+
+use std::ops::RangeInclusive;
 
 use snuffler_web_core::state::{
-    AppState, ColorScale, Colormap, MAX_TRACK_H, MIN_TRACK_H, ViewMode,
+    AppState, ColorScale, Colormap, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, ViewMode,
+    WaterfallSettings,
 };
 
-const LABEL_W: f32 = 104.0;
-const VALUE_W: f32 = 96.0;
-const DEFAULT_GAIN: f32 = 1.0;
-const DEFAULT_ROTATE_DEG: f64 = 0.0;
+/// Width of a control row's label column.
+const LABEL_WIDTH_PX: f32 = 104.0;
+/// Width of a control row's text field.
+const VALUE_WIDTH_PX: f32 = 96.0;
+
+/// The narrowest clip band the colorbar allows, as a fraction of the power range.
+const MIN_CLIP_BAND: f32 = 0.05;
+/// The highest the lower clip handle goes, one minimum band below the top.
+const MAX_CLIP_LOW: f32 = 0.95;
+
+/// The gain row: a logarithmic slider, reset to 1 by a double-click on the label.
+const GAIN: NumberControl<f32> = NumberControl {
+    label: "Gain:",
+    default: 1.0,
+    range: 0.001..=1000.0,
+    logarithmic: true,
+    format: |gain| format_compact(f64::from(gain), 3),
+    parse: parse_gain,
+};
+
+/// The rotation row, in degrees, reset to 0 by a double-click on the label.
+const ROTATE: NumberControl<f64> = NumberControl {
+    label: "Rotate [deg]:",
+    default: 0.0,
+    range: -180.0..=180.0,
+    logarithmic: false,
+    format: |degrees| format_compact(degrees, 1),
+    parse: parse_rotate,
+};
 
 enum ParsedFilter {
     Off,
@@ -28,9 +59,9 @@ fn format_compact(value: f64, digits: usize) -> String {
 fn format_hz(value: Option<f64>) -> String {
     match value {
         None => "off".into(),
-        Some(v) if v < 1.0 => format_compact(v, 3),
-        Some(v) if v < 100.0 => format_compact(v, 2),
-        Some(v) => format_compact(v, 1),
+        Some(hz) if hz < 1.0 => format_compact(hz, 3),
+        Some(hz) if hz < 100.0 => format_compact(hz, 2),
+        Some(hz) => format_compact(hz, 1),
     }
 }
 
@@ -55,17 +86,19 @@ fn parse_gain(text: &str) -> Option<f32> {
 }
 
 fn parse_rotate(text: &str) -> Option<f64> {
-    let rotate = text.trim().parse::<f64>().ok()?;
-    rotate.is_finite().then_some(rotate.clamp(-180.0, 180.0))
+    let degrees = text.trim().parse::<f64>().ok()?;
+    degrees.is_finite().then_some(degrees.clamp(-180.0, 180.0))
 }
 
-/// The corner-frequency range the two filter controls span, from the loaded
-/// data's sampling-rate band exactly as snuffler narrows its controls on every
-/// pile change (`adjust_controls`, `pile_viewer.py:4843`): the top corner is the
-/// finest trace's Nyquist, the bottom four decades under the coarsest trace's.
+/// The corner-frequency range the two filter controls span, from the loaded data's
+/// sampling-rate band.
+///
+/// This is exactly how snuffler narrows its controls on every pile change
+/// (`adjust_controls`, `pile_viewer.py:4843`): the top corner is the finest trace's
+/// Nyquist, the bottom four decades under the coarsest trace's.
 fn filter_range(deltat_range: (f64, f64)) -> (f64, f64) {
-    let (dtmin, dtmax) = deltat_range;
-    ((0.5 / dtmax) * 0.0001, 0.5 / dtmin)
+    let (deltat_min, deltat_max) = deltat_range;
+    ((0.5 / deltat_max) * 0.0001, 0.5 / deltat_min)
 }
 
 fn filter_to_unit(hz: f64, min_hz: f64, max_hz: f64) -> f64 {
@@ -149,7 +182,7 @@ fn filter_row(
             if let Some(hz) = *value {
                 *last_hz = hz;
             }
-            if row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if row.value.lost_focus() || ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 *text = format_hz(*value);
             }
         } else if row.value.lost_focus() {
@@ -158,11 +191,64 @@ fn filter_row(
     }
 }
 
+/// One numeric control row's behaviour: a double-click on the label resets the
+/// default, and the slider and the text field set the value.
+struct NumberControl<T> {
+    label: &'static str,
+    default: T,
+    range: RangeInclusive<T>,
+    logarithmic: bool,
+    format: fn(T) -> String,
+    parse: fn(&str) -> Option<T>,
+}
+
+/// Shows one [`NumberControl`] row editing `value`, with `text` as its text field.
+fn number_row<T: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    control: &NumberControl<T>,
+    value: &mut T,
+    text: &mut String,
+) {
+    let format = control.format;
+    let mut slider_value = *value;
+    let mut slider_changed = false;
+    let row = control_row(ui, control.label, text, format(*value), |ui| {
+        slider_changed = ui
+            .add(
+                egui::Slider::new(&mut slider_value, control.range.clone())
+                    .logarithmic(control.logarithmic)
+                    .show_value(false),
+            )
+            .changed();
+    });
+    if row.label.double_clicked() {
+        *value = control.default;
+        *text = format(*value);
+    } else if slider_changed {
+        *value = slider_value;
+        if !row.value.has_focus() {
+            *text = format(*value);
+        }
+    } else if value_committed(ui, &row.value) {
+        if let Some(parsed) = (control.parse)(text) {
+            *value = parsed;
+            if row.value.lost_focus() || ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                *text = format(*value);
+            }
+        } else if row.value.lost_focus() {
+            *text = format(*value);
+        }
+    }
+}
+
+/// The two interactive parts of a control row.
 struct ControlRowResponse {
     label: egui::Response,
     value: egui::Response,
 }
 
+/// Lays out one control row: a label, a text field showing `display_value` while
+/// unfocused, and whatever `add` puts after them.
 fn control_row(
     ui: &mut egui::Ui,
     label: &str,
@@ -172,13 +258,13 @@ fn control_row(
 ) -> ControlRowResponse {
     ui.horizontal(|ui| {
         let value_id = ui.make_persistent_id(("control-value", label));
-        if !ui.memory(|m| m.has_focus(value_id)) {
+        if !ui.memory(|memory| memory.has_focus(value_id)) {
             *value = display_value;
         }
 
-        let row_h = ui.spacing().interact_size.y;
-        let (label_rect, label_resp) =
-            ui.allocate_exact_size(egui::vec2(LABEL_W, row_h), egui::Sense::click());
+        let row_height = ui.spacing().interact_size.y;
+        let (label_rect, label_response) =
+            ui.allocate_exact_size(egui::vec2(LABEL_WIDTH_PX, row_height), egui::Sense::click());
         ui.painter().text(
             label_rect.right_center(),
             egui::Align2::RIGHT_CENTER,
@@ -189,11 +275,11 @@ fn control_row(
         // Painting straight to the canvas leaves egui with an interactive area and
         // no idea what is in it, so the accessibility tree gets an unnamed control
         // and the text field and slider beside it have no label to borrow either.
-        label_resp.widget_info(|| {
+        label_response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), label)
         });
-        let value_resp = ui.add_sized(
-            [VALUE_W, row_h],
+        let value_response = ui.add_sized(
+            [VALUE_WIDTH_PX, row_height],
             egui::TextEdit::singleline(value)
                 .id(value_id)
                 .font(egui::TextStyle::Monospace)
@@ -202,33 +288,30 @@ fn control_row(
         ui.spacing_mut().slider_width = ui.available_width().max(160.0);
         add(ui);
         ControlRowResponse {
-            label: label_resp,
-            value: value_resp,
+            label: label_response,
+            value: value_response,
         }
     })
     .inner
 }
 
+/// Whether the text field's value should be parsed this frame: on every edit, on
+/// leaving the field, and on Enter.
 fn value_committed(ui: &egui::Ui, response: &egui::Response) -> bool {
     response.changed()
         || response.lost_focus()
-        || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+        || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "cohesive draw/update routine; splitting would obscure the control flow"
-)]
-pub fn show(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    ntracks_total: usize,
-    deltat_range: (f64, f64),
-) {
+/// Shows the panel.
+///
+/// `track_count` is the pile's row count, and `deltat_range` the finest and coarsest
+/// sampling intervals, which bound the filter corners.
+pub fn show(ui: &mut egui::Ui, state: &mut AppState, track_count: usize, deltat_range: (f64, f64)) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
     let (min_hz, max_hz) = filter_range(deltat_range);
-    // Loading finer or coarser data moves the band; corners set for the old
-    // pile follow it in, as Qt's controls clamp their value on `set_range`.
+    // Loading finer or coarser data moves the band; corners set for the old pile
+    // follow it in, as Qt's controls clamp their value on `set_range`.
     for corner in [&mut state.highpass, &mut state.lowpass] {
         if let Some(hz) = corner.as_mut() {
             *hz = hz.clamp(min_hz, max_hz);
@@ -240,7 +323,7 @@ pub fn show(
         Corner::Highpass,
         &mut state.highpass,
         &mut state.highpass_text,
-        &mut state.highpass_hz,
+        &mut state.last_highpass_hz,
         (min_hz, max_hz),
     );
     filter_row(
@@ -248,225 +331,196 @@ pub fn show(
         Corner::Lowpass,
         &mut state.lowpass,
         &mut state.lowpass_text,
-        &mut state.lowpass_hz,
+        &mut state.last_lowpass_hz,
         (min_hz, max_hz),
     );
-
-    // snuffler's passband_check warning is posted to the permanent status line
-    // (`app.rs`), the counterpart of Qt's status area — a warning drawn here
-    // would vanish with the panel `c` hides.
+    // Snuffler's passband_check warning is posted to the permanent status line, the
+    // counterpart of Qt's status area: a warning drawn here would vanish with the
+    // panel `c` hides.
 
     // Gain is meaningless for the waterfall, so snuffler hides it there.
     if !waterfall {
-        let mut gain = state.gain;
-        let mut gain_slider_changed = false;
-        let gain_row = control_row(
-            ui,
-            "Gain:",
-            &mut state.gain_text,
-            format_compact(f64::from(state.gain), 3),
-            |ui| {
-                gain_slider_changed = ui
-                    .add(
-                        egui::Slider::new(&mut gain, 0.001..=1000.0)
-                            .logarithmic(true)
-                            .show_value(false),
-                    )
-                    .changed();
-            },
-        );
-        if gain_row.label.double_clicked() {
-            state.gain = DEFAULT_GAIN;
-            state.gain_text = format_compact(f64::from(state.gain), 3);
-        } else if gain_slider_changed {
-            state.gain = gain;
-            if !gain_row.value.has_focus() {
-                state.gain_text = format_compact(f64::from(state.gain), 3);
-            }
-        } else if value_committed(ui, &gain_row.value) {
-            if let Some(parsed) = parse_gain(&state.gain_text) {
-                state.gain = parsed;
-                if gain_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    state.gain_text = format_compact(f64::from(state.gain), 3);
-                }
-            } else if gain_row.value.lost_focus() {
-                state.gain_text = format_compact(f64::from(state.gain), 3);
-            }
-        }
+        number_row(ui, &GAIN, &mut state.gain, &mut state.gain_text);
     }
-
-    let mut rotate = state.rotate_deg;
-    let mut rotate_slider_changed = false;
-    let rotate_row = control_row(
-        ui,
-        "Rotate [deg]:",
-        &mut state.rotate_text,
-        format_compact(state.rotate_deg, 1),
-        |ui| {
-            rotate_slider_changed = ui
-                .add(egui::Slider::new(&mut rotate, -180.0..=180.0).show_value(false))
-                .changed();
-        },
-    );
-    if rotate_row.label.double_clicked() {
-        state.rotate_deg = DEFAULT_ROTATE_DEG;
-        state.rotate_text = format_compact(state.rotate_deg, 1);
-    } else if rotate_slider_changed {
-        state.rotate_deg = rotate;
-        if !rotate_row.value.has_focus() {
-            state.rotate_text = format_compact(state.rotate_deg, 1);
-        }
-    } else if value_committed(ui, &rotate_row.value) {
-        if let Some(parsed) = parse_rotate(&state.rotate_text) {
-            state.rotate_deg = parsed;
-            if rotate_row.value.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                state.rotate_text = format_compact(state.rotate_deg, 1);
-            }
-        } else if rotate_row.value.lost_focus() {
-            state.rotate_text = format_compact(state.rotate_deg, 1);
-        }
-    }
+    number_row(ui, &ROTATE, &mut state.rotate_deg, &mut state.rotate_text);
 
     ui.separator();
-
     ui.horizontal_wrapped(|ui| {
-        // Track height (pixels per row). With "Align" on, the layout snaps this to
-        // a height that tiles the canvas with whole tracks; off lets rows take the
-        // exact height and scroll continuously.
-        let mut height = if state.track_height > 0.0 {
-            state.track_height
-        } else {
-            40.0
-        };
-        ui.label("Track height:");
-        let resp = ui.add(egui::Slider::new(&mut height, MIN_TRACK_H..=MAX_TRACK_H).suffix(" px"));
-        if resp.changed() {
-            state.track_height = height;
-        }
-        resp.on_hover_text(format!("{} tracks total", ntracks_total.max(1)));
-        ui.checkbox(&mut state.snap_tracks, "Align")
-            .on_hover_text("Snap track height and scrolling to whole traces");
-
+        track_height_controls(ui, state, track_count);
         ui.separator();
-        // The pointer twin of the digit keys: clicking a kind recolours the
-        // selected markers (or retargets the floating pick), exactly what the
-        // key does — it never latches a kind for future picks, which in
-        // snuffler are always kind 0. `marker_kind` only remembers the last
-        // applied choice for the highlight.
-        ui.label("Marker:");
-        // The digits wear each kind's lit shade, the one a selected marker wears on
-        // the canvas, so the button and the marker it recolours match.
-        let markers = crate::view::palette_for(ui.ctx().theme(), state.wiggle_theme).markers;
-        for k in 0u8..8 {
-            let col = markers.kind(k, true);
-            let selected = state.marker_kind == k;
-            let txt = egui::RichText::new(format!("{k}")).color(col).strong();
-            if ui
-                .selectable_label(selected, txt)
-                .on_hover_text("Change color of selected markers")
-                .clicked()
-            {
-                state.marker_kind = k;
-                if let Some(pk) = state.picking.as_mut() {
-                    pk.kind = k;
-                } else {
-                    for m in &mut state.markers {
-                        if m.selected {
-                            m.kind = k;
-                        }
-                    }
-                }
-            }
-        }
+        marker_kind_buttons(ui, state);
     });
 
-    // Waterfall colorbar row (snuffler's ColorbarControl, shown only in waterfall).
+    // Snuffler's `ColorbarControl`, shown only in waterfall mode
     if waterfall {
-        ui.horizontal_wrapped(|ui| {
-            // `from_label` rather than a detached `ui.label` + `from_id_salt`:
-            // the label is what names the combo in the accessibility tree, and a
-            // nameless picker reads as whatever value it happens to hold.
-            egui::ComboBox::from_label("Colormap")
-                .selected_text(state.wf_cmap.label())
-                .show_ui(ui, |ui| {
-                    for cm in Colormap::ALL {
-                        ui.selectable_value(&mut state.wf_cmap, cm, cm.label());
-                    }
-                });
-            egui::ComboBox::from_label("Scale")
-                .selected_text(state.wf_color_scale.label())
-                .show_ui(ui, |ui| {
-                    for cs in ColorScale::ALL {
-                        ui.selectable_value(&mut state.wf_color_scale, cs, cs.label());
-                    }
-                });
-
-            ui.separator();
-            ui.label("Clip low:");
-            let low = ui.add(egui::Slider::new(&mut state.wf_clip.0, 0.0..=0.95).show_value(false));
-            ui.label("Clip high:");
-            let high =
-                ui.add(egui::Slider::new(&mut state.wf_clip.1, 0.05..=1.0).show_value(false));
-            // Snuffler's colorbar semantics (gui/util.py:817, :914): with Symmetry
-            // on, moving either clip handle mirrors the other around 0.5; a drag
-            // that would squeeze the band below its 0.05 minimum width clamps the
-            // handle being dragged rather than silently pushing the other one.
-            if low.changed() {
-                if state.wf_symmetry {
-                    state.wf_clip.1 = (1.0 - state.wf_clip.0).clamp(0.05, 1.0);
-                }
-                state.wf_clip.0 = state.wf_clip.0.min(state.wf_clip.1 - 0.05).max(0.0);
-            }
-            if high.changed() {
-                if state.wf_symmetry {
-                    state.wf_clip.0 = (1.0 - state.wf_clip.1).clamp(0.0, 0.95);
-                }
-                state.wf_clip.1 = state.wf_clip.1.max(state.wf_clip.0 + 0.05).min(1.0);
-            }
-            // Qt's colorbar resets its clip band on a double-click (gui/util.py:883).
-            if low.double_clicked() || high.double_clicked() {
-                state.wf_clip = (0.0, 1.0);
-            }
-            // Qt's colorbar wheel widens or narrows the clip band symmetrically,
-            // Symmetry locked only, refusing a step below the minimum width
-            // (`wheelEvent`, gui/util.py:886). Qt maps a 120-unit wheel notch to
-            // 0.024 of the band; egui reports points, ~50 a notch, so the factor
-            // keeps one notch worth one Qt notch.
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if state.wf_symmetry && scroll != 0.0 && (low.hovered() || high.hovered()) {
-                let delta = -f64::from(scroll) * (0.024 / 50.0);
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "clip positions live in 0..=1; f32 is the state's own precision"
-                )]
-                let (lo, hi) = (
-                    (f64::from(state.wf_clip.0) + delta).max(0.0) as f32,
-                    (f64::from(state.wf_clip.1) - delta).min(1.0) as f32,
-                );
-                if hi - lo >= 0.05 {
-                    state.wf_clip = (lo, hi);
-                }
-            }
-
-            ui.separator();
-            ui.checkbox(&mut state.wf_reverse, "Reverse");
-            // Symmetry is a live constraint on the clip pair, exactly snuffler's
-            // (`set_symetry`, gui/util.py:817): switching it on snaps the band // spellcheck:ignore-line
-            // symmetric around 0.5 by the tighter side.
-            if ui.checkbox(&mut state.wf_symmetry, "Symmetry").changed() && state.wf_symmetry {
-                let clip_max = 1.0 - state.wf_clip.0.min(1.0 - state.wf_clip.1);
-                state.wf_clip = (1.0 - clip_max, clip_max);
-            }
-            // Qt un-checks Symmetry whenever Absolute goes on, and re-checks it
-            // when Absolute goes off (`toggle_absolute`, gui/util.py:776).
-            if ui.checkbox(&mut state.wf_abs, "Abs").changed() {
-                state.wf_symmetry = !state.wf_abs;
-                if state.wf_symmetry {
-                    let clip_max = 1.0 - state.wf_clip.0.min(1.0 - state.wf_clip.1);
-                    state.wf_clip = (1.0 - clip_max, clip_max);
-                }
-            }
-            ui.checkbox(&mut state.wf_integrate, "Integrate");
-        });
+        ui.horizontal_wrapped(|ui| colorbar_controls(ui, &mut state.waterfall));
     }
+}
+
+/// Track height in pixels per row, and the Align toggle.
+///
+/// With Align on, the layout snaps the height to one that tiles the canvas with
+/// whole tracks; off lets rows take the exact height and scroll continuously.
+fn track_height_controls(ui: &mut egui::Ui, state: &mut AppState, track_count: usize) {
+    let mut height = if state.track_height > 0.0 {
+        state.track_height
+    } else {
+        40.0
+    };
+    ui.label("Track height:");
+    let response = ui.add(
+        egui::Slider::new(&mut height, MIN_TRACK_HEIGHT_PX..=MAX_TRACK_HEIGHT_PX).suffix(" px"),
+    );
+    if response.changed() {
+        state.track_height = height;
+    }
+    response.on_hover_text(format!("{} tracks total", track_count.max(1)));
+    ui.checkbox(&mut state.snap_tracks, "Align")
+        .on_hover_text("Snap track height and scrolling to whole traces");
+}
+
+/// The pointer twin of the digit keys.
+///
+/// Clicking a kind recolours the selected markers (or retargets the floating pick),
+/// exactly what the key does.
+/// It never latches a kind for future picks, which in snuffler are always kind 0.
+/// `marker_kind` only remembers the last applied choice for the highlight.
+fn marker_kind_buttons(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.label("Marker:");
+    // The digits wear each kind's lit shade, the one a selected marker wears on the
+    // canvas, so the button and the marker it recolours match.
+    let marker_palette = crate::view::palette_for(ui.ctx().theme(), state.wiggle_theme).markers;
+    for kind in 0_u8..8 {
+        let label = egui::RichText::new(format!("{kind}"))
+            .color(marker_palette.kind(kind, true))
+            .strong();
+        let clicked = ui
+            .selectable_label(state.marker_kind == kind, label)
+            .on_hover_text("Change color of selected markers")
+            .clicked();
+        if !clicked {
+            continue;
+        }
+        state.marker_kind = kind;
+        if let Some(pick) = state.picking.as_mut() {
+            pick.kind = kind;
+        } else {
+            for marker in &mut state.markers {
+                if marker.selected {
+                    marker.kind = kind;
+                }
+            }
+        }
+    }
+}
+
+/// The waterfall colorbar: colormap, scale, the clip band and its toggles.
+fn colorbar_controls(ui: &mut egui::Ui, settings: &mut WaterfallSettings) {
+    // `from_label` rather than a detached `ui.label` + `from_id_salt`: the label is
+    // what names the combo in the accessibility tree, and a nameless picker reads
+    // as whatever value it happens to hold.
+    egui::ComboBox::from_label("Colormap")
+        .selected_text(settings.colormap.label())
+        .show_ui(ui, |ui| {
+            for colormap in Colormap::ALL {
+                ui.selectable_value(&mut settings.colormap, colormap, colormap.label());
+            }
+        });
+    egui::ComboBox::from_label("Scale")
+        .selected_text(settings.color_scale.label())
+        .show_ui(ui, |ui| {
+            for color_scale in ColorScale::ALL {
+                ui.selectable_value(&mut settings.color_scale, color_scale, color_scale.label());
+            }
+        });
+
+    ui.separator();
+    clip_sliders(ui, settings);
+
+    ui.separator();
+    ui.checkbox(&mut settings.reverse_colormap, "Reverse");
+    // Symmetry is a live constraint on the clip pair, exactly snuffler's
+    // (`set_symetry`, gui/util.py:817). // spellcheck:ignore-line
+    if ui.checkbox(&mut settings.symmetric, "Symmetry").changed() && settings.symmetric {
+        make_clip_band_symmetric(settings);
+    }
+    // Qt un-checks Symmetry whenever Absolute goes on, and re-checks it when
+    // Absolute goes off (`toggle_absolute`, gui/util.py:776).
+    if ui
+        .checkbox(&mut settings.absolute_amplitudes, "Abs")
+        .changed()
+    {
+        settings.symmetric = !settings.absolute_amplitudes;
+        if settings.symmetric {
+            make_clip_band_symmetric(settings);
+        }
+    }
+    ui.checkbox(&mut settings.integrate, "Integrate");
+}
+
+/// The two clip handles, with snuffler's colorbar semantics (gui/util.py:817, :914).
+fn clip_sliders(ui: &mut egui::Ui, settings: &mut WaterfallSettings) {
+    ui.label("Clip low:");
+    let low =
+        ui.add(egui::Slider::new(&mut settings.clip_low, 0.0..=MAX_CLIP_LOW).show_value(false));
+    ui.label("Clip high:");
+    let high =
+        ui.add(egui::Slider::new(&mut settings.clip_high, MIN_CLIP_BAND..=1.0).show_value(false));
+
+    // With Symmetry on, moving either handle mirrors the other around 0.5.
+    // A drag that would squeeze the band below its minimum width clamps the handle
+    // being dragged rather than silently pushing the other one.
+    if low.changed() {
+        if settings.symmetric {
+            settings.clip_high = (1.0 - settings.clip_low).clamp(MIN_CLIP_BAND, 1.0);
+        }
+        settings.clip_low = settings
+            .clip_low
+            .min(settings.clip_high - MIN_CLIP_BAND)
+            .max(0.0);
+    }
+    if high.changed() {
+        if settings.symmetric {
+            settings.clip_low = (1.0 - settings.clip_high).clamp(0.0, MAX_CLIP_LOW);
+        }
+        settings.clip_high = settings
+            .clip_high
+            .max(settings.clip_low + MIN_CLIP_BAND)
+            .min(1.0);
+    }
+    // Qt's colorbar resets its clip band on a double-click (gui/util.py:883).
+    if low.double_clicked() || high.double_clicked() {
+        settings.clip_low = 0.0;
+        settings.clip_high = 1.0;
+    }
+
+    // Qt's colorbar wheel widens or narrows the clip band symmetrically, with
+    // Symmetry locked only, refusing a step below the minimum width (`wheelEvent`,
+    // gui/util.py:886).
+    // Qt maps a 120-unit wheel notch to 0.024 of the band, and egui reports points,
+    // about 50 a notch, so the factor keeps one notch worth one Qt notch.
+    let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+    if settings.symmetric && scroll != 0.0 && (low.hovered() || high.hovered()) {
+        let delta = -f64::from(scroll) * (0.024 / 50.0);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "clip positions live in 0..=1; f32 is the state's own precision"
+        )]
+        let (clip_low, clip_high) = (
+            (f64::from(settings.clip_low) + delta).max(0.0) as f32,
+            (f64::from(settings.clip_high) - delta).min(1.0) as f32,
+        );
+        if clip_high - clip_low >= MIN_CLIP_BAND {
+            settings.clip_low = clip_low;
+            settings.clip_high = clip_high;
+        }
+    }
+}
+
+/// Snaps the clip band symmetric around 0.5 by its tighter side, as switching
+/// Symmetry on does in snuffler.
+fn make_clip_band_symmetric(settings: &mut WaterfallSettings) {
+    let clip_max = 1.0 - settings.clip_low.min(1.0 - settings.clip_high);
+    settings.clip_low = 1.0 - clip_max;
+    settings.clip_high = clip_max;
 }

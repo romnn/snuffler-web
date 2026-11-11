@@ -1,9 +1,11 @@
 """The Qt oracle: a real, offscreen snuffler, asked what it is about to draw.
 
-Nothing here reimplements snuffler. The harness builds a live ``PileViewerMain``
-under ``QT_QPA_PLATFORM=offscreen``, sets the scenario's state through the same
-menu actions a user would click, and then *paints the widget*. During that paint it
-records the three values the painter computes and immediately turns into pixels:
+Nothing here reimplements snuffler.
+The harness builds a live ``PileViewerMain`` under ``QT_QPA_PLATFORM=offscreen``, sets
+the scenario's state through the same menu actions a user would click, and then *paints
+the widget*.
+During that paint it records the three values the painter computes and immediately turns
+into pixels:
 
 * the ``prepare_cutout2`` output — the traces about to be drawn,
 * the ``trace.minmax`` data ranges — snuffler's scaling matrix, evaluated,
@@ -32,9 +34,9 @@ from scenario import CorpusFiles, Scenario
 
 NslcId = Tuple[str, str, str, str]
 
-# Big enough that every corpus dataset fits on screen at once: a scenario should
-# never silently compare a page of tracks against the whole set. The eifel dataset
-# alone stacks 1061 channel tracks.
+# Big enough that every corpus dataset fits on screen at once: a scenario should never
+# silently compare a page of tracks against the whole set.
+# The eifel dataset alone stacks 1061 channel tracks.
 NTRACKS_SHOWN_MAX = 2048
 CANVAS_SIZE = (1400, 900)
 
@@ -93,25 +95,27 @@ class QtSnapshot:
     segments: List[Segment]
     tracks: List[Track]
     data_ranges: Dict[Any, Tuple[float, float]] = field(default_factory=dict)
-    # (data range as handed to AutoScaler) -> (ymin, ymax, yinc)
+    # (data range as handed to AutoScaler) -> (ymin, ymax, tick increment)
     scales: Dict[Tuple[float, float], Tuple[float, float, float]] = field(default_factory=dict)
     # nslc -> the scaling-group key snuffler filed it under for this scenario.
     scaling_keys: Dict[NslcId, Any] = field(default_factory=dict)
     # (net, sta, loc) and (net, sta) -> event-relative geometry, as `set_origin`
-    # computed it. Both of snuffler's station keys, because co-located instruments
-    # have their own positions and so their own distances.
+    # computed it.
+    # Both of snuffler's station keys, because co-located instruments have their own
+    # positions and so their own distances.
     station_geometry: Dict[Tuple[str, ...], Dict[str, Optional[float]]] = field(
         default_factory=dict
     )
-    # Trace boxes as `draw_trace_boxes` painted them: per track index, the filled
-    # rects in *pixels* — (left, right, palette slot in `box_styles`) — recorded
-    # off the real painter. Pixels rather than times, because Qt clips each rect
-    # to the canvas (right edge padded by one pixel) before drawing, and
-    # un-projecting would launder that back into times the painter never used.
+    # Trace boxes as `draw_trace_boxes` painted them: per track index, the filled rects
+    # in *pixels* — (left, right, palette slot in `box_styles`) — recorded off the real
+    # painter.
+    # Pixels rather than times, because Qt clips each rect to the canvas (right edge
+    # padded by one pixel) before drawing, and un-projecting would launder that back
+    # into times the painter never used.
     boxes: Dict[int, List[Tuple[float, float, int]]] = field(default_factory=dict)
-    # The time projection the boxes were drawn through, ((tmin, tmax),
-    # (umin, umax)): what the comparator needs to put the web's box times into
-    # the same pixels. None when Qt never drew boxes this paint.
+    # The time projection the boxes were drawn through, ((tmin, tmax), (umin, umax)):
+    # what the comparator needs to put the web's box times into the same pixels.
+    # None when Qt never drew boxes this paint.
     box_projection: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None
     png: Optional[bytes] = None
     full_png: Optional[bytes] = None
@@ -120,17 +124,19 @@ class QtSnapshot:
 def assert_upstream_geometry() -> None:
     """Fail if upstream stops computing the vertical leg the way the port copies it.
 
-    ``bridge._sort_distance`` mirrors ``Station.set_event_relative_data``, elevation
-    bug and all, because parity with the Qt application is what this suite measures —
-    see ``vertical-leg-follows-qt`` in ``known_gaps.toml``. The day pyrocko starts
-    folding in the elevation, that mirroring turns from parity into a divergence, and
-    the only symptom would be every distance sort disagreeing by tens of metres.
+    ``snuffler_bridge.sorting.event_distance_m`` mirrors
+    ``Station.set_event_relative_data``, elevation bug and all, because parity with the
+    Qt application is what this suite measures — see ``vertical-leg-follows-qt`` in
+    ``known_gaps.toml``.
+    The day pyrocko starts folding in the elevation, that mirroring turns from parity
+    into a divergence, and the only symptom would be every distance sort disagreeing by
+    tens of metres.
 
-    So the formula is asserted directly, on a station carrying *both* an elevation and
-    a borehole depth: the three candidate vertical legs give three different answers
-    there, and the check names which one upstream still uses. Doing it here rather
-    than through a scenario means a ``PYROCKO_REF`` bump trips it even if no corpus
-    station happens to have both.
+    So the formula is asserted directly, on a station carrying *both* an elevation and a
+    borehole depth: the three candidate vertical legs give three different answers
+    there, and the check names which one upstream still uses.
+    Doing it here rather than through a scenario means a ``PYROCKO_REF`` bump trips it
+    even if no corpus station happens to have both.
     """
     station = model.Station(network="XX", station="CAL", lat=0.0, lon=0.0, elevation=1700.0)
     station.depth = 145.0
@@ -149,7 +155,8 @@ def assert_upstream_geometry() -> None:
             "upstream pyrocko changed the 3D vertical leg: "
             f"set_event_relative_data gave {qt_leg:.1f} m where "
             f"`event.depth - station.depth` is {expected:.1f} m ({which}).\n"
-            "web/bridge.py:_sort_distance deliberately mirrors upstream's formula — see "
+            "web/snuffler_bridge/sorting.py:event_distance_m deliberately mirrors upstream's "
+            "formula — see "
             "`vertical-leg-follows-qt` in tests/parity/known_gaps.toml. Follow upstream "
             "there and retire that entry, or pin pyrocko back."
         )
@@ -167,9 +174,9 @@ def _app() -> qw.QApplication:
     return _APP
 
 
-# The harness's key notation, resolved to Qt. Same tokens the help pages use and the
-# same ones `parity_keys.ts` resolves for the browser, so a scenario, an inventory and
-# a driver all name a key the same way.
+# The harness's key notation, resolved to Qt.
+# Same tokens the help pages use and the same ones `parity_keys.ts` resolves for the
+# browser, so a scenario, an inventory and a driver all name a key the same way.
 KEY_NAMES: Dict[str, Tuple[int, str]] = {
     "<space>": (qc.Qt.Key_Space, " "),
     "<backspace>": (qc.Qt.Key_Backspace, ""),
@@ -197,9 +204,10 @@ KEY_NAMES: Dict[str, Tuple[int, str]] = {
 def key_event(token: str) -> Any:
     """Build the ``QKeyEvent`` one harness key token stands for.
 
-    Single characters go through as themselves — snuffler's ``keyPressEvent`` matches
-    on ``key_event.text()``, so 'a' and 'A' are different commands and the shift has to
-    be real. `<shift> + <tab>` is Qt's Backtab, which is a key of its own.
+    Single characters go through as themselves — snuffler's ``keyPressEvent`` matches on
+    ``key_event.text()``, so 'a' and 'A' are different commands and the shift has to be
+    real.
+    `<shift> + <tab>` is Qt's Backtab, which is a key of its own.
     """
     modifiers = qc.Qt.NoModifier
     while token.startswith("<shift> + "):
@@ -221,11 +229,12 @@ def key_event(token: str) -> Any:
 def host_window(frame: Any, controls: Any = None, marker_editor: Any = None) -> Any:
     """Put a `PileViewer` inside the kind of window snuffler expects to live in.
 
-    Not decoration. `keyPressEvent` ends in `update_status()`, which writes to
+    Not decoration.
+    `keyPressEvent` ends in `update_status()`, which writes to
     `self.window().statusBar()`, and `passband_check()` posts to
-    `self.window().status_messages` — both attributes of the real
-    `SnufflerWindow`. Without them every key raises, and a harness that catches the
-    exception concludes the key was handled.
+    `self.window().status_messages` — both attributes of the real `SnufflerWindow`.
+    Without them every key raises, and a harness that catches the exception concludes
+    the key was handled.
 
     Wired the way `snuffler_app.SnufflerWindow` wires it (snuffler_app.py:696), with
     pyrocko's own widget.
@@ -282,7 +291,7 @@ class QtViewer:
 
     def load_events(self, path: Path) -> None:
         """Load events and activate the largest — the same choice the web bridge
-        makes in ``_load_events_result``, so the sorts share one origin."""
+        makes in ``events.load_event_file``, so the sorts share one origin."""
         events = model.load_events(str(path))
         if not events:
             return
@@ -295,9 +304,9 @@ class QtViewer:
 
         Upstream (``snuffler.py:323``) feeds the same document to both consumers:
         ``get_pyrocko_stations()`` gives the sorts their coordinates and the raw
-        document joins ``station_xmls`` for restitution. The web bridge harvests
-        coordinates from its response files the same way, so loading them must mean
-        the same thing on both sides.
+        document joins ``station_xmls`` for restitution.
+        The web bridge harvests coordinates from its response files the same way, so
+        loading them must mean the same thing on both sides.
         """
         sx = stationxml.load_xml(filename=str(path))
         self.view.add_stations(sx.get_pyrocko_stations())
@@ -306,10 +315,10 @@ class QtViewer:
     def apply(self, state: Dict[str, Any]) -> None:
         view = self.view
 
-        # `lowpass_change`/`highpass_change` are the real setters, but they also
-        # push a status message through `self.window().status_messages`, which only
-        # exists on the full SnufflerWindow. What they do to the viewer is these
-        # three lines.
+        # `lowpass_change`/`highpass_change` are the real setters, but they also push a
+        # status message through `self.window().status_messages`, which only exists on
+        # the full SnufflerWindow.
+        # What they do to the viewer is these three lines.
         view.highpass = state["highpass"]
         view.lowpass = state["lowpass"]
         view.tf_cache = {}
@@ -347,9 +356,9 @@ class QtViewer:
         view.set_tracks_range((0, max(1, view.ntracks)))
 
         # Tier 1 is the wiggle pipeline.
-        # The waterfall diverges below the seam this oracle watches (Qt paints a
-        # QImage from `pile_viewer_waterfall`, the web returns normalized strips), so
-        # comparing them would be a pixel diff.
+        # The waterfall diverges below the seam this oracle watches (Qt paints a QImage
+        # from `pile_viewer_waterfall`, the web returns normalized strips), so comparing
+        # them would be a pixel diff.
         # See known_gaps.toml [[manual]] "waterfall-pipeline".
         if state["mode"] != "wiggle":
             raise ValueError(
@@ -450,12 +459,12 @@ class QtViewer:
 
         segments = [
             Segment(
-                nslc=tuple(tr.nslc_id),
-                tmin=float(tr.tmin),
-                deltat=float(tr.deltat),
-                y=np.asarray(tr.get_ydata(), dtype=np.float64),
+                nslc=tuple(trace.nslc_id),
+                tmin=float(trace.tmin),
+                deltat=float(trace.deltat),
+                y=np.asarray(trace.get_ydata(), dtype=np.float64),
             )
-            for tr in cutout
+            for trace in cutout
         ]
 
         tracks = [

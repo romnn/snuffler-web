@@ -69,9 +69,10 @@ dropped. A station 1.7 km up a mountain is measured as though it stood at sea le
 The geometrically honest term is `event.depth + station.elevation - station.depth`,
 and snuffler does not write it.
 
-`bridge._sort_distance` writes snuffler's version, deliberately. Parity with the Qt
-application is the claim this suite makes, so the port follows snuffler into the
-error rather than diverging into a better answer nobody can check it against.
+`snuffler_bridge.sorting.event_distance_m` writes snuffler's version, deliberately.
+Parity with the Qt application is the claim this suite makes, so the port follows
+snuffler into the error rather than diverging into a better answer nobody can
+check it against.
 Correcting the formula is upstream's to make, for every pyrocko user at once.
 
 Signed off. The hazard is upstream changing its mind: the day pyrocko adds the
@@ -82,11 +83,11 @@ with both an elevation and a borehole, and it fails by this key.
 """
 
 # [[alias]] maps the two vocabularies.
-# The frontends word the same command differently ('Open waveform files...'
-# against 'Open files…', 'Sort by Names' against 'Names'), and no string
-# normalization can tell that apart from a command that is genuinely absent.
-# So each equivalence is written down once, by a human, and the diff is exact
-# everywhere else.
+# The frontends word the same command differently ('Open waveform files...' against
+# 'Open files…', 'Sort by Names' against 'Names'), and no string normalization can tell
+# that apart from a command that is genuinely absent.
+# So each equivalence is written down once, by a human, and the diff is exact everywhere
+# else.
 
 [[alias]]
 qt = "File/Open waveform files..."
@@ -106,7 +107,8 @@ web = "File/Load markers…"
 
 [[alias]]
 # One Qt entry, two web entries: the browser needs the format chosen before the save
-# picker opens, so the port split it. The SVG twin shows up as web-only.
+# picker opens, so the port split it.
+# The SVG twin shows up as web-only.
 qt = "File/Save as SVG or PNG"
 web = "File/Save image (PNG)…"
 
@@ -324,10 +326,9 @@ web = "s s"
 qt = "shift and left-click"
 web = "<shift> + click on marker"
 
-# [[feature]] is the tier-2 allowlist proper: a command Qt offers that the web does
-# not.
-# Every entry has to keep matching something; one that stops applying fails the
-# run as stale.
+# [[feature]] is the tier-2 allowlist proper: a command Qt offers that the web does not.
+# Every entry has to keep matching something; one that stops applying fails the run as
+# stale.
 
 [[feature]]
 qt = "File/Print"
@@ -452,7 +453,7 @@ which turns `copper_r` into `coppe`.
 [[manual]]
 key = "color-traces-theming"
 title = "Trace coloring: snuffler's own under the Qt theme, this frontend's under its own"
-enforce = "nothing — no tier compares rendering; the palette, key and numbering halves are pinned by paint.rs unit tests"
+enforce = "nothing — no tier compares rendering; the palette, key and numbering halves are pinned by paint module unit tests"
 why = """
 In Qt, Color Traces recolors the wiggle strokes from `graph_colors`, numbered over
 the sorted distinct values of the subsort's coloring key (`color_lookup` over
@@ -460,7 +461,7 @@ the sorted distinct values of the subsort's coloring key (`color_lookup` over
 does the same: the per-subsort keys including CNSL's net+sta+loc composite, the
 sorted-key numbering over the whole pile (`ViewMeta.color_keys`, so a key keeps its
 colour as the view scrolls), snuffler's seven `graph_colors`, and black past the
-seventh key. Pinned by paint.rs unit tests.
+seventh key. Pinned by paint module unit tests.
 
 The **Snuffler Web** themes are this frontend's own and depart on purpose, signed
 off:
@@ -492,7 +493,7 @@ cannot diverge on the canvas snuffler owns.
 [[manual]]
 key = "marker-palette-theming"
 title = "Marker kinds: Tango under the Qt theme, the same families in the web theme's own shades"
-enforce = "nothing — no tier compares rendering; the family-per-kind, contrast and lit-is-lighter halves are pinned by paint.rs unit tests, and the Qt palette's `select_color` arithmetic by markers.rs"
+enforce = "nothing — no tier compares rendering; the family-per-kind, contrast and lit-is-lighter halves are pinned by paint module unit tests, and the Qt palette's `select_color` arithmetic by markers.rs"
 why = """
 Qt colours a marker by kind from `g_color_b` (marker.py:53): the Tango "3" shade
 idle, the "2" shade when selected or alerted (`select_color`, marker.py:306). Under
@@ -526,7 +527,7 @@ checked belongs written down. Examined against rendered `qt_oracle` PNGs of
   * The axis label layout is snuffler's: rows centred under the tick that earned
     them with the left-edge fallback, the `l0` to `l0_brief` abbreviation ladder
     against `pinc_approx*0.9`, and the half-interval `ushift`, pinned by
-    `timeaxis.rs`/`paint.rs` unit tests against snuffler's `TimeScaler`.
+    `timeaxis`/`paint` unit tests against snuffler's `TimeScaler`.
   * The track label chip is the text's own bounding rect under a white brush at
     alpha 100 (`gui/util.py:294`, `pile_viewer.py:3230`): square and unpadded,
     `Palette::label_pad`/`label_rounding` zero under this theme.
@@ -610,9 +611,9 @@ warns about.
 [[manual]]
 key = "timeaxis-algorithm"
 title = "The time axis stays f64 below the millisecond"
-enforce = "the timeaxis.rs unit tests, which pin the increment choice, the calendar anchoring and the label ladder against values from snuffler's own TimeScaler"
+enforce = "the timeaxis unit tests, which pin the increment choice, the calendar anchoring and the label ladder against values from snuffler's own TimeScaler"
 why = """
-`timeaxis.rs` transcribes `TimeScaler`/`TimeAx`: the 18-value `acceptable_tincs`
+`snuffler_web_core::timeaxis` transcribes `TimeScaler`/`TimeAx`: the 18-value `acceptable_tincs`
 table chosen by nearest entry to `span / 7`, calendar-anchored tick walks, the
 five-level label ladder with its abbreviation fallback, the centred-between-ticks
 shift, the context rows and the year-at-epoch suppression for synthetic data.
@@ -634,8 +635,8 @@ line shortened so it does not run under the y = 0 label; the ranges mode prints
 follow pile_viewer.py:3345-3434: axes *replaces* ranges when both are on, neither
 draws on a row shorter than about four text lines, several scales on one row step
 leftward past each other, and the numbers take the trace colour under Color
-Traces. The increment and exponent come across the bridge (`ViewSpan.yinc`,
-`.yexp`) from the same `AutoScaler` call that makes the range, so the ticks are
+Traces. The increment and exponent come across the bridge (`ViewSpan.ytick_step`,
+`.ytick_exponent`) from the same `AutoScaler` call that makes the range, so the ticks are
 pyrocko's, not a frontend recomputation.
 
 One difference is signed off: Qt derives `approx_ticks` from the track height
@@ -648,7 +649,7 @@ the increment is a layout decision the frontend owns.
 [[manual]]
 key = "trace-drawing-details"
 title = "With Clip Traces off, the web still clips to the track area"
-enforce = "the tier-1 `boxes` check (every scenario compares the bridge's boxes to Qt's recorded box paints) plus the paint.rs pile-backed box test; nothing compares the zero line and clip, which are one-line rules"
+enforce = "the tier-1 `boxes` check (every scenario compares the bridge's boxes to Qt's recorded box paints) plus the paint module pile-backed box test; nothing compares the zero line and clip, which are one-line rules"
 why = """
 The Show Boxes colour advances per contiguous run of samples (`_box_styles`, a
 transcription of `determine_box_styles` over the whole pile in `full_id` order,
@@ -705,7 +706,7 @@ Two losses are accepted:
 [[manual]]
 key = "marker-overload-full-quiet"
 title = "Past 2000 markers the web silences the per-trace passes Qt keeps paying for"
-enforce = "the paint.rs overload tests: the count readout appears, and past the limit no marker colour reaches an SVG holding real samples"
+enforce = "the paint module overload tests: the count readout appears, and past the limit no marker colour reaches an SVG holding real samples"
 why = """
 Qt's 2000-marker limit (`with_key_in_limited`, pile_viewer.py:3027) guards only its
 overview layer: the per-trace loop iterates the unlimited `with_key_in`
@@ -813,7 +814,7 @@ exit, keeps both.
 [[manual]]
 key = "command-line-semantics"
 title = "The `:` commands match Qt; where they answer, Qt is silent or crashes"
-enforce = "a tier-1-style check over bridge._command_result and _visible_traces against PileViewerMain.add_blacklist_pattern and update_trace_filter; the seam exists on both sides"
+enforce = "a tier-1-style check over snuffler_bridge.commands.run and state.visible_traces against PileViewerMain.add_blacklist_pattern and update_trace_filter; the seam exists on both sides"
 why = """
 The grammar, history, quick filter, blacklist bookkeeping, the `markers` and
 `scaling` arguments, the anchored `hide <token>` matching (`util.match_nslc`
@@ -1085,7 +1086,7 @@ Its cost is that widening the window makes data *disappear*: on the `tohoku`
 example the three 100 Hz strong-motion channels go blank at the default budget
 while the 20 Hz broadbands stay, which reads as missing data rather than as a
 fetch policy. This port has a cheaper way out of the same trade, because its
-canvas already tells the bridge how many bins it can draw (`npx`): fetch every
+canvas already tells the bridge how many bins it can draw (`bins_per_trace`): fetch every
 channel, and decimate what comes back to the min and max of each bin. The peak
 inside a bin survives, so the drawn trace is the one the raw samples would have
 drawn. On `tohoku`, Adaptive and Short differ by ~1 % of pixels on the channels

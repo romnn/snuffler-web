@@ -282,7 +282,11 @@ function fresh(state?: ExecutionControlState): { control: Int32Array; interrupt:
     Atomics.load(control, 0),
     ExecutionControlState.CancellingWithInterpreter
   );
-  check("protected-frame entry of a cancelled request arms the byte", Atomics.load(interrupt, 0), 2);
+  check(
+    "protected-frame entry of a cancelled request arms the byte",
+    Atomics.load(interrupt, 0),
+    2
+  );
 }
 
 if (failures > 0) {

@@ -3,11 +3,11 @@ title = "Co-located sensors on a track each"
 dataset = "multiloc"
 tiers = [1]
 
-# The same data under the ungrouped subsort, which is the control: `nscl` and
-# `nsc_l` are the same four codes ordered the same way and differ only in whether
-# the location joins the track key.
-# Listing both is what makes the grouped scenario mean something: a port mapping
-# them to the same thing would fail one of the two.
+# The same data under the ungrouped subsort, which is the control: `nscl` and `nsc_l`
+# are the same four codes ordered the same way and differ only in whether the location
+# joins the track key.
+# Listing both is what makes the grouped scenario mean something: a port mapping them to
+# the same thing would fail one of the two.
 [state]
 subsort = "nscl"
 

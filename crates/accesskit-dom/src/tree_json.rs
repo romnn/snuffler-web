@@ -14,17 +14,18 @@ use crate::action_name;
 
 /// Publishes tree snapshots on the window global it was built with.
 pub(crate) struct Publisher {
-    global: String,
-    rev_global: String,
-    rev: u32,
+    tree_global: String,
+    /// `<tree_global>Rev`, counting publishes so a reader can tell a stale snapshot.
+    revision_global: String,
+    revision: u32,
 }
 
 impl Publisher {
-    pub fn new(global: String) -> Self {
+    pub fn new(tree_global: String) -> Self {
         Self {
-            rev_global: format!("{global}Rev"),
-            global,
-            rev: 0,
+            revision_global: format!("{tree_global}Rev"),
+            tree_global,
+            revision: 0,
         }
     }
 
@@ -33,15 +34,15 @@ impl Publisher {
         let Some(window) = web_sys::window() else {
             return;
         };
-        self.rev = self.rev.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
         let entries = [
             (
-                self.global.as_str(),
+                self.tree_global.as_str(),
                 JsValue::from_str(&tree_to_json(update)),
             ),
             (
-                self.rev_global.as_str(),
-                JsValue::from_f64(f64::from(self.rev)),
+                self.revision_global.as_str(),
+                JsValue::from_f64(f64::from(self.revision)),
             ),
         ];
         for (key, value) in entries {
@@ -107,14 +108,14 @@ fn push_node(id: NodeId, node: &Node, out: &mut String) {
     }
     if let Some(bounds) = node.bounds() {
         out.push_str(",\"bounds\":[");
-        for (index, coord) in [bounds.x0, bounds.y0, bounds.x1, bounds.y1]
+        for (index, coordinate) in [bounds.x0, bounds.y0, bounds.x1, bounds.y1]
             .into_iter()
             .enumerate()
         {
             if index > 0 {
                 out.push(',');
             }
-            out.push_str(&coord.to_string());
+            out.push_str(&coordinate.to_string());
         }
         out.push(']');
     }
@@ -165,17 +166,17 @@ fn push_node(id: NodeId, node: &Node, out: &mut String) {
 
 fn push_json_string(value: &str, out: &mut String) {
     out.push('"');
-    for ch in value.chars() {
-        match ch {
+    for character in value.chars() {
+        match character {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            ch if (ch as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", ch as u32);
+            control if (control as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", control as u32);
             }
-            ch => out.push(ch),
+            other => out.push(other),
         }
     }
     out.push('"');

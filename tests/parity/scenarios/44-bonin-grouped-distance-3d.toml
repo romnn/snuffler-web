@@ -4,16 +4,18 @@ dataset = "bonin-2015-05-30-m7.8-multiloc"
 tiers = [1]
 load = ["events", "responses"]
 
-# A question a one-trace row never asks: which sensor's position does a merged row
-# sort by? Co-located instruments share a latitude and longitude, so under the 2D sort
-# of `bonin-grouped-sort-distance` the members of a row are interchangeable. They do
-# not share the vertical: IU.ANMO.00 hangs at 145 m in its borehole and IU.ANMO.10 at
-# 90 m, IU.COLA.00 at 116 m against IU.COLA.10 at the surface, IU.KIP.00 at 33 m
-# against IU.KIP.60 at 1 m. Three metres of distance out of six thousand kilometres is
-# enough, because Qt puts the sort value *inside* the track key: a row asked to merge
-# over locations comes back apart when its members disagree about the distance. Both
-# sides answer 27 rows, and 27 is the interesting answer — snuffler ungroups by depth
-# what the user asked it to group by location, and the port has to do that too.
+# A question a one-trace row never asks: which sensor's position does a merged row sort
+# by?
+# Co-located instruments share a latitude and longitude, so under the 2D sort of
+# `bonin-grouped-sort-distance` the members of a row are interchangeable.
+# They do not share the vertical: IU.ANMO.00 hangs at 145 m in its borehole and
+# IU.ANMO.10 at 90 m, IU.COLA.00 at 116 m against IU.COLA.10 at the surface, IU.KIP.00
+# at 33 m against IU.KIP.60 at 1 m.
+# Three metres of distance out of six thousand kilometres is enough, because Qt puts the
+# sort value *inside* the track key: a row asked to merge over locations comes back
+# apart when its members disagree about the distance.
+# Both sides answer 27 rows, and 27 is the interesting answer — snuffler ungroups by
+# depth what the user asked it to group by location, and the port has to do that too.
 [state]
 sort = "distance"
 distances_3d = true

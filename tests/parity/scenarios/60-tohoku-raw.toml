@@ -3,17 +3,20 @@ title = "One site, three instruments, every option off"
 dataset = "tohoku-2011-03-11-m9.1-clipping"
 tiers = [1]
 
-# The control for the other scenarios on this dataset. Three sampling rates in one
-# pile — 100 Hz strong motion beside 20 and 40 Hz broadbands — and a trace that goes
-# off scale partway through, which is a shape no generator here produces and which
-# both pipelines have to draw identically before any option is worth testing on it.
+# The control for the other scenarios on this dataset.
+# Three sampling rates in one pile — 100 Hz strong motion beside 20 and 40 Hz broadbands
+# — and a trace that goes off scale partway through, which is a shape no generator here
+# produces and which both pipelines have to draw identically before any option is worth
+# testing on it.
 
-# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window
-# and `visible_length` — at the default budget every trace here is too finely sampled
-# for a window this long and Qt draws empty rows. That divergence is already what
-# `oddrate-coarse-window` is for; repeating it here would only hide the data. So the
-# budget is raised until Qt keeps every trace, and the scenario compares recordings
-# rather than a fetch policy. It is a Qt-side knob: the web decimates whatever it has.
+# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window and
+# `visible_length` — at the default budget every trace here is too finely sampled for a
+# window this long and Qt draws empty rows.
+# That divergence is already what `oddrate-coarse-window` is for; repeating it here
+# would only hide the data.
+# So the budget is raised until Qt keeps every trace, and the scenario compares
+# recordings rather than a fetch policy.
+# It is a Qt-side knob: the web decimates whatever it has.
 [state]
 visible_length = 60000
 

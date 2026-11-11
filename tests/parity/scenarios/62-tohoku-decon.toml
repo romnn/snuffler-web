@@ -4,17 +4,19 @@ dataset = "tohoku-2011-03-11-m9.1-clipping"
 tiers = [1]
 load = ["responses"]
 
-# Every other deconvolution scenario here works on velocity sensors. This site also
-# carries an EpiSensor, whose response is in m/s², so the pile deconvolves into two
-# different physical quantities at once — and each side has to pick its frequency
-# limits per trace from the response it was handed, not from the pile.
+# Every other deconvolution scenario here works on velocity sensors.
+# This site also carries an EpiSensor, whose response is in m/s², so the pile
+# deconvolves into two different physical quantities at once — and each side has to pick
+# its frequency limits per trace from the response it was handed, not from the pile.
 
-# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window
-# and `visible_length` — at the default budget every trace here is too finely sampled
-# for a window this long and Qt draws empty rows. That divergence is already what
-# `oddrate-coarse-window` is for; repeating it here would only hide the data. So the
-# budget is raised until Qt keeps every trace, and the scenario compares recordings
-# rather than a fetch policy. It is a Qt-side knob: the web decimates whatever it has.
+# Qt fetches nothing finer than `min_deltat_allow`, which it derives from the window and
+# `visible_length` — at the default budget every trace here is too finely sampled for a
+# window this long and Qt draws empty rows.
+# That divergence is already what `oddrate-coarse-window` is for; repeating it here
+# would only hide the data.
+# So the budget is raised until Qt keeps every trace, and the scenario compares
+# recordings rather than a fetch policy.
+# It is a Qt-side knob: the web decimates whatever it has.
 [state]
 visible_length = 60000
 remove_response = true

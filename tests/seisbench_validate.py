@@ -35,8 +35,8 @@ def _model_class(name: str) -> Any:
 
 def _example_stream() -> obspy.Stream:
     stream = obspy.read()
-    for tr in stream:
-        tr.data = np.tile(tr.data, 8)
+    for trace in stream:
+        trace.data = np.tile(trace.data, 8)
     return stream
 
 
@@ -70,8 +70,8 @@ def _aligned_curves(
     if base < 0:
         ref = ref[-base:]
         base = 0
-    m = min(ref.size, ours.data.shape[0] - base)
-    return ref[:m], ours.data[base : base + m]
+    overlap = min(ref.size, ours.data.shape[0] - base)
+    return ref[:overlap], ours.data[base : base + overlap]
 
 
 def _torch_output(model: Any, batch: np.ndarray) -> np.ndarray:

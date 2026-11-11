@@ -6,9 +6,9 @@ pub struct Config {
     /// Whether the rendered spectrogram window is open.
     show_plot: bool,
     /// Short-time Fourier transform window length in seconds.
-    pub twin: f64,
+    pub window_length_s: f64,
     /// Overlap between adjacent windows in percent.
-    pub overlap: f64,
+    pub overlap_percent: f64,
     /// Window taper name understood by pyrocko.
     pub taper: String,
     /// Optional lower frequency bound in hertz.
@@ -25,8 +25,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             show_plot: false,
-            twin: 100.0,
-            overlap: 75.0,
+            window_length_s: 100.0,
+            overlap_percent: 75.0,
             taper: "Hanning".to_owned(),
             fmin: None,
             fmax: None,
@@ -41,13 +41,13 @@ impl Config {
     #[must_use]
     pub fn params(&self) -> SpectrogramSnufflingParams {
         SpectrogramSnufflingParams {
-            spectrogram_twin: self.twin,
-            spectrogram_overlap: self.overlap,
-            spectrogram_taper: self.taper.clone(),
-            spectrogram_fmin: self.fmin,
-            spectrogram_fmax: self.fmax,
-            spectrogram_color_scale: self.color_scale.clone(),
-            spectrogram_color_table: self.color_table.clone(),
+            window_length_s: self.window_length_s,
+            overlap_percent: self.overlap_percent,
+            taper: self.taper.clone(),
+            fmin: self.fmin,
+            fmax: self.fmax,
+            color_scale: self.color_scale.clone(),
+            color_table: self.color_table.clone(),
         }
     }
 

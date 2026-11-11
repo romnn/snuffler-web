@@ -1,9 +1,10 @@
 //! Display of rendered pyrocko/matplotlib figures as egui textures.
 //!
-//! The frontend never re-draws these figures itself — it shows the *exact* PNG
-//! that pyrocko's matplotlib code produced in Pyodide (see `bridge.py`
-//! `_render_figure_png`), so a figure window can never drift from what the Qt
-//! snuffler shows. This module only decodes the PNG once per render and blits it.
+//! The frontend never re-draws these figures itself.
+//! It shows the *exact* PNG that pyrocko's matplotlib code produced in Pyodide
+//! (see `web/snuffler_bridge/figures.py`, `render`), so a figure window can never
+//! drift from what the Qt snuffler shows.
+//! This module only decodes the PNG once per render and blits it.
 
 use std::collections::HashMap;
 
@@ -109,7 +110,7 @@ impl FigureWindows {
                 height_px: 760,
                 dpi: 110.0,
                 dark,
-                mt: None,
+                moment_tensor: None,
             };
             // A marker edit that left the request identical (a kind cycled, a
             // note renamed) refreshes the generation key without re-rendering.
@@ -145,7 +146,7 @@ impl FigureWindows {
             height_px: 520,
             dpi: 120.0,
             dark: ctx.theme() == egui::Theme::Dark,
-            mt: Some(MomentTensor {
+            moment_tensor: Some(MomentTensor {
                 mnn: moment_tensor[0],
                 mee: moment_tensor[1],
                 mdd: moment_tensor[2],
@@ -186,7 +187,7 @@ impl FigureCache {
     /// Draw the latest figure for `kind`: a spinner until the first render lands,
     /// the error text if rendering failed, else the image fit to the panel width.
     pub fn show(&mut self, ui: &mut egui::Ui, bridge: &Bridge, kind: &str) {
-        let generation = bridge.figure_gen(kind);
+        let generation = bridge.figure_generation(kind);
         if generation == 0 {
             if bridge.figure_job(kind).is_some() {
                 ui.horizontal(|ui| {
@@ -233,9 +234,11 @@ impl FigureCache {
     }
 }
 
-/// Decode matplotlib's Agg PNG (RGBA, or RGB with an added opaque alpha) into an
-/// egui `ColorImage`. Returns `None` on any decode error (the window then just
-/// shows nothing for that generation).
+/// Decode matplotlib's Agg PNG (RGBA, or RGB with an added opaque alpha) into an egui
+/// `ColorImage`.
+///
+/// Returns `None` on any decode error (the window then just shows nothing for that
+/// generation).
 fn decode_png(figure: &FigureData) -> Option<egui::ColorImage> {
     let decoder = png::Decoder::new(std::io::Cursor::new(&figure.png));
     let mut reader = decoder.read_info().ok()?;

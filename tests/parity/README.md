@@ -27,8 +27,9 @@ paint rather than re-deriving it is the whole point — the moment the harness c
 any of it itself, it stops being an oracle and becomes a second implementation that
 can drift the same way the first one can.
 
-The web side is `web/bridge.py`, imported directly with `PYTHONPATH=web/proto:web` and
-called at `_get_view_data` — the same entry point the Pyodide worker calls. Asking it
+The web side is the `web/snuffler_bridge` package, imported directly with
+`PYTHONPATH=web/proto:web` and called at `view.get_view_data` — the same entry point
+the Pyodide worker calls. Asking it
 for **undecimated** samples is simple: every scenario names one of Qt's fixed visible
 lengths, and on that path the payload *is* the chopped samples, at the trace's own
 rate unless `allow_downsampling` asked `Trace.downsample` for otherwise. The
@@ -151,7 +152,7 @@ drift is never ignorable.
 
 | dataset | what it is for |
 | --- | --- |
-| `demo` | the synthetic demo `bridge._make_example_scene` produces, byte for byte |
+| `demo` | the synthetic demo `snuffler_bridge.waveforms.make_example_scene` produces, byte for byte |
 | `gaplap` | gaps and overlaps at every size the degap logic branches on, aligned and off-grid |
 | `multi` | 4 stations × 3 components with coordinates, an event and poles-zeros responses |
 | `multiloc` | co-located sensors: two location codes at a site, the second an order of magnitude quieter |
@@ -304,11 +305,11 @@ scenario.py         the scenario and dataset model both tiers read
 harness.py          process scaffolding: environment, import paths, colours
 gaps.py             known_gaps.toml loaded, validated and enforced
 test_gaps.py        pytest edge cases for that enforcement
-test_reload_keep.py pytest guard for bridge.py's reload keep-list
+test_reload_keep.py pytest guard for the bridge's reload keep-list and module list
 test_bridge_snufflings.py, test_adaptive_visible_length.py, test_view_span_order.py
                     bridge behaviour against real pyrocko (task test:parity:bridge)
 qt_oracle.py        offscreen PileViewer -> real paint -> snapshot
-web_oracle.py       bridge._get_view_data -> snapshot
+web_oracle.py       snuffler_bridge.view.get_view_data -> snapshot
 compare.py          snapshot diff with per-field tolerances
 freq_limits.py      property grid for the one documented copy
 run_oracle.py       tier 1

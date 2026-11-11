@@ -18,18 +18,18 @@ pub trait DrawTarget {
     /// Fills a rounded rectangle.
     fn fill_rect(&mut self, rect: Rect, rounding: f32, fill: Color32);
     /// Draws one line segment.
-    fn line(&mut self, a: Pos2, b: Pos2, width: f32, color: Color32);
+    fn line(&mut self, from: Pos2, to: Pos2, width: f32, color: Color32);
     /// Draws a connected open path.
-    fn polyline(&mut self, pts: Vec<Pos2>, width: f32, color: Color32);
+    fn polyline(&mut self, points: Vec<Pos2>, width: f32, color: Color32);
     /// Fills a polygon.
-    fn polygon(&mut self, pts: Vec<Pos2>, fill: Color32);
+    fn polygon(&mut self, points: Vec<Pos2>, fill: Color32);
     /// Draws aligned text at the given logical point size.
     fn text(&mut self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32);
     /// Measures text with the same metrics used by the corresponding frontend.
     fn measure(&self, text: &str, size: f32) -> Vec2;
-    /// Draws the cached waterfall image for one span, keyed by its payload
-    /// offset — a track can carry several strips, so a row index would not
-    /// identify one.
+    /// Draws the cached waterfall image for one span, keyed by its payload offset.
+    ///
+    /// A track can carry several strips, so a row index would not identify one.
     fn waterfall(&mut self, rect: Rect, key: u64);
     /// Intersects subsequent drawing with `rect`.
     fn push_clip(&mut self, rect: Rect);
@@ -98,14 +98,17 @@ impl SvgTarget {
             self.body.push_str("</g>");
             self.open_clips -= 1;
         }
-        let (w, h, m) = (self.width, self.height, self.margin.max(0.0));
-        let origin = if m > 0.0 { -m } else { 0.0 };
-        let (vw, vh) = (w + 2.0 * m, h + 2.0 * m);
+        let (width, height) = (self.width, self.height);
+        let margin = self.margin.max(0.0);
+        let origin = if margin > 0.0 { -margin } else { 0.0 };
+        let view_width = width + 2.0 * margin;
+        let view_height = height + 2.0 * margin;
         let mut out = String::with_capacity(self.body.len() + self.defs.len() + 256);
         let _ = write!(
             out,
             "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
-             width=\"{w:.0}\" height=\"{h:.0}\" viewBox=\"{origin:.2} {origin:.2} {vw:.2} {vh:.2}\">"
+             width=\"{width:.0}\" height=\"{height:.0}\" \
+             viewBox=\"{origin:.2} {origin:.2} {view_width:.2} {view_height:.2}\">"
         );
         out.push_str(
             "<defs><style>text{font-family:'Ubuntu',system-ui,-apple-system,sans-serif;font-weight:bold;}</style>",
@@ -123,8 +126,8 @@ impl DrawTarget for SvgTarget {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let (col, op) = css_color(fill);
-        let rx = if rounding > 0.0 {
+        let CssColor { hex, opacity } = css_color(fill);
+        let corner_radius = if rounding > 0.0 {
             format!(" rx=\"{rounding:.1}\"")
         } else {
             String::new()
@@ -136,49 +139,52 @@ impl DrawTarget for SvgTarget {
             rect.min.y,
             rect.width(),
             rect.height(),
-            rx,
-            col,
-            op
+            corner_radius,
+            hex,
+            opacity
         );
     }
 
-    fn line(&mut self, a: Pos2, b: Pos2, width: f32, color: Color32) {
-        let (col, op) = css_color(color);
+    fn line(&mut self, from: Pos2, to: Pos2, width: f32, color: Color32) {
+        let CssColor { hex, opacity } = css_color(color);
         let _ = write!(
             self.body,
             "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-opacity=\"{:.3}\" stroke-width=\"{:.2}\"/>",
-            a.x, a.y, b.x, b.y, col, op, width
+            from.x, from.y, to.x, to.y, hex, opacity, width
         );
     }
 
-    fn polyline(&mut self, pts: Vec<Pos2>, width: f32, color: Color32) {
-        if pts.len() < 2 {
+    fn polyline(&mut self, points: Vec<Pos2>, width: f32, color: Color32) {
+        if points.len() < 2 {
             return;
         }
-        let (col, op) = css_color(color);
+        let CssColor { hex, opacity } = css_color(color);
         let _ = write!(self.body, "<polyline points=\"");
-        push_points(&mut self.body, &pts);
+        push_points(&mut self.body, &points);
         let _ = write!(
             self.body,
-            "\" fill=\"none\" stroke=\"{col}\" stroke-opacity=\"{op:.3}\" stroke-width=\"{width:.2}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
+            "\" fill=\"none\" stroke=\"{hex}\" stroke-opacity=\"{opacity:.3}\" stroke-width=\"{width:.2}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
         );
     }
 
-    fn polygon(&mut self, pts: Vec<Pos2>, fill: Color32) {
-        if pts.is_empty() {
+    fn polygon(&mut self, points: Vec<Pos2>, fill: Color32) {
+        if points.is_empty() {
             return;
         }
-        let (col, op) = css_color(fill);
+        let CssColor { hex, opacity } = css_color(fill);
         let _ = write!(self.body, "<polygon points=\"");
-        push_points(&mut self.body, &pts);
-        let _ = write!(self.body, "\" fill=\"{col}\" fill-opacity=\"{op:.3}\"/>");
+        push_points(&mut self.body, &points);
+        let _ = write!(
+            self.body,
+            "\" fill=\"{hex}\" fill-opacity=\"{opacity:.3}\"/>"
+        );
     }
 
     fn text(&mut self, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
         if text.is_empty() {
             return;
         }
-        let (col, op) = css_color(color);
+        let CssColor { hex, opacity } = css_color(color);
         let anchor = match align.x() {
             Align::Min => "start",
             Align::Center => "middle",
@@ -194,18 +200,20 @@ impl DrawTarget for SvgTarget {
         let _ = write!(
             self.body,
             // Bold because snuffler's canvas is: it sets a bold font before painting
-            // anything (pile_viewer.py:3203), and the egui target draws the same face,
-            // so an exported image matches what the app showed. The weight rides the
-            // element rather than the stylesheet above so that it survives a consumer
-            // with no CSS engine — the rasterizer behind the parity artifacts is one
-            // such, and its font database must carry the bold face for this to
-            // resolve (see `parity_artifacts.rs` and `view::raster`).
+            // anything (pile_viewer.py:3203).
+            // The egui target draws the same face, so an exported image matches what
+            // the app showed.
+            // The weight rides the element rather than the stylesheet above, so it
+            // survives a consumer with no CSS engine.
+            // The rasterizer behind the parity artifacts is one, and its font database
+            // must carry the bold face for this to resolve (see `parity_artifacts.rs`
+            // and `view::raster`).
             "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\" fill-opacity=\"{:.3}\" text-anchor=\"{}\" dominant-baseline=\"{}\">{}</text>",
             pos.x,
             pos.y,
             size,
-            col,
-            op,
+            hex,
+            opacity,
             anchor,
             baseline,
             escape_xml(text)
@@ -217,10 +225,10 @@ impl DrawTarget for SvgTarget {
     }
 
     fn waterfall(&mut self, rect: Rect, key: u64) {
-        let Some(img) = self.images.get(&key) else {
+        let Some(image) = self.images.get(&key) else {
             return;
         };
-        let Some(png) = encode_png_rgba(img.width, img.height, &img.rgba) else {
+        let Some(png) = encode_png_rgba(image.width, image.height, &image.rgba) else {
             return;
         };
         let _ = write!(
@@ -274,25 +282,32 @@ fn push_points(out: &mut String, points: &[Pos2]) {
     }
 }
 
-/// `#rrggbb` plus a 0..1 opacity for a straight, un-premultiplied colour.
-fn css_color(color: Color32) -> (String, f32) {
-    let [red, green, blue, alpha] = color.to_srgba_unmultiplied();
-    (
-        format!("#{red:02x}{green:02x}{blue:02x}"),
-        f32::from(alpha) / 255.0,
-    )
+/// A colour as SVG spells it: straight, un-premultiplied.
+struct CssColor {
+    /// `#rrggbb`.
+    hex: String,
+    /// `0..=1`.
+    opacity: f32,
 }
 
-fn escape_xml(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
+fn css_color(color: Color32) -> CssColor {
+    let [red, green, blue, alpha] = color.to_srgba_unmultiplied();
+    CssColor {
+        hex: format!("#{red:02x}{green:02x}{blue:02x}"),
+        opacity: f32::from(alpha) / 255.0,
+    }
+}
+
+fn escape_xml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
+            _ => out.push(character),
         }
     }
     out
@@ -300,21 +315,21 @@ fn escape_xml(s: &str) -> String {
 
 /// Minimal standard base64 (used to inline the waterfall PNG into the SVG).
 fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let enc = |b: u8| char::from(*T.get(usize::from(b) & 63).unwrap_or(&b'A'));
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let encode = |sextet: u8| char::from(*ALPHABET.get(usize::from(sextet) & 63).unwrap_or(&b'A'));
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk.first().copied().unwrap_or(0);
         let b1 = chunk.get(1).copied().unwrap_or(0);
         let b2 = chunk.get(2).copied().unwrap_or(0);
-        out.push(enc(b0 >> 2));
-        out.push(enc((b0 << 4) | (b1 >> 4)));
+        out.push(encode(b0 >> 2));
+        out.push(encode((b0 << 4) | (b1 >> 4)));
         out.push(if chunk.len() > 1 {
-            enc((b1 << 2) | (b2 >> 6))
+            encode((b1 << 2) | (b2 >> 6))
         } else {
             '='
         });
-        out.push(if chunk.len() > 2 { enc(b2) } else { '=' });
+        out.push(if chunk.len() > 2 { encode(b2) } else { '=' });
     }
     out
 }

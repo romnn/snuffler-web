@@ -5,7 +5,7 @@ pub use snuffler_web_core::snufflings::seisbench::Config;
 use super::Action;
 use super::widgets::{checkbox_row, param_row, run_button};
 
-const LABEL_W: f32 = 160.0;
+const LABEL_WIDTH_PX: f32 = 160.0;
 const LOCAL_MODEL_BASE_URL: &str = "assets/models/";
 
 #[derive(Clone, Copy)]
@@ -54,14 +54,17 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
     }
     ui.horizontal(|ui| {
         ui.add_sized(
-            [LABEL_W, 0.0],
+            [LABEL_WIDTH_PX, 0.0],
             egui::Label::new("Device").halign(Align::Max),
         );
         ui.label(&runtime.device);
     });
 
     ui.horizontal(|ui| {
-        ui.add_sized([LABEL_W, 0.0], egui::Label::new("Model").halign(Align::Max));
+        ui.add_sized(
+            [LABEL_WIDTH_PX, 0.0],
+            egui::Label::new("Model").halign(Align::Max),
+        );
         egui::ComboBox::from_id_salt("seisbench_model")
             .selected_text(selected_model(config.selected).label)
             .show_ui(ui, |ui| {
@@ -98,7 +101,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_sized(
-                [LABEL_W, 0.0],
+                [LABEL_WIDTH_PX, 0.0],
                 egui::Label::new("Progress").halign(Align::Max),
             );
             ui.add(
@@ -108,7 +111,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
             );
         });
         ui.horizontal(|ui| {
-            ui.add_space(LABEL_W);
+            ui.add_space(LABEL_WIDTH_PX);
             ui.small(&progress.label);
         });
     }
@@ -118,7 +121,10 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
 
 fn threshold_row(ui: &mut egui::Ui, label: &str, value: &mut f64) {
     ui.horizontal(|ui| {
-        ui.add_sized([LABEL_W, 0.0], egui::Label::new(label).halign(Align::Max));
+        ui.add_sized(
+            [LABEL_WIDTH_PX, 0.0],
+            egui::Label::new(label).halign(Align::Max),
+        );
         ui.add(
             egui::DragValue::new(value)
                 .speed(0.002)

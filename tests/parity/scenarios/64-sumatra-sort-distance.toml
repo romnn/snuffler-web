@@ -6,9 +6,10 @@ load = ["events", "responses"]
 
 # Teleseismic distances, where `ridgecrest-sort-distance` covers local ones: the same
 # sort over stations a third of the planet apart, whose printed kilometres run to five
-# figures. HRV wrote an empty location code in 2004 where the others use 00, so this
-# is also the distance sort meeting a station whose coordinates arrive under a key
-# that does not look like its neighbours'.
+# figures.
+# HRV wrote an empty location code in 2004 where the others use 00, so this is also the
+# distance sort meeting a station whose coordinates arrive under a key that does not
+# look like its neighbours'.
 
 [state]
 sort = "distance"

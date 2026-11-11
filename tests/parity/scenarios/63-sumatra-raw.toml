@@ -3,10 +3,11 @@ title = "Six hours at 1 Hz, every option off"
 dataset = "sumatra-2004-12-26-m9.1-surface-waves"
 tiers = [1]
 
-# The slow end of the corpus. Everything else here is 20 Hz or faster; these are LH
-# channels at one sample per second, so a six-hour view is 21600 samples decimated
-# into 1200 pixels — the same reduction the fast datasets do over a short window,
-# arrived at from the opposite direction.
+# The slow end of the corpus.
+# Everything else here is 20 Hz or faster; these are LH channels at one sample per
+# second, so a six-hour view is 21600 samples decimated into 1200 pixels — the same
+# reduction the fast datasets do over a short window, arrived at from the opposite
+# direction.
 
 [compare]
 reason = "identical recorded bytes at the corpus's lowest sampling rate, no processing"

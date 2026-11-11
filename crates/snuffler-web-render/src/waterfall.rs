@@ -13,15 +13,15 @@ use crate::draw::RasterImage;
 /// channel that arrives in several pieces yields one image per piece.
 #[expect(
     clippy::indexing_slicing,
-    reason = "the data and destination bounds follow from the checked nf*nt dimensions"
+    reason = "the data and destination bounds follow from the checked frequency-by-time bin dimensions"
 )]
 #[must_use]
 pub fn build_image(view: &ViewData, track: &ViewTrack, span: &ViewSpan) -> Option<RasterImage> {
-    if track.nf == 0 || span.count == 0 {
+    if track.frequency_bin_count == 0 || span.count == 0 {
         return None;
     }
-    let frequency_bins = usize::try_from(track.nf).ok()?;
-    let time_bins = usize::try_from(span.count.checked_div(track.nf)?).ok()?;
+    let frequency_bins = usize::try_from(track.frequency_bin_count).ok()?;
+    let time_bins = usize::try_from(span.count.checked_div(track.frequency_bin_count)?).ok()?;
     if time_bins == 0 {
         return None;
     }
@@ -72,7 +72,7 @@ mod tests {
             ..ViewSpan::default()
         };
         let track = ViewTrack {
-            nf: 2,
+            frequency_bin_count: 2,
             ..ViewTrack::default()
         };
 

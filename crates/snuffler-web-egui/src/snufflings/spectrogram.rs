@@ -10,8 +10,14 @@ const COLOR_TABLES: [&str; 2] = ["spectro", "rainbow"];
 pub fn panel(ui: &mut egui::Ui, config: &mut Config, nyquist: Option<f64>) -> Option<Action> {
     ui.label("Plot a spectrogram (windowed STFT) for the visible channels.");
     ui.add_space(6.0);
-    param_row(ui, "Window length [s]", &mut config.twin, 0.1, 10000.0);
-    param_row(ui, "Overlap [%]", &mut config.overlap, 0.0, 99.0);
+    param_row(
+        ui,
+        "Window length [s]",
+        &mut config.window_length_s,
+        0.1,
+        10000.0,
+    );
+    param_row(ui, "Overlap [%]", &mut config.overlap_percent, 0.0, 99.0);
     choice_row(ui, "Taper function", &mut config.taper, &TAPERS);
     // Qt re-narrows the corner ranges to the loaded band on every pile change
     // (`adjust_controls`, spectrogram.py:103).

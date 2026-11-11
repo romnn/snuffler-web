@@ -26,8 +26,8 @@ impl Config {
     #[must_use]
     pub fn params(&self) -> SpectrumSnufflingParams {
         SpectrumSnufflingParams {
-            spec_smoothing: self.smoothing,
-            spec_smoothing_bandwidth: self.smoothing_bandwidth,
+            smoothing: self.smoothing,
+            smoothing_bandwidth: self.smoothing_bandwidth,
         }
     }
 

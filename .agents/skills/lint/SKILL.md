@@ -9,7 +9,7 @@ description: >-
 # Linting & testing snuffler-web
 
 This repo is a Cargo workspace (Rust/egui → wasm) plus a Python bridge
-(`web/bridge.py`, runs in Pyodide) and protobuf schemas. **Always drive checks
+(`web/snuffler_bridge/`, runs in Pyodide) and protobuf schemas. **Always drive checks
 through the `task` runner** — the tasks pin tool versions and pass the flags/deps
 the bare tools need. Running the underlying tools by hand gives false results.
 
@@ -37,7 +37,7 @@ the toolkit boundaries, and the Python ruff lint.
 - **Do NOT run `mypy`/`uvx mypy` directly.** The Python type stubs need
   `types-protobuf` + `numpy` and the generated `*_pb2` modules; `task check:py`
   installs them via `uvx --with …` and runs `buf generate` first. A bare
-  `uvx mypy web/bridge.py` reports ~200 bogus `no-any-unimported` errors from the
+  `uvx mypy web/snuffler_bridge` reports ~200 bogus `no-any-unimported` errors from the
   generated protobuf stubs. Use `task check:py`.
 - **Do NOT run a single `cargo clippy`** and assume it's clean. The gate is the
   whole feature matrix (`cargo fc lint`, via `task lint:fc`) **and** the wasm

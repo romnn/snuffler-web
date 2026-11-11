@@ -29,7 +29,7 @@ against: `task snuffler`, see [`qt/`](qt/).
  Browser
  ├─ Web Worker
  │  └─ Pyodide (CPython + numpy + scipy + pyrocko, all WASM)     ← the compute
- │     └─ web/bridge.py  — strict-typed pyrocko shim
+ │     └─ web/snuffler_bridge/  — strict-typed pyrocko shim
  ├─ web/bridge.ts        — main-thread client, DOM I/O, worker RPC
  ├─ proto/               — protobuf bridge schema, generated for Rust/Python
  └─ Rust frontend (wasm32, via Trunk/wasm-bindgen)               ← the UI
@@ -134,7 +134,7 @@ docker compose up --build    # build both from this checkout instead
 ```
 
 The proxy is published on the **host's** 17684 for a reason: the app resolves it
-in the browser — `web/bridge.py` and `snuffler-web-core` both name
+in the browser — `web/snuffler_bridge/fdsn.py` and `snuffler-web-core` both name
 `127.0.0.1:17684`, and only route through it when the page is on a localhost
 origin — so the two containers never talk to each other.
 
@@ -185,9 +185,9 @@ those stages run under emulation and are slow.
 
 | Path | What |
 |---|---|
-| `web/bridge.ts` | main-thread client for the Pyodide worker |
-| `web/bridge_worker.ts` | Pyodide boot, package install, protobuf RPC, buffer transfer |
-| `web/bridge.py` | the type-checked pyrocko side of every bridge RPC |
+| `web/bridge.ts` | main-thread client for the Pyodide worker; the DOM glue beside it reads files (`browser_files.ts`), saves exports (`save_file.ts`) and fetches map tiles (`map_tiles.ts`) |
+| `web/bridge_worker.ts` | the Pyodide worker: boot, package install, protobuf RPC relay, cancellation; downloads in `pyodide_prefetch.ts`, progress events in `worker_events.ts`, SeisBench inference in `ort_client.ts` |
+| `web/snuffler_bridge/` | the type-checked pyrocko side of every bridge RPC, one module per concern |
 | `proto/` | protobuf schema for the Rust/Python bridge |
 | `adr/` | architecture decision records |
 | `examples/` | real recorded datasets: `File ▸ Examples` fetches each as one bundle, and the parity suite measures against the same bytes |

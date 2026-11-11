@@ -2,15 +2,16 @@
 #
 # Download the deployed py-mt runtime into served/, instead of building it.
 #
-# The Pages deploy publishes exactly what stage-web.sh assembles — Trunk copies
-# served/ to dist/py-mt/ — so the live site is a ready-made runtime: the same
-# relinked core, the same wheels, already precompiled to bytecode. A fresh
-# checkout becomes servable in a minute rather than the hour build-all.sh takes,
-# which is the only way to get a runtime without Docker and an emsdk toolchain.
+# The Pages deploy publishes exactly what stage-web.sh assembles (Trunk copies
+# served/ to dist/py-mt/), so the live site is a ready-made runtime: the same
+# relinked core, the same wheels, already precompiled to bytecode.
+# A fresh checkout becomes servable in a minute rather than the hour build-all.sh
+# takes, and this is the only way to get a runtime without Docker and an emsdk
+# toolchain.
 #
-# What you get is whatever main last deployed. Build with build-all.sh instead
-# when the runtime itself is what you are changing: a patch, a package pin, or
-# pybuild/setup.py.
+# What you get is whatever main last deployed.
+# Build with build-all.sh instead when the runtime itself is what you are changing:
+# a patch, a package pin, or pybuild/setup.py.
 #
 # Usage:  docker/pyodide-mt/fetch-web.sh
 #         PY_MT_URL=http://127.0.0.1:8080/py-mt docker/pyodide-mt/fetch-web.sh
@@ -46,8 +47,8 @@ PY
 )
 
 urls=""
-for f in $files; do
-    urls="$urls $base/$f"
+for file in $files; do
+    urls="$urls $base/$file"
 done
 # Unquoted on purpose: the list is one URL per word, and no artifact name has
 # ever carried a space.

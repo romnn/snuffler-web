@@ -16,12 +16,18 @@ pub fn panel(
     param_row(
         ui,
         "Short Window [s]",
-        &mut config.short_window,
+        &mut config.short_window_s,
         0.01,
         7200.0,
     );
-    param_row(ui, "Ratio", &mut config.ratio, 1.1, 20.0);
-    param_row(ui, "Level", &mut config.level, 0.0, 1.0);
+    param_row(
+        ui,
+        "Ratio",
+        &mut config.long_to_short_window_ratio,
+        1.1,
+        20.0,
+    );
+    param_row(ui, "Level", &mut config.trigger_level, 0.0, 1.0);
     checkbox_row(
         ui,
         &mut config.show_level_traces,
@@ -37,7 +43,7 @@ pub fn panel(
             [160.0, 0.0],
             egui::Label::new("Scaling/Normalization").halign(Align::Max),
         );
-        egui::ComboBox::from_id_salt("stalta_scalingmethod")
+        egui::ComboBox::from_id_salt("stalta_scaling_method")
             .selected_text(scaling_label(config.scaling_method))
             .show_ui(ui, |ui| {
                 for (idx, label) in ["[0-1]", "[-1/ratio,1]", "[-1/ratio,1] clipped to [0,1]"]

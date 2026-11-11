@@ -3,9 +3,9 @@ title = "Synthetic demo, whole extent, every option off"
 dataset = "demo"
 tiers = [1]
 
-# No window block: the whole dataset. Both sides then process the same samples with
-# the same context, so this is the scenario that has to be exact — anything it
-# reports is a real disagreement and not an artefact of how much data each side
-# chose to filter over.
+# No window block: the whole dataset.
+# Both sides then process the same samples with the same context, so this is the
+# scenario that has to be exact — anything it reports is a real disagreement and not an
+# artefact of how much data each side chose to filter over.
 [compare]
 reason = "baseline: identical input, no processing, so only float32 transport separates them"

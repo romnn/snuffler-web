@@ -1,9 +1,10 @@
 """Tier 2: extract Qt snuffler's whole command surface from the live widget tree.
 
 Extraction rather than a checklist, because a checklist is stale the moment upstream
-adds a menu item and nobody notices. Everything here is read off a real, offscreen
-``PileViewer``: the menu bar walked recursively, the built-in snufflings' declared
-parameters, and the key table snuffler ships as its own help page.
+adds a menu item and nobody notices.
+Everything here is read off a real, offscreen ``PileViewer``: the menu bar walked
+recursively, the built-in snufflings' declared parameters, and the key table snuffler
+ships as its own help page.
 
 Writes JSON on stdout, or to ``--out``. :mod:`run_inventory` diffs it against the
 web inventory.
@@ -99,7 +100,9 @@ def snufflings(view: Any) -> List[Dict[str, Any]]:
         out.append(
             {
                 "name": snuffling.get_name(),
-                "parameters": [parameter_entry(p) for p in snuffling.get_parameters()],
+                "parameters": [
+                    parameter_entry(parameter) for parameter in snuffling.get_parameters()
+                ],
                 "triggers": [name for name, _method in getattr(snuffling, "_triggers", [])],
             }
         )
@@ -183,10 +186,11 @@ def probe_tokens() -> List[str]:
 def key_bindings(view: Any, menu: qw.QWidget) -> List[Dict[str, Any]]:
     """Which keys snuffler actually binds, asked of the running widget.
 
-    Two sources, because snuffler has two. Menu items carry ``QAction`` shortcuts,
-    which the menu walk already sees. Everything else is a chain of comparisons inside
-    ``keyPressEvent`` ending in ``else: super().keyPressEvent(key_event)`` — so the
-    question "did snuffler bind this key" is exactly "did that fall-through run".
+    Two sources, because snuffler has two.
+    Menu items carry ``QAction`` shortcuts, which the menu walk already sees.
+    Everything else is a chain of comparisons inside ``keyPressEvent`` ending in ``else:
+    super().keyPressEvent(key_event)`` — so the question "did snuffler bind this key" is
+    exactly "did that fall-through run".
     Standing in for ``QWidget.keyPressEvent`` during the probe answers it precisely,
     where ``event.isAccepted()`` does not: PyQt leaves the event accepted either way.
 
@@ -195,8 +199,9 @@ def key_bindings(view: Any, menu: qw.QWidget) -> List[Dict[str, Any]]:
     own marker-kind and phase-key ranges.
 
     A branch that raises counts as bound: the exception is proof the key reached a
-    handler. Several of them reach for the surrounding ``SnufflerWindow`` (the marker
-    editor, the main controls), which a bare ``PileViewer`` does not have.
+    handler.
+    Several of them reach for the surrounding ``SnufflerWindow`` (the marker editor, the
+    main controls), which a bare ``PileViewer`` does not have.
     """
     bindings: Dict[str, Dict[str, Any]] = {}
     fell_through = False
@@ -253,7 +258,7 @@ def shortcut_token(text: str) -> str:
         # A bare letter shortcut is the unshifted key, which the help pages write
         # lowercase; `A` there means shift+a and is a different command.
         base = base.lower() if len(base) == 1 else f"<{base.lower()}>"
-        rendered.append(" + ".join([f"<{m}>" for m in modifiers] + [base]))
+        rendered.append(" + ".join([f"<{modifier}>" for modifier in modifiers] + [base]))
     return ", ".join(rendered)
 
 
@@ -261,9 +266,10 @@ def help_tables() -> Dict[str, List[Dict[str, str]]]:
     """The Key / Mouse / Command reference snuffler itself shows under Help.
 
     The live key map lives inside ``keyPressEvent`` as a chain of comparisons, so it
-    cannot be read off the widget tree. The help page is upstream's own statement of
-    the same thing, it ships in the same pinned source tree, and it is what the web
-    port's help window was written against — so it is the honest thing to diff.
+    cannot be read off the widget tree.
+    The help page is upstream's own statement of the same thing, it ships in the same
+    pinned source tree, and it is what the web port's help window was written against —
+    so it is the honest thing to diff.
     """
     sections: Dict[str, List[Dict[str, str]]] = {}
     for name in ("snuffler_help.html", "snuffler_help_epilog.html"):
@@ -277,10 +283,10 @@ def help_tables() -> Dict[str, List[Dict[str, str]]]:
 def controls(frame: Any) -> Tuple[List[Dict[str, Any]], Any]:
     """The bottom control strip, walked rather than listed.
 
-    ``PileViewer.controls()`` builds the strip on demand — the window is what calls
-    it (``snuffler_app.py:690``), so the harness has to as well. Its widgets carry
-    either a text label or, for the icon-only colorbar toggles, a tooltip, which is
-    all a user has to go on either.
+    ``PileViewer.controls()`` builds the strip on demand — the window is what calls it
+    (``snuffler_app.py:690``), so the harness has to as well.
+    Its widgets carry either a text label or, for the icon-only colorbar toggles, a
+    tooltip, which is all a user has to go on either.
     """
     strip = frame.controls()
     out: List[Dict[str, Any]] = []

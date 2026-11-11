@@ -5,9 +5,10 @@ tiers = [3]
 watch_menus = ["Options"]
 
 # Where the pick lands is a fraction of the waveform area, so each side turns it into
-# its own pixels. The resulting *time and track* therefore differ between the two
-# layouts by construction, and the diff says so: it compares what the marker is, not
-# where it was placed.
+# its own pixels.
+# The resulting *time and track* therefore differ between the two layouts by
+# construction, and the diff says so: it compares what the marker is, not where it was
+# placed.
 [[step]]
 action = "pick"
 x = 0.5

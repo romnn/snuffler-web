@@ -12,9 +12,15 @@ pub fn panel(
 ) -> Option<Action> {
     ui.label("Analyze 3-component polarization around selected marker anchors.");
     ui.add_space(6.0);
-    param_row(ui, "Length [s]", &mut config.length, 0.001, 1000.0);
-    param_row(ui, "Offset (relative)", &mut config.offset, -5.0, 5.0);
-    param_row(ui, "Delta Azimuth", &mut config.azimuth, -180.0, 180.0);
+    param_row(ui, "Length [s]", &mut config.window_length_s, 0.001, 1000.0);
+    param_row(
+        ui,
+        "Offset (relative)",
+        &mut config.window_offset_fraction,
+        -5.0,
+        5.0,
+    );
+    param_row(ui, "Delta Azimuth", &mut config.azimuth_deg, -180.0, 180.0);
     passband_rows(ui, &mut config.highpass, &mut config.lowpass, nyquist);
     param_row(ui, "Dot Position", &mut config.dot_position, 0.0, 1.0);
     checkbox_row(ui, &mut config.rotate_to_rt, "Rotate to RT");

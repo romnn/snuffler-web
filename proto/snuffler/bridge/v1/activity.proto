@@ -4,19 +4,29 @@ package snuffler.bridge.v1;
 
 import "google/protobuf/descriptor.proto";
 
+// Scheduling metadata every BridgeService rpc declares as its `activity` method
+// option; the Rust build refuses an rpc without one (adr/0006).
+
+// The executor lane an rpc runs on.
 enum ActivityLane {
   ACTIVITY_LANE_UNSPECIFIED = 0;
+  // Every operation but GetView, one at a time.
   ACTIVITY_LANE_JOB = 1;
+  // GetView alone, so the canvas updates while a job yields.
   ACTIVITY_LANE_VIEW = 2;
 }
 
+// How a new submission interacts with work already queued on its lane.
 enum ActivityPolicy {
   // There is deliberately no EXCLUSIVE: the job lane holds one permit, so
   // exclusion is what QUEUE already gives, and cross-lane exclusion is a
   // separate flag the ledger consumes.
   ACTIVITY_POLICY_UNSPECIFIED = 0;
+  // Every submission runs.
   ACTIVITY_POLICY_QUEUE = 1;
+  // An identical queued or running request is joined instead.
   ACTIVITY_POLICY_DEDUP = 2;
+  // A newer submission cancels the queued ones; only for reads.
   ACTIVITY_POLICY_LATEST_WINS = 3;
 }
 
@@ -39,6 +49,7 @@ enum CancellationSupport {
 }
 
 message Activity {
+  // What the activity readout calls the running job.
   string label = 1;
   ActivityLane lane = 2;
   ActivityPolicy policy = 3;

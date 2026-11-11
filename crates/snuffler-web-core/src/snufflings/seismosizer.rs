@@ -15,7 +15,7 @@ pub struct Config {
     /// Requested displacement, velocity, or acceleration unit.
     pub waveform_type: String,
     /// Source-time offset in seconds.
-    pub time: f64,
+    pub time_s: f64,
     /// Source north offset in kilometres.
     pub north_km: f64,
     /// Source east offset in kilometres.
@@ -25,13 +25,13 @@ pub struct Config {
     /// Moment magnitude (the DC, MT and rectangular sources carry one).
     pub magnitude: f64,
     /// Source strike in degrees.
-    pub strike: f64,
+    pub strike_deg: f64,
     /// Source dip in degrees.
-    pub dip: f64,
+    pub dip_deg: f64,
     /// Source rake in degrees.
-    pub rake: f64,
+    pub rake_deg: f64,
     /// Source-time-function duration in seconds.
-    pub stf_duration: f64,
+    pub stf_duration_s: f64,
     /// Source-time-function type: Qt's four choices (seismosizer.py:35).
     pub stf_type: String,
     /// Which of Qt's five source snufflings this run is (seismosizer.py:280).
@@ -50,15 +50,15 @@ pub struct Config {
     /// Relative nucleation point down dip, -1..1.
     pub nucleation_y: f64,
     /// Rupture velocity in m/s (rectangular source).
-    pub velocity: f64,
+    pub rupture_velocity_m_s: f64,
     /// Slip in metres (pseudo-dynamic rupture).
-    pub slip: f64,
+    pub slip_m: f64,
     /// Rupture-velocity-to-shear-velocity ratio (pseudo-dynamic rupture).
     pub gamma: f64,
     /// Patches along strike (pseudo-dynamic rupture).
-    pub nx: u32,
+    pub patches_along_strike: u32,
     /// Patches down dip (pseudo-dynamic rupture).
-    pub ny: u32,
+    pub patches_down_dip: u32,
     /// Tapered tractions switch (pseudo-dynamic rupture).
     pub tapered: bool,
     /// Dial values of the source types not currently active, keyed by type.
@@ -71,15 +71,15 @@ pub struct Config {
 /// waveform rows (seismosizer.py:280-560).
 #[derive(Clone)]
 struct SourceValues {
-    time: f64,
+    time_s: f64,
     north_km: f64,
     east_km: f64,
     depth_km: f64,
     magnitude: f64,
-    strike: f64,
-    dip: f64,
-    rake: f64,
-    stf_duration: f64,
+    strike_deg: f64,
+    dip_deg: f64,
+    rake_deg: f64,
+    stf_duration_s: f64,
     stf_type: String,
     rm6: [f64; 6],
     forces: [f64; 3],
@@ -87,11 +87,11 @@ struct SourceValues {
     width_km: f64,
     nucleation_x: f64,
     nucleation_y: f64,
-    velocity: f64,
-    slip: f64,
+    rupture_velocity_m_s: f64,
+    slip_m: f64,
     gamma: f64,
-    nx: u32,
-    ny: u32,
+    patches_along_strike: u32,
+    patches_down_dip: u32,
     tapered: bool,
 }
 
@@ -114,15 +114,15 @@ impl Default for Config {
             stores: Vec::new(),
             load_url: String::new(),
             waveform_type: "Displacement [m]".to_owned(),
-            time: 0.0,
+            time_s: 0.0,
             north_km: 0.0,
             east_km: 0.0,
             depth_km: 10.0,
             magnitude: 6.0,
-            strike: 0.0,
-            dip: 90.0,
-            rake: 0.0,
-            stf_duration: 0.0,
+            strike_deg: 0.0,
+            dip_deg: 90.0,
+            rake_deg: 0.0,
+            stf_duration_s: 0.0,
             stf_type: "half sin".to_owned(),
             source_type: "DCSource".to_owned(),
             // Qt's MTSource defaults: rel Mne = 1, the rest 0.
@@ -132,11 +132,11 @@ impl Default for Config {
             width_km: 5.0,
             nucleation_x: 0.0,
             nucleation_y: 0.0,
-            velocity: 3500.0,
-            slip: 1.0,
+            rupture_velocity_m_s: 3500.0,
+            slip_m: 1.0,
             gamma: 0.8,
-            nx: 5,
-            ny: 5,
+            patches_along_strike: 5,
+            patches_down_dip: 5,
             tapered: true,
             saved: BTreeMap::new(),
         }
@@ -146,15 +146,15 @@ impl Default for Config {
 impl Config {
     fn stash(&self) -> SourceValues {
         SourceValues {
-            time: self.time,
+            time_s: self.time_s,
             north_km: self.north_km,
             east_km: self.east_km,
             depth_km: self.depth_km,
             magnitude: self.magnitude,
-            strike: self.strike,
-            dip: self.dip,
-            rake: self.rake,
-            stf_duration: self.stf_duration,
+            strike_deg: self.strike_deg,
+            dip_deg: self.dip_deg,
+            rake_deg: self.rake_deg,
+            stf_duration_s: self.stf_duration_s,
             stf_type: self.stf_type.clone(),
             rm6: self.rm6,
             forces: self.forces,
@@ -162,25 +162,25 @@ impl Config {
             width_km: self.width_km,
             nucleation_x: self.nucleation_x,
             nucleation_y: self.nucleation_y,
-            velocity: self.velocity,
-            slip: self.slip,
+            rupture_velocity_m_s: self.rupture_velocity_m_s,
+            slip_m: self.slip_m,
             gamma: self.gamma,
-            nx: self.nx,
-            ny: self.ny,
+            patches_along_strike: self.patches_along_strike,
+            patches_down_dip: self.patches_down_dip,
             tapered: self.tapered,
         }
     }
 
     fn apply(&mut self, values: SourceValues) {
-        self.time = values.time;
+        self.time_s = values.time_s;
         self.north_km = values.north_km;
         self.east_km = values.east_km;
         self.depth_km = values.depth_km;
         self.magnitude = values.magnitude;
-        self.strike = values.strike;
-        self.dip = values.dip;
-        self.rake = values.rake;
-        self.stf_duration = values.stf_duration;
+        self.strike_deg = values.strike_deg;
+        self.dip_deg = values.dip_deg;
+        self.rake_deg = values.rake_deg;
+        self.stf_duration_s = values.stf_duration_s;
         self.stf_type = values.stf_type;
         self.rm6 = values.rm6;
         self.forces = values.forces;
@@ -188,11 +188,11 @@ impl Config {
         self.width_km = values.width_km;
         self.nucleation_x = values.nucleation_x;
         self.nucleation_y = values.nucleation_y;
-        self.velocity = values.velocity;
-        self.slip = values.slip;
+        self.rupture_velocity_m_s = values.rupture_velocity_m_s;
+        self.slip_m = values.slip_m;
         self.gamma = values.gamma;
-        self.nx = values.nx;
-        self.ny = values.ny;
+        self.patches_along_strike = values.patches_along_strike;
+        self.patches_down_dip = values.patches_down_dip;
         self.tapered = values.tapered;
     }
 
@@ -223,38 +223,38 @@ impl Config {
     #[must_use]
     pub fn params(&self) -> SeismosizerSnufflingParams {
         SeismosizerSnufflingParams {
-            seis_store: self.store.clone(),
-            seis_waveform_type: self.waveform_type.clone(),
-            seis_time: self.time,
-            seis_north_km: self.north_km,
-            seis_east_km: self.east_km,
-            seis_depth_km: self.depth_km,
-            seis_magnitude: self.magnitude,
-            seis_strike: self.strike,
-            seis_dip: self.dip,
-            seis_rake: self.rake,
-            seis_stf_duration: self.stf_duration,
-            seis_stf_type: self.stf_type.clone(),
-            seis_source_type: self.source_type.clone(),
-            seis_rmnn: self.rm6[0],
-            seis_rmee: self.rm6[1],
-            seis_rmdd: self.rm6[2],
-            seis_rmne: self.rm6[3],
-            seis_rmnd: self.rm6[4],
-            seis_rmed: self.rm6[5],
-            seis_fn: self.forces[0],
-            seis_fe: self.forces[1],
-            seis_fd: self.forces[2],
-            seis_length_km: self.length_km,
-            seis_width_km: self.width_km,
-            seis_nucleation_x: self.nucleation_x,
-            seis_nucleation_y: self.nucleation_y,
-            seis_velocity: self.velocity,
-            seis_slip: self.slip,
-            seis_gamma: self.gamma,
-            seis_nx: self.nx,
-            seis_ny: self.ny,
-            seis_tapered: self.tapered,
+            store: self.store.clone(),
+            waveform_type: self.waveform_type.clone(),
+            time_s: self.time_s,
+            north_km: self.north_km,
+            east_km: self.east_km,
+            depth_km: self.depth_km,
+            magnitude: self.magnitude,
+            strike_deg: self.strike_deg,
+            dip_deg: self.dip_deg,
+            rake_deg: self.rake_deg,
+            stf_duration_s: self.stf_duration_s,
+            stf_type: self.stf_type.clone(),
+            source_type: self.source_type.clone(),
+            relative_mnn: self.rm6[0],
+            relative_mee: self.rm6[1],
+            relative_mdd: self.rm6[2],
+            relative_mne: self.rm6[3],
+            relative_mnd: self.rm6[4],
+            relative_med: self.rm6[5],
+            force_north_n: self.forces[0],
+            force_east_n: self.forces[1],
+            force_down_n: self.forces[2],
+            length_km: self.length_km,
+            width_km: self.width_km,
+            nucleation_x: self.nucleation_x,
+            nucleation_y: self.nucleation_y,
+            rupture_velocity_m_s: self.rupture_velocity_m_s,
+            slip_m: self.slip_m,
+            gamma: self.gamma,
+            patches_along_strike: self.patches_along_strike,
+            patches_down_dip: self.patches_down_dip,
+            tapered: self.tapered,
         }
     }
 
@@ -281,15 +281,15 @@ mod tests {
     fn switching_source_types_keeps_each_panels_values() {
         let mut config = Config::default();
         config.switch_source("SFSource");
-        config.stf_duration = 80.0;
+        config.stf_duration_s = 80.0;
         config.switch_source("DCSource");
         // DC opens on its own defaults, not on SF's leftovers — Qt's five
         // snufflings are independent panels (seismosizer.py:280-560).
-        assert!(config.stf_duration.abs() < 1e-12);
+        assert!(config.stf_duration_s.abs() < 1e-12);
         config.switch_source("SFSource");
         // The 80 s SF duration survives the round trip instead of being
         // clamped to DC's 50 s ceiling.
-        assert!((config.stf_duration - 80.0).abs() < 1e-12);
+        assert!((config.stf_duration_s - 80.0).abs() < 1e-12);
     }
 
     #[test]

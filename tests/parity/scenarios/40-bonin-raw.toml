@@ -4,8 +4,9 @@ dataset = "bonin-2015-05-30-m7.8-multiloc"
 tiers = [1]
 
 # The control for every other scenario on this dataset: 42 recorded traces at two
-# sampling rates through both pipelines untouched. If a grouped scenario below
-# diverges, this one is what says the divergence came from the grouping rather than
-# from the data — the same job `eifel-raw-full` does at deployment scale.
+# sampling rates through both pipelines untouched.
+# If a grouped scenario below diverges, this one is what says the divergence came from
+# the grouping rather than from the data — the same job `eifel-raw-full` does at
+# deployment scale.
 [compare]
 reason = "identical recorded bytes, no processing, so only float32 transport separates them"

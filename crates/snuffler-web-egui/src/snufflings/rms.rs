@@ -11,9 +11,15 @@ pub fn panel(
     nyquist: Option<f64>,
 ) -> Option<Action> {
     passband_rows(ui, &mut config.highpass, &mut config.lowpass, nyquist);
-    param_row(ui, "Block Length [s]", &mut config.block, 0.1, 3600.0);
-    checkbox_row(ui, &mut config.group, "Group channels");
-    checkbox_row(ui, &mut config.log, "Log RMS");
+    param_row(
+        ui,
+        "Block Length [s]",
+        &mut config.block_length_s,
+        0.1,
+        3600.0,
+    );
+    checkbox_row(ui, &mut config.group_components, "Group channels");
+    checkbox_row(ui, &mut config.logarithmic, "Log RMS");
     copy_passband_row(
         ui,
         (&mut config.highpass, &mut config.lowpass),

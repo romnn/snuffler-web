@@ -160,11 +160,11 @@ mod tests {
 
     /// A transport that answers every rpc with one canned envelope, so the
     /// generated client's envelope handling can be exercised without a browser.
-    struct Canned(Vec<u8>);
+    struct CannedTransport(Vec<u8>);
 
     // Answering from memory rather than with `async fn`: these never suspend, and
-    // a ready future is what lets `now` below drive them without a runtime.
-    impl BridgeTransport for Canned {
+    // a ready future is what lets `poll_once` below drive them without a runtime.
+    impl BridgeTransport for CannedTransport {
         fn unary(
             &self,
             _operation: crate::bridge::v1::Operation,
@@ -186,9 +186,9 @@ mod tests {
 
     /// A transport whose worker is gone — the failure that must never be mistaken
     /// for something pyrocko said.
-    struct Dead;
+    struct DeadTransport;
 
-    impl BridgeTransport for Dead {
+    impl BridgeTransport for DeadTransport {
         fn unary(
             &self,
             _operation: crate::bridge::v1::Operation,
@@ -210,7 +210,7 @@ mod tests {
 
     /// Drives a future that cannot actually suspend: the transports above answer
     /// from memory, so one poll is the whole story and no runtime is needed.
-    fn now<F: Future>(future: F) -> eyre::Result<F::Output> {
+    fn poll_once<F: Future>(future: F) -> eyre::Result<F::Output> {
         let mut future = std::pin::pin!(future);
         match future
             .as_mut()
@@ -231,9 +231,11 @@ mod tests {
     /// The wire id the sample rpc is addressed by, which the errors have to name.
     const MAP_DATA: &str = "/snuffler.bridge.v1.BridgeService/MapData";
 
-    /// Uses `MapData` as the sample RPC throughout.
-    fn call(bytes: Vec<u8>) -> eyre::Result<CallError> {
-        match now(BridgeServiceClient::new(Canned(bytes)).map_data(MapRequest::default()))? {
+    /// Calls `MapData`, the sample RPC throughout, against a canned reply.
+    fn call_with_reply(bytes: Vec<u8>) -> eyre::Result<CallError> {
+        match poll_once(
+            BridgeServiceClient::new(CannedTransport(bytes)).map_data(MapRequest::default()),
+        )? {
             Ok(payload) => bail!("expected a failure, got {payload:?}"),
             Err(error) => Ok(error),
         }
@@ -241,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_python_exception_arrives_with_its_traceback() -> eyre::Result<()> {
-        let error = call(envelope(bridge_result::Result::Error(
+        let error = call_with_reply(envelope(bridge_result::Result::Error(
             crate::bridge::v1::BridgeError {
                 kind: "ValueError".to_owned(),
                 message: "no traces in that window".to_owned(),
@@ -267,7 +269,7 @@ mod tests {
 
     #[test]
     fn an_exception_with_no_message_does_not_trail_a_separator() -> eyre::Result<()> {
-        let error = call(envelope(bridge_result::Result::Error(
+        let error = call_with_reply(envelope(bridge_result::Result::Error(
             crate::bridge::v1::BridgeError {
                 kind: "KeyboardInterrupt".to_owned(),
                 message: String::new(),
@@ -288,7 +290,7 @@ mod tests {
 
     #[test]
     fn an_empty_envelope_is_not_mistaken_for_success() -> eyre::Result<()> {
-        let error = call(BridgeResult { result: None }.encode_to_vec())?;
+        let error = call_with_reply(BridgeResult { result: None }.encode_to_vec())?;
         let CallError::Empty { method } = error else {
             bail!("an envelope with no oneof set should be Empty, got {error:?}")
         };
@@ -303,7 +305,7 @@ mod tests {
     fn another_rpcs_payload_is_refused() -> eyre::Result<()> {
         // A SceneMeta where MapData was asked for: the schema and the generated
         // ends have drifted, which is nobody's user error.
-        let error = call(envelope(bridge_result::Result::Scene(
+        let error = call_with_reply(envelope(bridge_result::Result::Scene(
             crate::bridge::v1::SceneMeta::default(),
         )))?;
         let CallError::UnexpectedPayload { method } = error else {
@@ -318,7 +320,7 @@ mod tests {
 
     #[test]
     fn bytes_that_are_not_an_envelope_name_the_rpc() -> eyre::Result<()> {
-        let error = call(vec![0xFF; 8])?;
+        let error = call_with_reply(vec![0xFF; 8])?;
         let CallError::Decode { method, .. } = &error else {
             bail!("undecodable bytes should be a Decode failure, got {error:?}")
         };
@@ -336,7 +338,8 @@ mod tests {
 
     #[test]
     fn a_dead_worker_never_looks_like_a_remote_failure() -> eyre::Result<()> {
-        let Err(error) = now(BridgeServiceClient::new(Dead).map_data(MapRequest::default()))?
+        let Err(error) =
+            poll_once(BridgeServiceClient::new(DeadTransport).map_data(MapRequest::default()))?
         else {
             bail!("a dead transport cannot produce a payload")
         };

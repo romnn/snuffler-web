@@ -24,11 +24,11 @@ package = false
 # *removed*, re-resolves, and then rejects the lock under `--locked`.
 
 [tool.mypy]
-# The interpreter bridge.py actually runs on: the wasm CPython in our Pyodide
+# The interpreter the bridge actually runs on: the wasm CPython in our Pyodide
 # build (pyodide-lock's info.python), not the host that runs mypy.
 python_version = "3.14"
 strict = true
-files = ["web/bridge.py", "web/bootstrap.py", "web/seisbench_infer.py"]
+files = ["web/snuffler_bridge", "web/bootstrap.py", "web/seisbench_infer.py"]
 mypy_path = ["web/proto", "typings"]
 exclude = ["^web/proto/", "^pybuild/build/", "^sources/", "^target/"]
 
@@ -100,7 +100,7 @@ include = [
     "tests/seisbench_validate.py",
     "typings/**/*.pyi",
     "web/bootstrap.py",
-    "web/bridge.py",
+    "web/snuffler_bridge/*.py",
     "web/seisbench_infer.py",
 ]
 

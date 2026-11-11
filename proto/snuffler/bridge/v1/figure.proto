@@ -13,7 +13,8 @@ import "snuffler/bridge/v1/snuffling.proto";
 // displays as a texture.
 message FigureRequest {
   // Which figure to render, e.g. "ampspec", "cake_model", "cake_rays",
-  // "spectrogram", "polarization". bridge.py dispatches on this.
+  // "spectrogram", "polarization".
+  // snuffler_bridge.figures dispatches on this.
   string kind = 1;
   // The same view + snuffling parameters every other snuffling rpc takes, so a
   // figure sees the identical processed traces and per-snuffling knobs.
@@ -26,7 +27,7 @@ message FigureRequest {
   // Render with a dark matplotlib style so the figure matches the app theme.
   bool dark = 6;
   // For the "beachball" kind: the moment tensor to draw (params is unused then).
-  optional MomentTensor mt = 7;
+  optional MomentTensor moment_tensor = 7;
 }
 
 // A rendered matplotlib figure as PNG bytes.

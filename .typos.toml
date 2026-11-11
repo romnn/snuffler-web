@@ -40,12 +40,8 @@ nd = "nd"
 Pn = "Pn"
 # "NED" is the north-east-down coordinate convention moment tensors use, not "need".
 NED = "NED"
-# `iy` is the y-axis loop index beside `ny` (scale-tick rows in paint.rs), the
-# usual partner of an `ix`.
-#
 # Upstream's own misspellings — the `Symetric` menu label, the `set_symetry`
 # method — are *not* listed here. They really are misspelled, and an entry would
 # stop the checker seeing that spelling anywhere in the repo, including where
 # someone meant to write it correctly; each is silenced at the line that quotes
 # it with `spellcheck:ignore-line` instead.
-iy = "iy"

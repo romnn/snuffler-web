@@ -12,33 +12,39 @@ const UBUNTU_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Regular.
 /// to the regular one, exporting an image the app never showed.
 const UBUNTU_BOLD: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Bold.ttf");
 
-/// Rasterize `svg` to PNG bytes at `scale`× its declared point size, giving a
-/// crisp high-DPI image. `width`/`height` are the SVG viewBox size in points.
+/// Rasterize `svg` to PNG bytes at `scale`× its declared point size, giving a crisp high-DPI
+/// image.
+///
+/// `width`/`height` are the SVG viewBox size in points.
 /// Returns `None` if parsing, allocation, or encoding fails.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "the target pixel size is validated finite and >= 1 before the cast"
 )]
 pub fn rasterize_svg(svg: &str, width: f32, height: f32, scale: f32) -> Option<Vec<u8>> {
-    let mut opt = usvg::Options {
+    let mut options = usvg::Options {
         font_family: "Ubuntu".to_owned(),
         ..usvg::Options::default()
     };
     {
-        let db = opt.fontdb_mut();
-        db.load_font_data(UBUNTU_REGULAR.to_vec());
-        db.load_font_data(UBUNTU_BOLD.to_vec());
-        db.set_sans_serif_family("Ubuntu");
+        let database = options.fontdb_mut();
+        database.load_font_data(UBUNTU_REGULAR.to_vec());
+        database.load_font_data(UBUNTU_BOLD.to_vec());
+        database.set_sans_serif_family("Ubuntu");
     }
-    let tree = usvg::Tree::from_str(svg, &opt).ok()?;
+    let tree = usvg::Tree::from_str(svg, &options).ok()?;
 
-    let w = (width * scale).round();
-    let h = (height * scale).round();
-    if !w.is_finite() || !h.is_finite() || w < 1.0 || h < 1.0 {
+    let pixel_width = (width * scale).round();
+    let pixel_height = (height * scale).round();
+    if !pixel_width.is_finite()
+        || !pixel_height.is_finite()
+        || pixel_width < 1.0
+        || pixel_height < 1.0
+    {
         return None;
     }
-    let mut pixmap = tiny_skia::Pixmap::new(w as u32, h as u32)?;
+    let mut pixmap = tiny_skia::Pixmap::new(pixel_width as u32, pixel_height as u32)?;
     resvg::render(
         &tree,
         tiny_skia::Transform::from_scale(scale, scale),
