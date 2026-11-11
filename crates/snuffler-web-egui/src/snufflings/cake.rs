@@ -22,7 +22,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
                     // Qt prefixes the shipped models "Cake builtin: <name>"
                     // (cake_phase.py), distinguishing them from GF-store and
                     // user-loaded models over an otherwise identical set.
-                    let label = if m.starts_with("GF store:") || m.starts_with("Cake builtin:") {
+                    let label = if m.starts_with("GF Store:") || m.starts_with("Cake builtin:") {
                         m.clone()
                     } else {
                         format!("Cake builtin: {m}")
