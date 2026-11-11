@@ -337,15 +337,25 @@ tasks:
       # - sg scan
 
   lint:boundaries:
-    desc: "keep shared Rust crates independent from egui, eframe, and epaint"
+    desc: "keep the shared Rust crates free of every UI toolkit, so any frontend can build on them"
+    vars:
+      # Toolkits and the windowing/GPU stacks under them. ecolor and emath are
+      # plain colour and geometry types and stay allowed.
+      TOOLKITS: "egui[a-z_-]*|eframe|epaint|winit|glow|glutin|wgpu[a-z_-]*|gpui|leptos[a-z_-]*"
     cmds:
-      # --target all: without it cargo tree resolves for the host only, which
-      # would miss a toolkit dependency added under a wasm32 cfg section.
-      - 'if cargo tree -p snuffler-web-core -e normal --target all | rg -q "(^| )(egui|eframe|epaint) v"; then exit 1; fi'
-      - 'if cargo tree -p snuffler-web-render -e normal --target all | rg -q "(^| )(egui|eframe|epaint) v"; then exit 1; fi'
       # accesskit-dom is a toolkit-agnostic AccessKit -> DOM adapter; only the
       # egui-a11y bridge may know about egui.
-      - 'if cargo tree -p accesskit-dom -e normal --target all | rg -q "(^| )(egui|eframe|epaint) v"; then exit 1; fi'
+      # --target all: without it cargo tree resolves for the host only, which
+      # would miss a toolkit dependency added under a wasm32 cfg section.
+      - |
+        for crate in snuffler-web-core snuffler-web-render accesskit-dom; do
+          tree=$(cargo tree -p "$crate" -e normal --target all --prefix none) || exit 1
+          found=$(printf '%s\n' "$tree" | rg -o "^({{.TOOLKITS}}) v" | sort -u)
+          if [ -n "$found" ]; then
+            echo "$crate must stay toolkit-free (adr/0005), but depends on: $found"
+            exit 1
+          fi
+        done
 
   lint:py:
     desc: "lint Python bridge with ruff"
