@@ -70,7 +70,7 @@ jobs:
             prebuilt-assets: false
             title: snuffler-web-proxy
             description: "Allowlisted CORS and WebSocket-to-TCP proxy for snuffler-web"
-            smoke-port: 17684
+            smoke-port: 8080
             smoke-path: /health
             smoke-uid: 10001
 

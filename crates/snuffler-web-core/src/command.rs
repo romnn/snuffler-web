@@ -295,7 +295,7 @@ fn save_history(history: &[String]) {
     if let Some(storage) = history_storage()
         && let Err(err) = storage.set_item(HISTORY_KEY, &history.join("\n"))
     {
-        log::warn!("saving the command history failed: {err:?}");
+        tracing::warn!(?err, "saving the command history failed");
     }
 }
 

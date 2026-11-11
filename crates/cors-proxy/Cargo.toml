@@ -15,6 +15,7 @@ reqwest = { workspace = true, features = [
     "stream",
 ] }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

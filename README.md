@@ -122,7 +122,7 @@ other push and pull request only builds and smoke-tests them:
 | Image | What |
 |---|---|
 | `ghcr.io/romnn/snuffler-web/web` | the site — egui wasm frontend, Pyodide 314 runtime, example bundles — behind an unprivileged nginx on `:8080` |
-| `ghcr.io/romnn/snuffler-web/proxy` | `snuffler-web-proxy` on `:17684`: the allowlisted `/cors` and `/tcp` endpoints |
+| `ghcr.io/romnn/snuffler-web/proxy` | `snuffler-web-proxy` on `:8080`: the allowlisted `/cors` and `/tcp` endpoints |
 
 `latest`, `X.Y.Z` and `X.Y` follow the newest release tag, and every release is
 additionally tagged `sha-<commit>`.
@@ -228,6 +228,19 @@ those stages run under emulation and are slow.
   `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` / `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`, or a
   `.env` next to the proxy (see `.env.example`). The proxy itself is built from two
   generic crates, `cors-proxy` and `tcp-over-ws-proxy`, which know no hosts.
+- The proxy logs to stderr, filtered by `RUST_LOG` (or `--log-filter`, such as
+  `debug` or `info,cors_proxy=trace`; one that does not parse stops startup), as
+  readable lines by default and as JSON with `SNUFFLER_PROXY_LOG_FORMAT=json`
+  (`--log-format json`), which the Docker image sets. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `--otel-endpoint`)
+  to also export its traces, metrics and logs to an OpenTelemetry collector over
+  OTLP gRPC: a server span per request and per TCP relay, honouring an incoming
+  W3C `traceparent`; and the proxies' own metrics, each per upstream host, with
+  every host outside the allowlist counted as `other`: `cors_proxy_requests`
+  (forwarded, denied, invalid or upstream failed),
+  `cors_proxy_upstream_duration_ms` and `cors_proxy_pending_upstream_requests`;
+  `tcp_over_ws_proxy_connections` (connected, failed, refused or invalid),
+  `tcp_over_ws_proxy_active_relays`, `tcp_over_ws_proxy_relay_duration_seconds`
+  and `tcp_over_ws_proxy_bytes`.
 - **Response deconvolution** (Options → Remove response) is wired through
   `trace.transfer` but is a no-op until response metadata (StationXML/RESP) is
   loaded — the demo data carries none.

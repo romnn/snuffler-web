@@ -1,6 +1,5 @@
 //! TCP targets: parsing them from a request or a config rule, and the allowlist they must pass.
 
-use std::fmt;
 use std::num::ParseIntError;
 
 /// A validated `host:port` the browser asked to reach.
@@ -12,8 +11,8 @@ pub(crate) struct TcpTarget {
     pub port: u16,
 }
 
-impl fmt::Display for TcpTarget {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for TcpTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}:{}", self.host, self.port)
     }
 }
@@ -67,8 +66,12 @@ impl Allowlist {
         }
     }
 
-    pub(crate) fn contains(&self, target: &TcpTarget) -> bool {
-        self.targets.iter().any(|allowed| allowed.matches(target))
+    /// The rule that allows `target`, if any.
+    ///
+    /// The relay connects to the rule rather than the request, so everything downstream sees
+    /// the configured spelling of the host, whatever case the client used.
+    pub(crate) fn allowed(&self, target: &TcpTarget) -> Option<&AllowedTcpTarget> {
+        self.targets.iter().find(|allowed| allowed.matches(target))
     }
 }
 
@@ -101,8 +104,23 @@ impl AllowedTcpTarget {
         Ok(Self::new(&target.host, target.port))
     }
 
+    /// Trimmed and lowercase.
+    pub(crate) fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
     fn matches(&self, target: &TcpTarget) -> bool {
         target.host.eq_ignore_ascii_case(&self.host) && target.port == self.port
+    }
+}
+
+impl std::fmt::Display for AllowedTcpTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}:{}", self.host, self.port)
     }
 }
 
@@ -157,7 +175,7 @@ fn validate_target(host: &str, port: u16) -> Result<TcpTarget, TargetError> {
 
 #[cfg(test)]
 mod tests {
-    use color_eyre::eyre;
+    use color_eyre::eyre::{self, bail};
 
     use super::*;
 
@@ -199,31 +217,37 @@ mod tests {
         )?]))
     }
 
+    /// A host in any case is allowed, and resolves to the rule's own spelling, which is all the
+    /// relay and its metric labels ever see.
     #[test]
-    fn accepts_an_allowed_target() -> eyre::Result<()> {
+    fn accepts_an_allowed_target_in_its_configured_spelling() -> eyre::Result<()> {
         let target = target_from_query(Some("host=STREAM.example.org&port=18000"))?;
-        assert!(example_allowlist()?.contains(&target));
+        let allowlist = example_allowlist()?;
+        let Some(allowed) = allowlist.allowed(&target) else {
+            bail!("{target} should be allowed");
+        };
+        assert_eq!(allowed.to_string(), "stream.example.org:18000");
         Ok(())
     }
 
     #[test]
     fn rejects_other_hosts() -> eyre::Result<()> {
         let target = target_from_query(Some("host=example.net&port=18000"))?;
-        assert!(!example_allowlist()?.contains(&target));
+        assert!(example_allowlist()?.allowed(&target).is_none());
         Ok(())
     }
 
     #[test]
     fn rejects_other_ports() -> eyre::Result<()> {
         let target = target_from_query(Some("host=stream.example.org&port=22"))?;
-        assert!(!example_allowlist()?.contains(&target));
+        assert!(example_allowlist()?.allowed(&target).is_none());
         Ok(())
     }
 
     #[test]
     fn an_empty_allowlist_refuses_everything() -> eyre::Result<()> {
         let target = target_from_query(Some("host=stream.example.org&port=18000"))?;
-        assert!(!Allowlist::new([]).contains(&target));
+        assert!(Allowlist::new([]).allowed(&target).is_none());
         Ok(())
     }
 }

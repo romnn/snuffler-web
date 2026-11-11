@@ -35,7 +35,7 @@ services:
       context: .
       dockerfile: docker/proxy/Dockerfile
     ports:
-      - "127.0.0.1:17684:17684"
+      - "127.0.0.1:17684:8080"
     read_only: true
     tmpfs:
       - /tmp
@@ -48,3 +48,5 @@ services:
     # environment:
     #   SNUFFLER_PROXY_ALLOW_HTTP_TARGETS: "https://example.org/fdsnws/dataselect/1/query"
     #   SNUFFLER_PROXY_ALLOW_TCP_TARGETS: "example.org:18000"
+    #   # Export traces, metrics and logs to an OpenTelemetry collector (OTLP gRPC).
+    #   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"

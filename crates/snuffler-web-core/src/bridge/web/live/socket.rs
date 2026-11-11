@@ -44,9 +44,9 @@ impl Drop for LiveSocket {
         self.socket.set_onerror(None);
         self.socket.set_onclose(None);
         if let Err(err) = self.socket.close() {
-            log::warn!(
-                "closing the SeedLink socket failed: {}",
-                js_value_to_string(err)
+            tracing::warn!(
+                err = js_value_to_string(err),
+                "closing the SeedLink socket failed"
             );
         }
     }
@@ -194,7 +194,7 @@ fn on_open(
                 return;
             }
         }
-        log::info!("SeedLink connected: {source}");
+        tracing::info!(%source, "SeedLink connected");
         repaint.request_repaint();
     }) as Box<dyn FnMut(_)>)
 }
@@ -280,7 +280,7 @@ fn on_close(
 ) -> Closure<dyn FnMut(web_sys::Event)> {
     Closure::wrap(Box::new(move |_event: web_sys::Event| {
         if close_live_ingest(&inner, stream, session) {
-            log::info!("SeedLink disconnected: {source}");
+            tracing::info!(%source, "SeedLink disconnected");
         }
         repaint.request_repaint();
     }) as Box<dyn FnMut(_)>)

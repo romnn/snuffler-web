@@ -2,7 +2,8 @@
 
 # snuffler-web-proxy: the allowlisted CORS + WebSocket-to-TCP proxy the app talks
 # to for non-CORS FDSN endpoints and for SeedLink/ringserver streams.
-# Same binary micromux runs locally on 127.0.0.1:17684.
+# Same binary micromux runs locally on 127.0.0.1:17684; the container listens on
+# 8080 like the web image, and docker-compose.yaml publishes it on the host's 17684.
 #
 # Caching is cargo-chef's: the dependency graph is compiled against a skeleton
 # workspace in a layer keyed only on Cargo.toml/Cargo.lock, so editing the proxy
@@ -97,13 +98,15 @@ RUN apt-get update \
 
 COPY --from=builder /usr/local/bin/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
 
-# The binary defaults to 127.0.0.1, which inside a container is reachable by nothing.
-ENV SNUFFLER_PROXY_BIND=0.0.0.0:17684
+# The binary defaults to 127.0.0.1:17684, which inside a container is reachable by nothing.
+# Its log defaults to readable lines for a terminal; a container's goes to a log shipper.
+ENV SNUFFLER_PROXY_BIND=0.0.0.0:8080 \
+    SNUFFLER_PROXY_LOG_FORMAT=json
 
 USER 10001
-EXPOSE 17684
+EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:17684/health || exit 1
+    CMD curl -fsS http://127.0.0.1:8080/health || exit 1
 
 ENTRYPOINT ["snuffler-web-proxy"]

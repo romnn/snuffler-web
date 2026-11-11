@@ -7,8 +7,7 @@ compile_error!("snuffler-web is browser-only. Run `task serve`.");
 fn main() {
     use wasm_bindgen::JsCast as _;
 
-    // Redirect `log` messages to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    init_tracing();
     console_error_panic_hook::set_once();
 
     let web_options = eframe::WebOptions::default();
@@ -49,9 +48,9 @@ fn main() {
                 .is_ok();
                 snuffler_web_egui::set_pool_ready(ready);
                 if ready {
-                    log::info!("rayon pool up: {threads} threads");
+                    tracing::info!(threads, "rayon pool up");
                 } else {
-                    log::warn!(
+                    tracing::warn!(
                         "no rayon pool (no cross-origin isolation); running on the main thread"
                     );
                 }
@@ -63,7 +62,7 @@ fn main() {
             .and_then(|document| document.get_element_by_id("the_canvas_id"))
             .and_then(|element| element.dyn_into::<web_sys::HtmlCanvasElement>().ok())
         else {
-            log::error!("could not find a canvas element with id #the_canvas_id");
+            tracing::error!("could not find a canvas element with id #the_canvas_id");
             return;
         };
 
@@ -75,7 +74,26 @@ fn main() {
             )
             .await
         {
-            log::error!("failed to start eframe: {err:?}");
+            tracing::error!(?err, "failed to start eframe");
         }
     });
+}
+
+/// Sends `tracing` events to the browser console.
+///
+/// eframe and egui log through the `log` crate; `init` also installs the bridge that turns
+/// those records into `tracing` events, so they reach the console the same way.
+#[cfg(target_arch = "wasm32")]
+fn init_tracing() {
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    // The browser has no wall clock for the formatter, and the console adds its own timestamps.
+    let console = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(tracing_web::MakeWebConsoleWriter::new())
+        .with_filter(tracing_subscriber::filter::LevelFilter::DEBUG);
+    tracing_subscriber::registry().with(console).init();
 }

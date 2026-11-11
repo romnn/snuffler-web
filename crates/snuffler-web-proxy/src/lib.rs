@@ -7,11 +7,17 @@
 //! - `/cors?url=…`: FDSN requests, through [`cors_proxy`].
 //! - `/tcp?host=…&port=…`: the live `SeedLink` stream, through [`tcp_over_ws_proxy`].
 //!
+//! The two proxy routes get a tower-http [`TraceLayer`] span and log line per request (see
+//! [`http_trace`]), and count their own metrics.
+//! `/health` gets neither, since a container healthcheck polls it every few seconds.
+//!
 //! The built-in hosts are in [`defaults`].
 //! A deployment allows more with the `--allow-*` flags or their environment variables, which a
 //! `.env` file in the working directory may also set.
 
 mod defaults;
+mod http_trace;
+pub mod telemetry;
 
 use std::future::pending;
 use std::net::SocketAddr;
@@ -27,6 +33,7 @@ use axum::http::{Request, Response};
 use axum::routing::{any, get};
 use clap::Parser;
 use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 const DEFAULT_BIND: &str = "127.0.0.1:17684";
@@ -59,6 +66,25 @@ pub struct Args {
     )]
     pub allow_http_targets: Vec<String>,
 
+    /// How to write the stderr log: `pretty` for a terminal, `json` for a log shipper.
+    #[arg(long, env = "SNUFFLER_PROXY_LOG_FORMAT", value_enum, default_value_t)]
+    pub log_format: telemetry::LogFormat,
+
+    /// Which events to log and export, as `RUST_LOG`-style directives such as `debug` or
+    /// `info,cors_proxy=trace`.
+    ///
+    /// Defaults to `info` for the proxy's own crates.
+    /// A filter that does not parse stops the proxy at startup.
+    #[arg(long, env = "RUST_LOG")]
+    pub log_filter: Option<String>,
+
+    /// OpenTelemetry collector to export traces, metrics and logs to over OTLP gRPC, such as
+    /// `http://localhost:4317`.
+    ///
+    /// Without it, the proxy only logs to stderr.
+    #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    pub otel_endpoint: Option<String>,
+
     /// More TCP targets to allow, in `host:port` form.
     ///
     /// The app's `SeedLink` servers are always allowed.
@@ -77,6 +103,9 @@ pub enum RunError {
     /// The `.env` file in the working directory exists but could not be read.
     #[error("failed to load the .env file")]
     EnvFile(#[source] dotenvy::Error),
+    /// Telemetry could not be set up.
+    #[error(transparent)]
+    Telemetry(#[from] telemetry::TelemetryError),
     /// The upstream HTTP client could not be configured.
     #[error("failed to build the upstream HTTP client")]
     HttpClient(#[source] reqwest::Error),
@@ -119,19 +148,30 @@ struct ProxyState {
     tcp: tcp_over_ws_proxy::Proxy,
 }
 
-/// Loads `.env`, parses the command line and runs the local proxy until shutdown.
+/// Loads `.env`, parses the command line, sets up telemetry and runs the local proxy until
+/// shutdown.
 ///
 /// Variables already set in the environment win over the file.
 ///
 /// # Errors
 ///
-/// Returns [`RunError::EnvFile`] for an unreadable `.env`, and fails like [`run`] otherwise.
+/// Returns [`RunError::EnvFile`] for an unreadable `.env`, [`RunError::Telemetry`] when the
+/// OTLP exporters cannot be built, and fails like [`run`] otherwise.
 pub async fn run_from_env() -> Result<(), RunError> {
-    init_tracing();
-    if let Some(path) = load_env_file()? {
+    let env_file = load_env_file()?;
+    let args = Args::parse();
+    // Flushes the exported telemetry when the proxy stops.
+    let _telemetry = telemetry::init(
+        args.log_format,
+        args.log_filter
+            .as_deref()
+            .filter(|filter| !filter.trim().is_empty()),
+        args.otel_endpoint.as_deref(),
+    )?;
+    if let Some(path) = env_file {
         info!(path = %path.display(), "loaded environment file");
     }
-    run(Args::parse()).await
+    run(args).await
 }
 
 /// Runs the local proxy with explicit configuration until shutdown.
@@ -156,10 +196,19 @@ pub async fn run(args: Args) -> Result<(), RunError> {
         cors: cors_proxy::Proxy::new(http_client, http_allowlist),
         tcp: tcp_over_ws_proxy::Proxy::new(connect_timeout, tcp_allowlist),
     });
+    // A layer wraps only the routes added before it, which keeps `/health` out.
     let app = Router::new()
-        .route("/health", get(health))
         .route("/cors", any(handle_cors))
         .route("/tcp", get(handle_tcp))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(http_trace::request_span)
+                .on_request(http_trace::record_trace_id)
+                .on_response(http_trace::record_response)
+                // A 5xx is already marked on the span and logged by the handler that failed.
+                .on_failure(()),
+        )
+        .route("/health", get(health))
         .with_state(state);
 
     let listener = TcpListener::bind(args.bind)
@@ -169,20 +218,14 @@ pub async fn run(args: Args) -> Result<(), RunError> {
             source,
         })?;
     info!("snuffler proxy listening on http://{}", args.bind);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(RunError::Serve)
-}
-
-/// Logs at `info` for this crate unless `RUST_LOG` says otherwise.
-fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "snuffler_web_proxy=info,tower_http=warn".into()),
-        )
-        .init();
+    // The peer address is what the request span records as `client.address`.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .map_err(RunError::Serve)
 }
 
 /// Loads `.env` from the working directory, if there is one.

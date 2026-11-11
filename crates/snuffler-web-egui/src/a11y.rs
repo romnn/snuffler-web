@@ -97,7 +97,7 @@ pub fn publish_ready(ready: bool) {
 /// Turn on AccessKit and keep the DOM overlay in sync with each pass.
 pub fn install(ctx: &egui::Context) {
     if !enabled() {
-        log::info!("a11y layer disabled by ?a11y=0");
+        tracing::info!("a11y layer disabled by ?a11y=0");
         return;
     }
     if matches!(flag().as_deref(), Some("tree")) {
@@ -105,12 +105,15 @@ pub fn install(ctx: &egui::Context) {
         // The difference against `?a11y=0` is what enabling AccessKit costs inside egui, and the
         // difference against `?a11y=1` is what the projection costs on top.
         ctx.enable_accesskit();
-        log::info!("a11y: tree enabled, projection off");
+        tracing::info!("a11y tree enabled, DOM projection off");
         return;
     }
 
     let Some(canvas) = canvas() else {
-        log::error!("a11y: canvas #{CANVAS_ID} not found, projection disabled");
+        tracing::error!(
+            canvas_id = CANVAS_ID,
+            "canvas not found, a11y projection disabled"
+        );
         return;
     };
     let options = accesskit_dom::Options {
@@ -133,7 +136,7 @@ pub fn install(ctx: &egui::Context) {
             });
             A11Y.with_borrow_mut(|slot| *slot = Some(a11y));
         }
-        Err(err) => log::error!("a11y: could not build the DOM projection: {err}"),
+        Err(err) => tracing::error!(%err, "could not build the a11y DOM projection"),
     }
 }
 

@@ -289,7 +289,7 @@ fn complete_live_ingest(
     state.scene_generation += 1;
     state.clear_view();
     if let LiveIngestState::Lagged { dropped_bytes, .. } = state.live.ingest {
-        log::warn!("SeedLink resumed after acknowledging a gap of {dropped_bytes} bytes");
+        tracing::warn!(dropped_bytes, "SeedLink resumed after acknowledging a gap");
     }
     state.live.ingest = LiveIngestState::Streaming {
         stream: live.stream,

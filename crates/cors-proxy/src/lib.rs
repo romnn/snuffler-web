@@ -6,8 +6,10 @@
 
 mod allowlist;
 mod headers;
+mod metrics;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::http::{Method, Request, Response, StatusCode};
@@ -15,6 +17,7 @@ use reqwest::Url;
 
 pub use self::allowlist::{AllowedHttpTarget, Allowlist, TargetError};
 use self::headers::{add_cors_headers, forwardable_headers};
+use self::metrics::{HandledRequest, OTHER_SERVER, Outcome, PendingUpstream, count_request};
 
 /// Proxies safe HTTP requests through a configured [`Allowlist`].
 #[derive(Clone)]
@@ -34,27 +37,75 @@ impl Proxy {
     }
 
     /// Handles one browser proxy request and maps failures into HTTP responses.
+    ///
+    /// Every request but a preflight counts towards `cors_proxy_requests`, by `outcome`
+    /// (`forwarded`, `denied`, `invalid` or `upstream_failed`), upstream `server.address` and
+    /// response status.
+    /// One that reached the upstream also records how long the upstream took to answer in
+    /// `cors_proxy_upstream_duration_ms`, and counts towards
+    /// `cors_proxy_pending_upstream_requests` while it waits.
+    #[tracing::instrument(name = "cors_request", skip_all, fields(method = %request.method(), upstream))]
     pub async fn handle(&self, request: Request<Body>) -> Response<Body> {
         if request.method() == Method::OPTIONS {
             return cors_preflight_response();
         }
-        if !matches!(*request.method(), Method::GET | Method::HEAD) {
-            return text_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                format!("method is not allowed: {}\n", request.method()),
-            );
-        }
-
-        match self.forward(request).await {
-            Ok(response) => response,
-            Err(err) => text_response(err.status(), format!("{}\n", error_chain(&err))),
-        }
+        let started = Instant::now();
+        let (result, server_address) = match self.allowed_target(&request) {
+            Ok(target) => {
+                let server_address = target.host_str().unwrap_or(OTHER_SERVER).to_owned();
+                let result = {
+                    let _pending = PendingUpstream::start(&server_address);
+                    self.forward(request, target).await
+                };
+                (result, server_address)
+            }
+            Err(err) => (Err(err), OTHER_SERVER.to_owned()),
+        };
+        let elapsed = started.elapsed();
+        let (response, outcome, upstream_error) = match result {
+            Ok(response) => (response, Outcome::Forwarded, None),
+            Err(err) => {
+                let message = error_chain(&err);
+                tracing::warn!(error = %message, "proxy request failed");
+                let response = text_response(err.status(), format!("{message}\n"));
+                (response, err.outcome(), err.upstream_error())
+            }
+        };
+        count_request(&HandledRequest {
+            outcome,
+            upstream_error,
+            server_address: &server_address,
+            status: response.status(),
+            elapsed,
+        });
+        response
     }
 
-    async fn forward(&self, mut request: Request<Body>) -> Result<Response<Body>, ProxyError> {
+    /// The request's target, when its method is safe and the allowlist has it.
+    fn allowed_target(&self, request: &Request<Body>) -> Result<Url, ProxyError> {
+        if !matches!(*request.method(), Method::GET | Method::HEAD) {
+            return Err(ProxyError::MethodNotAllowed(request.method().clone()));
+        }
         let target = target_url_from_query(request.uri().query())?;
+        // Only the parts the allowlist compares, so a query string never reaches a trace.
+        tracing::Span::current().record(
+            "upstream",
+            format!(
+                "{}://{}{}",
+                target.scheme(),
+                target.host_str().unwrap_or_default(),
+                target.path()
+            ),
+        );
         self.allowlist.check(&target)?;
+        Ok(target)
+    }
 
+    async fn forward(
+        &self,
+        mut request: Request<Body>,
+        target: Url,
+    ) -> Result<Response<Body>, ProxyError> {
         // Forward the request, minus hop-by-hop headers and browser credentials
         let request_headers = forwardable_headers(request.headers());
         let body = std::mem::take(request.body_mut());
@@ -82,6 +133,8 @@ impl Proxy {
 /// Every variant maps to one HTTP status through [`ProxyError::status`].
 #[derive(Debug, thiserror::Error)]
 enum ProxyError {
+    #[error("method is not allowed: {0}")]
+    MethodNotAllowed(Method),
     #[error("missing url query parameter")]
     MissingTargetUrl,
     #[error("invalid target URL")]
@@ -102,8 +155,35 @@ impl ProxyError {
             Self::MissingTargetUrl | Self::InvalidTargetUrl(_) | Self::UnsupportedScheme(_) => {
                 StatusCode::BAD_REQUEST
             }
+            Self::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             Self::NotAllowed(_) => StatusCode::FORBIDDEN,
             Self::Upstream(_) | Self::Response(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    fn outcome(&self) -> Outcome {
+        match self {
+            Self::MethodNotAllowed(_)
+            | Self::MissingTargetUrl
+            | Self::InvalidTargetUrl(_)
+            | Self::UnsupportedScheme(_) => Outcome::Invalid,
+            Self::NotAllowed(_) => Outcome::Denied,
+            Self::Upstream(_) | Self::Response(_) => Outcome::UpstreamFailed,
+        }
+    }
+
+    /// The `error.type` of a failed upstream request.
+    fn upstream_error(&self) -> Option<&'static str> {
+        match self {
+            Self::Upstream(err) if err.is_timeout() => Some("timeout"),
+            Self::Upstream(err) if err.is_connect() => Some("connect"),
+            Self::Upstream(_) => Some("request"),
+            Self::Response(_) => Some("response"),
+            Self::MethodNotAllowed(_)
+            | Self::MissingTargetUrl
+            | Self::InvalidTargetUrl(_)
+            | Self::UnsupportedScheme(_)
+            | Self::NotAllowed(_) => None,
         }
     }
 }

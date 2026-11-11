@@ -41,7 +41,10 @@ eframe = { version = "0.34", default-features = false, features = [
 # `metrics` feeds the `snuffler_a11y_stats` wasm export the browser suite asserts
 # on; `tree-json` backs the `?a11y=debug` dump.
 egui-a11y = { path = "../egui-a11y", features = ["metrics", "tree-json"] }
-log = "0.4"
+tracing = { workspace = true }
+# `tracing` to the browser console; the `tracing-log` bridge also carries eframe's `log` records.
+tracing-subscriber = { workspace = true, features = ["fmt", "tracing-log"] }
+tracing-web = "0.1.4"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
