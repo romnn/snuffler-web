@@ -6,8 +6,6 @@
 //! `build/client.rs` produces them, and they are the only way a bridge call reports
 //! failure.
 
-use std::fmt;
-
 use crate as pb;
 
 /// The bridge transport itself failed, before any envelope existed.
@@ -53,8 +51,8 @@ pub struct RemoteError {
 // separator for `raise ValueError()` — an exception is allowed to carry no message at
 // all.
 // (thiserror's `fmt = ` escape hatch is enum-only.)
-impl fmt::Display for RemoteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for RemoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.message.is_empty() {
             write!(f, "{}", self.kind)
         } else {

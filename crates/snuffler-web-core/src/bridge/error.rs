@@ -8,8 +8,6 @@
 //! in a job outcome or [`crate::bridge::Bridge::diagnostic`].
 //! Both consumers build on the host.
 
-use std::fmt;
-
 use snuffler_web_proto::{CallError, RemoteError};
 
 /// Why one source in a file-reload batch failed.
@@ -58,8 +56,8 @@ pub struct ReloadError {
     pub failures: Vec<ReloadSourceError>,
 }
 
-impl fmt::Display for ReloadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ReloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (index, failure) in self.failures.iter().enumerate() {
             if index > 0 {
                 f.write_str("; ")?;
