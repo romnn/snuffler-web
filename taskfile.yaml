@@ -1,67 +1,52 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
 
+vars:
+  # Every crate that builds for the host.
+  # snuffler-web-egui is wasm only, so the wasm tasks name it separately.
+  # prettier-ignore
+  HOST_CRATES: >-
+    -p accesskit-dom
+    -p egui-a11y
+    -p snuffler-web-core
+    -p snuffler-web-render
+    -p snuffler-web-proto
+    -p snuffler-web-cors-proxy
+    -p snuffler-web-tcp-ws-proxy
+    -p snuffler-web-proxy
+  TRUNK_CONFIG: crates/snuffler-web-egui/Trunk.toml
+
 tasks:
   default:
     cmds:
       - task: serve
 
-  fetch:pyrocko:
-    desc: "clone pyrocko at the pinned commit into sources/ (gitignored)"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - mise exec -- ./pybuild/fetch-pyrocko.sh
+  # Web app
 
-  build:examples:
-    desc: "pack examples/ into the dataset bundles the app fetches on demand"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - python3 scripts/build-examples.py {{.CLI_ARGS}}
-
-  # Trunk canonicalizes every ignored watch path when its watcher starts and
-  # aborts if one is missing.
-  # `trunk build` never resolves the list, which is why CI does not hit this.
-  # The Pyodide builder creates this scratch tree only after it has run locally.
-  internal:dev-dirs:
-    internal: true
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - mkdir -p docker/pyodide-mt/.work
-
-  pyodide:build:
-    desc: "build the custom threaded Pyodide 314 in Docker (about an hour)"
-    dir: "{{.ROOT_DIR}}"
-    deps: ["fetch:pyrocko"]
-    cmds:
-      - docker/pyodide-mt/build-all.sh
-
-  # Pages publishes exactly the runtime directory assembled by stage-web.sh, so
-  # local development can download it instead of rebuilding Pyodide for an hour.
-  pyodide:fetch:
-    desc: "download the deployed Pyodide 314 runtime"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - docker/pyodide-mt/fetch-web.sh
-
-  # The threaded egui build runs heavy resvg export on a wasm-bindgen-rayon pool.
-  # The wasm atomics/link flags live in .cargo/config.toml.
-  # Build-std stays scoped to these tasks because the precompiled wasm32 standard
-  # library is single-threaded and host-native Cargo commands do not need it.
-  # The post-build hook rewrites wasm-bindgen-rayon's worker import, which would
-  # otherwise mismatch Trunk's subresource-integrity hash for that snippet.
-  # The serve profile keeps release-grade codegen without ship-only fat LTO.
-  # Task exports NO_COLOR=1 when color is disabled, but Trunk requires a literal
-  # boolean, so each command overrides it at the process boundary.
+  # `serve` uses the `serve` cargo profile: release-grade codegen without the
+  # fat LTO that would make every rebuild slow.
+  # Trunk wants NO_COLOR as a literal boolean, while Task exports NO_COLOR=1.
   serve:
     desc: "run the optimized, threaded web app"
     dir: "{{.ROOT_DIR}}"
     deps: ["fetch:pyrocko", "internal:dev-dirs"]
+    # Every Trunk task sets these two.
+    # The threaded wasm build rebuilds std with atomics, because the precompiled
+    # wasm32 std is single-threaded; host cargo commands must not do that.
+    # Subresource integrity is off because the post-build hook rewrites
+    # wasm-bindgen-rayon's worker import after Trunk has hashed it.
     env:
       CARGO_UNSTABLE_BUILD_STD: std,panic_abort
       TRUNK_BUILD_NO_SRI: "true"
     interactive: true
     cmds:
-      - NO_COLOR=true trunk serve --config crates/snuffler-web-egui/Trunk.toml --cargo-profile serve --features threads {{.CLI_ARGS}}
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk serve
+        --config {{.TRUNK_CONFIG}}
+        --cargo-profile serve
+        --features threads
+        {{.CLI_ARGS}}
 
   build:
     desc: "build the threaded web app for release"
@@ -71,11 +56,18 @@ tasks:
       CARGO_UNSTABLE_BUILD_STD: std,panic_abort
       TRUNK_BUILD_NO_SRI: "true"
     cmds:
-      - NO_COLOR=true trunk build --config crates/snuffler-web-egui/Trunk.toml --release --features threads {{.CLI_ARGS}}
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk build
+        --config {{.TRUNK_CONFIG}}
+        --release
+        --features threads
+        {{.CLI_ARGS}}
 
-  # Lean builds fetch SeisBench weights from SNUFFLER_ONNX_MODEL_BASE_URL.
-  # SNUFFLER_EMBED_DATA must track `--no-default-features` because setting only
-  # one makes the app request model files the build did not stage.
+  # Lean builds leave out the SeisBench weights and fetch them from
+  # SNUFFLER_ONNX_MODEL_BASE_URL instead.
+  # SNUFFLER_EMBED_DATA=0 and --no-default-features must go together, or the
+  # app requests model files the build did not stage.
   serve:lean:
     desc: "run the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
     dir: "{{.ROOT_DIR}}"
@@ -86,7 +78,13 @@ tasks:
       SNUFFLER_EMBED_DATA: "0"
     interactive: true
     cmds:
-      - NO_COLOR=true trunk serve --config crates/snuffler-web-egui/Trunk.toml --no-default-features --features gf,threads {{.CLI_ARGS}}
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk serve
+        --config {{.TRUNK_CONFIG}}
+        --no-default-features
+        --features gf,threads
+        {{.CLI_ARGS}}
 
   build:lean:
     desc: "build the web app without bundled SeisBench weights; requires SNUFFLER_ONNX_MODEL_BASE_URL"
@@ -97,10 +95,55 @@ tasks:
       TRUNK_BUILD_NO_SRI: "true"
       SNUFFLER_EMBED_DATA: "0"
     cmds:
-      - NO_COLOR=true trunk build --config crates/snuffler-web-egui/Trunk.toml --release --no-default-features --features gf,threads {{.CLI_ARGS}}
+      # prettier-ignore
+      - >
+        NO_COLOR=true trunk build
+        --config {{.TRUNK_CONFIG}}
+        --release
+        --no-default-features
+        --features gf,threads
+        {{.CLI_ARGS}}
 
-  # The web image consumes the prebuilt Pyodide runtime rather than rebuilding
-  # it, so changing that runtime only repeats its staging and compression layers.
+  # Trunk's watcher aborts when an ignored watch path is missing, and the
+  # Pyodide builder only creates this directory once it has run.
+  internal:dev-dirs:
+    internal: true
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mkdir -p docker/pyodide-mt/.work
+
+  build:examples:
+    desc: "pack examples/ into the dataset bundles the app fetches on demand"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - python3 scripts/build-examples.py {{.CLI_ARGS}}
+
+  # Sources and runtime
+
+  fetch:pyrocko:
+    desc: "clone pyrocko at the pinned commit into sources/ (gitignored)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - mise exec -- ./pybuild/fetch-pyrocko.sh
+
+  pyodide:build:
+    desc: "build the custom threaded Pyodide 314 in Docker (about an hour)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    cmds:
+      - docker/pyodide-mt/build-all.sh
+
+  # Pages publishes the runtime that stage-web.sh assembles, so downloading it
+  # replaces the hour-long build unless you are changing the runtime itself.
+  pyodide:fetch:
+    desc: "download the deployed Pyodide 314 runtime"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - docker/pyodide-mt/fetch-web.sh
+
+  # Containers
+
+  # The web image copies the prebuilt Pyodide runtime instead of building it.
   docker:build:
     desc: "build the snuffler-web and snuffler-proxy container images"
     dir: "{{.ROOT_DIR}}"
@@ -118,6 +161,8 @@ tasks:
     interactive: true
     cmds:
       - docker compose up
+
+  # Upstream Qt snuffler (the parity reference, see qt/)
 
   snuffler:
     desc: "run the pinned native PyQt5 snuffler"
@@ -140,9 +185,14 @@ tasks:
       - sh: test -d "examples/{{.EXAMPLE}}/meta"
         msg: "example has no StationXML directory: {{.EXAMPLE}}"
     cmds:
-      - uv run --project qt snuffler {{.CLI_ARGS}} --events "examples/{{.EXAMPLE}}/catalog.yaml" --stationxml "examples/{{.EXAMPLE}}/meta/*.xml" "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+      # prettier-ignore
+      - >
+        uv run --project qt snuffler {{.CLI_ARGS}}
+        --events "examples/{{.EXAMPLE}}/catalog.yaml"
+        --stationxml "examples/{{.EXAMPLE}}/meta/*.xml"
+        "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
 
-  # The same as snuffler:example, without a display: qt/driver.py then takes
+  # Like snuffler:example, but without a display: qt/driver.py then takes
   # commands such as `screenshot`, `menu` and `set` until it is told to `quit`.
   snuffler:headless:example:
     desc: "run the native snuffler headless on an example, driven by qt/driver.py"
@@ -154,20 +204,20 @@ tasks:
       - sh: test -f "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
         msg: "unknown example: {{.EXAMPLE}}"
     cmds:
-      - uv run --project qt python qt/driver.py serve -- --events "examples/{{.EXAMPLE}}/catalog.yaml" --stationxml "examples/{{.EXAMPLE}}/meta/*.xml" "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
+      # prettier-ignore
+      - >
+        uv run --project qt python qt/driver.py serve --
+        --events "examples/{{.EXAMPLE}}/catalog.yaml"
+        --stationxml "examples/{{.EXAMPLE}}/meta/*.xml"
+        "examples/{{.EXAMPLE}}/{{.EXAMPLE}}.mseed"
 
-  typos:
-    desc: "check repository for typos"
-    aliases: [spellcheck]
-    cmds:
-      - typos
+  # Type checks
 
   check:
     desc: "check Rust, Python and TypeScript"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo c -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
-      - task: check:threads
+      - task: check:rust
       - task: check:py
       - task: check:ts
 
@@ -175,8 +225,30 @@ tasks:
     desc: "check cargo workspace"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo c -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
+      - cargo c {{.HOST_CRATES}} --all-features --lib --tests {{.CLI_ARGS}}
       - task: check:threads
+
+  # The cargo-fc matrix leaves out `threads`, because that build needs
+  # build-std; this keeps the real threaded build compiling.
+  check:threads:
+    desc: "type-check the threaded wasm build (the `threads` feature, excluded from the fc matrix)"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+    cmds:
+      # prettier-ignore
+      - >
+        cargo c -p snuffler-web-egui
+        --target wasm32-unknown-unknown
+        --features threads
+        {{.CLI_ARGS}}
+
+  check:fc:
+    desc: "check cargo workspace for all combinations of features"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo fc check --all-targets {{.CLI_ARGS}}
+      - task: check:py
 
   check:py:
     desc: "typecheck Python bridge"
@@ -192,41 +264,241 @@ tasks:
     cmds:
       - buf generate
       - bunx tsc --noEmit -p tsconfig.json
-      # Separate project: the tests need node globals the browser-side bridge
-      # code must not see (and they run at full strictness).
+      # The tests are a separate project: they need node globals the browser
+      # code must not see, and they run at full strictness.
       - bunx tsc --noEmit -p tests/tsconfig.json
-      # Pure and synchronous, so the cancellation state machine's transition
-      # table is pinned on every check rather than only in browser suites.
+      # Pure and synchronous, so the cancellation state machine is checked on
+      # every run, not only in the browser suites.
       - bun tests/execution_control_validate.ts
 
-  check:fc:
-    desc: "check cargo workspace for all combinations of features"
+  # Lints
+
+  lint:
+    desc: "lint Rust (host + wasm32) and Python workspace"
+    cmds:
+      - cargo lint {{.HOST_CRATES}} --all-features --lib --tests {{.CLI_ARGS}}
+      # wasm32 is the app's own target.
+      # prettier-ignore
+      - >
+        cargo lint -p snuffler-web-egui -p egui-a11y -p accesskit-dom
+        --all-features
+        --target wasm32-unknown-unknown
+        --lib
+        {{.CLI_ARGS}}
+      - task: lint:boundaries
+      - task: lint:py
+
+  # cargo-fc reads each crate's targets from its Cargo.toml: snuffler-web-egui
+  # is wasm only, the proxies are checked for Linux, macOS and Windows.
+  lint:fc:
+    desc: "lint Rust (all feature combinations, host + wasm32) and Python workspace"
+    cmds:
+      - cargo fc lint --all-targets {{.CLI_ARGS}}
+      - task: lint:boundaries
+      - task: check:threads
+      - task: lint:py
+
+  lint:fix:
+    desc: "lint and fix cargo workspace"
+    aliases: [fix]
+    cmds:
+      - cargo fixit {{.HOST_CRATES}} --all-features --lib --tests {{.CLI_ARGS}}
+
+  # Only the egui-a11y bridge may know egui; accesskit-dom is toolkit-agnostic.
+  # `--target all` also resolves wasm32-only dependencies, which a host-only
+  # `cargo tree` would miss.
+  lint:boundaries:
+    desc: "keep the shared Rust crates free of every UI toolkit, so any frontend can build on them"
+    vars:
+      # ecolor and emath are plain colour and geometry types, so they stay allowed.
+      TOOLKITS: "egui[a-z_-]*|eframe|epaint|winit|glow|glutin|wgpu[a-z_-]*|gpui|leptos[a-z_-]*"
+    cmds:
+      - |
+        for crate in snuffler-web-core snuffler-web-render accesskit-dom; do
+          tree=$(cargo tree -p "$crate" -e normal --target all --prefix none) || exit 1
+          found=$(printf '%s\n' "$tree" | rg -o "^({{.TOOLKITS}}) v" | sort -u)
+          if [ -n "$found" ]; then
+            echo "$crate must stay toolkit-free (adr/0005), but depends on: $found"
+            exit 1
+          fi
+        done
+
+  lint:py:
+    desc: "lint Python bridge with ruff"
     dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo fc check --all-targets {{.CLI_ARGS}}
-      - task: check:py
+      - uv run ruff check --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
 
-  check:threads:
-    desc: "type-check the threaded wasm build (the `threads` feature, excluded from the fc matrix)"
+  lint:actions:
+    desc: "lint github actions"
+    cmds:
+      - actionlint
+
+  typos:
+    desc: "check repository for typos"
+    aliases: [spellcheck]
+    cmds:
+      - typos
+
+  # Tests
+
+  test:
+    desc: "test cargo workspace"
+    cmds:
+      # prettier-ignore
+      - >
+        cargo nextest run {{.HOST_CRATES}}
+        --all-features --lib --tests
+        --no-tests warn
+        {{.CLI_ARGS}}
+
+  test:fc:
+    desc: "test native support crates for all combinations of features"
+    cmds:
+      # prettier-ignore
+      - >
+        cargo fc --no-targets nextest run {{.HOST_CRATES}}
+        --lib --tests
+        --no-tests warn
+        {{.CLI_ARGS}}
+
+  test:doc:
+    desc: "run doctests in cargo workspace"
+    cmds:
+      - cargo test --doc --workspace {{.CLI_ARGS}}
+
+  test:seisbench:
+    desc: "validate exported SeisBench ONNX models against pinned seisbench"
     dir: "{{.ROOT_DIR}}"
-    # The actual threaded wasm build still needs build-std so std is rebuilt with
-    # atomics. This closes the gap left by the generic feature matrix.
-    env:
-      CARGO_UNSTABLE_BUILD_STD: std,panic_abort
     cmds:
-      - cargo c -p snuffler-web-egui --target wasm32-unknown-unknown --features threads {{.CLI_ARGS}}
+      # prettier-ignore
+      - >
+        uv run --no-project
+        --with seisbench==0.11.7 --with torch --with obspy --with onnxruntime --with numpy
+        python tests/seisbench_validate.py
+        {{.CLI_ARGS}}
 
-  clean:
-    desc: "clean cargo workspace"
+  test:seisbench:browser:
+    desc: "validate SeisBench inference in the served wasm app (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo clean {{.CLI_ARGS}}
+      - bun tests/seisbench_browser_validate.ts {{.CLI_ARGS}}
 
-  docs:
-    desc: "open documentation preview"
-    env:
-      RUSTDOCFLAGS: "--cfg docsrs"
+  test:a11y:browser:
+    desc: "validate the accessibility overlay in the served wasm app (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo watchdoc --all-features {{.CLI_ARGS}}
+      - bun tests/a11y_browser_validate.ts {{.CLI_ARGS}}
+
+  # Parity with upstream Qt snuffler (see tests/parity/README.md)
+  #
+  # Every tier runs pyrocko built from sources/ at the PYROCKO_REF pin, so the
+  # Qt side only moves when the pin is bumped.
+
+  test:parity:
+    desc: "tier 1 parity: Qt snuffler's own paint output vs the Python bridge, plus the bridge snuffling tests; headless, no browser"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      # The harness self-test runs first, because every tier trusts it.
+      # CLI_ARGS is cleared for both, since it carries scenario names for the oracle.
+      - task: test:parity:unit
+        vars: { CLI_ARGS: "" }
+      - task: test:parity:bridge
+        vars: { CLI_ARGS: "" }
+      - uv run --project qt --group parity python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
+
+  test:parity:unit:
+    desc: "unit tests for the parity harness's own enforcement (gaps.evaluate, Register.load, the reload keep-list)"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      # prettier-ignore
+      - >
+        uv run --project qt --only-group parity python -m pytest -q
+        tests/parity/test_gaps.py
+        tests/parity/test_reload_keep.py
+        {{.CLI_ARGS}}
+
+  test:parity:bridge:
+    desc: "bridge behaviour against real pyrocko, no browser: snuffling marker scope, aggregation, failure contracts, and the Adaptive visible length"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    cmds:
+      - buf generate
+      # prettier-ignore
+      - >
+        uv run --project qt --group parity python -m pytest -q
+        tests/parity/test_bridge_snufflings.py
+        tests/parity/test_adaptive_visible_length.py
+        tests/parity/test_view_span_order.py
+        {{.CLI_ARGS}}
+
+  test:parity:inventory:
+    desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - uv run --project qt --group parity python tests/parity/run_inventory.py {{.CLI_ARGS}}
+
+  test:parity:scenarios:
+    desc: "tier 3 parity: one scenario through both GUIs (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
+    dir: "{{.ROOT_DIR}}"
+    deps: ["fetch:pyrocko"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    cmds:
+      - buf generate
+      - uv run --project qt --group parity python tests/parity/run_scenarios.py {{.CLI_ARGS}}
+
+  render:parity:tier1:
+    desc: "render browserless Tier 1 web waveform artifacts from oracle output"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo run --quiet -p snuffler-web-render --example parity_artifacts -- {{.CLI_ARGS}}
+
+  # Formatting
+
+  format:
+    desc: "format Rust, Python, JavaScript, and protobuf schemas"
+    cmds:
+      - task: format:rust
+      - task: format:py
+      - task: format:js
+      - task: format:proto
+
+  format:rust:
+    desc: "format cargo workspace"
+    cmds:
+      - cargo fmt --all {{.CLI_ARGS}}
+
+  format:py:
+    desc: "format Python bridge code"
+    cmds:
+      - uv run ruff format --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
+
+  format:js:
+    desc: "format JavaScript bridge code"
+    cmds:
+      # prettier-ignore
+      - >
+        bunx --bun prettier@3.6.2 --write
+        --cache --cache-location node_modules/.cache/prettier/.prettier-cache
+        web/*.ts
+        scripts/patch-trunk-loader.mjs scripts/screenshot-themes.ts
+        tests/*.ts tests/parity/*.ts
+        package.json
+        {{.CLI_ARGS}}
+
+  format:proto:
+    desc: "format protobuf schemas"
+    cmds:
+      - buf format -w
+
+  # Dependencies
 
   outdated:
     desc: "list outdated deps (incl. new majors): adoptable now vs still in cooldown"
@@ -260,18 +532,15 @@ tasks:
   mise:upgrade:
     desc: "upgrade mise-managed tools and refresh the lockfile"
     env:
-      # A fresh release is invisible for up to an hour behind mise's remote-versions cache
-      # (fetch_remote_versions_cache = "1h"); upgrading is exactly when the listing must be live.
+      # mise caches remote version lists for an hour, which would hide a fresh release.
       MISE_FETCH_REMOTE_VERSIONS_CACHE: "0s"
-      # mise resolves `latest` for GitHub tools through its hosted version index, which trails a
-      # fresh release even with that cache off.
-      # Asking GitHub directly lets an upgrade adopt a release the moment it is published.
+      # mise's hosted version index trails GitHub releases even with the cache off.
       MISE_USE_VERSIONS_HOST: "0"
     cmds:
       - mise upgrade {{.CLI_ARGS}}
       - mise lock
 
-  # Both delegate to the cargo aliases, which own the flag sets; see .cargo/config.toml.
+  # The flag sets live in the cargo aliases in .cargo/config.toml.
   unused:
     desc: "check for unused cargo workspace dependencies by scanning sources (cargo-shear)"
     aliases: [unused-dependencies]
@@ -288,182 +557,16 @@ tasks:
     cmds:
       - cargo audit {{.CLI_ARGS}}
 
-  format:
-    desc: "format Rust, Python, JavaScript, and protobuf schemas"
-    cmds:
-      - task: format:rust
-      - task: format:py
-      - task: format:js
-      - task: format:proto
+  # Maintenance
 
-  format:rust:
-    desc: "format cargo workspace"
+  clean:
+    desc: "clean cargo workspace"
     cmds:
-      - cargo fmt --all {{.CLI_ARGS}}
+      - cargo clean {{.CLI_ARGS}}
 
-  format:py:
-    desc: "format Python bridge code"
-    cmds:
-      - uv run ruff format --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
-
-  format:js:
-    desc: "format JavaScript bridge code"
-    cmds:
-      - bunx --bun prettier@3.6.2 --write --cache --cache-location node_modules/.cache/prettier/.prettier-cache web/bridge.ts web/bridge_worker.ts web/execution_control.ts web/worker_protocol.ts web/ort_worker.ts scripts/patch-trunk-loader.mjs tests/seisbench_browser_validate.ts tests/a11y_browser_validate.ts tests/parity/inventory_web.ts tests/parity/scenario_web.ts tests/parity/parity_browser.ts tests/parity/parity_keys.ts package.json {{.CLI_ARGS}}
-
-  format:proto:
-    desc: "format protobuf schemas"
-    cmds:
-      - buf format -w
-
-  test:
-    desc: "test cargo workspace"
-    cmds:
-      - cargo nextest run -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests --no-tests "warn" {{.CLI_ARGS}}
-
-  test:fc:
-    desc: "test native support crates for all combinations of features"
-    cmds:
-      - cargo fc --no-targets nextest run -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --lib --tests --no-tests "warn" {{.CLI_ARGS}}
-
-  test:doc:
-    desc: "run doctests in cargo workspace"
-    cmds:
-      - cargo test --doc --workspace {{.CLI_ARGS}}
-
-  lint:boundaries:
-    desc: "keep the shared Rust crates free of every UI toolkit, so any frontend can build on them"
-    vars:
-      # Toolkits and the windowing/GPU stacks under them. ecolor and emath are
-      # plain colour and geometry types and stay allowed.
-      TOOLKITS: "egui[a-z_-]*|eframe|epaint|winit|glow|glutin|wgpu[a-z_-]*|gpui|leptos[a-z_-]*"
-    cmds:
-      # accesskit-dom is a toolkit-agnostic AccessKit -> DOM adapter; only the
-      # egui-a11y bridge may know about egui.
-      # --target all: without it cargo tree resolves for the host only, which
-      # would miss a toolkit dependency added under a wasm32 cfg section.
-      - |
-        for crate in snuffler-web-core snuffler-web-render accesskit-dom; do
-          tree=$(cargo tree -p "$crate" -e normal --target all --prefix none) || exit 1
-          found=$(printf '%s\n' "$tree" | rg -o "^({{.TOOLKITS}}) v" | sort -u)
-          if [ -n "$found" ]; then
-            echo "$crate must stay toolkit-free (adr/0005), but depends on: $found"
-            exit 1
-          fi
-        done
-
-  lint:py:
-    desc: "lint Python bridge with ruff"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - uv run ruff check --cache-dir .ruff_cache --force-exclude {{.CLI_ARGS}}
-
-  test:seisbench:
-    desc: "validate exported SeisBench ONNX models against pinned seisbench"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - uv run --no-project --with seisbench==0.11.7 --with torch --with obspy --with onnxruntime --with numpy python tests/seisbench_validate.py {{.CLI_ARGS}}
-
-  test:seisbench:browser:
-    desc: "validate SeisBench inference in the served wasm app (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - bun tests/seisbench_browser_validate.ts {{.CLI_ARGS}}
-
-  test:a11y:browser:
-    desc: "validate the accessibility overlay in the served wasm app (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - bun tests/a11y_browser_validate.ts {{.CLI_ARGS}}
-
-  # Parity against the original Qt snuffler. All three tiers run pyrocko built from
-  # sources/ at the PYROCKO_REF pin rather than from PyPI, so the Qt side only moves
-  # when the pin is deliberately bumped — and the pinned numpy keeps the corpus
-  # generator's RNG stream fixed. See tests/parity/README.md.
-  test:parity:
-    desc: "tier 1 parity: Qt snuffler's own paint output vs web/bridge.py, plus the bridge snuffling tests; headless, no browser"
-    dir: "{{.ROOT_DIR}}"
-    deps: ["fetch:pyrocko"]
+  docs:
+    desc: "open documentation preview"
     env:
-      QT_QPA_PLATFORM: offscreen
+      RUSTDOCFLAGS: "--cfg docsrs"
     cmds:
-      # The harness self-test runs first: the tiers trust gaps.evaluate to hold
-      # findings to the register, so its edge cases are proven before any scenario
-      # relies on them.
-      # CLI_ARGS is cleared for both, because it carries scenario names for the oracle.
-      - task: test:parity:unit
-        vars: { CLI_ARGS: "" }
-      - task: test:parity:bridge
-        vars: { CLI_ARGS: "" }
-      - uv run --project qt --group parity python tests/parity/run_oracle.py --png {{.CLI_ARGS}}
-
-  render:parity:tier1:
-    desc: "render browserless Tier 1 web waveform artifacts from oracle output"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - cargo run --quiet -p snuffler-web-render --example parity_artifacts -- {{.CLI_ARGS}}
-
-  test:parity:unit:
-    desc: "unit tests for the parity harness's own enforcement (gaps.evaluate, Register.load, the reload keep-list)"
-    dir: "{{.ROOT_DIR}}"
-    cmds:
-      - uv run --project qt --only-group parity python -m pytest -q tests/parity/test_gaps.py tests/parity/test_reload_keep.py {{.CLI_ARGS}}
-
-  test:parity:bridge:
-    desc: "bridge behaviour against real pyrocko, no browser: snuffling marker scope, aggregation, failure contracts, and the Adaptive visible length"
-    dir: "{{.ROOT_DIR}}"
-    deps: ["fetch:pyrocko"]
-    cmds:
-      - buf generate
-      - uv run --project qt --group parity python -m pytest -q tests/parity/test_bridge_snufflings.py tests/parity/test_adaptive_visible_length.py tests/parity/test_view_span_order.py {{.CLI_ARGS}}
-
-  test:parity:inventory:
-    desc: "tier 2 parity: diff the two command surfaces (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
-    dir: "{{.ROOT_DIR}}"
-    deps: ["fetch:pyrocko"]
-    env:
-      QT_QPA_PLATFORM: offscreen
-    cmds:
-      - uv run --project qt --group parity python tests/parity/run_inventory.py {{.CLI_ARGS}}
-
-  test:parity:scenarios:
-    desc: "tier 3 parity: one scenario through both GUIs (requires http://127.0.0.1:17683 or SNUFFLER_BROWSER_URL)"
-    dir: "{{.ROOT_DIR}}"
-    deps: ["fetch:pyrocko"]
-    env:
-      QT_QPA_PLATFORM: offscreen
-    cmds:
-      - buf generate
-      - uv run --project qt --group parity python tests/parity/run_scenarios.py {{.CLI_ARGS}}
-
-  lint:
-    desc: "lint Rust (host + wasm32) and Python workspace"
-    cmds:
-      - cargo lint -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
-      # wasm32 is the app target — the bridge/UI entrypoint lives here.
-      - cargo lint -p snuffler-web-egui -p egui-a11y -p accesskit-dom --all-features --target wasm32-unknown-unknown --lib {{.CLI_ARGS}}
-      - task: lint:boundaries
-      - task: lint:py
-
-  lint:fc:
-    desc: "lint Rust (all feature combinations, host + wasm32) and Python workspace"
-    cmds:
-      # cargo-fc reads per-package targets from Cargo.toml: snuffler-web-egui is wasm
-      # only; proxy crates are checked on Linux, macOS, and Windows GNU.
-      - cargo fc lint --all-targets {{.CLI_ARGS}}
-      - task: lint:boundaries
-      # The fc matrix excludes `threads` (it still needs build-std); compile-
-      # check that build separately so the real threaded path cannot rot.
-      - task: check:threads
-      - task: lint:py
-
-  lint:fix:
-    desc: "lint and fix cargo workspace"
-    aliases: [fix]
-    cmds:
-      - cargo fixit -p accesskit-dom -p egui-a11y -p snuffler-web-core -p snuffler-web-render -p snuffler-web-proto -p snuffler-web-cors-proxy -p snuffler-web-tcp-ws-proxy -p snuffler-web-proxy --all-features --lib --tests {{.CLI_ARGS}}
-
-  lint:actions:
-    desc: "lint github actions"
-    cmds:
-      - actionlint
+      - cargo watchdoc --all-features {{.CLI_ARGS}}
