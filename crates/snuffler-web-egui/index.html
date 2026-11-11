@@ -121,6 +121,11 @@
             opacity: 0;
         }
 
+        /* A failed boot leaves nothing underneath to click, and the error must be selectable. */
+        #loading.failed {
+            pointer-events: auto;
+        }
+
         #loading .panel {
             width: min(340px, 82vw);
             display: flex;
@@ -290,9 +295,14 @@
             const row = document.querySelector("#loading .row");
             if (bar) bar.style.display = "none";
             if (row) row.style.display = "none";
+            document.getElementById("loading")?.classList.add("failed");
             // Only blame the browser when a capability is actually absent; a failed
             // download reaches here too, and telling someone to update their OS over
             // a dropped request would send them off fixing the wrong thing.
+            const message = String(error && error.message ? error.message : error);
+            // Shared wasm memory is reserved up front, so a browser short on memory
+            // refuses it at startup ("out of memory", "could not allocate memory").
+            const outOfMemory = /out of memory|allocate memory/i.test(message);
             el.innerHTML =
                 (missing.length
                     ? "<strong>This browser cannot run snuffler-web.</strong>" +
@@ -300,10 +310,15 @@
                       "<br><br>On iPhone and iPad every browser uses the system WebKit, " +
                       "so updating iOS/iPadOS — or using a different device — is what " +
                       "changes this."
+                    : outOfMemory
+                    ? "<strong>snuffler-web failed to start.</strong>" +
+                      "The browser could not reserve the memory the app needs. " +
+                      "Close other tabs, especially other snuffler-web tabs, or " +
+                      "restart the browser, then reload."
                     : "<strong>snuffler-web failed to start.</strong>" +
                       "The browser supports everything the app needs, so this is most " +
                       "likely a network or hosting problem. Reloading may fix it.") +
-                "<br><br><code>" + String(error && error.message ? error.message : error) +
+                "<br><br><code>" + message +
                 "<br>" + JSON.stringify(snufflerCapabilities) + "</code>";
             el.style.display = "block";
             console.error("[snuffler] startup failed:", error, snufflerCapabilities);
