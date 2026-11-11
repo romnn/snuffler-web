@@ -11,21 +11,19 @@
 # for the one GOMP symbol the native asm provides but wasm doesn't.
 #
 # Output: <build tree>/libomp.a  (defines __kmpc_*, omp_*, __kmp_invoke_microtask)
-# Usage:  docker/pyodide-pthread/libomp/build.sh
-#         PYODIDE_BUILD_TREE=/path/to/tree docker/pyodide-pthread/libomp/build.sh
+# Usage:  PYODIDE_BUILD_TREE=<pyodide tree> IMAGE=<pyodide-env image> libomp/build.sh
+#         (docker/pyodide-mt/build.sh calls it with both set)
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-build="${PYODIDE_BUILD_TREE:-$here/../.work/pyodide-pthread}"
-# Override IMAGE for a different toolchain (e.g. the em5.0.3/py314 image used by
-# the fork-free docker/pyodide-mt build).
-image="${IMAGE:-pyodide/pyodide-env:20250915-chrome140-firefox140-py313}"
+build="${PYODIDE_BUILD_TREE:?set PYODIDE_BUILD_TREE to the Pyodide build tree}"
+image="${IMAGE:?set IMAGE to the pyodide-env image of that tree}"
 # JAicewizard/emscripten@libomp — the source behind emscripten PR #25937.
 repo="https://github.com/JAicewizard/emscripten.git"
 sha="67a610023bafdb84fa08c6b6e658036fb7dde43a"
 
 if [ ! -d "$build/emsdk" ]; then
-    echo "ERROR: $build has no emsdk — run docker/pyodide-pthread/build.sh first." >&2
+    echo "ERROR: $build has no emsdk — run docker/pyodide-mt/build.sh." >&2
     exit 1
 fi
 

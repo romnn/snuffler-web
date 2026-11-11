@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Assemble the threaded Pyodide 314 runtime + wheels into a clean, web-servable
-# directory the app loads from py-mt/ (see web/bridge_worker.js, which sets
+# directory the app loads from py-mt/ (see web/bridge_worker.ts, which sets
 # PYODIDE_BASE to py-mt/). Trunk's post_build hook copies this dir to dist/py-mt/.
 # The app is MT-only, so this runtime must be present for the app to boot — build
 # it with docker/pyodide-mt/build-all.sh (a fresh checkout has no Pyodide until
@@ -10,7 +10,7 @@
 #
 # Sources (both produced by the docker/pyodide-mt build steps):
 #   - core runtime (relinked MT + OpenMP + SIMD main) from build.sh's   .work/pyodide/dist/
-#   - package wheels + pyodide-lock.json from packages.sh/build-pyrocko's .work/pyodide/dist-mt/
+#   - package wheels + pyodide-lock.json from build-packages.sh/build-pyrocko.sh's .work/pyodide/dist-mt/
 # Only artifacts the lock references are copied, minus the *-tests.tar test data
 # (not imported at runtime) — the rest of build-recipes' install-dir clutter is
 # left behind.
@@ -25,7 +25,7 @@ pkgs="$work/dist-mt"      # build-recipes --install-dir output
 out="$here/served"       # clean, gitignored staging dir (Trunk → dist/py-mt/)
 
 [ -f "$runtime/pyodide.asm.wasm" ] || { echo "ERROR: $runtime/pyodide.asm.wasm missing — run build.sh first." >&2; exit 1; }
-[ -f "$pkgs/pyodide-lock.json" ]   || { echo "ERROR: $pkgs/pyodide-lock.json missing — run packages.sh + build-pyrocko.sh first." >&2; exit 1; }
+[ -f "$pkgs/pyodide-lock.json" ]   || { echo "ERROR: $pkgs/pyodide-lock.json missing — run build-packages.sh + build-pyrocko.sh first." >&2; exit 1; }
 
 rm -rf "$out"; mkdir -p "$out"
 

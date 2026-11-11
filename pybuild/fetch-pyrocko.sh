@@ -3,7 +3,7 @@
 #
 # pyrocko is NOT vendored in this repo (sources/ is gitignored). This clones the
 # exact, known-good commit (PYROCKO_REF) of pyrocko into sources/pyrocko, which
-# the wheel build (build-wheel.sh) and the bundled data assets (the cake
+# the wheel build (docker/pyodide-mt/build-pyrocko.sh) and the bundled data assets (the cake
 # earthmodels and the map's plate boundaries, both referenced by index.html)
 # need. The pin lives in mise.toml ([env]); the Task workflow enters that
 # environment before invoking this script.

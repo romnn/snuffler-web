@@ -7,8 +7,6 @@ name: GitHub Pages
 # pthread + OpenMP + SIMD runtime + wheels, served at py-mt/ — plus the egui wasm
 # built threaded (wasm-bindgen-rayon). Both need cross-origin isolation, which the
 # coi-serviceworker provides (GitHub Pages can't set COOP/COEP response headers).
-# There is no single-threaded CDN path anymore; a non-threaded build, if ever
-# needed, is produced via the `threads` build-time feature on a separate path.
 #
 # The custom build (CPython 3.14 + Pyodide from source) is ~1 h, so we CACHE its
 # expensive PRE-STAGE artifacts — the relinked runtime (.work/pyodide/dist) and the
@@ -123,7 +121,7 @@ jobs:
       # a fresh build; any input change misses and rebuilds (no stale-restore hazard).
       # Restore only here; we SAVE in a separate step right after the build (below)
       # so a later trunk/backstop failure can't discard the ~1 h artifacts. The key
-      # globs docker/pyodide-pthread/libomp/** (build.sh AND kmp_wasm_compat.c, both
+      # globs docker/pyodide-mt/libomp/** (build.sh AND kmp_wasm_compat.c, both
       # compiled into libomp.a and whole-archived into the runtime), so a libomp
       # change correctly busts the cache.
       - name: Restore Pyodide 314 build artifacts
@@ -133,7 +131,7 @@ jobs:
           path: |
             docker/pyodide-mt/.work/pyodide/dist
             docker/pyodide-mt/.work/pyodide/dist-mt
-          key: "pyodide314-artifacts-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'docker/pyodide-pthread/libomp/**', 'pybuild/setup.py', 'pybuild/pyproject.toml') }}-pyrocko-${{ steps.pyodide-disc.outputs.pyrocko }}"
+          key: "pyodide314-artifacts-${{ hashFiles('docker/pyodide-mt/build.sh', 'docker/pyodide-mt/build-packages.sh', 'docker/pyodide-mt/build-pyrocko.sh', 'docker/pyodide-mt/packages.sh', 'docker/pyodide-mt/force_sjlj.c', 'docker/pyodide-mt/patches/**', 'docker/pyodide-mt/pyrocko/meta.yaml', 'docker/pyodide-mt/libomp/**', 'pybuild/setup.py', 'pybuild/pyproject.toml') }}-pyrocko-${{ steps.pyodide-disc.outputs.pyrocko }}"
 
       # pyrocko source is needed by the build (on a cache miss) and by trunk
       # (index.html ships the cake earthmodels and the plate boundaries from it),

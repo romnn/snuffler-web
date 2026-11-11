@@ -16,7 +16,6 @@
 # Build outputs. The images produce their own.
 target
 dist
-dist-py
 node_modules
 web/gen
 web/proto
@@ -33,19 +32,16 @@ tests/parity/.artifacts
 tests/parity/corpus/data
 docker/pyodide-mt/.work
 docker/pyodide-mt/out
-docker/pyodide-pthread
 
 # Nothing here is an input to the web or proxy image: the Pyodide *builder*
-# (as against its output in served/), the Qt frontend's own image context, the
-# test suites, and the prose.
-docker/pyodide-mt/browser-test
+# (as against its output in served/), the upstream Qt reference, the test
+# suites, and the type stubs.
+docker/pyodide-mt/libomp
 docker/pyodide-mt/patches
 docker/pyodide-mt/pyrocko
 qt
 tests
-plan
 typings
-snuffler-initial.png
 
 # The pyrocko checkout is 80 MB of source the image needs exactly two things
 # from — the cake earthmodels and the map's plate boundaries, both staged by

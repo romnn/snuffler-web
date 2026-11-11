@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 #
-# Fork-free pthread (+ later OpenMP) Pyodide build. Unlike docker/pyodide-pthread
-# (which clones the yosefk fork), this clones OFFICIAL pyodide at a pinned commit
-# and applies ONLY our own small patch — patches/0001-pthread.patch — built in
-# the OFFICIAL pyodide-env image. We maintain the patch ourselves; no fork is a
-# dependency. The OpenMP runtime (libomp) is a separate step (see ../pyodide-pthread/libomp).
+# Fork-free pthread + OpenMP Pyodide build: clones OFFICIAL pyodide at a pinned
+# commit and applies ONLY our own small patch — patches/0001-pthread.patch — built
+# in the OFFICIAL pyodide-env image. The OpenMP runtime is built by libomp/build.sh.
 #
 # Usage:  docker/pyodide-mt/build.sh
 #         KEEP=1 docker/pyodide-mt/build.sh   # keep .work for incremental rebuilds
@@ -24,8 +22,8 @@ jobs="${JOBS:-24}"
 # Modules/_hacl/Hacl_*_Simd128.c, which reference x86/NEON `vec128` intrinsics
 # that have no wasm definition -> "unknown type name Lib_IntVector_Intrinsics_vec128"
 # (build fails). The interpreter gains nothing from SIMD anyway; wasm SIMD is
-# applied where it matters — the numpy/pyrocko *package* kernels (packages.sh,
-# build-pyrocko*.sh, each with their own SIMD=0 toggle).
+# applied where it matters — the numpy/pyrocko *package* kernels (build-packages.sh,
+# build-pyrocko.sh, each with their own SIMD=0 toggle).
 # PIC system-lib archives (inside the container). The all-but-packages main only
 # pulls *referenced* objects from these, so it lacks the float-math / locale /
 # libc++ symbols that packages (numpy, scipy, pyrocko) need. We whole-archive the
@@ -91,7 +89,7 @@ docker run --rm \
 #    __kmpc_*/omp_* symbols for side modules. NO -sPTHREAD_POOL_SIZE (a pre-spawned
 #    pool can't see side modules dlopen'd later). Reuses the libomp builder with the
 #    em5 image; the LLVM openmp source compiles unchanged with em5's clang.
-PYODIDE_BUILD_TREE="$PWD" IMAGE="$image" "$here/../pyodide-pthread/libomp/build.sh"
+PYODIDE_BUILD_TREE="$PWD" IMAGE="$image" "$here/libomp/build.sh"
 # force_sjlj.c gives the main a wasm-SJLJ __c_longjmp tag (DCE'd otherwise, since
 # no core TU uses wasm setjmp) so wasm-SJLJ side modules (scipy/Pillow/matplotlib
 # exts) can link. The packages are built -fwasm-exceptions (wasm-SJLJ) to match;

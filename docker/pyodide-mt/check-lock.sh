@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Fail loudly if a staged Pyodide lock can't actually satisfy the app's boot-time
-# loadPackage(). A truncated/stale py-mt build silently breaks the deploy:
-# pyodide-lock.json (or its wheels) ends up incomplete, so loadPackage() throws
-# "No known package" / 404s a wheel at runtime (observed as a Firefox cold-load
-# stalling on scipy, while a browser with a warm cache still worked).
+# loadPackage().
+# A truncated/stale py-mt build silently breaks the deploy: pyodide-lock.json (or
+# its wheels) ends up incomplete, so loadPackage() throws "No known package" or
+# 404s a wheel at runtime, which a browser with a warm cache does not notice.
 #
 # loadPackage() resolves the TRANSITIVE dependency closure of the requested names
 # and fetches every wheel, so this guard validates that whole closure — names AND
@@ -12,7 +12,7 @@
 # stage-web.sh (local builds + every CI path) AND on the final deployed artifact in
 # the Pages workflow, so a broken lock can never reach users unnoticed.
 #
-# Keep `required` in sync with the loadPackage([...]) list in web/bridge_worker.js.
+# Keep `required` in sync with PYODIDE_PACKAGES in web/bridge_worker.ts.
 #
 # Usage:  check-lock.sh <path/to/pyodide-lock.json>
 set -euo pipefail
@@ -20,6 +20,8 @@ set -euo pipefail
 lock="${1:?usage: check-lock.sh <pyodide-lock.json>}"
 required="numpy scipy matplotlib pyyaml micropip protobuf requests pyodide-http pyrocko"
 
+# Unquoted on purpose: one package name per word.
+# shellcheck disable=SC2086
 python3 - "$lock" $required <<'PY'
 import json, os, sys
 

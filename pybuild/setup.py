@@ -13,18 +13,14 @@ of them except ``evalresp_ext`` (which needs the external ``evalresp`` C library
                  minimal            — only the waveform-inspector core
                  a,b,c              — explicit comma-separated list of ext keys
 
-  PYROCKO_OPENMP = 0      (default) — serial build. Correct everywhere, including
-                                      the stock single-threaded CDN Pyodide.
-                   1                — pass -fopenmp. Emscripten maps OpenMP onto
-                                      wasm pthreads, which ONLY work on a
-                                      pthread-enabled Pyodide running on a
-                                      cross-origin-isolated page (COOP/COEP +
-                                      SharedArrayBuffer). A -pthread build will not
-                                      load into the stock single-threaded Pyodide,
-                                      so leave this off until that runtime exists.
+  PYROCKO_OPENMP = 0      (default) — serial build, loads into any Pyodide.
+                   1                — pass -fopenmp, as docker/pyodide-mt does.
+                                      OpenMP maps onto wasm pthreads, so the wheel
+                                      only loads into a pthread-enabled Pyodide on
+                                      a cross-origin-isolated page.
 
-The pure-Python pyrocko tree is shipped unmodified (copied into ./pyrocko by
-build-wheel.sh). libmseed is extracted + patched there too.
+The pure-Python pyrocko tree is shipped unmodified (staged next to this file by
+docker/pyodide-mt/build-pyrocko.sh, which also extracts and patches libmseed).
 """
 
 import os

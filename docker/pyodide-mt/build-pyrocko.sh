@@ -8,7 +8,7 @@
 # main by build.sh); the parstack inner loops also carry #pragma omp simd.
 #
 # Prerequisites: build.sh (main + libomp + libomp-src for omp.h), numpy built
-# (packages.sh), and a fetched sources/pyrocko (`task fetch:pyrocko`).
+# (build-packages.sh), and a fetched sources/pyrocko (`task fetch:pyrocko`).
 # Usage:  docker/pyodide-mt/build-pyrocko.sh
 set -euo pipefail
 
@@ -27,7 +27,7 @@ ompinc_host="$build/libomp-src/system/lib/libomp/include"
 [ -f "$ompinc_host/omp.h" ] || { echo "ERROR: libomp source missing — run build.sh (libomp step) first." >&2; exit 1; }
 ompinc="/src/libomp-src/system/lib/libomp/include"
 
-# 1) Stage pyrocko src + libmseed + setup.py (same layout build-pyrocko-cdn.sh uses).
+# 1) Stage pyrocko src + libmseed + setup.py.
 b="$build/pyrocko-build"
 rm -rf "$b"; mkdir -p "$b"
 cp -r "$src/src" "$b/pyrocko"

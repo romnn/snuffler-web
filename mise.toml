@@ -11,8 +11,7 @@
 #
 # The Pyodide runtime is our CUSTOM threaded Pyodide 314 build (py3.14 /
 # emscripten 5.0.3, pthread + OpenMP + SIMD), built in docker (docker/pyodide-mt)
-# — NOT via a host emsdk or xbuildenv — and produced by build-all.sh. (A
-# single-threaded wheel for a future non-threaded build is opt-in: BUILD_CDN=1.)
+# — NOT via a host emsdk or xbuildenv — and produced by build-all.sh.
 # Building it takes an hour and needs Docker, so `task pyodide:fetch` downloads the
 # one Pages deploys instead.
 # `task pyodide:build` is for changing the runtime itself.

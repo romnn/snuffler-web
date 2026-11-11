@@ -18,15 +18,12 @@
 # `task fetch:pyrocko`. Keep it out of git.
 /sources
 
-# pyodide wheel build: keep the scripts (build-wheel.sh, setup.py, bootstrap),
-# drop the cross-compiled wheel + all generated toolchain caches.
-/dist-py
+# Generated protobuf modules, and output of the retired host wheel build.
 /web/proto
 /pybuild/build
-/pybuild/*.log
-/pybuild/.emscripten-version
 /.venv-pyodide
 /.pyodide-xbuildenv-*
+/dist-py
 /.mypy_cache
 /.ruff_cache
 **/.venv
@@ -39,10 +36,6 @@
 
 # Python bytecode cache
 __pycache__/
-
-# experimental pthread Pyodide build (see docker/pyodide-pthread/)
-docker/pyodide-pthread/out/
-docker/pyodide-pthread/.work/
 
 docker/pyodide-mt/.work/
 docker/pyodide-mt/out/
