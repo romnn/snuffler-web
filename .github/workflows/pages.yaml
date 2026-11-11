@@ -72,12 +72,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: System deps (native egui backend, used by the wheel build env)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-
       # Provision the pinned toolchain (Python, Bun, uv, Task, Trunk, Binaryen, protoc —
       # protoc + buf compile the bridge .proto during the trunk build). emsdk is
       # NOT needed here: the Pyodide wheels build inside the pyodide-env docker
@@ -89,15 +83,6 @@ jobs:
           env: false
       - name: Install web build tools
         run: mise install python bun uv task buf protoc aqua:WebAssembly/binaryen github:trunk-rs/trunk
-
-      # The egui app is built THREADED (off-main-thread PNG export via
-      # wasm-bindgen-rayon), which needs a nightly + rust-src to rebuild std with
-      # atomics (-Z build-std) — the precompiled wasm32 std is single-threaded.
-      # rust-toolchain.toml stays on stable; plain clippy/test (rust.yml) are
-      # unaffected. Only this trunk build uses nightly (see the env on the build
-      # step and the build-scoped settings in taskfile.yaml).
-      - name: Install nightly Rust (threaded wasm build-std)
-        run: rustup toolchain install nightly --profile minimal --component rust-src --target wasm32-unknown-unknown
 
       # The pyrocko source pin is a cache discriminator that isn't a file (it lives
       # in mise.toml [env]); extract it so a TOOL-version bump in mise.toml does not
@@ -225,12 +210,10 @@ jobs:
       # Project pages live under /<repo>/, so the asset URLs must be prefixed.
       # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/ and
       # web/assets/models/*.onnx -> assets/models/.
-      # The Task workflow owns the threaded build flags, so local and Pages builds
-      # cannot silently diverge; CI adds only its nightly toolchain selection and
-      # project-specific public URL.
+      # The Task workflow owns the threaded build flags and rust-toolchain.toml the
+      # pinned nightly, so local and Pages builds cannot silently diverge; CI adds
+      # only the project-specific public URL.
       - name: Trunk build (release, threaded)
-        env:
-          RUSTUP_TOOLCHAIN: nightly
         run: task build -- --public-url "/${{ github.event.repository.name }}/"
 
       # Final backstop: validate the lock in the ACTUAL artifact about to be

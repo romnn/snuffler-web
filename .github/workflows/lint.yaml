@@ -36,7 +36,7 @@ jobs:
           cache-on-failure: true
 
       # The wasm bridge externs read /web/gen/bridge.js at compile time
-      # (the wasm-bindgen module in snuffler-web-core/src/bridge.rs). It is
+      # (the wasm-bindgen module in snuffler-web-core/src/bridge/web/mod.rs). It is
       # generated, not committed, so the wasm clippy below cannot read it unless we
       # build it first. Install the JS deps, run `buf generate` (the TS proto
       # messages bridge.ts imports), and bun-bundle the glue — the same artifacts
