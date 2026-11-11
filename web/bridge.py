@@ -3573,8 +3573,10 @@ async def _ensure_seisbench_model(
         )
     cache_key = "%s/%s/%s" % (model, weights, base)
     if cache_key not in _SEISBENCH_MODEL_URLS:
+        # An absolute base is fetched directly: the local proxy's allowlist only
+        # admits FDSN endpoints, so routing model hosts through it would be refused.
         if base.startswith(("http://", "https://")):
-            url = _local_cors_proxy_url(_join_url(base, filename))
+            url = _join_url(base, filename)
         else:
             url = _asset_url(_join_url(base, filename))
         _SEISBENCH_MODEL_URLS[cache_key] = url
