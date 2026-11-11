@@ -446,6 +446,10 @@ impl App {
     ///
     /// SVG generation stays on the main wasm thread because a cloned egui context
     /// shares locks with the live renderer.
+    /// A rayon worker contending for those locks reaches epaint's debug lock
+    /// timeout, which calls `std::time::Instant` and aborts on wasm, and the browser
+    /// main thread may not block on a lock either, so plain `parking_lot` locks do
+    /// not fix it.
     /// Rasterization receives only the owned SVG and runs on rayon when available.
     #[cfg(feature = "svg-raster")]
     fn start_png_export(&mut self, ctx: &egui::Context, job: JobHandle) {

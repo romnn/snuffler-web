@@ -26,8 +26,7 @@ On macOS, add `-- --no-opengl` to either Snuffler task if Qt's OpenGL paint warn
 causes visible rendering problems.
 
 Qt-for-Python has no usable WebAssembly build, so this application cannot run in
-the browser; see
-[`../plan/qt-frontend-feasibility.md`](../plan/qt-frontend-feasibility.md).
+the browser; see [ADR 2](../adr/0002-upstream-qt-is-a-reference.md).
 
 ## Drive it headless
 

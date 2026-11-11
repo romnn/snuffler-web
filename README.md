@@ -19,7 +19,7 @@ We give snuffler a new outfit without touching its brain.
 The web app is a Rust/egui UI compiled to wasm that drives real pyrocko via Pyodide,
 running **entirely in the browser, no server** (`task serve`).
 The real, unmodified PyQt5 snuffler is not shipped: Qt-for-Python has no WebAssembly
-build (see [`plan/qt-frontend-feasibility.md`](plan/qt-frontend-feasibility.md)).
+build (see [ADR 2](adr/0002-upstream-qt-is-a-reference.md)).
 It runs natively instead, as the reference the parity tests measure the web app
 against: `task snuffler`, see [`qt/`](qt/).
 
@@ -206,11 +206,9 @@ those stages run under emulation and are slow.
 
 ## Notes & limitations
 
-- First load pulls Pyodide + numpy/scipy/matplotlib + the pyrocko wheel
-  (~100 MB, dominated by scipy/matplotlib) from the jsdelivr CDN; subsequent
-  loads are cached. See `plan/load-time-reduction.md` for how to cut that.
-- matplotlib is loaded only because `pyrocko.orthodrome` imports
-  `matplotlib.path` at module top; it isn't otherwise used.
+- First load pulls the Pyodide runtime with numpy, scipy, matplotlib and the
+  pyrocko wheel, dominated by scipy and matplotlib; later loads are cached.
+  scipy carries pyrocko's filters and matplotlib renders pyrocko's own figures.
 - The egui frontend is browser-only: run it with `task serve` or pass
   `--config crates/snuffler-web-egui/Trunk.toml` to Trunk,
   not `cargo run`.

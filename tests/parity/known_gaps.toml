@@ -39,8 +39,14 @@
 # no divergence and never go stale. A full tier-1 run fails on any such entry, which
 # is what keeps "enforced" meaning enforced.
 #
-# `bucket` is the four-way split from plan/native-gaps.md: sandbox-hard,
-# needs-a-server, chromium-only, soft.
+# `bucket` says why a platform gap exists:
+# - `sandbox-hard`: the browser sandbox forbids it, with no workaround (raw sockets,
+#   silent local file access, subprocesses, native-dependency snufflings, >4 GB heaps);
+# - `needs-a-server`: possible only through an external proxy (non-CORS FDSN hosts,
+#   SeedLink);
+# - `chromium-only`: works only with the File System Access API, so Firefox and Safari
+#   degrade to one-shot uploads;
+# - `soft`: present but slower (CPU-only BLAS, browser inference).
 #
 # `checks` lists the tier-1 check kinds the entry accounts for; `strict` (default
 # true) means the divergence must still reproduce, so an entry cannot rot into
@@ -1443,7 +1449,7 @@ why = """
 error on engines without the File System Access API — the `addGfStore` pattern —
 so Firefox and Safari get "this needs a Chromium-based browser" in the status line
 instead of a silent `Ready`. The capability limit itself is real and stays
-(`plan/native-gaps.md` bucket 3): there is no way to re-read a file from disk
+(`chromium-only`): there is no way to re-read a file from disk
 without `showOpenFilePicker` handles.
 
 Two residues are recorded rather than hidden: files that arrived by drag-and-drop

@@ -1,7 +1,8 @@
 # Parity: proving the web port behaves like Qt snuffler
 
-Implements [`plan/parity-testing.md`](../../plan/parity-testing.md). Three tiers, in
-descending value per unit of effort, and nothing here drives pixels over VNC.
+Measures the web port against upstream snuffler, its reference (see
+[ADR 2](../../adr/0002-upstream-qt-is-a-reference.md)). Three tiers, in descending value
+per unit of effort, and nothing here drives pixels over VNC.
 
 | | what it compares | needs |
 | --- | --- | --- |
