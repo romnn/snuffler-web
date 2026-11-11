@@ -39,6 +39,7 @@ mod file_load;
 mod js;
 mod live;
 mod metadata;
+mod proxy;
 mod runtime;
 mod tiles;
 mod view;

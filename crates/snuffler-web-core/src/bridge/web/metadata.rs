@@ -44,7 +44,7 @@ impl Bridge {
         )
     }
 
-    /// Search a CORS-enabled FDSN event service; results become event markers.
+    /// Search an FDSN event service; results become event markers.
     /// The largest-magnitude hit becomes the active event, so this forces a
     /// re-dispatch for the distance/azimuth sort to recompute against it.
     pub fn catalog_search(&self, params: CatalogRequest) -> Submission {

@@ -36,6 +36,11 @@
          binaryen (see Trunk.toml). -->
     <link data-trunk rel="rust" data-wasm-opt="0" />
     <base data-trunk-public-url />
+    <!-- the deployment's runtime configuration, such as where snuffler-web-proxy is
+         (web/config.js documents it); a classic script, so it has run before the
+         app's module scripts read it -->
+    <link data-trunk rel="copy-file" href="../../web/config.js" />
+    <script src="config.js"></script>
     <!-- pyrocko/snuffler boar mark, matching the favicon on pyrocko.org -->
     <link data-trunk rel="icon" href="assets/favicon.png" />
     <!-- same boar mark, copied verbatim for the loading-screen logo (<img> below) -->

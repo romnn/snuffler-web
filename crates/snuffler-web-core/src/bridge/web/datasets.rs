@@ -108,8 +108,8 @@ impl Bridge {
         )
     }
 
-    /// Downloads waveforms from a CORS-enabled FDSN dataselect service and
-    /// appends them to the pile (browser fetch; pyrocko parses).
+    /// Downloads waveforms from an FDSN dataselect service and appends them to the pile
+    /// (browser fetch; pyrocko parses).
     pub fn download_waveforms(&self, params: WaveformDownloadRequest) -> Submission {
         let inner = self.inner.clone();
         submit_job(

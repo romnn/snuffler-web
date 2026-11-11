@@ -198,7 +198,7 @@ optimize_app_wasm() {
 # is the only thing a cache can be expected to honour.
 #
 # Rewriting the already-hashed main module means its name no longer matches its
-# bytes, so this requires the --no-sri builds (see taskfile.yaml).
+# bytes, so this requires the --no-sri builds (see tasks/web.yaml).
 patch_rayon_worker_import() {
     for dir in "${build_dirs[@]}"; do
         local main hash
@@ -295,7 +295,28 @@ stage_threaded_pyodide() {
     echo "[py-mt] threaded runtime staged"
 }
 
+# The page's runtime configuration (web/config.js documents it): Trunk copies the
+# repository's own, which names no proxy, unless SNUFFLER_PROXY_URL names one.
+# micromux sets it for the local proxy and the Pages build for the public one; a
+# Helm deployment mounts its own config.js over the image's instead.
+write_runtime_config() {
+    if [ -z "${SNUFFLER_PROXY_URL:-}" ]; then
+        return
+    fi
+    # json.dumps escapes the URL for the JavaScript object literal.
+    config=$(python3 -c '
+import json, os
+print(json.dumps({"proxyUrl": os.environ["SNUFFLER_PROXY_URL"]}))
+')
+    {
+        echo "// Written by scripts/trunk-post-build.sh from SNUFFLER_PROXY_URL."
+        echo "globalThis.snufflerConfig = $config;"
+    } > "$staging_dir/config.js"
+    echo "[config] proxyUrl=$SNUFFLER_PROXY_URL"
+}
+
 stage_bridge_module
+write_runtime_config
 stage_ort_runtime
 stage_seisbench_models
 stage_examples

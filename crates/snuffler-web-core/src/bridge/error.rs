@@ -183,6 +183,17 @@ pub enum SeedlinkError {
         source: std::num::ParseIntError,
     },
 
+    /// The site names no proxy, which a browser needs to reach a `SeedLink` server.
+    #[error("live SeedLink streaming is not available on this site")]
+    Unavailable,
+
+    /// The proxy's `WebSocket` URL could not be built.
+    #[error("could not build the address to stream the SeedLink server from: {detail}")]
+    ProxyUrl {
+        /// The JS exception, stringified at the boundary.
+        detail: String,
+    },
+
     /// The `WebSocket` to the proxy could not be opened.
     #[error("could not open a SeedLink WebSocket to {url}: {detail}")]
     Connect {

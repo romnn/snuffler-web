@@ -225,7 +225,12 @@ jobs:
       # The Task workflow owns the threaded build flags and rust-toolchain.toml the
       # pinned nightly, so local and Pages builds cannot silently diverge; CI adds
       # only the project-specific public URL.
+      # The site streams live SeedLink data, and makes the FDSN requests a browser cannot
+      # make directly, through the project's public proxy (scripts/trunk-post-build.sh
+      # writes it into config.js).
       - name: Trunk build (release, threaded)
+        env:
+          SNUFFLER_PROXY_URL: https://proxy.snuffler.romnn.com/
         run: task build -- --public-url "/${{ github.event.repository.name }}/"
 
       # Final backstop: validate the lock in the ACTUAL artifact about to be

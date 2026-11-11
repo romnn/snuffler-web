@@ -231,14 +231,6 @@ pub fn seedlink(ctx: &egui::Context, state: &mut AppState, active: bool) -> Opti
                     intent = Some(SeedlinkIntent::SaveBuffer);
                 }
             });
-            // The WebSocket route to a SeedLink server exists only through the
-            // local proxy; saying so beats a connect error with no context.
-            ui.small(
-                "Live streaming tunnels through snuffler-web-proxy on \
-                 127.0.0.1:17684 (run `micromux`), so it works only for a \
-                 locally served app — the deployed site cannot reach SeedLink \
-                 servers.",
-            );
         });
     state.show_live_seedlink = open;
     intent

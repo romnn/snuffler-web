@@ -29,6 +29,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "BinaryType",
+    "Document",
     "ErrorEvent",
     "Event",
     "MessageEvent",
@@ -36,5 +37,8 @@ web-sys = { version = "0.3", features = [
     # The ':' command line keeps its history in localStorage, the browser's
     # counterpart to snuffler's `$HOME/.pyrocko/.snuffler_history`.
     "Storage",
+    # Resolving the configured proxy against the page, and building the tunnel's URL.
+    "Url",
+    "UrlSearchParams",
     "Window",
 ] }

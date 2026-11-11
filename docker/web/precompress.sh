@@ -40,7 +40,9 @@ self="$0"
 # the images and fonts carry their own codec.
 # Skipping them by name matters most for the Pyodide runtime, which is ~50 MB of
 # wheels.
-find "$root" -type f -size +512c \
+# config.js is never compressed: a deployment mounts its own over the image's, and
+# brotli_static and gzip_static would keep answering with the image's copy.
+find "$root" -type f -size +512c ! -name config.js \
     ! -name '*.br' ! -name '*.gz' ! -name '*.zst' \
     ! -name '*.zip' ! -name '*.whl' ! -name '*.tar' \
     ! -name '*.png' ! -name '*.jpg' ! -name '*.jpeg' ! -name '*.webp' \

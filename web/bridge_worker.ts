@@ -453,6 +453,18 @@ function makeDirectories(paths: string[]) {
   }
 }
 
+// Runs the deployment's config.js, which sets `snufflerConfig` for the bridge to read
+// (`web/config.js` documents it).
+// The worker sits next to it, so it resolves against the worker's own URL.
+// Without it the bridge runs with no proxy, as on a deployment that names none.
+async function importDeploymentConfig(): Promise<void> {
+  try {
+    await import(new URL("config.js", self.location.href).href);
+  } catch (err) {
+    console.warn("[bridge-worker] config.js did not load; running without a proxy", err);
+  }
+}
+
 // Boots Python once; every request awaits the same promise.
 async function boot() {
   if (pyodideReadyPromise) return pyodideReadyPromise;
@@ -467,6 +479,7 @@ async function boot() {
       // while it is coming up.
       const sources = fetchBridgeSources();
       void sources.catch(() => {});
+      const deploymentConfig = importDeploymentConfig();
       const prefetch = await startPyodidePrefetch();
       await prefetch.priority;
 
@@ -519,6 +532,7 @@ async function boot() {
       // uses inside functions, then imports the bridge while counting modules, so
       // the longest phase of the boot has a moving bar instead of a frozen one.
       reportBootProgress(BOOT_SPAN.importStart, "Importing pyrocko…");
+      await deploymentConfig;
       makeDirectories(["/snuffler_web_proto", "/snuffler_bridge"]);
       for (const [destination, source] of await sources) {
         pyodide.FS.writeFile(destination, source);

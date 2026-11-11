@@ -1,16 +1,17 @@
-"""FDSN web services: query URLs, and fetches through the local CORS proxy."""
+"""FDSN web services: query URLs, and fetches that fall back to snuffler-web-proxy."""
 
 from __future__ import annotations
 
-from typing import Any
+import functools
+from typing import Any, Optional
 from urllib.parse import quote
 
 from snuffler_web_proto import data_pb2
 
 from . import operation, state
 
-# CORS-enabled FDSN web services (verified to allow cross-origin fetch).
-# The local proxy allows these hosts; keep them in sync with
+# The FDSN web services the app knows by name, all of which send CORS headers.
+# The proxy allows these hosts; keep them in sync with
 # `crates/snuffler-web-proxy/src/defaults.rs`.
 _SERVICE_BASE_URLS = {
     "geofon": "https://geofon.gfz.de",
@@ -30,39 +31,56 @@ def _service_base_url(name: str, default: str = "geofon") -> str:
     return _SERVICE_BASE_URLS.get(name, _SERVICE_BASE_URLS[default])
 
 
-def _local_cors_proxy_url(url: str) -> str:
-    if not (url.startswith("http://") or url.startswith("https://")):
-        return url
+@functools.cache
+def _proxy_base() -> Optional[str]:
+    """snuffler-web-proxy's base URL, ending in ``/``, or None without a usable one.
+
+    The worker imports the deployment's ``config.js`` before the bridge, which sets
+    ``snufflerConfig`` (``web/config.js`` documents it).
+    It is read once, like the Rust side reads it for live SeedLink streams.
+    """
     try:
         import js
-
-        protocol = str(js.location.protocol)
-        host = str(js.location.hostname)
+    except ImportError:
+        return None
+    proxy = getattr(getattr(js, "snufflerConfig", None), "proxyUrl", None)
+    if not isinstance(proxy, str) or not proxy.strip():
+        return None
+    try:
+        url = js.URL.new(proxy.strip(), js.location.href)
     except Exception:
-        return url
-    if protocol != "http:" or host not in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-        return url
-    return "http://127.0.0.1:17684/cors?url=%s" % quote(url, safe="")
+        print("[py.fdsn] ignoring an invalid proxyUrl %r" % proxy)
+        return None
+    if url.protocol not in ("http:", "https:"):
+        print("[py.fdsn] ignoring a non-HTTP proxyUrl %r" % proxy)
+        return None
+    base = str(url.href)
+    return base if base.endswith("/") else base + "/"
 
 
 async def fetch(url: str) -> Any:
-    """GET an FDSN query, through the local CORS proxy when the page is served from localhost."""
+    """GET an FDSN query, directly or, when the browser cannot, through the proxy.
+
+    The data centers the app knows send CORS headers, so the proxy is a fallback for what a
+    browser refuses: a data center without CORS headers, one that sends them twice
+    (eida.bgr.de), or plain HTTP from an HTTPS page.
+    The browser reports each of those as the same network error as an unreachable host, so
+    any failure retries through the proxy.
+    An HTTP error status is the data center's answer, never retried.
+    """
     from pyodide.http import pyfetch
 
-    proxied = _local_cors_proxy_url(url)
     try:
-        response = await operation.await_external(pyfetch(proxied))
-    except Exception:
-        if proxied != url:
-            return await operation.await_external(pyfetch(url))
-        raise
-    # The local proxy 403s any host off its allowlist, the normal outcome for a
-    # custom base URL on localhost, and not an exception.
-    # Retry such a host directly: if it sends CORS headers the query still
-    # works, and if not the failure surfaces as the network error it is.
-    if response.status == 403 and proxied != url:
         return await operation.await_external(pyfetch(url))
-    return response
+    except Exception:
+        proxy = _proxy_base()
+        if proxy is None or not url.startswith(("http://", "https://")):
+            raise
+        # Retried inside the handler, so a failure here carries the direct one as its context.
+        # The proxy answers 403 for a data center off its allowlist, which surfaces like any
+        # other HTTP error.
+        proxied = "%scors?url=%s" % (proxy, quote(url, safe=""))
+        return await operation.await_external(pyfetch(proxied))
 
 
 async def fetch_text_or_empty(url: str) -> str:
@@ -70,8 +88,8 @@ async def fetch_text_or_empty(url: str) -> str:
 
     Only 204 and 404, the codes the standard assigns to "no matching data", read
     as empty.
-    Every other failure raises, so a 403 from the local proxy's allowlist or a
-    500 from the service surfaces as the error it is, not as "0 loaded".
+    Every other failure raises, so a 403 from the proxy's allowlist or a 500
+    from the service surfaces as the error it is, not as "0 loaded".
     """
     response = await fetch(url)
     if response.ok:
