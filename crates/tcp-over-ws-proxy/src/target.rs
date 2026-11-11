@@ -57,14 +57,14 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    /// Extends the built-in `SeedLink` targets with deployment-specific targets.
-    pub fn with_default_targets<I>(extra_targets: I) -> Self
+    /// Allows exactly `targets`; an empty list refuses every connection.
+    pub fn new<I>(targets: I) -> Self
     where
         I: IntoIterator<Item = AllowedTcpTarget>,
     {
-        let mut targets = default_seedlink_targets();
-        targets.extend(extra_targets);
-        Self { targets }
+        Self {
+            targets: targets.into_iter().collect(),
+        }
     }
 
     pub(crate) fn contains(&self, target: &TcpTarget) -> bool {
@@ -104,15 +104,6 @@ impl AllowedTcpTarget {
     fn matches(&self, target: &TcpTarget) -> bool {
         target.host.eq_ignore_ascii_case(&self.host) && target.port == self.port
     }
-}
-
-/// The app's default live `SeedLink` server, plus GEOFON's.
-fn default_seedlink_targets() -> Vec<AllowedTcpTarget> {
-    [
-        AllowedTcpTarget::new("rtserve.iris.washington.edu", 18000),
-        AllowedTcpTarget::new("geofon.gfz.de", 18000),
-    ]
-    .into()
 }
 
 /// Reads the target from a `host=…&port=…` query.
@@ -172,8 +163,8 @@ mod tests {
 
     #[test]
     fn parses_host_and_port_query() -> eyre::Result<()> {
-        let target = target_from_query(Some("host=geofon.gfz.de&port=18000"))?;
-        assert_eq!(target.to_string(), "geofon.gfz.de:18000");
+        let target = target_from_query(Some("host=stream.example.org&port=18000"))?;
+        assert_eq!(target.to_string(), "stream.example.org:18000");
         Ok(())
     }
 
@@ -189,37 +180,50 @@ mod tests {
     fn rejects_unusable_ports() {
         // Not a number, out of range, and the unconnectable zero port
         assert!(matches!(
-            target_from_query(Some("host=geofon.gfz.de&port=seedlink")),
+            target_from_query(Some("host=stream.example.org&port=http")),
             Err(TargetError::InvalidPort { .. })
         ));
         assert!(matches!(
-            AllowedTcpTarget::parse("geofon.gfz.de:70000"),
+            AllowedTcpTarget::parse("stream.example.org:70000"),
             Err(TargetError::InvalidPort { .. })
         ));
         assert!(matches!(
-            AllowedTcpTarget::parse("geofon.gfz.de:0"),
+            AllowedTcpTarget::parse("stream.example.org:0"),
             Err(TargetError::ZeroPort)
         ));
     }
 
+    fn example_allowlist() -> eyre::Result<Allowlist> {
+        Ok(Allowlist::new([AllowedTcpTarget::parse(
+            "stream.example.org:18000",
+        )?]))
+    }
+
     #[test]
-    fn default_allowlist_accepts_known_seedlink_hosts() -> eyre::Result<()> {
-        let target = target_from_query(Some("host=rtserve.iris.washington.edu&port=18000"))?;
-        assert!(Allowlist::with_default_targets([]).contains(&target));
+    fn accepts_an_allowed_target() -> eyre::Result<()> {
+        let target = target_from_query(Some("host=STREAM.example.org&port=18000"))?;
+        assert!(example_allowlist()?.contains(&target));
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_hosts() -> eyre::Result<()> {
-        let target = target_from_query(Some("host=example.org&port=18000"))?;
-        assert!(!Allowlist::with_default_targets([]).contains(&target));
+    fn rejects_other_hosts() -> eyre::Result<()> {
+        let target = target_from_query(Some("host=example.net&port=18000"))?;
+        assert!(!example_allowlist()?.contains(&target));
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_ports() -> eyre::Result<()> {
-        let target = target_from_query(Some("host=rtserve.iris.washington.edu&port=22"))?;
-        assert!(!Allowlist::with_default_targets([]).contains(&target));
+    fn rejects_other_ports() -> eyre::Result<()> {
+        let target = target_from_query(Some("host=stream.example.org&port=22"))?;
+        assert!(!example_allowlist()?.contains(&target));
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_allowlist_refuses_everything() -> eyre::Result<()> {
+        let target = target_from_query(Some("host=stream.example.org&port=18000"))?;
+        assert!(!Allowlist::new([]).contains(&target));
         Ok(())
     }
 }

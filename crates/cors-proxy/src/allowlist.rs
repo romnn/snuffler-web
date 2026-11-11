@@ -1,4 +1,4 @@
-//! The exact HTTP targets the proxy forwards to: built-in FDSN endpoints plus configured extras.
+//! The exact HTTP targets the proxy forwards to, as configured by its caller.
 
 use reqwest::Url;
 
@@ -25,14 +25,14 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    /// Extends the built-in FDSN targets with deployment-specific rules.
-    pub fn with_default_rules<I>(extra_rules: I) -> Self
+    /// Allows exactly `rules`; an empty list refuses every request.
+    pub fn new<I>(rules: I) -> Self
     where
         I: IntoIterator<Item = AllowedHttpTarget>,
     {
-        let mut rules = default_fdsn_targets();
-        rules.extend(extra_rules);
-        Self { rules }
+        Self {
+            rules: rules.into_iter().collect(),
+        }
     }
 
     pub(crate) fn check(&self, url: &Url) -> Result<(), ProxyError> {
@@ -95,35 +95,6 @@ impl AllowedHttpTarget {
     }
 }
 
-/// The FDSN query endpoints of the data centers the app knows by name.
-///
-/// Keep the hosts in sync with `_SERVICE_BASE_URLS` in `web/snuffler_bridge/fdsn.py`.
-fn default_fdsn_targets() -> Vec<AllowedHttpTarget> {
-    const HOSTS: &[&str] = &[
-        "geofon.gfz.de",
-        "service.earthscope.org",
-        "service.iris.edu",
-        "earthquake.usgs.gov",
-        "www.orfeus-eu.org",
-        "webservices.ingv.it",
-        "ws.resif.fr",
-        "eida.bgr.de",
-    ];
-    const PATHS: &[&str] = &[
-        "/fdsnws/dataselect/1/query",
-        "/fdsnws/event/1/query",
-        "/fdsnws/station/1/query",
-    ];
-    HOSTS
-        .iter()
-        .flat_map(|host| {
-            PATHS
-                .iter()
-                .map(move |path| AllowedHttpTarget::new("https", host, 443, path))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use color_eyre::eyre;
@@ -146,31 +117,44 @@ mod tests {
         ));
     }
 
+    fn example_allowlist() -> eyre::Result<Allowlist> {
+        Ok(Allowlist::new([AllowedHttpTarget::parse(
+            "https://data.example.org/api/query",
+        )?]))
+    }
+
     #[test]
-    fn default_allowlist_accepts_fdsn_query() -> eyre::Result<()> {
-        let url = Url::parse("https://geofon.gfz.de/fdsnws/dataselect/1/query?net=GE")?;
-        assert!(Allowlist::with_default_rules([]).check(&url).is_ok());
+    fn accepts_an_allowed_url_with_any_query() -> eyre::Result<()> {
+        let url = Url::parse("https://data.example.org/api/query?station=ABC")?;
+        assert!(example_allowlist()?.check(&url).is_ok());
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_pages_on_allowed_host() -> eyre::Result<()> {
-        let url = Url::parse("https://geofon.gfz.de/index.html")?;
-        assert!(Allowlist::with_default_rules([]).check(&url).is_err());
+    fn rejects_other_pages_on_an_allowed_host() -> eyre::Result<()> {
+        let url = Url::parse("https://data.example.org/index.html")?;
+        assert!(example_allowlist()?.check(&url).is_err());
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_ports_on_allowed_host() -> eyre::Result<()> {
-        let url = Url::parse("https://geofon.gfz.de:444/fdsnws/dataselect/1/query?net=GE")?;
-        assert!(Allowlist::with_default_rules([]).check(&url).is_err());
+    fn rejects_other_ports_on_an_allowed_host() -> eyre::Result<()> {
+        let url = Url::parse("https://data.example.org:444/api/query")?;
+        assert!(example_allowlist()?.check(&url).is_err());
         Ok(())
     }
 
     #[test]
-    fn default_allowlist_rejects_other_hosts() -> eyre::Result<()> {
-        let url = Url::parse("https://example.org/fdsnws/dataselect/1/query")?;
-        assert!(Allowlist::with_default_rules([]).check(&url).is_err());
+    fn rejects_other_hosts() -> eyre::Result<()> {
+        let url = Url::parse("https://example.net/api/query")?;
+        assert!(example_allowlist()?.check(&url).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_allowlist_refuses_everything() -> eyre::Result<()> {
+        let url = Url::parse("https://data.example.org/api/query")?;
+        assert!(Allowlist::new([]).check(&url).is_err());
         Ok(())
     }
 }

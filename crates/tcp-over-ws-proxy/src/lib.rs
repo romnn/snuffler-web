@@ -1,6 +1,7 @@
-//! Allowlisted WebSocket-to-TCP relay for browser `SeedLink` clients.
+//! Allowlisted TCP-over-WebSocket proxy for browser clients that speak a raw TCP protocol.
 //!
-//! A browser cannot open a raw TCP socket, so it asks for `/seedlink?host=…&port=…` instead.
+//! A browser cannot open a raw TCP socket, so it asks for `?host=…&port=…` on the route the
+//! caller mounts this proxy at.
 //! An allowlisted target is upgraded to a WebSocket whose binary frames carry the TCP bytes.
 
 mod relay;

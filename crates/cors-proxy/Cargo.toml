@@ -1,5 +1,5 @@
 [package]
-name = "snuffler-web-cors-proxy"
+name = "cors-proxy"
 version.workspace = true
 edition.workspace = true
 publish = false

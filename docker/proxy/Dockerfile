@@ -85,7 +85,7 @@ FROM ${RUNTIME_IMAGE} AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 LABEL org.opencontainers.image.title="snuffler-web-proxy" \
-      org.opencontainers.image.description="Allowlisted CORS and WebSocket-to-TCP proxy for snuffler-web"
+      org.opencontainers.image.description="Allowlisted CORS and TCP-over-WebSocket proxy for snuffler-web"
 
 # ca-certificates because rustls verifies outgoing FDSN requests against the
 # system trust store (rustls-platform-verifier); curl only so the HEALTHCHECK
@@ -97,10 +97,7 @@ RUN apt-get update \
 
 COPY --from=builder /usr/local/bin/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
 
-# The binary defaults to 127.0.0.1, which inside a container is reachable by
-# nothing.
-# Everything else keeps its default; the allowlists are extended with
-# SNUFFLER_PROXY_ALLOW_HTTP_TARGETS / SNUFFLER_PROXY_ALLOW_TCP_TARGETS.
+# The binary defaults to 127.0.0.1, which inside a container is reachable by nothing.
 ENV SNUFFLER_PROXY_BIND=0.0.0.0:17684
 
 USER 10001

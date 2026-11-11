@@ -1,4 +1,4 @@
-//! Allowlisted streaming CORS proxy for browser-side FDSN requests.
+//! Allowlisted streaming CORS proxy for browser-side HTTP requests.
 //!
 //! The browser asks for `/cors?url=<target>`.
 //! A `GET` or `HEAD` to an allowlisted target is forwarded, and the response streams back with
@@ -166,13 +166,8 @@ mod tests {
 
     #[test]
     fn accepts_http_target() -> eyre::Result<()> {
-        let url = target_url_from_query(Some(
-            "url=https%3A%2F%2Fgeofon.gfz.de%2Ffdsnws%2Fdataselect%2F1%2Fquery",
-        ))?;
-        assert_eq!(
-            url.as_str(),
-            "https://geofon.gfz.de/fdsnws/dataselect/1/query"
-        );
+        let url = target_url_from_query(Some("url=https%3A%2F%2Fdata.example.org%2Fapi%2Fquery"))?;
+        assert_eq!(url.as_str(), "https://data.example.org/api/query");
         Ok(())
     }
 

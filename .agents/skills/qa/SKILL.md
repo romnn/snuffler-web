@@ -29,7 +29,7 @@ selection, or hovering stops working for the human using the app. The flag turns
 hit-testing on for your session only.
 
 If the app is not running: `task run` (or the `web` service in `micromux.yaml`,
-port 17683; the FDSN/SeedLink proxy on 17684 is a separate service).
+port 17683; the CORS and TCP proxy on 17684 is a separate service).
 
 ## Waiting for readiness
 
@@ -95,7 +95,7 @@ is open.
 ## Running it, and knowing when a change is actually served
 
 The app runs under **micromux** (`micromux.yaml`): the `web` service is the Trunk
-dev server on 17683, `proxy` is the FDSN/SeedLink proxy on 17684. Use the
+dev server on 17683, `proxy` is the CORS and TCP proxy on 17684. Use the
 micromux MCP tools — `list_services`, `get_health`, `get_logs`, `wait_for_log`,
 `restart_service` — rather than starting your own server on the same port; a
 second one collides with the service-worker namespace the COI headers rely on.

@@ -11,8 +11,8 @@ vars:
     -p snuffler-web-core
     -p snuffler-web-render
     -p snuffler-web-proto
-    -p snuffler-web-cors-proxy
-    -p snuffler-web-tcp-ws-proxy
+    -p cors-proxy
+    -p tcp-over-ws-proxy
     -p snuffler-web-proxy
   TRUNK_CONFIG: crates/snuffler-web-egui/Trunk.toml
 

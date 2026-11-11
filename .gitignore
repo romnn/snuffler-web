@@ -41,6 +41,9 @@ docker/pyodide-mt/.work/
 docker/pyodide-mt/out/
 docker/pyodide-mt/served/
 
+# A deployment's own proxy allowlist (see .env.example).
+.env
+
 # Agent scratch.
 scratchpad/
 

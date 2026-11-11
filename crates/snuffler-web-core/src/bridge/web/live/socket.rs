@@ -1,12 +1,13 @@
-//! The WebSocket to the `SeedLink` proxy: the handshake it sends on open, the framing
-//! of the packets it receives, and how its errors and closing end the stream.
+//! The WebSocket to the local TCP proxy that carries the `SeedLink` stream: the handshake it
+//! sends on open, the framing of the packets it receives, and how its errors and closing end
+//! the stream.
 
 use crate::seedlink::{FrameError, MAX_FRAME_BUFFER_BYTES, drain_records, v4_selectors};
 
 use super::*;
 
-/// Where the local TCP-to-WebSocket proxy listens; it dials the `SeedLink` server.
-const SEEDLINK_PROXY_URL: &str = "ws://127.0.0.1:17684/seedlink";
+/// Where the local TCP-over-WebSocket proxy listens; it dials the `SeedLink` server.
+const TCP_PROXY_URL: &str = "ws://127.0.0.1:17684/tcp";
 
 /// The live socket plus the JS callbacks it invokes.
 ///
@@ -147,7 +148,7 @@ fn proxy_url(host: &str, port: u16) -> String {
     let host = js_sys::encode_uri_component(host)
         .as_string()
         .unwrap_or_default();
-    format!("{SEEDLINK_PROXY_URL}?host={host}&port={port}")
+    format!("{TCP_PROXY_URL}?host={host}&port={port}")
 }
 
 /// The `SeedLink` 4 handshake: select the station and channels, then start streaming.

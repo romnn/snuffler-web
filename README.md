@@ -122,7 +122,7 @@ other push and pull request only builds and smoke-tests them:
 | Image | What |
 |---|---|
 | `ghcr.io/romnn/snuffler-web/web` | the site — egui wasm frontend, Pyodide 314 runtime, example bundles — behind an unprivileged nginx on `:8080` |
-| `ghcr.io/romnn/snuffler-web/proxy` | `snuffler-web-proxy` on `:17684`: the allowlisted `/cors` and `/seedlink` endpoints |
+| `ghcr.io/romnn/snuffler-web/proxy` | `snuffler-web-proxy` on `:17684`: the allowlisted `/cors` and `/tcp` endpoints |
 
 `latest`, `X.Y.Z` and `X.Y` follow the newest release tag, and every release is
 additionally tagged `sha-<commit>`.
@@ -196,7 +196,8 @@ those stages run under emulation and are slow.
 | `crates/snuffler-web-egui/` | egui frontend, Trunk entry point, and frontend assets |
 | `crates/snuffler-web-proto/` | generated Rust protobuf crate |
 | `crates/accesskit-dom/`, `crates/egui-a11y/` | the AccessKit tree projected into a DOM overlay, for screen readers and browser agents |
-| `crates/snuffler-web-proxy/` | the local `/cors` + `/seedlink` proxy, built from the two crates beside it |
+| `crates/snuffler-web-proxy/` | snuffler-web's local `/cors` + `/tcp` proxy, with the hosts the app uses built in |
+| `crates/cors-proxy/`, `crates/tcp-over-ws-proxy/` | the generic, allowlisted proxies it is built from |
 | `qt/` | the upstream Qt snuffler as a native reference, with a headless driver |
 | `tests/` | browser suites and the Qt parity harness (`tests/parity/`) |
 | `pybuild/` | `setup.py` (the pyrocko wheel build def, used by `docker/pyodide-mt`) + `fetch-pyrocko.sh` + `protoc-gen-mypy` |
@@ -218,13 +219,15 @@ those stages run under emulation and are slow.
   run `micromux` instead of plain `task serve`. It starts Trunk on
   `127.0.0.1:17683` and `snuffler-web-proxy` on `127.0.0.1:17684`; local FDSN fetches
   use `/cors` through that proxy when available, and the same process exposes
-  `/seedlink` as a WebSocket-to-raw-TCP tunnel.
-- `snuffler-web-proxy` is not an open proxy: `/cors` only forwards to the known FDSN
-  query endpoints used by the app, only permits `GET`/`HEAD`, and strips browser
-  credential headers. `/seedlink` only connects to known SeedLink/ringserver
-  hosts on their allowed ports. A hosted deployment can add exact targets with
-  `--allow-http-target` / `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` and
-  `--allow-tcp-target` / `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`.
+  `/tcp` as a TCP-over-WebSocket tunnel for the SeedLink stream.
+- `snuffler-web-proxy` is not an open proxy: `/cors` only forwards to the FDSN
+  query endpoints the app uses, only permits `GET`/`HEAD`, and strips browser
+  credential headers; `/tcp` only connects to the app's SeedLink servers. Both lists
+  are in `crates/snuffler-web-proxy/src/defaults.rs`. A deployment allows more with
+  `--allow-http-target` / `--allow-tcp-target`, their variables
+  `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` / `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`, or a
+  `.env` next to the proxy (see `.env.example`). The proxy itself is built from two
+  generic crates, `cors-proxy` and `tcp-over-ws-proxy`, which know no hosts.
 - **Response deconvolution** (Options → Remove response) is wired through
   `trace.transfer` but is a no-op until response metadata (StationXML/RESP) is
   loaded — the demo data carries none.

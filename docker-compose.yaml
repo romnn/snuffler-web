@@ -6,7 +6,7 @@
 # proxy when the page itself is on a localhost origin, and both it and
 # snuffler-web-core hardcode 127.0.0.1:17684 as the proxy — which the BROWSER
 # resolves, not the web container. So the proxy has to be published on the host's
-# 17684 for /cors and /seedlink to be reachable at all; the two containers never
+# 17684 for /cors and /tcp to be reachable at all; the two containers never
 # talk to each other.
 #
 #   docker compose up --build        # build both images from this checkout
@@ -42,9 +42,9 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
-    # The proxy is allowlisted, not open: /cors forwards only to the FDSN query
-    # endpoints the app knows and /seedlink only to known SeedLink hosts. A
-    # deployment that needs more adds exact targets here.
+    # The proxy is allowlisted, not open: it always allows the FDSN endpoints and
+    # SeedLink servers the app uses, and a deployment allows more here (or with an
+    # `env_file`, see .env.example).
     # environment:
     #   SNUFFLER_PROXY_ALLOW_HTTP_TARGETS: "https://example.org/fdsnws/dataselect/1/query"
-    #   SNUFFLER_PROXY_ALLOW_TCP_TARGETS: "geofon.gfz.de:18000"
+    #   SNUFFLER_PROXY_ALLOW_TCP_TARGETS: "example.org:18000"

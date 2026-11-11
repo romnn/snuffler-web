@@ -1,14 +1,14 @@
 [workspace]
 members = [
     "crates/accesskit-dom",
+    "crates/cors-proxy",
     "crates/egui-a11y",
     "crates/snuffler-web-core",
-    "crates/snuffler-web-cors-proxy",
     "crates/snuffler-web-egui",
     "crates/snuffler-web-proto",
     "crates/snuffler-web-proxy",
     "crates/snuffler-web-render",
-    "crates/snuffler-web-tcp-ws-proxy",
+    "crates/tcp-over-ws-proxy",
 ]
 resolver = "3"
 
@@ -94,6 +94,7 @@ axum = "0.8.9"
 bytes = "1"
 clap = "4.6.1"
 color-eyre = "0.6"
+dotenvy = "0.15"
 ecolor = "0.34"
 egui = "0.34"
 emath = "0.34"
