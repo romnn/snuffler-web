@@ -100,7 +100,7 @@ pub struct SeedlinkForm {
 impl Default for SeedlinkForm {
     fn default() -> Self {
         Self {
-            host: "rtserve.iris.washington.edu".into(),
+            host: "rtserve.earthscope.org".into(),
             port: "18000".into(),
             net: "IU".into(),
             sta: "ANMO".into(),
