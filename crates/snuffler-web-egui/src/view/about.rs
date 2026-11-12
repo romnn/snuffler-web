@@ -95,6 +95,7 @@ const ACKNOWLEDGED: &[(&str, &str)] = &[
     ("Rayon", "https://github.com/rayon-rs/rayon"),
     ("OpenStreetMap", "https://www.openstreetmap.org/copyright"),
     ("Geist", "https://github.com/vercel/geist-font"),
+    ("JetBrains Mono", "https://www.jetbrains.com/lp/mono/"),
 ];
 
 /// Draws the About window when the shared state asks for it.

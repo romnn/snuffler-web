@@ -528,7 +528,7 @@ fn show_primary_activity(
                 return (
                     ui.colored_label(
                         egui::Color32::from_rgb(0xE0, 0x50, 0x50),
-                        "PICK (Esc to exit)",
+                        "◉ PICK (Esc to exit)",
                     )
                     .on_hover_text(
                         "Batch picking: click/drag on a trace to place a pick; number/F keys \
