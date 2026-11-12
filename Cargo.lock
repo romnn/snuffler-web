@@ -3524,6 +3524,7 @@ dependencies = [
 name = "snuffler-web-core"
 version = "0.0.3"
 dependencies = [
+ "color-eyre",
  "ecolor",
  "js-sys",
  "snuffler-web-proto",

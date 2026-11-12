@@ -218,6 +218,45 @@ pub enum SeedlinkError {
         /// What the `ErrorEvent` carried; browsers often say very little here.
         detail: String,
     },
+
+    /// The connection closed while the stream was live, without a socket error first.
+    #[error(
+        "the SeedLink connection closed (code {code}){}",
+        close_reason_suffix(reason)
+    )]
+    Closed {
+        /// The `CloseEvent` code, such as 1006 when the connection dropped.
+        code: u16,
+        /// The `CloseEvent` reason, often empty.
+        reason: String,
+    },
+
+    /// A batch of records was not the one the stream expected next, so the stream
+    /// stopped rather than ingest out of order.
+    #[error("SeedLink data arrived out of order: batch {received}, expected batch {expected}")]
+    OutOfOrder {
+        /// The batch that arrived.
+        received: u64,
+        /// The batch the stream was waiting for.
+        expected: u64,
+    },
+
+    /// Ingest fell behind and dropped buffered data, so the traces have a gap.
+    /// The stream itself goes on.
+    #[error("SeedLink ingest fell behind and dropped {dropped_bytes} bytes; the traces have a gap")]
+    Lagged {
+        /// Bytes dropped from the mailbox in this episode.
+        dropped_bytes: u64,
+    },
+}
+
+/// The `: reason` a close message ends with, when the peer gave one.
+fn close_reason_suffix(reason: &str) -> String {
+    if reason.is_empty() {
+        String::new()
+    } else {
+        format!(": {reason}")
+    }
 }
 
 #[cfg(test)]

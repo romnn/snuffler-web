@@ -31,7 +31,7 @@ pub(super) struct LiveSocket {
         dead_code,
         reason = "keeps the socket's close callback alive until drop"
     )]
-    on_close: Closure<dyn FnMut(web_sys::Event)>,
+    on_close: Closure<dyn FnMut(web_sys::CloseEvent)>,
 }
 
 impl Drop for LiveSocket {
@@ -268,16 +268,23 @@ fn on_error(
     }) as Box<dyn FnMut(_)>)
 }
 
+/// Ends the stream when the connection closes under it.
+///
+/// A close the app asked for never gets here, since retiring the socket detaches this
+/// callback first, so the reason is put on screen.
 fn on_close(
     inner: Rc<RefCell<Inner>>,
     repaint: Repaint,
     source: String,
     stream: StreamId,
     session: LiveSessionEpoch,
-) -> Closure<dyn FnMut(web_sys::Event)> {
-    Closure::wrap(Box::new(move |_event: web_sys::Event| {
+) -> Closure<dyn FnMut(web_sys::CloseEvent)> {
+    Closure::wrap(Box::new(move |event: web_sys::CloseEvent| {
         if close_live_ingest(&inner, stream, session) {
-            tracing::info!(%source, "SeedLink disconnected");
+            let code = event.code();
+            let reason = event.reason();
+            tracing::info!(%source, code, %reason, "SeedLink disconnected");
+            set_diagnostic(&inner, SeedlinkError::Closed { code, reason }.into());
         }
         repaint.request_repaint();
     }) as Box<dyn FnMut(_)>)

@@ -17,17 +17,6 @@ thread_local! {
     static LIVE_SOCKET: RefCell<Option<LiveSocket>> = const { RefCell::new(None) };
 }
 
-/// What every callback of one socket needs to know about the stream it feeds.
-#[derive(Clone)]
-struct LiveStream {
-    /// The `host:port NET.STA selectors` label the pile shows as the source.
-    source: String,
-    started_at: f64,
-    stream: StreamId,
-    session: LiveSessionEpoch,
-    retain_s: f64,
-}
-
 /// Closes the stream if it is still the current one, and reports whether it was.
 /// A terminally closed stream retires its socket too; otherwise the UI keeps
 /// offering a live session whose every packet is rejected.
@@ -63,11 +52,16 @@ pub(super) fn defer_live_socket_retirement() {
 }
 
 /// Closes the socket and ends the live session, before a new source replaces the pile.
+///
+/// It also records the user's pick, so a boot example still waiting for the worker
+/// yields to it.
 pub(super) fn retire_live_session(inner: &Rc<RefCell<Inner>>) {
     LIVE_SOCKET.with(|slot| {
         slot.borrow_mut().take();
     });
-    inner.borrow_mut().live.retire();
+    let mut state = inner.borrow_mut();
+    state.choose_source();
+    state.live.retire();
 }
 
 impl Bridge {
@@ -104,13 +98,9 @@ impl Bridge {
                 LIVE_SOCKET.with(|slot| {
                     *slot.borrow_mut() = Some(socket);
                 });
-                let mut state = self.inner.borrow_mut();
-                state.live.retire();
-                state.live.session_epoch = session.0;
-                state.live.last_stream_id = stream.0;
-                state.live.ingest = LiveIngestState::Opening { stream, session };
-                state.live.follow_s = follow_s;
-                state.diagnostic = None;
+                self.inner
+                    .borrow_mut()
+                    .begin_live_session(stream, session, follow_s);
             }
             Err(err) => {
                 self.inner.borrow_mut().diagnostic = Some(err.into());

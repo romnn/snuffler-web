@@ -34,6 +34,7 @@ use crate::activity::{
 use crate::activity::{JobState, Progress, RuntimeState};
 
 mod error;
+mod ingest;
 mod install;
 mod live;
 mod proto;
@@ -43,10 +44,12 @@ mod tiles;
 pub use error::{
     BridgeError, MarshalError, ReloadError, ReloadFailureReason, ReloadSourceError, SeedlinkError,
 };
-use live::LiveState;
-pub use live::{LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, SeedlinkParams};
 #[cfg(target_arch = "wasm32")]
-use live::{LiveIngestBatch, LiveIngestMailbox, LiveIngestState, LiveSessionEpoch, StreamId};
+use ingest::{BatchAction, LiveIngestCompletion};
+#[cfg(target_arch = "wasm32")]
+use live::LiveStream;
+pub use live::{LIVE_FOLLOW_SECONDS, LIVE_RETAIN_SECONDS, LiveSeedlinkSession, SeedlinkParams};
+use live::{LiveIngestState, LiveSessionEpoch, LiveState, StreamId};
 use results::FigureSlot;
 pub use results::{
     ActivitySnapshot, CommandOutcome, FigureData, GotoTarget, SeisbenchProgress, SeisbenchStatus,
@@ -132,6 +135,11 @@ struct Inner {
     tiles: TileCache,
 
     live: LiveState,
+    /// Bumped at the moment the user picks what the pile shows: a load, a download, a
+    /// live stream, or `Close all`.
+    /// A load that only decides once the worker answers, as the boot example does,
+    /// compares it with the value it took and yields when it has moved.
+    source_choice: u64,
 
     /// The datasets `File ▸ Examples` offers, fetched the first time that menu is opened
     /// rather than compiled in, so a deployment can gain an example without a new wasm
@@ -151,6 +159,57 @@ struct Inner {
     /// A dataset introduces itself once, when it arrives, which is a fact known here
     /// rather than something the frontend should infer from a generation change.
     dataset_note_unseen: bool,
+}
+
+impl Inner {
+    /// Records that the user picked a new source for the pile, and returns that pick.
+    fn choose_source(&mut self) -> u64 {
+        self.source_choice = self.source_choice.wrapping_add(1);
+        self.source_choice
+    }
+
+    /// Whether `choice`, from [`Self::choose_source`], is still the user's latest pick.
+    fn is_latest_source_choice(&self, choice: u64) -> bool {
+        self.source_choice == choice
+    }
+
+    /// Settles an `open_example` request whose listing has arrived.
+    ///
+    /// It keeps the listing for the examples menu and returns the example to load, or
+    /// `None` when a source the user picked after `choice` supersedes it.
+    fn example_to_open(
+        &mut self,
+        choice: u64,
+        listed: Vec<ExampleDataset>,
+        slug: String,
+    ) -> Result<Option<ExampleDataset>, BridgeError> {
+        let found = listed.iter().find(|example| example.slug == slug).cloned();
+        self.examples = Some(Ok(listed));
+        let example = found.ok_or(BridgeError::UnknownExample { slug })?;
+        Ok(self.is_latest_source_choice(choice).then_some(example))
+    }
+
+    /// The live session current now, which a retirement decided later is fenced to.
+    fn live_session_fence(&self) -> LiveSessionEpoch {
+        LiveSessionEpoch(self.live.session_epoch)
+    }
+
+    /// Whether the live session is still the one `fence` saw, so retiring it cannot end
+    /// a stream started since.
+    fn is_same_live_session(&self, fence: LiveSessionEpoch) -> bool {
+        LiveSessionEpoch(self.live.session_epoch) == fence
+    }
+
+    /// Makes a new live stream the pile's source, retiring any earlier session.
+    fn begin_live_session(&mut self, stream: StreamId, session: LiveSessionEpoch, follow_s: f64) {
+        self.choose_source();
+        self.live.retire();
+        self.live.session_epoch = session.0;
+        self.live.last_stream_id = stream.0;
+        self.live.ingest = LiveIngestState::Opening { stream, session };
+        self.live.follow_s = follow_s;
+        self.diagnostic = None;
+    }
 }
 
 /// The shared activity snapshot and the ledger revision it was built from.
@@ -613,7 +672,157 @@ mod web;
 mod tests {
     use std::sync::Arc;
 
-    use super::{Bridge, BundleAbout, BundleView, Inner, Operation, Repaint, ViewData};
+    use color_eyre::eyre::{self, ensure};
+
+    use super::proto::pb;
+    use super::{
+        Bridge, BridgeError, BundleAbout, BundleView, ExampleDataset, Inner, LIVE_FOLLOW_SECONDS,
+        LiveSessionEpoch, Operation, Outcome, ReloadError, ReloadFailureReason, ReloadSourceError,
+        Repaint, SeedlinkError, StreamId, ViewData,
+    };
+
+    /// A watched-file poll that finds nothing to do, or reloads a changed file, keeps
+    /// the reason a live stream stopped on screen instead of falling back to "Ready".
+    #[test]
+    fn a_watched_file_poll_keeps_a_live_stream_diagnostic() -> eyre::Result<()> {
+        let mut inner = Inner {
+            diagnostic: Some(
+                SeedlinkError::Closed {
+                    code: 1006,
+                    reason: String::new(),
+                }
+                .into(),
+            ),
+            ..Default::default()
+        };
+
+        // A poll that reloads one changed file, then one that finds no change
+        inner.install_waveform_content(pb::LoadBytesResult::default());
+        let changed = inner.finish_file_load(Vec::new(), 1)?;
+        let unchanged = inner.finish_file_load(Vec::new(), 0)?;
+
+        ensure!(
+            matches!(
+                (changed, unchanged),
+                (Outcome::Succeeded, Outcome::Succeeded)
+            ),
+            "both polls succeed"
+        );
+        ensure!(
+            matches!(
+                inner.diagnostic,
+                Some(BridgeError::Seedlink(SeedlinkError::Closed {
+                    code: 1006,
+                    ..
+                }))
+            ),
+            "the live stream's diagnostic stays, got {:?}",
+            inner.diagnostic
+        );
+        Ok(())
+    }
+
+    /// A file load that succeeds clears the failure an earlier file load left, which it
+    /// resolves.
+    #[test]
+    fn a_successful_file_load_clears_an_earlier_file_load_failure() -> eyre::Result<()> {
+        let mut inner = Inner {
+            diagnostic: Some(
+                ReloadError {
+                    failures: vec![ReloadSourceError {
+                        source_id: "a".to_owned(),
+                        name: "a.mseed".to_owned(),
+                        reason: ReloadFailureReason::BrowserRead {
+                            detail: "gone".to_owned(),
+                        },
+                    }],
+                }
+                .into(),
+            ),
+            ..Default::default()
+        };
+
+        inner.finish_file_load(Vec::new(), 1)?;
+
+        ensure!(inner.diagnostic.is_none(), "the old failure is resolved");
+        Ok(())
+    }
+
+    /// A bundle retires the live session that was current when it was asked for, but
+    /// not one the user started while the file was still being read.
+    #[test]
+    fn a_bundle_retires_only_the_live_session_it_was_asked_for_under() {
+        let mut inner = Inner::default();
+        inner.begin_live_session(StreamId(1), LiveSessionEpoch(1), LIVE_FOLLOW_SECONDS);
+
+        // The session current at the pick is the one the bundle replaces.
+        let fence = inner.live_session_fence();
+        assert!(inner.is_same_live_session(fence));
+
+        // A stream started after the pick survives the bundle.
+        inner.begin_live_session(StreamId(2), LiveSessionEpoch(2), LIVE_FOLLOW_SECONDS);
+        assert!(!inner.is_same_live_session(fence));
+    }
+
+    const BOOT_SLUG: &str = "sumatra-2004-12-26-m9.1-surface-waves";
+
+    fn listing() -> Vec<ExampleDataset> {
+        vec![ExampleDataset {
+            slug: BOOT_SLUG.to_owned(),
+            url: "examples/sumatra.zip".to_owned(),
+            ..ExampleDataset::default()
+        }]
+    }
+
+    /// The boot example loads when the user has picked nothing while the worker booted.
+    #[test]
+    fn boot_example_loads_when_nothing_was_picked_meanwhile() -> eyre::Result<()> {
+        let mut inner = Inner::default();
+        let boot_example = inner.choose_source();
+
+        let example = inner.example_to_open(boot_example, listing(), BOOT_SLUG.to_owned())?;
+
+        ensure!(
+            example.is_some_and(|example| example.slug == BOOT_SLUG),
+            "the boot example loads"
+        );
+        Ok(())
+    }
+
+    /// A live stream started while the boot example waits for the worker supersedes it,
+    /// so the example cannot replace the stream once the listing arrives.
+    #[test]
+    fn boot_example_yields_to_a_live_stream_started_meanwhile() -> eyre::Result<()> {
+        let mut inner = Inner::default();
+        let boot_example = inner.choose_source();
+
+        inner.begin_live_session(StreamId(1), LiveSessionEpoch(1), LIVE_FOLLOW_SECONDS);
+        let example = inner.example_to_open(boot_example, listing(), BOOT_SLUG.to_owned())?;
+
+        ensure!(example.is_none(), "the live stream keeps the pile");
+        // The listing still reaches the examples menu.
+        ensure!(
+            matches!(&inner.examples, Some(Ok(examples)) if examples.len() == 1),
+            "the listing is kept"
+        );
+        Ok(())
+    }
+
+    /// Files asked for while the boot listing holds the job lane queue behind it; the
+    /// request alone supersedes the example, which would otherwise be admitted behind
+    /// the picker and replace the files it loads.
+    #[test]
+    fn boot_example_yields_to_files_asked_for_behind_its_listing() -> eyre::Result<()> {
+        let mut inner = Inner::default();
+        let boot_example = inner.choose_source();
+
+        // What `Bridge::open_files` records before it queues the picker.
+        inner.choose_source();
+        let example = inner.example_to_open(boot_example, listing(), BOOT_SLUG.to_owned())?;
+
+        ensure!(example.is_none(), "the picked files keep the pile");
+        Ok(())
+    }
 
     #[test]
     fn bundle_presentation_uses_the_installed_scene_generation() {

@@ -121,14 +121,22 @@ fn acknowledge_source(file: &pb::BrowserFile) {
 }
 
 /// Loads one file as a bundle or as waveforms, depending on what `bridge.js` saw.
+///
+/// A bundle replaces the pile, so it retires the live session, but only the one that
+/// was current when the load was asked for (`fence`): reading the file can take long
+/// enough for the user to start a newer stream, which must survive.
 async fn load_browser_file(
     inner: &Rc<RefCell<Inner>>,
     file: &mut pb::BrowserFile,
     mode: SourceLoadMode,
+    fence: LiveSessionEpoch,
 ) -> Result<BrowserFileOutcome, CallError> {
     let content = std::mem::take(&mut file.content);
     if file.bundle {
-        retire_live_session(inner);
+        let retire = inner.borrow().is_same_live_session(fence);
+        if retire {
+            retire_live_session(inner);
+        }
         return client()
             .load_bundle(pb::LoadBundleRequest {
                 url: String::new(),
@@ -139,7 +147,7 @@ async fn load_browser_file(
             })
             .await
             .map(|bundle| {
-                inner.borrow_mut().install_bundle_result(bundle);
+                inner.borrow_mut().install_bundle_content(bundle);
                 BrowserFileOutcome::Installed
             });
     }
@@ -159,7 +167,7 @@ async fn load_browser_file(
             } else {
                 BrowserFileOutcome::Duplicate
             };
-            inner.borrow_mut().install_waveform_result(result);
+            inner.borrow_mut().install_waveform_content(result);
             outcome
         })
 }
@@ -170,6 +178,7 @@ async fn load_file_page(
     flow: JobHandle,
     mut page: BrowserFileLoadPage,
     mode: SourceLoadMode,
+    fence: LiveSessionEpoch,
     progress: &mut FileLoadProgress,
 ) -> FilePageOutcome {
     // Files the browser could not even read
@@ -204,7 +213,7 @@ async fn load_file_page(
             u64::from(known_total),
             format!("Loading {}", file.name),
         );
-        match load_browser_file(inner, &mut file, mode).await {
+        match load_browser_file(inner, &mut file, mode, fence).await {
             Ok(BrowserFileOutcome::Installed) => {
                 progress.committed = progress.committed.saturating_add(1);
                 acknowledge_source(&file);
@@ -297,6 +306,7 @@ async fn run_file_load(
     flow: JobHandle,
     mut page: BrowserFileLoadPage,
     mode: SourceLoadMode,
+    fence: LiveSessionEpoch,
 ) -> Result<Outcome, BridgeError> {
     let load_id = page.load_id.clone();
     if let Err(error) = ensure_flow_live(&inner, flow, "browser file load") {
@@ -310,7 +320,7 @@ async fn run_file_load(
     // Load page by page
     let mut progress = FileLoadProgress::default();
     loop {
-        match load_file_page(&inner, flow, page, mode, &mut progress).await {
+        match load_file_page(&inner, flow, page, mode, fence, &mut progress).await {
             FilePageOutcome::More => {}
             FilePageOutcome::Complete => break,
             FilePageOutcome::Cancelled { remaining } => {
@@ -359,25 +369,23 @@ async fn run_file_load(
         set_reload_diagnostic(&inner, &mut progress.failures);
         return Ok(Outcome::TooLate);
     }
-    if progress.failures.is_empty() {
-        inner.borrow_mut().diagnostic = None;
-        return Ok(Outcome::Succeeded);
-    }
-    let committed = progress.committed;
-    let error = BridgeError::from(ReloadError {
-        failures: progress.failures,
-    });
-    inner.borrow_mut().diagnostic = Some(error.clone());
-    if committed == 0 {
-        Err(error)
-    } else {
-        Ok(Outcome::Succeeded)
-    }
+    inner
+        .borrow_mut()
+        .finish_file_load(progress.failures, progress.committed)
 }
 
 impl Bridge {
     /// Open local waveform files via a browser picker and append them.
+    ///
+    /// Asking counts as picking the pile's source even before the picker opens, since
+    /// the picker only opens once the job lane reaches it, behind a boot example that
+    /// must not replace these files.
     pub fn open_files(&self) -> Submission {
+        let fence = {
+            let mut state = self.inner.borrow_mut();
+            state.choose_source();
+            state.live_session_fence()
+        };
         let inner = self.inner.clone();
         submit_flow_with_outcome(
             self.inner.clone(),
@@ -388,14 +396,21 @@ impl Bridge {
             move |flow| async move {
                 let page =
                     decode_browser_file_page(js_open_files().await, "open_files", "opening files")?;
-                run_file_load(inner, flow, page, SourceLoadMode::Append).await
+                run_file_load(inner, flow, page, SourceLoadMode::Append, fence).await
             },
         )
     }
 
     /// Recursively load every waveform file under a picked directory
     /// (Chromium File System Access); appends them to the pile.
+    ///
+    /// Asking counts as picking the pile's source, as for [`Self::open_files`].
     pub fn open_directory(&self) -> Submission {
+        let fence = {
+            let mut state = self.inner.borrow_mut();
+            state.choose_source();
+            state.live_session_fence()
+        };
         let inner = self.inner.clone();
         submit_flow_with_outcome(
             self.inner.clone(),
@@ -409,7 +424,7 @@ impl Bridge {
                     "open_directory",
                     "opening a directory",
                 )?;
-                run_file_load(inner, flow, page, SourceLoadMode::Append).await
+                run_file_load(inner, flow, page, SourceLoadMode::Append, fence).await
             },
         )
     }
@@ -421,7 +436,11 @@ impl Bridge {
     /// batch fails.
     /// Those failures remain visible through the recoverable diagnostic slot.
     pub fn reload_files(&self) -> Submission {
-        self.inner.borrow_mut().diagnostic = None;
+        let fence = {
+            let mut state = self.inner.borrow_mut();
+            state.clear_file_load_diagnostic();
+            state.live_session_fence()
+        };
         let inner = self.inner.clone();
         submit_flow_with_outcome(
             self.inner.clone(),
@@ -435,7 +454,7 @@ impl Bridge {
                     "reload_files",
                     "reloading files",
                 )?;
-                run_file_load(inner, flow, page, SourceLoadMode::Replace).await
+                run_file_load(inner, flow, page, SourceLoadMode::Replace, fence).await
             },
         )
     }
@@ -445,6 +464,7 @@ impl Bridge {
     /// Successful changes install immediately; source failures still surface
     /// because otherwise their earlier batch peers would change invisibly.
     pub fn poll_watched_files(&self) -> Submission {
+        let fence = self.inner.borrow().live_session_fence();
         let inner = self.inner.clone();
         submit_flow_with_outcome(
             self.inner.clone(),
@@ -458,7 +478,7 @@ impl Bridge {
                     "poll_watched_files",
                     "watching files",
                 )?;
-                run_file_load(inner, flow, page, SourceLoadMode::Replace).await
+                run_file_load(inner, flow, page, SourceLoadMode::Replace, fence).await
             },
         )
     }

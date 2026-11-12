@@ -27,6 +27,7 @@ impl Bridge {
     /// Empties the pile and the event context (`File ▸ Close all`), leaving
     /// the blank viewer Qt starts with when given no arguments.
     pub fn empty_scene(&self) -> Submission {
+        retire_live_session(&self.inner);
         let inner = self.inner.clone();
         submit_job(
             self.inner.clone(),
@@ -36,7 +37,6 @@ impl Bridge {
             Vec::new(),
             async move {
                 let scene = client().empty_scene().await?;
-                retire_live_session(&inner);
                 js_clear_open_sources();
                 let mut state = inner.borrow_mut();
                 state.diagnostic = None;
@@ -59,6 +59,7 @@ impl Bridge {
         if data.starts_with(ZIP_MAGIC) {
             return self.load_bundle_bytes(name, data);
         }
+        self.inner.borrow_mut().choose_source();
         let inner = self.inner.clone();
         let detail = Some(name.clone());
         submit_job(
@@ -111,6 +112,7 @@ impl Bridge {
     /// Downloads waveforms from an FDSN dataselect service and appends them to the pile
     /// (browser fetch; pyrocko parses).
     pub fn download_waveforms(&self, params: WaveformDownloadRequest) -> Submission {
+        self.inner.borrow_mut().choose_source();
         let inner = self.inner.clone();
         submit_job(
             self.inner.clone(),
@@ -180,7 +182,13 @@ impl Bridge {
     /// An unknown slug is an error the user has to see, since they followed a link
     /// that promised data, so it lands in the status line rather than only in the
     /// console.
+    ///
+    /// The app issues this at boot, and the example only loads once the worker has
+    /// booted and listed the examples, which on a cold cache takes tens of seconds.
+    /// A source the user picks meanwhile, such as a live stream, wins: the example is
+    /// then not loaded at all, rather than replacing that source when it lands.
     pub fn open_example(&self, slug: String) -> Submission {
+        let choice = self.inner.borrow_mut().choose_source();
         let bridge = self.clone();
         submit_job(
             self.inner.clone(),
@@ -194,10 +202,14 @@ impl Bridge {
                     Some(Ok(examples)) => examples,
                     _ => client().list_examples().await?.examples,
                 };
-                let found = listed.iter().find(|example| example.slug == slug).cloned();
-                bridge.inner.borrow_mut().examples = Some(Ok(listed));
-                let example = found.ok_or(BridgeError::UnknownExample { slug })?;
-                let _submission = bridge.load_bundle(example.url, example.sha256, example.title);
+                let example = bridge
+                    .inner
+                    .borrow_mut()
+                    .example_to_open(choice, listed, slug)?;
+                if let Some(example) = example {
+                    let _submission =
+                        bridge.load_bundle(example.url, example.sha256, example.title);
+                }
                 Ok(())
             },
         )

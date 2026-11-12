@@ -22,6 +22,9 @@ ecolor = { workspace = true }
 snuffler-web-proto = { path = "../snuffler-web-proto" }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+color-eyre = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 tracing = { workspace = true }
@@ -29,6 +32,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "BinaryType",
+    "CloseEvent",
     "Document",
     "ErrorEvent",
     "Event",

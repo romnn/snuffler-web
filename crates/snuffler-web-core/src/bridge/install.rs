@@ -11,8 +11,8 @@ use crate::markers::MarkerBudget;
 
 use super::proto::pb;
 use super::{
-    ActiveEventResult, BridgeError, BundleAbout, BundleView, DatasetNote, Inner, SceneMeta,
-    SnufflingResult,
+    ActiveEventResult, BridgeError, BundleAbout, BundleView, DatasetNote, Inner, Outcome,
+    ReloadError, ReloadSourceError, SceneMeta, SnufflingResult,
 };
 
 /// The marker budget every marker-producing request carries.
@@ -28,24 +28,63 @@ impl Inner {
         self.clear_view();
     }
 
-    /// Installs the scene a successful load returned, clearing the last load's diagnostic.
-    pub(super) fn install_loaded_scene(&mut self, scene: Option<SceneMeta>) {
+    pub(super) fn install_waveform_result(&mut self, result: pb::LoadBytesResult) {
         self.diagnostic = None;
-        self.replace_scene(scene.unwrap_or_default());
+        self.install_waveform_content(result);
     }
 
-    pub(super) fn install_waveform_result(&mut self, mut result: pb::LoadBytesResult) {
-        self.install_loaded_scene(result.scene.take());
+    /// Installs loaded waveforms without settling the diagnostic, for a file load that
+    /// settles it once at its end ([`Self::finish_file_load`]).
+    pub(super) fn install_waveform_content(&mut self, mut result: pb::LoadBytesResult) {
+        self.replace_scene(result.scene.take().unwrap_or_default());
         if let Some(event_state) = result.event_state.take() {
             self.install_event_state(event_state);
         }
     }
 
-    pub(super) fn install_bundle_result(&mut self, mut result: pb::BundleResult) {
-        self.install_loaded_scene(result.scene.take());
+    pub(super) fn install_bundle_result(&mut self, result: pb::BundleResult) {
+        self.diagnostic = None;
+        self.install_bundle_content(result);
+    }
+
+    /// Installs a loaded bundle without settling the diagnostic, as
+    /// [`Self::install_waveform_content`] does.
+    pub(super) fn install_bundle_content(&mut self, mut result: pb::BundleResult) {
+        self.replace_scene(result.scene.take().unwrap_or_default());
         self.install_bundle_presentation(result.view.take(), result.about.take());
         if let Some(info) = result.info.take() {
             self.install_snuffling_result(info);
+        }
+    }
+
+    /// Settles a finished browser file load, picked, reloaded or polled in the
+    /// background, from the sources that failed and how many files it committed.
+    ///
+    /// Success clears only an earlier file-load failure, which this load resolves.
+    /// Any other diagnostic, such as why a live stream stopped, stays on screen, since
+    /// a watched-file poll runs every second and would otherwise wipe it at once.
+    pub(super) fn finish_file_load(
+        &mut self,
+        failures: Vec<ReloadSourceError>,
+        committed: u32,
+    ) -> Result<Outcome, BridgeError> {
+        if failures.is_empty() {
+            self.clear_file_load_diagnostic();
+            return Ok(Outcome::Succeeded);
+        }
+        let error = BridgeError::from(ReloadError { failures });
+        self.diagnostic = Some(error.clone());
+        if committed == 0 {
+            Err(error)
+        } else {
+            Ok(Outcome::Succeeded)
+        }
+    }
+
+    /// Clears the diagnostic when it reports a failed file load, and keeps any other.
+    pub(super) fn clear_file_load_diagnostic(&mut self) {
+        if matches!(self.diagnostic, Some(BridgeError::Reload(_))) {
+            self.diagnostic = None;
         }
     }
 

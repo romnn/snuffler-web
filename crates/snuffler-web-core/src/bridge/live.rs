@@ -38,6 +38,17 @@ pub struct SeedlinkParams {
     pub retain_s: f64,
 }
 
+/// What every callback of one socket needs to know about the stream it feeds.
+#[derive(Clone, Debug)]
+pub(super) struct LiveStream {
+    /// The `host:port NET.STA selectors` label the pile shows as the source.
+    pub(super) source: String,
+    pub(super) started_at: f64,
+    pub(super) stream: StreamId,
+    pub(super) session: LiveSessionEpoch,
+    pub(super) retain_s: f64,
+}
+
 /// Identity of one socket's packet stream, echoed back by every ingest acknowledgement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct StreamId(pub(super) u64);
@@ -154,5 +165,44 @@ impl LiveState {
         self.mailbox = LiveIngestMailbox::default();
         self.ingest_job = None;
         self.started_at = None;
+    }
+
+    /// The batch the socket must deliver next, past those in flight and those queued.
+    pub(super) fn expected_seq(&self) -> u64 {
+        self.mailbox.batches.back().map_or_else(
+            || match self.ingest {
+                LiveIngestState::ResetInFlight { .. } => 1,
+                LiveIngestState::Streaming { next_seq, .. }
+                | LiveIngestState::Lagged { next_seq, .. } => next_seq,
+                LiveIngestState::Opening { .. } | LiveIngestState::Closed => 0,
+            },
+            |queued| queued.seq.wrapping_add(1),
+        )
+    }
+
+    /// Records that batches `first..=last` went to Python, so the socket's next batch
+    /// is the one after `last`.
+    ///
+    /// Batches that arrive meanwhile are checked against this, so leaving `next_seq` at
+    /// `first` would close the stream on the very batch it should queue.
+    pub(super) fn mark_in_flight(
+        &mut self,
+        stream: StreamId,
+        session: LiveSessionEpoch,
+        first: u64,
+        last: u64,
+    ) {
+        match &mut self.ingest {
+            _ if first == 0 => {
+                self.ingest = LiveIngestState::ResetInFlight { stream, session };
+            }
+            LiveIngestState::Streaming { next_seq, .. }
+            | LiveIngestState::Lagged { next_seq, .. } => {
+                *next_seq = (*next_seq).max(last.wrapping_add(1));
+            }
+            LiveIngestState::Opening { .. }
+            | LiveIngestState::ResetInFlight { .. }
+            | LiveIngestState::Closed => {}
+        }
     }
 }
