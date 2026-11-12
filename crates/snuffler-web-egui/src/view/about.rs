@@ -64,38 +64,34 @@ fn profile() -> &'static str {
 /// What this is made of: the projects that end up in the shipped bundle, and the toolchains
 /// that produce it.
 ///
-/// Ordered by role — languages, the wasm toolchain, the scientific stack, the UI, the
-/// pickers, the plumbing, the typefaces — so the list reads as something more than an
-/// alphabet.
-///
-/// pyrocko is deliberately absent: it is the project this one serves, and it has its own link
-/// above.
-/// Pure orchestration (mise, Task, micromux) is absent too — it never touches the artifact.
+/// Display order is alphabetical regardless of declaration order.
+/// Pure orchestration (mise, Task, micromux) is absent — it never touches the artifact.
 const ACKNOWLEDGED: &[(&str, &str)] = &[
-    ("Rust", "https://www.rust-lang.org"),
-    ("CPython", "https://www.python.org"),
-    ("TypeScript", "https://www.typescriptlang.org"),
-    ("Pyodide", "https://pyodide.org"),
-    ("Emscripten", "https://emscripten.org"),
-    ("LLVM", "https://llvm.org"),
-    ("Binaryen", "https://github.com/WebAssembly/binaryen"),
-    ("Trunk", "https://trunkrs.dev"),
-    ("wasm-bindgen", "https://github.com/rustwasm/wasm-bindgen"),
-    ("Bun", "https://bun.sh"),
-    ("NumPy", "https://numpy.org"),
-    ("SciPy", "https://scipy.org"),
-    ("Matplotlib", "https://matplotlib.org"),
-    ("egui", "https://github.com/emilk/egui"),
     ("AccessKit", "https://accesskit.dev"),
-    ("resvg", "https://github.com/linebender/resvg"),
-    ("SeisBench", "https://github.com/seisbench/seisbench"),
-    ("ONNX Runtime", "https://onnxruntime.ai"),
-    ("Protocol Buffers", "https://protobuf.dev"),
-    ("prost", "https://github.com/tokio-rs/prost"),
-    ("Rayon", "https://github.com/rayon-rs/rayon"),
-    ("OpenStreetMap", "https://www.openstreetmap.org/copyright"),
+    ("Binaryen", "https://github.com/WebAssembly/binaryen"),
+    ("Bun", "https://bun.sh"),
+    ("CPython", "https://www.python.org"),
+    ("egui", "https://github.com/emilk/egui"),
+    ("Emscripten", "https://emscripten.org"),
     ("Geist", "https://github.com/vercel/geist-font"),
     ("JetBrains Mono", "https://www.jetbrains.com/lp/mono/"),
+    ("LLVM", "https://llvm.org"),
+    ("Matplotlib", "https://matplotlib.org"),
+    ("NumPy", "https://numpy.org"),
+    ("ONNX Runtime", "https://onnxruntime.ai"),
+    ("OpenStreetMap", "https://www.openstreetmap.org/copyright"),
+    ("prost", "https://github.com/tokio-rs/prost"),
+    ("Protocol Buffers", "https://protobuf.dev"),
+    ("Pyodide", "https://pyodide.org"),
+    ("pyrocko.org", "https://pyrocko.org"),
+    ("Rayon", "https://github.com/rayon-rs/rayon"),
+    ("resvg", "https://github.com/linebender/resvg"),
+    ("Rust", "https://www.rust-lang.org"),
+    ("SciPy", "https://scipy.org"),
+    ("SeisBench", "https://github.com/seisbench/seisbench"),
+    ("Trunk", "https://trunkrs.dev"),
+    ("TypeScript", "https://www.typescriptlang.org"),
+    ("wasm-bindgen", "https://github.com/rustwasm/wasm-bindgen"),
 ];
 
 /// Draws the About window when the shared state asks for it.
@@ -178,15 +174,17 @@ fn contents(ui: &mut egui::Ui, runtime: Option<&RuntimeInfo>) {
 /// One line of thanks, then the projects themselves as a wrapping list of links.
 fn acknowledgement(ui: &mut egui::Ui) {
     ui.label(weak(
-        "Thanks to the contributors of the open source projects that power snuffler-web:",
+        "Thanks to the contributors of these open source projects (listed alphabetically):",
     ));
     ui.add_space(6.0);
+    let mut projects = ACKNOWLEDGED.to_vec();
+    projects.sort_by_cached_key(|(name, _)| name.to_lowercase());
     ui.horizontal_wrapped(|ui| {
         // The separators are their own labels so only the name itself is a link.
         // Spacing goes to zero for the same reason: a comma belongs against the
         // word it follows, not a widget-gap away from it.
         ui.spacing_mut().item_spacing.x = 0.0;
-        for (index, (name, url)) in ACKNOWLEDGED.iter().enumerate() {
+        for (index, (name, url)) in projects.iter().enumerate() {
             if index > 0 {
                 ui.label(weak(", "));
             }
