@@ -20,12 +20,12 @@ use snuffler_web_render::palette::{Theme, palette};
 const WIDTH: f32 = 1400.0;
 const HEIGHT: f32 = 900.0;
 const EXPORT_SCALE: f32 = 2.0;
-const UBUNTU_REGULAR: &[u8] =
-    include_bytes!("../../snuffler-web-egui/assets/fonts/Ubuntu-Regular.ttf");
+const GEIST_REGULAR: &[u8] =
+    include_bytes!("../../snuffler-web-egui/assets/fonts/Geist-Regular.ttf");
 /// The canvas draws every label bold, so the artifact rasterizer needs the face
 /// resvg will resolve `font-weight: bold` to; without it the artifacts would come
 /// back regular and quietly disagree with what the browser shows.
-const UBUNTU_BOLD: &[u8] = include_bytes!("../../snuffler-web-egui/assets/fonts/Ubuntu-Bold.ttf");
+const GEIST_BOLD: &[u8] = include_bytes!("../../snuffler-web-egui/assets/fonts/Geist-Bold.ttf");
 
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
@@ -126,14 +126,14 @@ fn approximate_text_size(text: &str, size: f32) -> Vec2 {
 
 fn rasterize_svg(svg: &str) -> eyre::Result<Vec<u8>> {
     let mut options = usvg::Options {
-        font_family: "Ubuntu".to_owned(),
+        font_family: "Geist".to_owned(),
         ..usvg::Options::default()
     };
     {
         let database = options.fontdb_mut();
-        database.load_font_data(UBUNTU_REGULAR.to_vec());
-        database.load_font_data(UBUNTU_BOLD.to_vec());
-        database.set_sans_serif_family("Ubuntu");
+        database.load_font_data(GEIST_REGULAR.to_vec());
+        database.load_font_data(GEIST_BOLD.to_vec());
+        database.set_sans_serif_family("Geist");
     }
     let tree = usvg::Tree::from_str(svg, &options).wrap_err("parse rendered SVG")?;
     let width = (WIDTH * EXPORT_SCALE).round();

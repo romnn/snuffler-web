@@ -30,12 +30,12 @@ pub fn palette_for(theme: egui::Theme, wiggle: WiggleTheme) -> Palette {
 
 /// The font every label on the waveform canvas is drawn and measured in.
 ///
-/// Bold, because snuffler's canvas is (see `CANVAS_FAMILY`), and one function so
+/// Bold, because snuffler's canvas is (see [`crate::fonts::CANVAS_FAMILY`]), and one function so
 /// the painter and the SVG export cannot measure in one face and draw in another.
 #[must_use]
 pub fn canvas_font(size: f32) -> egui::FontId {
     egui::FontId::new(
         size,
-        egui::FontFamily::Name(crate::app::CANVAS_FAMILY.into()),
+        egui::FontFamily::Name(crate::fonts::CANVAS_FAMILY.into()),
     )
 }

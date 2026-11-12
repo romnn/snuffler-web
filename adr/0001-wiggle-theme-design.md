@@ -98,12 +98,16 @@ lookup. Marker families, their shared shades, colour meanings and defaults are u
 
 ## Defaults
 
-| Setting | Snuffler Qt | Web themes |
-| --- | --- | --- |
-| Canvas | light, pinned | follows the app |
-| Show boxes | on | **on light, off dark** |
-| Color traces | off (upstream boots so) | house: on · moods: only when the boxes cannot separate |
-| Track separators | off | on |
+Fieldbook is the default theme. Only Fieldbook and Snuffler Qt are selectable; the other
+palettes remain defined and validated with `enabled: false` in the theme catalog.
+A saved disabled theme falls back to Fieldbook.
+
+| Setting | Snuffler Qt | Fieldbook | Disabled web themes |
+| --- | --- | --- | --- |
+| Canvas | light, pinned | follows the app | follows the app |
+| Show boxes | on | off in light and dark | on light, off dark |
+| Color traces | off (upstream boots so) | on | only when the boxes cannot separate |
+| Track separators | off | on | on |
 
 "Only when the boxes cannot separate" means the boxes are hidden **or** the subsort groups
 locations. All three are `Option<bool>`: the user's click outranks the default and is what

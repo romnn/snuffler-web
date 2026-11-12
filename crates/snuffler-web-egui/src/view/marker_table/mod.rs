@@ -82,7 +82,9 @@ impl MarkerTable {
             .show(ctx, |ui| {
                 marker_toolbar(ui, state, marker_update_active);
                 ui.separator();
-                self.table(ui, state, &mut output);
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    self.table(ui, state, &mut output);
+                });
             });
         state.show_marker_editor = open;
 

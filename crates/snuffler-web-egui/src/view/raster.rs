@@ -4,18 +4,11 @@
 
 use resvg::{tiny_skia, usvg};
 
-/// Embedded font so SVG `<text>` renders the same as the on-screen view — resvg
-/// has no system fonts to fall back on under wasm.
-const UBUNTU_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Regular.ttf");
-/// The canvas is drawn bold, so the exported PNG needs the bold face too — resvg
-/// resolves `font-weight: bold` against this database and would otherwise fall back
-/// to the regular one, exporting an image the app never showed.
-const UBUNTU_BOLD: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Bold.ttf");
-
 /// Rasterize `svg` to PNG bytes at `scale`× its declared point size, giving a crisp high-DPI
 /// image.
 ///
 /// `width`/`height` are the SVG viewBox size in points.
+/// The embedded Geist faces match the waveform canvas.
 /// Returns `None` if parsing, allocation, or encoding fails.
 #[expect(
     clippy::cast_possible_truncation,
@@ -24,14 +17,14 @@ const UBUNTU_BOLD: &[u8] = include_bytes!("../../assets/fonts/Ubuntu-Bold.ttf");
 )]
 pub fn rasterize_svg(svg: &str, width: f32, height: f32, scale: f32) -> Option<Vec<u8>> {
     let mut options = usvg::Options {
-        font_family: "Ubuntu".to_owned(),
+        font_family: "Geist".to_owned(),
         ..usvg::Options::default()
     };
     {
         let database = options.fontdb_mut();
-        database.load_font_data(UBUNTU_REGULAR.to_vec());
-        database.load_font_data(UBUNTU_BOLD.to_vec());
-        database.set_sans_serif_family("Ubuntu");
+        database.load_font_data(crate::fonts::REGULAR.to_vec());
+        database.load_font_data(crate::fonts::BOLD.to_vec());
+        database.set_sans_serif_family("Geist");
     }
     let tree = usvg::Tree::from_str(svg, &options).ok()?;
 

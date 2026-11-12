@@ -341,7 +341,8 @@ impl App {
             ui.separator();
 
             ui.label("Wiggle theme");
-            for theme in WiggleTheme::ALL {
+            for entry in WiggleTheme::ALL.into_iter().filter(|entry| entry.enabled) {
+                let theme = entry.theme;
                 let previous = self.session.state.wiggle_theme;
                 if ui
                     .selectable_value(&mut self.session.state.wiggle_theme, theme, theme.label())

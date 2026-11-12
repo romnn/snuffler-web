@@ -441,7 +441,24 @@ async function checkEifelMarkerBounds(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Snufflings" }).click();
   await page.getByRole("checkbox", { name: "Markers" }).click();
   await page.getByRole("dialog", { name: "Markers" }).waitFor({ timeout: TIMEOUT_MS });
+  // Dismiss the Snufflings menu before interacting with the window behind it.
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(500);
+  const markerClose = await page
+    .getByRole("dialog", { name: "Markers" })
+    .getByRole("button", { name: "Close window" })
+    .boundingBox();
+  const viewport = page.viewportSize();
+  check(
+    "the marker window close button stays inside the viewport",
+    markerClose !== null &&
+      viewport !== null &&
+      markerClose.x >= 0 &&
+      markerClose.y >= 0 &&
+      markerClose.x + markerClose.width <= viewport.width &&
+      markerClose.y + markerClose.height <= viewport.height,
+    JSON.stringify({ markerClose, viewport })
+  );
   const markerProjection = await page.evaluate(() => ({
     nodes: document.querySelectorAll("#snuffler-a11y *").length,
     names: [...document.querySelectorAll("#snuffler-a11y *")].map(

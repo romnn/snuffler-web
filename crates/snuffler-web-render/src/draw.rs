@@ -111,7 +111,8 @@ impl SvgTarget {
              viewBox=\"{origin:.2} {origin:.2} {view_width:.2} {view_height:.2}\">"
         );
         out.push_str(
-            "<defs><style>text{font-family:'Ubuntu',system-ui,-apple-system,sans-serif;font-weight:bold;}</style>",
+            "<defs><style>text{font-family:'Geist',system-ui,-apple-system,sans-serif;\
+             font-weight:bold;}</style>",
         );
         out.push_str(&self.defs);
         out.push_str("</defs>");

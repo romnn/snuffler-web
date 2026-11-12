@@ -26,8 +26,7 @@ const QUICK_FILTER_COMMANDS: [&str; 4] = ["n", "s", "l", "c"];
 const MAX_HISTORY: usize = 100;
 
 /// Hint shown in an empty input, verbatim from snuffler.
-/// The arrows need a font that carries them — the egui frontend draws this line in
-/// `JetBrains Mono` for exactly that reason.
+/// The egui frontend uses a monospace face with arrow glyphs for history navigation.
 pub const PLACEHOLDER: &str =
     "Quick commands: e.g. 'c HH?' to select channels. Use ↑ or ↓ to navigate.";
 

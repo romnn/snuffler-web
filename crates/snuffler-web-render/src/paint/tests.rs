@@ -473,6 +473,7 @@ fn a_span_marker_after_a_segment_draws_no_square_on_it() {
 #[test]
 fn an_unfetched_channel_still_paints_its_pile_backed_box() {
     let state = AppState {
+        wiggle_theme: WiggleTheme::SnufflerQt,
         tmin: 1_700_000_000.0,
         tmax: 1_701_209_600.0,
         ..AppState::default()

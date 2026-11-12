@@ -14,7 +14,7 @@ use snuffler_web_core::state::{
 };
 
 /// Width of a control row's label column.
-const LABEL_WIDTH_PX: f32 = 104.0;
+const LABEL_WIDTH_PX: f32 = 120.0;
 /// Width of a control row's text field.
 const VALUE_WIDTH_PX: f32 = 96.0;
 
@@ -257,6 +257,7 @@ fn control_row(
     add: impl FnOnce(&mut egui::Ui),
 ) -> ControlRowResponse {
     ui.horizontal(|ui| {
+        ui.add_space(8.0);
         let value_id = ui.make_persistent_id(("control-value", label));
         if !ui.memory(|memory| memory.has_focus(value_id)) {
             *value = display_value;
@@ -313,7 +314,7 @@ pub fn show(
     state: &mut AppState,
     track_count: usize,
     deltat_range: (f64, f64),
-    show_readout: impl FnOnce(&mut egui::Ui),
+    show_readout: impl FnOnce(&mut egui::Ui, &mut AppState),
 ) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
     let (min_hz, max_hz) = filter_range(deltat_range);
@@ -356,7 +357,7 @@ pub fn show(
         track_height_controls(ui, state, track_count);
         ui.separator();
         marker_kind_buttons(ui, state);
-        show_readout(ui);
+        show_readout(ui, state);
     });
 
     // Snuffler's `ColorbarControl`, shown only in waterfall mode

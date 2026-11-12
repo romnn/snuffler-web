@@ -274,7 +274,6 @@ impl Marker {
 
     /// First-motion glyph, snuffler's own arrows (`polarity_symbols`,
     /// `marker.py:21`): ↑ up, ↓ down, ↕ undecided.
-    /// The bundled `JetBrains Mono` fallback covers all three.
     #[must_use]
     pub fn polarity_symbol(&self) -> &'static str {
         match self.polarity {

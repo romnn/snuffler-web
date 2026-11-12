@@ -290,7 +290,7 @@ impl Default for AppState {
             sort: SortMode::Name,
             subsort: Subsort::Nslc,
             view_mode: ViewMode::Wiggle,
-            wiggle_theme: WiggleTheme::SnufflerQt,
+            wiggle_theme: WiggleTheme::Fieldbook,
             visible_length: VisibleLength::Adaptive,
             show_boxes: None,
             clip_traces: true,
@@ -435,17 +435,14 @@ impl AppState {
     }
 
     /// Whether the trace boxes are drawn: the user's choice if they made one,
-    /// otherwise what the canvas defaults to.
+    /// otherwise what the theme defaults to for the current canvas.
     ///
-    /// Paper gets them and a dark canvas does not.
-    /// A tinted block on white is a wash the wiggle reads straight through, but the
-    /// same block on near-black has to be dark enough to stay behind the data, and a
-    /// screen of them reads as banding rather than as information.
-    /// Snuffler has no dark canvas and so no such default; the user's own click
-    /// outranks this under either.
+    /// Fieldbook hides boxes on both canvases; other themes draw them on light only.
+    /// The user's explicit choice overrides either default.
     #[must_use]
     pub fn boxes_visible(&self, theme: Theme) -> bool {
-        self.show_boxes.unwrap_or(theme == Theme::Light)
+        self.show_boxes
+            .unwrap_or_else(|| self.wiggle_theme.default_boxes(theme))
     }
 
     /// Whether markers of this kind are currently drawn/selectable (the `:markers`
@@ -473,8 +470,38 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use crate::markers::Marker;
+    use crate::theme::{Theme, WiggleTheme};
 
     use super::AppState;
+
+    #[test]
+    fn fieldbook_defaults_to_colored_traces_without_boxes_on_both_canvases() {
+        let mut state = AppState::default();
+        assert_eq!(state.wiggle_theme, WiggleTheme::Fieldbook);
+        for theme in Theme::ALL {
+            assert!(!state.boxes_visible(theme));
+            assert!(state.color_traces(theme));
+        }
+
+        // Explicit drawing choices still override the theme defaults.
+        state.show_boxes = Some(true);
+        state.show_color_traces = Some(false);
+        for theme in Theme::ALL {
+            assert!(state.boxes_visible(theme));
+            assert!(!state.color_traces(theme));
+        }
+    }
+
+    #[test]
+    fn switching_to_snuffler_qt_restores_its_default_drawing_rules() {
+        let state = AppState {
+            wiggle_theme: WiggleTheme::SnufflerQt,
+            ..Default::default()
+        };
+        assert!(state.boxes_visible(Theme::Light));
+        assert!(!state.color_traces(Theme::Light));
+        assert!(!state.track_separators());
+    }
 
     fn event(hash: &str, selected: bool, active: bool) -> Marker {
         let mut marker = Marker::new(0.0, 0.0, 0);

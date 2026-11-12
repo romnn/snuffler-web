@@ -521,9 +521,9 @@ checked belongs written down. Examined against rendered `qt_oracle` PNGs of
 `bonin-subsort-grouped` and `demo-raw-full`:
 
   * Canvas text is bold, as snuffler's is (`pile_viewer.py:542`, `:3203`): the port
-    draws the canvas in Ubuntu Bold (`view::canvas_font`, and `font-weight` on the
-    SVG path). On `demo-raw-full` a tick label carries 0.154 of its box in ink
-    against Qt's 0.221, with the glyph width within 3 %.
+    draws the canvas in Geist Bold (`view::canvas_font`, and `font-weight` on the
+    SVG path). Font metrics differ from Qt; the current Geist face has not been
+    measured against the oracle PNGs.
   * The axis label layout is snuffler's: rows centred under the tick that earned
     them with the left-edge fallback, the `l0` to `l0_brief` abbreviation ladder
     against `pinc_approx*0.9`, and the half-interval `ushift`, pinned by

@@ -17,6 +17,8 @@ mod chrome;
 // `?example=<slug>` links: read one on boot, publish one after a load.
 #[cfg(target_arch = "wasm32")]
 mod deep_link;
+#[cfg(target_arch = "wasm32")]
+mod fonts;
 // Settings that survive a reload (the browser's `snuffler.pf`).
 #[cfg(target_arch = "wasm32")]
 mod persist;

@@ -3,12 +3,6 @@
 use egui::FontId;
 use snuffler_web_core::theme::WiggleTheme;
 
-/// The egui font family the waveform canvas draws every label in: bold, as
-/// snuffler's canvas is.
-///
-/// Registered in [`configure_look`].
-pub const CANVAS_FAMILY: &str = "canvas";
-
 /// Apply a wiggle theme's claim on the frontend's light/dark preference, and
 /// return the user's own preference to hold on to for as long as it is overruled.
 ///
@@ -39,65 +33,7 @@ pub(super) fn pin_theme(
 pub(super) fn configure_look(ctx: &egui::Context) {
     use egui::FontFamily::{Monospace, Proportional};
     use egui::TextStyle;
-    // egui's bundled proportional face is Ubuntu-Light, which renders very thin.
-    // Register Ubuntu Regular as the primary proportional font (same typeface, one
-    // weight up) and keep the built-in fonts as fallbacks for glyph coverage.
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "ubuntu_regular".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../assets/fonts/Ubuntu-Regular.ttf"
-        ))),
-    );
-    fonts
-        .families
-        .entry(Proportional)
-        .or_default()
-        .insert(0, "ubuntu_regular".to_owned());
-    // egui's bundled monospace face is Hack, which carries no arrows — and the ':'
-    // command line spells its history keys as ↑/↓, which would draw as tofu.
-    // JetBrains Mono covers the arrows (and ± for marker polarities).
-    fonts.font_data.insert(
-        "jetbrains_mono".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../assets/fonts/JetBrainsMono-Regular.ttf"
-        ))),
-    );
-    fonts
-        .families
-        .entry(Monospace)
-        .or_default()
-        .insert(0, "jetbrains_mono".to_owned());
-    // Also the last proportional fallback: Ubuntu has no arrows either, so this is
-    // what keeps a ↑ from turning into tofu in any label that happens to use one.
-    fonts
-        .families
-        .entry(Proportional)
-        .or_default()
-        .push("jetbrains_mono".to_owned());
-    // Everything snuffler paints onto its canvas is bold: `TimeAx.drawit` sets it on
-    // the axis (pile_viewer.py:543), and the paint pass sets a bold font before it
-    // draws anything else (pile_viewer.py:3203, applied at :3229).
-    // That is what makes its track labels and tick numbers read at a glance.
-    // The canvas asks for this family by name; the chrome around it keeps the
-    // regular one.
-    fonts.font_data.insert(
-        "ubuntu_bold".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../assets/fonts/Ubuntu-Bold.ttf"
-        ))),
-    );
-    fonts.families.insert(
-        egui::FontFamily::Name(CANVAS_FAMILY.into()),
-        vec![
-            "ubuntu_bold".to_owned(),
-            // Fallbacks for what Ubuntu Bold has no glyph for — the arrows and the
-            // per-track ± the regular stack already covers.
-            "jetbrains_mono".to_owned(),
-            "Ubuntu-Light".to_owned(),
-        ],
-    );
-    ctx.set_fonts(fonts);
+    crate::fonts::configure(ctx);
     crate::chrome::install(ctx);
 
     // Both styles, not the active one: egui keeps a `Style` per theme, and

@@ -11,7 +11,6 @@ mod view_budget;
 mod windows;
 
 use self::export::MarkerExportScope;
-pub use self::look::CANVAS_FAMILY;
 use self::look::{configure_look, pin_theme};
 use crate::view::waveform::WaterfallCache;
 use crate::view::{controls, waveform};
@@ -78,7 +77,6 @@ impl App {
     /// Build the app, configure egui styling, and kick off loading the example.
     #[must_use]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        configure_look(&cc.egui_ctx);
         crate::a11y::install(&cc.egui_ctx);
         let repaint_now = cc.egui_ctx.clone();
         let repaint_after = cc.egui_ctx.clone();
@@ -89,6 +87,7 @@ impl App {
         // The settings a reload keeps (the browser's `snuffler.pf`), applied
         // over the defaults before anything reads them.
         let restored = crate::persist::restore(&mut session.state);
+        configure_look(&cc.egui_ctx);
         // The restored wiggle theme decides what the light/dark preference is
         // allowed to be: pinning it here, before the first frame, is what keeps a
         // white-canvas theme from flashing through dark chrome on the way in.
@@ -240,17 +239,19 @@ impl App {
         if self.session.state.show_controls {
             let deltat_range = self.session.scene_deltat_range();
             let fps = self.frame_stats_shown_fps;
+            let previous_theme = self.session.state.wiggle_theme;
             egui::Panel::bottom("controls").show_inside(ui, |ui| {
-                let mut show_about = false;
                 controls::show(
                     ui,
                     &mut self.session.state,
                     total_tracks.max(1),
                     deltat_range,
-                    |ui| show_about = Self::show_build_readout(ui, fps),
+                    |ui, state| Self::show_build_readout(ui, fps, state),
                 );
-                self.session.state.show_about |= show_about;
             });
+            if self.session.state.wiggle_theme != previous_theme {
+                self.apply_theme_pinning(ui.ctx(), self.session.state.wiggle_theme);
+            }
         }
         self.show_marker_info_panel(ui);
         let central = egui::CentralPanel::default()

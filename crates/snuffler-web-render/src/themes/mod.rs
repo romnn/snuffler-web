@@ -164,8 +164,7 @@ mod tests {
 
     /// Every web theme on every canvas it renders on, each once.
     fn web_palettes() -> Vec<(WiggleTheme, Theme, Palette)> {
-        WiggleTheme::ALL
-            .into_iter()
+        WiggleTheme::all()
             .filter(|wiggle| !wiggle.mirrors_qt_coloring())
             .flat_map(|wiggle| {
                 let polarities = wiggle
@@ -182,7 +181,7 @@ mod tests {
     fn every_web_theme_has_both_canvases() {
         // A theme that only works on one canvas is not a theme of this frontend;
         // only the Qt theme, which reproduces a white-only application, may pin.
-        for wiggle in WiggleTheme::ALL {
+        for wiggle in WiggleTheme::all() {
             assert_eq!(
                 wiggle.pinned_polarity().is_some(),
                 wiggle.mirrors_qt_coloring(),
@@ -205,7 +204,7 @@ mod tests {
         // comfortable ink without changing that acceptance floor.
         // The dark canvas has no such coupling — its ink is light on a dark ground
         // and has the whole range to itself — so its blocks reach 2.6.
-        for wiggle in WiggleTheme::ALL {
+        for wiggle in WiggleTheme::all() {
             for theme in Theme::ALL {
                 let pal = palette(theme, wiggle);
                 let ink = contrast(pal.trace, pal.background);
@@ -366,7 +365,7 @@ mod tests {
     fn a_stroke_index_keeps_its_hue_across_the_canvases() {
         // Light and dark have their own ink weights, but key N stays the same colour
         // family in both, so a coloring key keeps its identity across a switch.
-        for wiggle in WiggleTheme::ALL {
+        for wiggle in WiggleTheme::all() {
             if wiggle.pinned_polarity().is_some() {
                 continue;
             }

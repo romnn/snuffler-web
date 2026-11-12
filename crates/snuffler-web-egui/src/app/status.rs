@@ -7,6 +7,9 @@ use snuffler_web_core::activity::{
     RuntimeState,
 };
 
+use snuffler_web_core::state::AppState;
+use snuffler_web_core::theme::WiggleTheme;
+
 use super::App;
 
 impl App {
@@ -220,8 +223,8 @@ impl App {
         crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
     }
 
-    /// Small build and performance readouts at the right of the marker controls.
-    pub(super) fn show_build_readout(ui: &mut egui::Ui, fps: Option<u32>) -> bool {
+    /// Small theme, build and performance readouts at the right of the marker controls.
+    pub(super) fn show_build_readout(ui: &mut egui::Ui, fps: Option<u32>, state: &mut AppState) {
         let stamp = crate::view::about::build_stamp();
         let font = egui::FontId::monospace(11.0);
         let width = ui
@@ -233,9 +236,10 @@ impl App {
             + 6.0;
         // Keep the existing controls on their row when the window is narrow.
         if ui.available_width() < width {
-            return false;
+            return;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             if let Some(fps) = fps {
                 ui.label(
                     egui::RichText::new(format!("{fps} fps"))
@@ -246,20 +250,40 @@ impl App {
                 ui.separator();
             }
             let response = ui
-                .add(
-                    egui::Label::new(egui::RichText::new(stamp).monospace().size(11.0).weak())
-                        .sense(egui::Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if response.hovered() || response.has_focus() {
-                ui.painter().line_segment(
-                    [response.rect.left_bottom(), response.rect.right_bottom()],
-                    egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()),
-                );
+                .push_id("build_version", |ui| {
+                    readout_link(ui, egui::RichText::new(stamp).monospace().size(11.0))
+                })
+                .inner;
+            if response.clicked() {
+                state.show_about = true;
             }
-            response.clicked()
-        })
-        .inner
+            if state.wiggle_theme != WiggleTheme::SnufflerQt {
+                let text = "Switch to the original Snuffler theme";
+                let note_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        text.to_owned(),
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::PLACEHOLDER,
+                    )
+                    .size()
+                    .x
+                    + ui.spacing().item_spacing.x * 2.0
+                    + 6.0;
+                if ui.available_width() >= note_width {
+                    ui.separator();
+                    if ui
+                        .push_id("original_theme", |ui| {
+                            readout_link(ui, egui::RichText::new(text).size(11.0))
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        state.wiggle_theme = WiggleTheme::SnufflerQt;
+                    }
+                }
+            }
+        });
     }
 
     fn show_cursor_time(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -300,6 +324,19 @@ impl App {
         )
         .on_hover_text("UTC time at the last pointer position over the tracks.");
     }
+}
+
+fn readout_link(ui: &mut egui::Ui, text: egui::RichText) -> egui::Response {
+    let response = ui
+        .add(egui::Label::new(text.weak()).sense(egui::Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.hovered() || response.has_focus() {
+        ui.painter().line_segment(
+            [response.rect.left_bottom(), response.rect.right_bottom()],
+            egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()),
+        );
+    }
+    response
 }
 
 fn active_job(jobs: &[(JobHandle, JobRecord)], now_s: f64) -> Option<(JobHandle, &JobRecord)> {

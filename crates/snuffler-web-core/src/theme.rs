@@ -5,7 +5,7 @@
 //! Colours live with the renderer (`snuffler_web_render::themes`), keyed on the
 //! identity here.
 //! This module holds only what the application state has to carry, persist and act
-//! on, so adding a theme is one variant here plus its palette there.
+//! on, so adding a theme needs its variant and availability entry here plus its palette there.
 
 use crate::state::Subsort;
 
@@ -92,17 +92,60 @@ pub enum WiggleTheme {
     Afterglow,
 }
 
+/// A theme's availability in the frontend and persisted settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WiggleThemeEntry {
+    /// The palette and drawing policies this entry identifies.
+    pub theme: WiggleTheme,
+    /// Whether users can select or restore this theme.
+    pub enabled: bool,
+}
+
 impl WiggleTheme {
-    /// Themes in menu order.
-    pub const ALL: [WiggleTheme; 7] = [
-        WiggleTheme::SnufflerQt,
-        WiggleTheme::Fieldbook,
-        WiggleTheme::Kiln,
-        WiggleTheme::Fjord,
-        WiggleTheme::Daybreak,
-        WiggleTheme::Herbarium,
-        WiggleTheme::Afterglow,
+    /// Theme definitions in menu order, including disabled palettes.
+    pub const ALL: [WiggleThemeEntry; 7] = [
+        WiggleThemeEntry {
+            theme: WiggleTheme::SnufflerQt,
+            enabled: true,
+        },
+        WiggleThemeEntry {
+            theme: WiggleTheme::Fieldbook,
+            enabled: true,
+        },
+        WiggleThemeEntry {
+            theme: WiggleTheme::Kiln,
+            enabled: false,
+        },
+        WiggleThemeEntry {
+            theme: WiggleTheme::Fjord,
+            enabled: false,
+        },
+        WiggleThemeEntry {
+            theme: WiggleTheme::Daybreak,
+            enabled: false,
+        },
+        WiggleThemeEntry {
+            theme: WiggleTheme::Herbarium,
+            enabled: false,
+        },
+        WiggleThemeEntry {
+            theme: WiggleTheme::Afterglow,
+            enabled: false,
+        },
     ];
+
+    /// All palettes, including disabled themes, for rendering and validation.
+    pub fn all() -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().map(|entry| entry.theme)
+    }
+
+    /// Whether this theme can be selected or restored from settings.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        Self::ALL
+            .into_iter()
+            .any(|entry| entry.theme == self && entry.enabled)
+    }
 
     /// Returns the frontend label for this theme, which is also its persisted form.
     #[must_use]
@@ -129,7 +172,7 @@ impl WiggleTheme {
             }
             WiggleTheme::Fieldbook => {
                 "Balanced mineral blues, brick red and leaf green, with quieter supporting inks. \
-                 Coloured strokes over quiet blocks."
+                 Coloured strokes without trace boxes by default."
             }
             WiggleTheme::Kiln => {
                 "Fired clay and ochre, balanced by indigo, sage and glazed teal. \
@@ -160,6 +203,13 @@ impl WiggleTheme {
     #[must_use]
     pub const fn default_track_separators(self) -> bool {
         !matches!(self, WiggleTheme::SnufflerQt)
+    }
+
+    /// Whether trace boxes are drawn when the user has not chosen an override.
+    /// Fieldbook leaves its coloured strokes on the plain canvas in both polarities.
+    #[must_use]
+    pub const fn default_boxes(self, theme: Theme) -> bool {
+        !matches!(self, Self::Fieldbook) && matches!(theme, Theme::Light)
     }
 
     /// How this theme colours strokes, absent an explicit choice from the user.
@@ -228,7 +278,7 @@ impl WiggleTheme {
             "Snuffler Web 5" => Some(Self::Afterglow),
             _ => None,
         };
-        former_label.or_else(|| Self::ALL.into_iter().find(|theme| theme.label() == value))
+        former_label.or_else(|| Self::all().find(|theme| theme.label() == value))
     }
 }
 
@@ -237,10 +287,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_fieldbook_and_snuffler_qt_are_enabled() {
+        let enabled: Vec<_> = WiggleTheme::all().filter(|theme| theme.enabled()).collect();
+        assert_eq!(enabled, [WiggleTheme::SnufflerQt, WiggleTheme::Fieldbook]);
+    }
+
+    #[test]
     fn labels_round_trip_through_the_wire_form() {
         // The label is what the settings store persists, so every theme has to come
         // back from its own label.
-        for theme in WiggleTheme::ALL {
+        for theme in WiggleTheme::all() {
             assert_eq!(WiggleTheme::from_wire(theme.label()), Some(theme));
         }
         for (old, theme) in [

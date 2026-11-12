@@ -9,9 +9,9 @@
 //! clip traces, and the chosen visible length (Qt persists the visible-length *table*; the
 //! web's entries are fixed, so the choice is what there is to keep).
 //!
-//! Two settings have no counterpart in the `.pf` because Qt has nowhere to put them: the
-//! wiggle theme, and the light/dark preference the frontend is drawn in.
-//! Both are choices about *this* app's appearance, and an appearance that resets on reload is
+//! Appearance settings specific to this frontend include the wiggle theme
+//! and light/dark preference.
+//! An appearance that resets on reload is
 //! the one thing a user notices immediately — so they are kept here rather than in eframe's
 //! own storage, alongside everything else the reload restores.
 
@@ -115,7 +115,7 @@ fn read_bool(storage: &web_sys::Storage, key: &str, value: &mut bool) {
 /// Applies the stored settings over the defaults, at boot.
 ///
 /// A key that is missing or unreadable leaves its default alone, so a first visit (and a
-/// stale store from an older build) behaves exactly like Qt's defaults.
+/// stale store from an older build) uses the application's defaults.
 pub fn restore(state: &mut AppState) -> Restored {
     // Following the system is what a browser app does absent a choice, but the
     // default wiggle theme may pin it light anyway — that is the caller's to
@@ -152,6 +152,7 @@ pub fn restore(state: &mut AppState) -> Restored {
     if let Some(theme) = read(&storage, "wiggle_theme")
         .as_deref()
         .and_then(WiggleTheme::from_wire)
+        .filter(|theme| theme.enabled())
     {
         state.wiggle_theme = theme;
     }

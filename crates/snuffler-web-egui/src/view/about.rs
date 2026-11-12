@@ -94,10 +94,7 @@ const ACKNOWLEDGED: &[(&str, &str)] = &[
     ("prost", "https://github.com/tokio-rs/prost"),
     ("Rayon", "https://github.com/rayon-rs/rayon"),
     ("OpenStreetMap", "https://www.openstreetmap.org/copyright"),
-    ("JetBrains Mono", "https://www.jetbrains.com/lp/mono/"),
-    // Not bare "Ubuntu": in a list of projects that reads as the distribution.
-    // This is the Dalton Maag typeface the bundled Ubuntu-Regular.ttf comes from.
-    ("Ubuntu Typeface", "https://design.ubuntu.com/font"),
+    ("Geist", "https://github.com/vercel/geist-font"),
 ];
 
 /// Draws the About window when the shared state asks for it.
