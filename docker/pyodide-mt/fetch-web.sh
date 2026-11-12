@@ -9,7 +9,8 @@
 # takes, and this is the only way to get a runtime without Docker and an emsdk
 # toolchain.
 #
-# What you get is whatever main last deployed.
+# What you get is whatever main last deployed, which Pages serves under latest/.
+# Before the first such deploy, the release at the site's root is used instead.
 # Build with build-all.sh instead when the runtime itself is what you are changing:
 # a patch, a package pin, or pybuild/setup.py.
 #
@@ -21,15 +22,22 @@ here="$(cd "$(dirname "$0")" && pwd)"
 out="$here/served"
 # Inside .work so a failed fetch leaves nothing git has to be told to ignore.
 staging="$here/.work/served-fetch"
-base="${PY_MT_URL:-https://romnn.github.io/snuffler-web/py-mt}"
-base="${base%/}"
+site="https://romnn.github.io/snuffler-web"
 
 rm -rf "$staging"
 mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
 
-echo "fetching $base"
-curl -fsS -o "$staging/pyodide-lock.json" "$base/pyodide-lock.json"
+fetched=""
+for base in ${PY_MT_URL:-$site/latest/py-mt $site/py-mt}; do
+    base="${base%/}"
+    echo "fetching $base"
+    if curl -fsS -o "$staging/pyodide-lock.json" "$base/pyodide-lock.json"; then
+        fetched=1
+        break
+    fi
+done
+test -n "$fetched"
 
 # The four runtime files stage-web.sh copies, plus every artifact the lock
 # references — the same set it stages, read from the other side of the wire.

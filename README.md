@@ -10,7 +10,8 @@ Everything runs in the browser, and files you open are not uploaded.
   <img alt="snuffler-web showing the 2015 Bonin Islands earthquake, with three components per station, sorted by distance" src="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero.png">
 </picture>
 
-The app is available at <https://romnn.github.io/snuffler-web/>.
+The app is available at <https://romnn.github.io/snuffler-web/>, which serves the newest
+release; <https://romnn.github.io/snuffler-web/latest/> serves the current `main` branch.
 
 ## What it does
 

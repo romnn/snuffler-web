@@ -15,12 +15,26 @@ use snuffler_web_core::state::AppState;
 /// Unset means "built from a working tree", which is the honest answer.
 const BUILD_DATE: Option<&str> = option_env!("SNUFFLER_BUILD_DATE");
 const GIT_COMMIT: Option<&str> = option_env!("SNUFFLER_GIT_COMMIT");
+/// The release tag, such as `v0.1.0`, which only a release build sets.
+const RELEASE: Option<&str> = option_env!("SNUFFLER_RELEASE");
+
+/// The release tag, if this is a release build.
+///
+/// The Docker build passes the variable empty for every other build, so empty counts as
+/// unset.
+fn release() -> Option<&'static str> {
+    RELEASE.filter(|tag| !tag.is_empty())
+}
 
 /// The stamp for the top bar.
 ///
-/// Labelled, because a bare timestamp in a row that also carries the cursor clock reads as
-/// just another time.
+/// A release shows its tag alone.
+/// Any other build is labelled, because a bare timestamp in a row that also carries the
+/// cursor clock reads as just another time.
 pub fn build_stamp() -> String {
+    if let Some(tag) = release() {
+        return tag.to_owned();
+    }
     BUILD_DATE.map_or_else(|| "dev build".to_owned(), |date| format!("built on {date}"))
 }
 
@@ -31,9 +45,10 @@ pub fn build_tooltip() -> String {
         Some(date) => format!("Built {date}"),
         None => "Development build (built from a working tree)".to_owned(),
     };
+    let release = release().map_or_else(String::new, |tag| format!("Release {tag} · "));
     let commit = GIT_COMMIT.map_or_else(String::new, |sha| format!(" · commit {sha}"));
     format!(
-        "{head}{commit} · {}\nClick for the About window.",
+        "{release}{head}{commit} · {}\nClick for the About window.",
         profile()
     )
 }
@@ -125,6 +140,9 @@ fn contents(ui: &mut egui::Ui, runtime: Option<&RuntimeInfo>) {
 
     section(ui, "Build");
     table(ui, "about_build", |ui| {
+        if let Some(tag) = release() {
+            fact(ui, "release", tag);
+        }
         fact(ui, "built", BUILD_DATE.unwrap_or("development build"));
         if let Some(sha) = GIT_COMMIT {
             fact(ui, "commit", sha);

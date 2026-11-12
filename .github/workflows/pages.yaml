@@ -3,6 +3,17 @@ name: GitHub Pages
 # Build the web app (Rust/egui wasm + the py-mt Pyodide runtime) and deploy it to
 # GitHub Pages. Set the repo's Pages source to "GitHub Actions" to publish.
 #
+# The site serves two builds:
+#
+# - / is the newest release.
+#   A release tag builds it and attaches it to the GitHub release as site-<tag>.tar.zst,
+#   then starts this workflow on main to deploy it.
+# - /latest/ is main.
+#   A push to main builds it and deploys it beside the newest release's site.
+#   Before the first release, / redirects to /latest/.
+#
+# Only main deploys, so the github-pages environment needs no rule for tags.
+#
 # The app is a single threaded build: our custom Pyodide 314 (docker/pyodide-mt) —
 # pthread + OpenMP + SIMD runtime + wheels, served at py-mt/ — plus the egui wasm
 # built threaded (wasm-bindgen-rayon). Both need cross-origin isolation, which the
@@ -23,12 +34,12 @@ name: GitHub Pages
 on:
   push:
     branches: [main]
+    # bumpversion tags releases as v<version> (.bumpversion.toml).
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Allow one concurrent deployment; don't cancel an in-progress one.
 concurrency:
@@ -50,6 +61,12 @@ jobs:
     # group above deliberately never cancels a run in progress, every later push
     # queues behind it for that whole time.
     timeout-minutes: 120
+    permissions:
+      # A release tag creates the GitHub release and starts the deploy from main.
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
 
@@ -218,8 +235,13 @@ jobs:
         run: |
           echo "SNUFFLER_BUILD_DATE=$(TZ=Europe/Berlin date +'%Y-%m-%d %H:%M (%Z, Europe/Berlin)')" >> "$GITHUB_ENV"
           echo "SNUFFLER_GIT_COMMIT=${GITHUB_SHA::10}" >> "$GITHUB_ENV"
+          # A release shows its tag instead of the date.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "SNUFFLER_RELEASE=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          fi
 
-      # Project pages live under /<repo>/, so the asset URLs must be prefixed.
+      # Project pages live under /<repo>/, so the asset URLs must be prefixed; main is
+      # served one level deeper, under latest/.
       # Trunk.toml's post_build hook stages docker/pyodide-mt/served -> py-mt/ and
       # web/assets/models/*.onnx -> assets/models/.
       # The Task workflow owns the threaded build flags and rust-toolchain.toml the
@@ -231,7 +253,10 @@ jobs:
       - name: Trunk build (release, threaded)
         env:
           SNUFFLER_PROXY_URL: https://proxy.snuffler.romnn.com/
-        run: task build -- --public-url "/${{ github.event.repository.name }}/"
+        # prettier-ignore
+        run: >-
+          task build -- --public-url
+          "/${{ github.event.repository.name }}/${{ github.ref_type != 'tag' && 'latest/' || '' }}"
 
       # Final backstop: validate the lock in the ACTUAL artifact about to be
       # published (trunk copied served/ -> dist/py-mt). A truncated/stale lock —
@@ -239,12 +264,44 @@ jobs:
       - name: Verify the deployed Pyodide lock is complete
         run: bash docker/pyodide-mt/check-lock.sh dist/py-mt/pyodide-lock.json
 
-      - uses: actions/upload-pages-artifact@v5
+      - name: Attach the site to the release and deploy it
+        if: github.ref_type == 'tag'
+        run: |
+          tag=$GITHUB_REF_NAME
+          tar -C dist --zstd -cf "site-$tag.tar.zst" .
+          gh release view "$tag" >/dev/null 2>&1 ||
+            gh release create "$tag" --verify-tag --generate-notes
+          gh release upload "$tag" "site-$tag.tar.zst" --clobber
+          gh workflow run pages.yaml --ref main
+
+      # The newest release goes at the root and this build under latest/.
+      # gh picks the newest release that is neither a draft nor a prerelease.
+      - name: Assemble the site
+        if: github.ref_type != 'tag'
+        run: |
+          mkdir site
+          if tag=$(gh release view --json tagName --jq .tagName 2>/dev/null); then
+            gh release download "$tag" --pattern 'site-*.tar.zst' --output site.tar.zst
+            tar -C site --zstd -xf site.tar.zst
+            rm site.tar.zst
+          else
+            printf '%s\n' '<!doctype html>' \
+              '<meta http-equiv="refresh" content="0; url=latest/">' \
+              '<a href="latest/">snuffler-web</a>' > site/index.html
+          fi
+          mv dist site/latest
+
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: dist
+          path: site
 
   deploy:
     needs: build
+    if: github.ref_type != 'tag'
+    permissions:
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     # This job only publishes the artifact the build already produced, but Pages
     # can sit in `syncing_files` well past deploy-pages' 10-minute default before

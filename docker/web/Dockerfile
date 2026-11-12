@@ -183,11 +183,13 @@ COPY sources/pyrocko/src/gui/snuffler/snufflings/map/plates.kml \
 
 # Declared here, immediately before the build, so a new commit stamp invalidates
 # nothing above it.
-# The app reads both with `option_env!` (see
+# The app reads these with `option_env!` (see
 # crates/snuffler-web-egui/src/view/about.rs) and shows them in its About window;
 # leaving them unset builds a stamp-less app, which is what a local build gets.
 ARG SNUFFLER_BUILD_DATE=""
 ARG SNUFFLER_GIT_COMMIT=""
+# The release tag, which a release build shows instead of the date; empty otherwise.
+ARG SNUFFLER_RELEASE=""
 # Where the site will be mounted.
 # Anything but "/" also needs the matching subdirectory under nginx's root, which
 # the final stage handles.
