@@ -38,6 +38,7 @@ impl App {
                 }
                 ui.separator();
                 self.show_cursor_time(ui, ctx);
+                ui.separator();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                     self.show_activity(ui, ctx, total_tracks);
@@ -110,77 +111,75 @@ impl App {
         ui.push_id("recovery_actions", |ui| {
             self.show_recovery_actions(ui, &runtime, active);
         });
-        let (status, urgency) = ui
-            .push_id("primary_activity", |ui| {
-                show_primary_activity(ui, &runtime, jobs, active, total_tracks)
-            })
-            .inner;
-        crate::a11y::announce_changes(ctx, &status, urgency);
-        if let Some(error) = self.session.bridge.diagnostic() {
-            ui.separator();
-            let label = ui.colored_label(
-                egui::Color32::from_rgb(0xC0, 0x60, 0x20),
-                format!("⚠ {error}"),
-            );
-            let label = match error.traceback() {
-                Some(traceback) => label.on_hover_text(traceback),
-                None => label,
-            };
-            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Urgent);
-        }
-        // Processing failures the view survived (a filter or restitution that threw, drawn
-        // unprocessed).
-        // Snuffler lets these exceptions reach the user; here the bridge sends them with the view
-        // they affected, and the status line is where the user is told rather than the worker
-        // console.
-        let notices = self
-            .session
-            .bridge
-            .view()
-            .map(|view| view.meta.notices.clone())
-            .unwrap_or_default();
-        if let Some(first) = notices.first() {
-            ui.separator();
-            let extra = notices.len().saturating_sub(1);
-            let text = if extra > 0 {
-                format!("⚠ {first} (+{extra} more)")
-            } else {
-                format!("⚠ {first}")
-            };
-            let label = ui.colored_label(egui::Color32::from_rgb(0xC0, 0x80, 0x20), text);
-            let label = if extra > 0 {
-                label.on_hover_text(notices.join("\n"))
-            } else {
-                label
-            };
-            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
-        }
-        // Qt's passband_check posts this to the window's permanent status area
-        // (pile_viewer.py:4023) — not to the controls panel, which `c` hides —
-        // and says what the app did about it: the highpass is dropped from
-        // processing while the corners stay inverted.
-        if let (Some(hp), Some(lp)) = (self.session.state.highpass, self.session.state.lowpass)
-            && hp >= lp
-        {
-            ui.separator();
-            let label = ui.colored_label(
-                egui::Color32::from_rgb(0xCF, 0x8E, 0x00),
-                "⚠ Corner frequency of highpass greater than corner frequency of lowpass. \
-                 Highpass deactivated.",
-            );
-            crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
-        }
-        if self.session.state.picking.is_some() {
-            ui.separator();
-            ui.colored_label(
-                egui::Color32::from_rgb(0xE0, 0x50, 0x50),
-                "◉ PICK (Esc to exit)",
-            )
-            .on_hover_text(
-                "Batch picking: click/drag on a trace to place a pick; number/F keys \
-                 set kind/phase and carry to the next pick.",
-            );
-        }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let (status, urgency) = ui
+                .push_id("primary_activity", |ui| {
+                    show_primary_activity(
+                        ui,
+                        &runtime,
+                        jobs,
+                        active,
+                        total_tracks,
+                        self.session.state.picking.is_some(),
+                    )
+                })
+                .inner;
+            crate::a11y::announce_changes(ctx, &status, urgency);
+            if let Some(error) = self.session.bridge.diagnostic() {
+                ui.separator();
+                let label = ui.colored_label(
+                    egui::Color32::from_rgb(0xC0, 0x60, 0x20),
+                    format!("⚠ {error}"),
+                );
+                let label = match error.traceback() {
+                    Some(traceback) => label.on_hover_text(traceback),
+                    None => label,
+                };
+                crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Urgent);
+            }
+            // Processing failures the view survived (a filter or restitution that threw, drawn
+            // unprocessed).
+            // Snuffler lets these exceptions reach the user; here the bridge sends them with the view
+            // they affected, and the status line is where the user is told rather than the worker
+            // console.
+            let notices = self
+                .session
+                .bridge
+                .view()
+                .map(|view| view.meta.notices.clone())
+                .unwrap_or_default();
+            if let Some(first) = notices.first() {
+                ui.separator();
+                let extra = notices.len().saturating_sub(1);
+                let text = if extra > 0 {
+                    format!("⚠ {first} (+{extra} more)")
+                } else {
+                    format!("⚠ {first}")
+                };
+                let label = ui.colored_label(egui::Color32::from_rgb(0xC0, 0x80, 0x20), text);
+                let label = if extra > 0 {
+                    label.on_hover_text(notices.join("\n"))
+                } else {
+                    label
+                };
+                crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
+            }
+            // Qt's passband_check posts this to the window's permanent status area
+            // (pile_viewer.py:4023) — not to the controls panel, which `c` hides —
+            // and says what the app did about it: the highpass is dropped from
+            // processing while the corners stay inverted.
+            if let (Some(hp), Some(lp)) = (self.session.state.highpass, self.session.state.lowpass)
+                && hp >= lp
+            {
+                ui.separator();
+                let label = ui.colored_label(
+                    egui::Color32::from_rgb(0xCF, 0x8E, 0x00),
+                    "⚠ Corner frequency of highpass greater than corner frequency of lowpass. \
+                     Highpass deactivated.",
+                );
+                crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
+            }
+        });
     }
 
     /// A permanent row below the time axis keeps marker hovers from moving the tracks.
@@ -473,6 +472,7 @@ fn show_primary_activity(
     jobs: &[(JobHandle, JobRecord)],
     active: Option<(JobHandle, &JobRecord)>,
     total_tracks: usize,
+    picking: bool,
 ) -> (egui::Response, crate::a11y::Urgency) {
     match runtime {
         RuntimeState::Booting => {
@@ -522,6 +522,19 @@ fn show_primary_activity(
                 return (
                     ui.colored_label(egui::Color32::from_rgb(0xC0, 0x60, 0x20), notice),
                     crate::a11y::Urgency::Urgent,
+                );
+            }
+            if picking {
+                return (
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xE0, 0x50, 0x50),
+                        "PICK (Esc to exit)",
+                    )
+                    .on_hover_text(
+                        "Batch picking: click/drag on a trace to place a pick; number/F keys \
+                         set kind/phase and carry to the next pick.",
+                    ),
+                    crate::a11y::Urgency::Polite,
                 );
             }
             (
