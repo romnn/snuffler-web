@@ -125,7 +125,8 @@ The proxy only connects to an allowlist: the FDSN query endpoints of the data ce
 knows, and its SeedLink servers.
 A deployment can add more with `SNUFFLER_PROXY_ALLOW_HTTP_TARGETS` and
 `SNUFFLER_PROXY_ALLOW_TCP_TARGETS`.
-`/cors` only forwards `GET` and `HEAD` requests, without the browser's cookies and credentials.
+`/cors` only forwards `GET` and `HEAD` requests, without the browser's cookies and credentials,
+and follows a redirect only to a target it allows too.
 It is not an open proxy.
 
 The proxy is a small Rust server that runs separately from the site, from its own Docker image

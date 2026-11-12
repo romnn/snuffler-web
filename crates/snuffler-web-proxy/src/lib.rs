@@ -188,12 +188,11 @@ pub async fn run(args: Args) -> Result<(), RunError> {
     let http_client = reqwest::Client::builder()
         .connect_timeout(connect_timeout)
         .pool_idle_timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(32)
-        .build()
-        .map_err(RunError::HttpClient)?;
+        .pool_max_idle_per_host(32);
+    let cors = cors_proxy::Proxy::new(http_client, http_allowlist).map_err(RunError::HttpClient)?;
 
     let state = Arc::new(ProxyState {
-        cors: cors_proxy::Proxy::new(http_client, http_allowlist),
+        cors,
         tcp: tcp_over_ws_proxy::Proxy::new(connect_timeout, tcp_allowlist),
     });
     // A layer wraps only the routes added before it, which keeps `/health` out.

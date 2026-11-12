@@ -648,6 +648,7 @@ dependencies = [
  "color-eyre",
  "reqwest",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "url",
 ]

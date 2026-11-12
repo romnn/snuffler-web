@@ -3,6 +3,7 @@
 //! The browser asks for `/cors?url=<target>`.
 //! A `GET` or `HEAD` to an allowlisted target is forwarded, and the response streams back with
 //! CORS headers added; everything else gets a plain-text error.
+//! A redirect is followed only to a target the allowlist has too.
 
 mod allowlist;
 mod headers;
@@ -19,6 +20,9 @@ pub use self::allowlist::{AllowedHttpTarget, Allowlist, TargetError};
 use self::headers::{add_cors_headers, forwardable_headers};
 use self::metrics::{HandledRequest, OTHER_SERVER, Outcome, PendingUpstream, count_request};
 
+/// The most redirects one proxied request follows, as many as reqwest's own default.
+const MAX_REDIRECTS: usize = 10;
+
 /// Proxies safe HTTP requests through a configured [`Allowlist`].
 #[derive(Clone)]
 pub struct Proxy {
@@ -27,13 +31,27 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    /// Creates a proxy forwarding to the targets in `allowlist`.
-    #[must_use]
-    pub fn new(http_client: reqwest::Client, allowlist: Allowlist) -> Self {
-        Self {
+    /// Creates a proxy forwarding to the targets in `allowlist`, with a client built from
+    /// `http_client`.
+    ///
+    /// The client's redirect policy is replaced: it follows a redirect only to a target
+    /// `allowlist` has, so a redirect cannot reach a host or path the allowlist leaves out.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`reqwest::Error`] of a client that does not build.
+    pub fn new(
+        http_client: reqwest::ClientBuilder,
+        allowlist: Allowlist,
+    ) -> Result<Self, reqwest::Error> {
+        let allowlist = Arc::new(allowlist);
+        let http_client = http_client
+            .redirect(redirect_policy(Arc::clone(&allowlist)))
+            .build()?;
+        Ok(Self {
             http_client,
-            allowlist: Arc::new(allowlist),
-        }
+            allowlist,
+        })
     }
 
     /// Handles one browser proxy request and maps failures into HTTP responses.
@@ -103,20 +121,23 @@ impl Proxy {
 
     async fn forward(
         &self,
-        mut request: Request<Body>,
+        request: Request<Body>,
         target: Url,
     ) -> Result<Response<Body>, ProxyError> {
-        // Forward the request, minus hop-by-hop headers and browser credentials
+        // Forward the request, minus hop-by-hop headers and browser credentials.
+        // Only GET and HEAD get here, so no body is sent, which also lets the client follow a
+        // 307 or 308 redirect: it cannot replay a streamed body.
         let request_headers = forwardable_headers(request.headers());
-        let body = std::mem::take(request.body_mut());
-        let mut upstream_request = self
-            .http_client
-            .request(request.method().clone(), target)
-            .body(reqwest::Body::wrap_stream(body.into_data_stream()));
+        let mut upstream_request = self.http_client.request(request.method().clone(), target);
         for (name, value) in request_headers {
             upstream_request = upstream_request.header(name, value);
         }
-        let upstream_response = upstream_request.send().await?;
+        // reqwest's errors name the full URL, query included, which can carry a signed download
+        // URL's token, and they reach the log and the browser's error body.
+        let upstream_response = upstream_request
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         // Stream the response back with the same filtering, plus CORS headers
         let mut response = Response::builder().status(upstream_response.status());
@@ -127,6 +148,27 @@ impl Proxy {
         Ok(add_cors_headers(response))
     }
 }
+
+/// Follows a redirect only to a target `allowlist` has, and at most [`MAX_REDIRECTS`] of them.
+///
+/// The allowlist is checked once for the requested URL, so without this a redirect from an
+/// allowed target would reach any path or host.
+fn redirect_policy(allowlist: Arc<Allowlist>) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() > MAX_REDIRECTS {
+            return attempt.error(TooManyRedirects);
+        }
+        match allowlist.check(attempt.url()) {
+            Ok(()) => attempt.follow(),
+            Err(err) => attempt.error(err),
+        }
+    })
+}
+
+/// A request redirected more than [`MAX_REDIRECTS`] times.
+#[derive(Debug, thiserror::Error)]
+#[error("more than {MAX_REDIRECTS} redirects")]
+struct TooManyRedirects;
 
 /// Why a proxied request failed.
 ///
@@ -177,6 +219,7 @@ impl ProxyError {
         match self {
             Self::Upstream(err) if err.is_timeout() => Some("timeout"),
             Self::Upstream(err) if err.is_connect() => Some("connect"),
+            Self::Upstream(err) if err.is_redirect() => Some("redirect"),
             Self::Upstream(_) => Some("request"),
             Self::Response(_) => Some("response"),
             Self::MethodNotAllowed(_)
@@ -232,7 +275,13 @@ fn target_url_from_query(query: Option<&str>) -> Result<Url, ProxyError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::Router;
+    use axum::response::Redirect;
+    use axum::routing::get;
     use color_eyre::eyre::{self, bail};
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -269,6 +318,63 @@ mod tests {
             "invalid target URL: relative URL without a base"
         );
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    /// Serves an upstream on a free local port: `/hop` redirects to the allowed `/data`, `/escape`
+    /// to `/secret`, which the allowlist leaves out, and `/secret` counts the requests it gets.
+    async fn redirecting_upstream(secret_hits: Arc<AtomicUsize>) -> eyre::Result<String> {
+        let app = Router::new()
+            .route("/hop", get(|| async { Redirect::temporary("/data") }))
+            .route("/data", get(|| async { "data" }))
+            .route("/escape", get(|| async { Redirect::temporary("/secret") }))
+            .route(
+                "/secret",
+                get(move || async move {
+                    secret_hits.fetch_add(1, Ordering::SeqCst);
+                    "secret"
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        Ok(base)
+    }
+
+    async fn proxy_get(proxy: &Proxy, target: &str) -> eyre::Result<(StatusCode, String)> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("url", target)
+            .finish();
+        let request = Request::get(format!("/cors?{query}")).body(Body::empty())?;
+        let response = proxy.handle(request).await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        Ok((status, String::from_utf8(body.to_vec())?))
+    }
+
+    #[tokio::test]
+    async fn follows_redirects_only_within_the_allowlist() -> eyre::Result<()> {
+        let secret_hits = Arc::new(AtomicUsize::new(0));
+        let base = redirecting_upstream(Arc::clone(&secret_hits)).await?;
+        let allowlist = Allowlist::new(
+            ["/hop", "/data", "/escape"]
+                .into_iter()
+                .map(|path| AllowedHttpTarget::parse(&format!("{base}{path}")))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let proxy = Proxy::new(reqwest::Client::builder(), allowlist)?;
+
+        // A redirect to another allowed target is followed, and its response comes back.
+        let (status, body) = proxy_get(&proxy, &format!("{base}/hop")).await?;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "data"));
+
+        // A redirect out of the allowlist fails the request before it reaches the target, and the
+        // error names neither URL's query, where a signed download URL keeps its token.
+        let (status, body) = proxy_get(&proxy, &format!("{base}/escape?token=SENTINEL")).await?;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(body.contains("target URL is not allowed"), "{body}");
+        assert!(!body.contains("SENTINEL"), "{body}");
+        assert_eq!(secret_hits.load(Ordering::SeqCst), 0);
         Ok(())
     }
 }
