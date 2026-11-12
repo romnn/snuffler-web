@@ -33,7 +33,7 @@ tasks:
       - bun tests/activity_browser_validate.ts
 
   test:view:browser:
-    desc: "check loading feedback for sparse snapshots during scroll and pan"
+    desc: "check delayed activity feedback during scroll and pan"
     dir: "{{.ROOT_DIR}}"
     cmds:
       - bun tests/view_browser_validate.ts

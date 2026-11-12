@@ -35,10 +35,10 @@ use that whole segment; integration precedes display decimation and cropping. On
 rows (and any rotation partners) are processed. This deliberately differs from Qt's crop-relative
 integral, whose level changes while panning.
 
-**Missing payload is visible.** Rows omitted from a sparse reply carry that fact explicitly.
-While a scroll exposes them or a pan extends beyond the last reply's time bounds, the canvas
-keeps its latest snapshot and displays `Updating traces…` until the replacement arrives.
-An empty row whose payload was fetched remains an ordinary empty row.
+**View refreshes use the activity indicator.** While a scroll or pan waits for a new
+payload, the canvas keeps its latest snapshot. The shared activity readout shows
+`Updating view` only after the refresh has been pending for 500 ms, keeping ordinary
+interaction free of transient loading badges.
 
 **Upstream's own window-dependence is reproduced, not fixed.**
 Where Qt snuffler itself depends on the window, the web app follows it, because parity with

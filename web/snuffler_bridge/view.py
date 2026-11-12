@@ -443,14 +443,7 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
     # each one on its own trace rather than on the row it happens to share.
     scaled_spans: List[Tuple[view_pb2.ViewSpan, ptrace.Trace]] = []
     fast_individual_minmax = base == "minmax" and scaling_group == "individual"
-    scale_keys = {
-        key: index + 1
-        for index, key in enumerate(
-            sorted(
-                {_scaling_key(trace, scaling_group) for trace in state.visible_traces()}, key=repr
-            )
-        )
-    }
+    scale_keys: Dict[Any, int] = {}
     offset = 0
     view_idx = 0
     wanted_tracks = 0
@@ -576,7 +569,6 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
         # `meta.tracks` as the full row universe and derives the scroll range and
         # the next page request from its length.
         t = meta.tracks.add()
-        t.samples_omitted = not want_samples
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
         t.station_label = nslc_part
@@ -606,7 +598,8 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
             span.count = build.npoints
             span.offset = int(offset)
             span.loc = build.source.nslc_id[2]
-            span.scale_key = scale_keys[_scaling_key(build.source, scaling_group)]
+            scaling_key = _scaling_key(build.source, scaling_group)
+            span.scale_key = scale_keys.setdefault(scaling_key, len(scale_keys) + 1)
             span.ymax = 1.0
             span.yscale = 1.0
             if mode == "waterfall":

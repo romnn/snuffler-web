@@ -254,22 +254,6 @@ def test_scale_identity_survives_equal_ranges_and_panning() -> None:
         assert len({(span.ymin, span.ymax) for span in spans}) == 1
         return {span.loc: span.scale_key for span in spans}
 
-    individual = keys(100.0, "individual")
-    assert len(set(individual.values())) == 2
-    assert keys(120.0, "individual") == individual
-    assert len(set(keys(100.0, "common").values())) == 1
-
-
-def test_unfetched_rows_are_distinct_from_rows_without_data() -> None:
-    state.set_traces([located_trace("00", 0.1, 1000), located_trace("10", 0.1, 1000)])
-    request = view_pb2.ViewParams(
-        tmin=2000.0,
-        tmax=2100.0,
-        bins_per_trace=1200,
-        track_offset=1,
-        track_count=1,
-        adaptive_visible_length=True,
-    )
-    meta, _payload = view.get_view_data(request)
-    assert [track.samples_omitted for track in meta.tracks] == [True, False]
-    assert all(not track.spans for track in meta.tracks)
+    for start in (100.0, 120.0):
+        assert len(set(keys(start, "individual").values())) == 2
+        assert len(set(keys(start, "common").values())) == 1

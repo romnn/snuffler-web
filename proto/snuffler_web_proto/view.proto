@@ -162,8 +162,6 @@ message ViewTrack {
   string station_label = 12;
   // Distance to the active event, formatted in Python independently of sorting.
   string distance_label = 13;
-  // This row is present for navigation but its samples were outside the requested page.
-  bool samples_omitted = 14;
 }
 
 message ViewMeta {

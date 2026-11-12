@@ -41,47 +41,6 @@ fn track(net: &str, sta: &str, loc: &str, cha: &str, label: &str) -> ViewTrack {
 }
 
 #[test]
-fn loading_feedback_distinguishes_missing_payloads_from_empty_rows() {
-    let mut state = AppState {
-        tmin: 10.0,
-        tmax: 20.0,
-        tracks_per_page: Some(1.0),
-        ..AppState::default()
-    };
-    let view = ViewData {
-        meta: ViewMeta {
-            data_tmin: 10.0,
-            data_tmax: 20.0,
-            tracks: vec![
-                ViewTrack::default(),
-                ViewTrack {
-                    samples_omitted: true,
-                    ..ViewTrack::default()
-                },
-            ],
-            ..ViewMeta::default()
-        },
-        ..ViewData::default()
-    };
-    let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0));
-    assert!(!super::awaiting_samples(
-        &view,
-        &compute_layout(&state, &view, rect)
-    ));
-    state.track_scroll = 1.0;
-    assert!(super::awaiting_samples(
-        &view,
-        &compute_layout(&state, &view, rect)
-    ));
-    state.track_scroll = 0.0;
-    state.tmin = 9.0;
-    assert!(super::awaiting_samples(
-        &view,
-        &compute_layout(&state, &view, rect)
-    ));
-}
-
-#[test]
 fn three_sensor_scale_annotations_have_distinct_horizontal_positions() {
     for axes in [false, true] {
         let state = AppState {

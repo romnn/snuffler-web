@@ -1,4 +1,4 @@
-// Check loading feedback while a real worker answers a changed page or time window.
+// Check delayed activity feedback while a real worker answers a scroll or pan.
 import assert from "node:assert/strict";
 import {
   appUrl,
@@ -17,7 +17,7 @@ try {
 _loading_get_view = BridgeServicer.get_view
 async def _test_loading_get_view(self, request, data):
     import asyncio
-    await operation.await_external(asyncio.sleep(0.6))
+    await operation.await_external(asyncio.sleep(0.9))
     return await _loading_get_view(self, request, data)
 BridgeServicer.get_view = _test_loading_get_view
 `;
@@ -26,22 +26,27 @@ BridgeServicer.get_view = _test_loading_get_view
   const loaded = await page.goto(appUrl({ a11y: "pointer", example: "eifel" }));
   assert.ok(loaded?.ok());
   await waitForAppReady(page);
-  const loading = page.getByText("Updating traces…", { exact: true });
+  const loading = page.getByText("Updating view", { exact: true });
+  const badge = page.getByText("Updating traces…", { exact: true });
   await loading.waitFor({ state: "hidden" });
   await page.mouse.move(1000, 400);
+  let started = Date.now();
   await page.mouse.wheel(0, 600);
   await loading.waitFor({ state: "visible", timeout: 5000 });
+  assert.ok(Date.now() - started >= 400, "activity feedback must wait through its grace period");
+  assert.equal(await badge.count(), 0, "the canvas must not duplicate activity feedback");
   await loading.waitFor({ state: "hidden" });
-  console.log("ok   scrolling unfetched rows shows loading feedback until their samples arrive");
+  console.log("ok   scrolling uses delayed activity feedback without a canvas badge");
   await page.mouse.move(1050, 400);
+  started = Date.now();
   await page.mouse.down();
   await page.mouse.move(650, 400, { steps: 4 });
   await page.mouse.up();
   await loading.waitFor({ state: "visible", timeout: 5000 });
+  assert.ok(Date.now() - started >= 400, "activity feedback must wait through its grace period");
+  assert.equal(await badge.count(), 0, "the canvas must not duplicate activity feedback");
   await loading.waitFor({ state: "hidden" });
-  console.log(
-    "ok   panning beyond the snapshot shows loading feedback until its replacement arrives"
-  );
+  console.log("ok   panning uses delayed activity feedback without a canvas badge");
 } finally {
   await browser.close();
 }

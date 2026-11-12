@@ -221,7 +221,7 @@ pub fn show(
     wave_response
 }
 
-/// Exposes the drawn loading state and geographic annotations to accessibility tools.
+/// Exposes the drawn geographic annotations to accessibility tools.
 fn publish_annotations(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -229,16 +229,6 @@ fn publish_annotations(
     canvas_id: egui::Id,
     lay: &snuffler_web_render::layout::Layout<'_>,
 ) {
-    if snuffler_web_render::paint::awaiting_samples(view, lay) {
-        ui.interact(
-            lay.track_area,
-            canvas_id.with("view-loading"),
-            Sense::hover(),
-        )
-        .widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Updating traces…")
-        });
-    }
     if let Some(text) = state.epicentre_location(&view.meta) {
         ui.interact(
             Rect::from_min_max(
