@@ -1,4 +1,4 @@
-"""Prove that an unclassified bridge RPC is rejected during code generation."""
+"""Prove that bridge RPCs with missing or unsafe activity metadata are rejected."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from google.protobuf import descriptor_pb2
 from google.protobuf.compiler import plugin_pb2
 
 
-def main() -> None:
+def reject_fixture(filename: str, expected: str) -> None:
     root = Path(__file__).resolve().parents[1]
-    fixture = root / "tests/fixtures/missing_activity.proto"
+    fixture = root / "tests/fixtures" / filename
     with tempfile.TemporaryDirectory(prefix="snuffler-codegen-") as temporary:
         descriptor_path = Path(temporary) / "fixture.bin"
         subprocess.run(
@@ -41,13 +41,21 @@ def main() -> None:
         capture_output=True,
         check=False,
     )
-    expected = "BridgeService.MissingActivity: missing required activity option"
     stderr = result.stderr.decode(errors="replace")
     if result.returncode == 0 or expected not in stderr:
         raise SystemExit(
-            f"missing-activity fixture was not rejected as expected: "
-            f"exit={result.returncode}, stderr={stderr!r}"
+            f"{filename} was not rejected as expected: exit={result.returncode}, stderr={stderr!r}"
         )
+
+
+def main() -> None:
+    reject_fixture(
+        "missing_activity.proto", "BridgeService.MissingActivity: missing required activity option"
+    )
+    reject_fixture(
+        "latest_wins_mutation.proto",
+        "BridgeService.LatestWinsMutation: LATEST_WINS requires SESSION_ACCESS_READ_ONLY",
+    )
 
 
 if __name__ == "__main__":

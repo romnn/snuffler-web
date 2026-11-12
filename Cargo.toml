@@ -111,6 +111,7 @@ prost = "0.14.4"
 prost-build = "0.14.4"
 prost-reflect = "0.16.5"
 quote = "1"
+tempfile = "3"
 reqwest = { version = "0.13.4", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
 syn = { version = "2", features = ["full"] }

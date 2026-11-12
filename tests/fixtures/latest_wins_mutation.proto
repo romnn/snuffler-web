@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package snuffler_web_proto;
+
+import "snuffler_web_proto/activity.proto";
+
+message Empty {}
+
+message BridgeResult {
+  oneof result {
+    Empty empty = 1;
+  }
+}
+
+service BridgeService {
+  rpc LatestWinsMutation(Empty) returns (Empty) {
+    option (activity) = {
+      label: "Unsafe mutation"
+      lane: ACTIVITY_LANE_JOB
+      policy: ACTIVITY_POLICY_LATEST_WINS
+      session_access: SESSION_ACCESS_MUTATING
+      cancellation: CANCELLATION_SUPPORT_SUPPORTED
+    };
+  }
+}

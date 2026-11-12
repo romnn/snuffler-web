@@ -93,12 +93,10 @@ pub fn menu(
             .clicked()
         {
             panels.open(Panel::Spectrogram);
-            action = Some(Action::Spectrogram);
             ui.close();
         }
         if ui.button("Amplitude spectrum").clicked() {
             panels.open(Panel::AmplitudeSpectrum);
-            action = Some(Action::Spectrum);
             ui.close();
         }
         ui.separator();
@@ -119,7 +117,6 @@ pub fn menu(
             .clicked()
         {
             panels.open(Panel::Polarization);
-            action = Some(Action::Polarization);
             ui.close();
         }
         if ui

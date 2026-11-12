@@ -834,7 +834,7 @@ def test_event_projection_is_bounded_and_retains_the_active_event() -> None:
     assert len(projection.kagan) == 2
 
 
-def test_interrupted_view_invalidation_clears_every_view_owned_cache() -> None:
+def test_interrupted_view_invalidation_preserves_frozen_scales() -> None:
     state.cached_pile = object()
     state.cached_pile_generation = 9
     state.cutout_key = np.array([1.0])
@@ -851,7 +851,7 @@ def test_interrupted_view_invalidation_clears_every_view_owned_cache() -> None:
     assert state.cutout_traces is None
     assert state.cutout_notices == []
     assert state.view_notices == []
-    assert state.fixed_data_ranges == {}
+    assert state.fixed_data_ranges == {"track": (1.0, 2.0)}
 
 
 def test_polarization_analyses_a_hidden_component() -> None:
@@ -1137,3 +1137,49 @@ def test_view_projection_is_shallow_and_preserves_workspace_identity() -> None:
         if state.session_store._transaction_snapshot is not None:
             state.session_store.rollback(snapshot)
         load_traces([])
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("injected failure"), KeyboardInterrupt()])
+def test_failed_or_cancelled_mutation_preserves_committed_analysis_results(
+    monkeypatch: pytest.MonkeyPatch, failure: BaseException
+) -> None:
+    load_traces([make_trace("XX", "OLD", "BHZ", 0.0, 100, 1.0)])
+    state.replace_derived_traces("stalta", [make_trace("DER", "OLD", "BHZ", 0.0, 100, 1.0)])
+    before = trace_payloads()
+
+    async def fail_dispatch(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        state.replace_derived_traces("stalta", [make_trace("DER", "NEW", "BHZ", 0.0, 100, 2.0)])
+        raise failure
+
+    monkeypatch.setattr(bridge_dispatch, "dispatch", fail_dispatch)
+    reply = asyncio.run(service.call("/snuffler_web_proto.BridgeService/RunSnuffling"))
+    result = bridge_pb2.BridgeResult.FromString(reply["result"])
+    assert result.WhichOneof("result") == (
+        "cancelled" if isinstance(failure, KeyboardInterrupt) else "error"
+    )
+    assert trace_payloads() == before
+    assert state.derived_traces["stalta"][0].station == "OLD"
+
+
+def test_stale_commit_requires_an_injected_generation_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    load_traces([make_trace("XX", "OLD", "BHZ", 0.0, 100, 1.0)])
+    normal = bridge_pb2.BridgeResult.FromString(
+        asyncio.run(service.call("/snuffler_web_proto.BridgeService/EmptyScene"))["result"]
+    )
+    assert normal.WhichOneof("result") == "scene"
+    before = state.session_store.generation
+    commit = state.session_store.commit
+
+    def stale_commit(expected: int, update: state.SessionUpdate) -> Any:
+        return commit(expected - 1, update)
+
+    monkeypatch.setattr(state.session_store, "commit", stale_commit)
+    result = bridge_pb2.BridgeResult.FromString(
+        asyncio.run(service.call("/snuffler_web_proto.BridgeService/EmptyScene"))["result"]
+    )
+    assert result.WhichOneof("result") == "stale"
+    assert result.stale.expected_generation == before - 1
+    assert result.stale.actual_generation == before
+    assert state.session_store.generation == before

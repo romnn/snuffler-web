@@ -112,6 +112,8 @@ struct Inner {
     /// Latest render of each open figure window (amplitude spectrum, cake, …), keyed by
     /// figure kind.
     figures: HashMap<String, FigureSlot>,
+    /// Render identities survive slot removal when the Python runtime is replaced.
+    figure_generation: u64,
     snuffling: Option<SnufflingResult>,
     snuffling_generation: u64,
     /// A custom model name the user just uploaded ("Add Model"), for the frontend to
@@ -158,6 +160,13 @@ struct Inner {
 }
 
 impl Inner {
+    fn install_figure(&mut self, kind: String, data: FigureData) {
+        self.figure_generation = self.figure_generation.wrapping_add(1);
+        let slot = self.figures.entry(kind).or_default();
+        slot.data = data;
+        slot.generation = self.figure_generation;
+    }
+
     /// Records that the user picked a new source for the pile, and returns that pick.
     fn choose_source(&mut self) -> u64 {
         self.source_choice = self.source_choice.wrapping_add(1);
@@ -661,14 +670,46 @@ mod web;
 mod tests {
     use std::sync::Arc;
 
-    use color_eyre::eyre::{self, ensure};
+    use color_eyre::eyre::{self, OptionExt as _, ensure};
 
     use super::proto::pb;
     use super::{
-        Bridge, BridgeError, BundleAbout, BundleView, ExampleDataset, Inner, LIVE_FOLLOW_SECONDS,
-        LiveSessionEpoch, Operation, Outcome, ReloadError, ReloadFailureReason, ReloadSourceError,
-        Repaint, SeedlinkError, StreamId, ViewData,
+        Bridge, BridgeError, BundleAbout, BundleView, ExampleDataset, FigureData, Inner,
+        LIVE_FOLLOW_SECONDS, LiveSessionEpoch, Operation, Outcome, ReloadError,
+        ReloadFailureReason, ReloadSourceError, Repaint, SeedlinkError, StreamId, ViewData,
     };
+
+    #[test]
+    fn replacement_figures_never_reuse_a_texture_generation() -> eyre::Result<()> {
+        let mut inner = Inner::default();
+        inner.install_figure(
+            "beachball".to_owned(),
+            FigureData {
+                png: vec![1],
+                error: String::new(),
+            },
+        );
+        let first = inner
+            .figures
+            .get("beachball")
+            .ok_or_eyre("missing first figure")?
+            .generation;
+        inner.figures.clear();
+        inner.install_figure(
+            "beachball".to_owned(),
+            FigureData {
+                png: vec![2],
+                error: String::new(),
+            },
+        );
+        let replacement = inner
+            .figures
+            .get("beachball")
+            .ok_or_eyre("missing replacement figure")?;
+        ensure!(replacement.generation > first);
+        ensure!(replacement.data.png == [2]);
+        Ok(())
+    }
 
     /// A watched-file poll that finds nothing to do, or reloads a changed file, keeps
     /// the reason a live stream stopped on screen instead of falling back to "Ready".

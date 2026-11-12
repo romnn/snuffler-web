@@ -25,6 +25,12 @@ tasks:
     cmds:
       - bun tests/bridge_runtime_validate.ts
 
+  test:activity:browser:
+    desc: "check activity recovery, figure admission, and real Python interruption in the browser"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/activity_browser_validate.ts
+
   test:isolation:unit:
     desc: "check deployment-scoped COI handshakes and worker activation"
     dir: "{{.ROOT_DIR}}"

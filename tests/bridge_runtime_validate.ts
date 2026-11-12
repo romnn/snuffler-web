@@ -160,6 +160,50 @@ let nextJobId = 1n;
   assert.equal(worker.terminated, true);
 }
 
+{
+  // Messages already queued by a dying worker cannot settle its replacement's reused ids.
+  const old = currentWorker();
+  old.ready();
+  let completions = 0;
+  const first = bridge.call(BridgeMethod.getView, new Uint8Array(), nextJobId++);
+  const second = bridge.call(BridgeMethod.listExamples, new Uint8Array(), nextJobId++);
+  const firstFailure = assert.rejects(
+    first.finally(() => {
+      completions += 1;
+    }),
+    /injected crash/
+  );
+  const secondFailure = assert.rejects(
+    second.finally(() => {
+      completions += 1;
+    }),
+    /injected crash/
+  );
+  const handler = old.onmessage;
+  assert.ok(handler);
+  old.onerror?.({ message: "injected crash" });
+  await Promise.all([firstFailure, secondFailure]);
+  assert.equal(completions, 2);
+
+  const replacement = currentWorker();
+  let settled = false;
+  const request = bridge.call(BridgeMethod.getView, new Uint8Array(), nextJobId++).then(() => {
+    settled = true;
+  });
+  const pending = replacement.requests.at(-1);
+  assert.ok(pending);
+  handler({
+    data: { epoch: old.epoch, id: pending.id, ok: true, result: new ArrayBuffer(0) },
+  } as MessageEvent<WorkerMessage>);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.equal(completions, 2);
+  replacement.ready();
+  replacement.reply(pending);
+  await request;
+  assert.equal(settled, true);
+}
+
 // The stub has no background worker; clear its remaining synthetic boot timer.
 clock.timers.clear();
 console.log("all bridge-runtime deadline checks passed");

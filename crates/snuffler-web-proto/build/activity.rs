@@ -276,15 +276,18 @@ fn rpc_operation(
         "BridgeService.{name}: activity label is empty"
     );
 
-    // Only the Python dispatcher consumes session access.
-    // Validate it here too so no generated endpoint accepts an unspecified contract.
-    activity.enum_value("session_access", |_| Some(()))?;
+    let session_access = activity.enum_value("session_access", |value| Some(value.to_owned()))?;
+    let policy = activity.enum_value("policy", Policy::from_proto)?;
+    ensure!(
+        !matches!(policy, Policy::LatestWins) || session_access == "SESSION_ACCESS_READ_ONLY",
+        "BridgeService.{name}: LATEST_WINS requires SESSION_ACCESS_READ_ONLY"
+    );
 
     Ok(OperationActivity {
         name: name.to_owned(),
         label,
         lane: activity.enum_value("lane", Lane::from_proto)?,
-        policy: activity.enum_value("policy", Policy::from_proto)?,
+        policy,
         secondary_feedback: activity.bool("secondary_feedback")?,
         cancellation: activity.enum_value("cancellation", CancellationCapability::from_proto)?,
         supersedes: activity.bool("supersedes")?,

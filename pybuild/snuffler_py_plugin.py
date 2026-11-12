@@ -124,6 +124,13 @@ def bridge_methods(
                 f"BridgeService.{method.name}: activity has empty/UNSPECIFIED "
                 + ", ".join(empty_fields)
             )
+        if (
+            enum_name(activity, "policy") == "ACTIVITY_POLICY_LATEST_WINS"
+            and enum_name(activity, "session_access") != "SESSION_ACCESS_READ_ONLY"
+        ):
+            raise SystemExit(
+                f"BridgeService.{method.name}: LATEST_WINS requires SESSION_ACCESS_READ_ONLY"
+            )
 
         # Request and response types
         request_module = message_module[method.input_type]

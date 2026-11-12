@@ -581,6 +581,59 @@ mod tests {
     }
 
     #[test]
+    fn late_replies_cannot_resettle_jobs_after_runtime_loss() {
+        let mut ledger = ActivityLedger::new(8);
+        ledger.set_runtime(RuntimeState::Ready);
+        let job = ledger
+            .submit(Operation::RunSnuffling, None, Vec::new(), 1.0)
+            .handle();
+        let view = ledger
+            .submit(Operation::GetView, None, Vec::new(), 1.0)
+            .handle();
+        assert!(ledger.try_dispatch(job, Waker::noop()));
+        assert!(ledger.try_dispatch(view, Waker::noop()));
+        let epoch = RuntimeEpoch::new(3);
+        ledger.runtime_lost(epoch);
+        let terminal_revision = ledger.revision();
+        ledger.complete(job, Outcome::Succeeded);
+        ledger.complete(view, Outcome::Cancelled);
+        assert_eq!(ledger.revision(), terminal_revision);
+        for handle in [job, view] {
+            assert!(matches!(ledger.get(handle).map(super::JobRecord::state),
+                Some(JobState::Done(Outcome::Lost(lost))) if *lost == epoch));
+        }
+        ledger.set_runtime(RuntimeState::Ready);
+        let next = ledger
+            .submit(Operation::RunCommand, None, Vec::new(), 2.0)
+            .handle();
+        assert!(ledger.try_dispatch(next, Waker::noop()));
+    }
+
+    #[test]
+    fn distinct_figure_kinds_queue_and_both_complete() {
+        let mut ledger = ActivityLedger::new(4);
+        ledger.set_runtime(RuntimeState::Ready);
+        let spectrum = ledger
+            .submit(Operation::RenderFigure, None, b"ampspec".to_vec(), 1.0)
+            .handle();
+        let spectrogram = ledger
+            .submit(Operation::RenderFigure, None, b"spectrogram".to_vec(), 1.0)
+            .handle();
+        assert_ne!(spectrum, spectrogram);
+        assert!(ledger.try_dispatch(spectrum, Waker::noop()));
+        assert!(!ledger.try_dispatch(spectrogram, Waker::noop()));
+        ledger.complete(spectrum, Outcome::Succeeded);
+        assert!(ledger.try_dispatch(spectrogram, Waker::noop()));
+        ledger.complete(spectrogram, Outcome::Succeeded);
+        for handle in [spectrum, spectrogram] {
+            assert!(matches!(
+                ledger.get(handle).map(super::JobRecord::state),
+                Some(JobState::Done(Outcome::Succeeded))
+            ));
+        }
+    }
+
+    #[test]
     fn view_and_job_lanes_can_each_hold_one_permit() {
         let mut ledger = ActivityLedger::new(4);
         ledger.set_runtime(RuntimeState::Ready);

@@ -52,8 +52,8 @@ The RPC reply is the only terminal signal; a dead worker settles its jobs as `Lo
 - Opening a snuffling panel never starts its analysis; only its Run or Plot control does.
 - Compute jobs are never killed for being slow; only operations that declare a deadline
   (network, boot) have one.
-- Nothing is retried automatically after the worker dies: a mutation whose execution was
-  ambiguous is not replayed, and queued intent is dropped, not resent.
+- Mutations are never retried automatically after the worker dies: ambiguous execution is
+  not replayed, and queued intent is dropped. Views and visible figures can be requested again.
 - View work enters the activity readout only after 0.5 s, so ordinary panning shows none.
 - Marker results are bounded (20,000 by default, 100,000 at most) and the truncation is
   shown, never silent.
@@ -63,9 +63,12 @@ The RPC reply is the only terminal signal; a dead worker settles its jobs as `Lo
 - Adding an RPC means choosing its `Activity`; the build refuses to guess.
 - The cancellation protocol between Rust, the worker and Python (`web/execution_control.ts`)
   is the most delicate code in the app; its validation suite pins every transition.
-- Not built yet: a per-track index for marker hit-testing, a shared compute budget between
-  the rayon pool and OpenMP, a generator check that `LATEST_WINS` is only used for reads,
-  and several of the planned regression tests.
+- Both generators reject mutating `LATEST_WINS` operations. Host tests cover transactional
+  rollback, defensive stale commits, terminal settlement, and SeedLink sequence fences.
+  Browser tests exercise real Python interruption, partial-load cancellation, view recovery,
+  explicit figure execution, and worker replacement.
+- Not built yet: a per-track index for marker hit-testing and a shared compute budget between
+  the rayon pool and OpenMP.
 
 ## References
 
@@ -73,3 +76,4 @@ The RPC reply is the only terminal signal; a dead worker settles its jobs as `Lo
 - `proto/snuffler_web_proto/activity.proto`, `crates/snuffler-web-proto/build/activity.rs`
 - `crates/snuffler-web-core/src/markers/store.rs`, `web/execution_control.ts`, `web/snuffler_bridge/service.py`
 - `tests/codegen_missing_activity.py`, `tests/execution_control_validate.ts`
+- `tests/bridge_runtime_validate.ts`, `tests/activity_browser_validate.ts`

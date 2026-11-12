@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use snuffler_web_core::activity::{RuntimeState, Submission};
 use snuffler_web_core::bridge::{Bridge, FigureData, FigureRequest, MomentTensor};
 use snuffler_web_core::session::Session;
 
@@ -114,14 +115,16 @@ impl FigureWindows {
             };
             // A marker edit that left the request identical (a kind cycled, a
             // note renamed) refreshes the generation key without re-rendering.
-            if self
-                .requests
-                .get(kind)
-                .is_none_or(|(_, cached)| cached != &request)
+            if !bridge_has_request
+                || self
+                    .requests
+                    .get(kind)
+                    .is_none_or(|(_, cached)| cached != &request)
             {
-                let _submission = session.bridge.render_figure(request.clone());
+                self.submit_request(&session.bridge, generation, request);
+            } else {
+                self.requests.insert(kind.to_owned(), (generation, request));
             }
-            self.requests.insert(kind.to_owned(), (generation, request));
         }
 
         let mut open = true;
@@ -155,13 +158,15 @@ impl FigureWindows {
                 med: moment_tensor[5],
             }),
         };
-        if self
-            .requests
-            .get("beachball")
-            .is_none_or(|(_, cached)| cached != &request)
+        let bridge_has_request =
+            bridge.figure("beachball").is_some() || bridge.figure_job("beachball").is_some();
+        if !bridge_has_request
+            || self
+                .requests
+                .get("beachball")
+                .is_none_or(|(_, cached)| cached != &request)
         {
-            let _submission = bridge.render_figure(request.clone());
-            self.requests.insert("beachball".to_owned(), (0, request));
+            self.submit_request(bridge, 0, request);
         }
 
         let mut open = true;
@@ -171,6 +176,23 @@ impl FigureWindows {
             .show(ctx, |ui| self.cache.show(ui, bridge, "beachball"));
         if !open {
             self.clear_beachball();
+        }
+    }
+
+    fn submit_request(&mut self, bridge: &Bridge, generation: u64, request: FigureRequest) {
+        // A restarting runtime will repaint on recovery; do not flood the ledger with rejections.
+        if matches!(
+            bridge.activity_snapshot().runtime,
+            RuntimeState::Restarting | RuntimeState::Failed(_)
+        ) {
+            return;
+        }
+        if matches!(
+            bridge.render_figure(request.clone()),
+            Submission::Accepted(_) | Submission::Joined(_)
+        ) {
+            self.requests
+                .insert(request.kind.clone(), (generation, request));
         }
     }
 }

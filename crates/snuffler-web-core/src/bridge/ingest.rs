@@ -532,6 +532,56 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_retired_session_cannot_deliver_batches_or_acknowledge_the_successor() {
+        let mut inner = streaming_inner();
+        let successor = LiveStream {
+            session: LiveSessionEpoch(2),
+            ..stream()
+        };
+        inner.begin_live_session(STREAM, successor.session, LIVE_FOLLOW_SECONDS);
+        assert!(matches!(
+            inner.accept_live_batch(&stream(), vec![0; 512], 0, 0.0),
+            BatchAction::Held
+        ));
+        assert!(matches!(
+            inner.complete_live_ingest(
+                Ok(pb::IngestMiniSeedResult::default()),
+                None,
+                0,
+                0,
+                &stream()
+            ),
+            LiveIngestCompletion::Superseded
+        ));
+        assert!(inner.live.ingest.is_current(STREAM, successor.session));
+        assert!(inner.diagnostic.is_none());
+        assert!(matches!(
+            inner.accept_live_batch(&successor, vec![0; 512], 0, 0.0),
+            BatchAction::Dispatch(_)
+        ));
+    }
+
+    #[test]
+    fn an_acknowledgement_from_another_session_cannot_advance_the_stream() -> eyre::Result<()> {
+        let mut inner = streaming_inner();
+        ensure!(deliver(&mut inner, 0, 0.0)?.is_some());
+        let result = inner.complete_live_ingest(
+            Ok(pb::IngestMiniSeedResult {
+                stream_id: STREAM.0,
+                session_epoch: SESSION.0 + 1,
+                ..pb::IngestMiniSeedResult::default()
+            }),
+            inner.live.ingest_job,
+            0,
+            0,
+            &stream(),
+        );
+        ensure!(matches!(result, LiveIngestCompletion::Failed(_)));
+        ensure!(!inner.live.ingest.is_current(STREAM, SESSION));
+        Ok(())
+    }
+
     fn ensure_lagged(inner: &Inner, bytes: u64) -> eyre::Result<()> {
         ensure!(
             matches!(

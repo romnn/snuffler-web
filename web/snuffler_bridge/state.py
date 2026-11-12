@@ -233,7 +233,6 @@ def invalidate_interrupted_view() -> None:
     """Forget everything a cancelled view build may have left half-written."""
     clear_view_cache()
     view_notices.clear()
-    fixed_data_ranges.clear()
 
 
 def add_view_notice(message: str) -> None:

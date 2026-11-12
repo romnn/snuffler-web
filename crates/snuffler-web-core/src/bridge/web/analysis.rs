@@ -28,17 +28,20 @@ impl Bridge {
             async move {
                 let rendered = client().render_figure(request).await;
                 let mut state = inner.borrow_mut();
-                let slot = state.figures.entry(slot_kind).or_default();
                 // A queued successor may already own the slot's spinner.
-                if slot.job == work_own_job.get() {
+                if let Some(slot) = state.figures.get_mut(&slot_kind)
+                    && slot.job == work_own_job.get()
+                {
                     slot.job = None;
                 }
                 let figure = rendered?;
-                slot.data = FigureData {
-                    png: figure.png,
-                    error: figure.error,
-                };
-                slot.generation = slot.generation.wrapping_add(1);
+                state.install_figure(
+                    slot_kind,
+                    FigureData {
+                        png: figure.png,
+                        error: figure.error,
+                    },
+                );
                 Ok(())
             },
         );
