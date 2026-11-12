@@ -85,6 +85,11 @@ pub struct Args {
     #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
     pub otel_endpoint: Option<String>,
 
+    /// Whether log events are exported with the traces and metrics: `otlp`, or `none` to keep
+    /// them to stderr, such as where a log shipper already collects it.
+    #[arg(long, env = "OTEL_LOGS_EXPORTER", value_enum, default_value_t)]
+    pub otel_logs_exporter: telemetry::LogsExporter,
+
     /// More TCP targets to allow, in `host:port` form.
     ///
     /// The app's `SeedLink` servers are always allowed.
@@ -167,6 +172,7 @@ pub async fn run_from_env() -> Result<(), RunError> {
             .as_deref()
             .filter(|filter| !filter.trim().is_empty()),
         args.otel_endpoint.as_deref(),
+        args.otel_logs_exporter,
     )?;
     if let Some(path) = env_file {
         info!(path = %path.display(), "loaded environment file");

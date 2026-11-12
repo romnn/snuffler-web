@@ -54,6 +54,19 @@ pub enum LogFormat {
     Json,
 }
 
+/// Where log events go besides stderr while an OTLP endpoint is set, under the names of
+/// OpenTelemetry's `OTEL_LOGS_EXPORTER`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub enum LogsExporter {
+    /// Exported over OTLP, beside the traces and metrics.
+    #[default]
+    Otlp,
+    /// Kept to stderr, for a deployment that already collects it, which would otherwise store
+    /// every event twice.
+    #[value(name = "none")]
+    Disabled,
+}
+
 /// Why telemetry could not be set up.
 #[derive(Debug, thiserror::Error)]
 pub enum TelemetryError {
@@ -85,7 +98,8 @@ pub struct Telemetry {
 struct Providers {
     traces: SdkTracerProvider,
     metrics: SdkMeterProvider,
-    logs: SdkLoggerProvider,
+    /// Absent under [`LogsExporter::Disabled`].
+    logs: Option<SdkLoggerProvider>,
 }
 
 impl Drop for Telemetry {
@@ -100,7 +114,9 @@ impl Drop for Telemetry {
         if let Err(err) = providers.metrics.shutdown() {
             eprintln!("failed to flush metrics: {err}");
         }
-        if let Err(err) = providers.logs.shutdown() {
+        if let Some(logs) = providers.logs
+            && let Err(err) = logs.shutdown()
+        {
             eprintln!("failed to flush logs: {err}");
         }
     }
@@ -113,8 +129,8 @@ impl Drop for Telemetry {
 /// the export still never sees the [`EXPORTER_STACK`].
 ///
 /// Without `otel_endpoint` only the stderr log is installed.
-/// With one, spans, metrics and log events are also exported over OTLP gRPC, and the stderr log
-/// keeps going.
+/// With one, spans, metrics and, unless `logs_exporter` is [`LogsExporter::Disabled`], log
+/// events are also exported over OTLP gRPC, and the stderr log keeps going.
 /// The exporters connect lazily, so an unreachable collector never blocks startup.
 ///
 /// The W3C trace-context propagator becomes the [`opentelemetry::global`] one, which the
@@ -129,6 +145,7 @@ pub fn init(
     log_format: LogFormat,
     log_filter: Option<&str>,
     otel_endpoint: Option<&str>,
+    logs_exporter: LogsExporter,
 ) -> Result<Telemetry, TelemetryError> {
     let stderr_filter = match log_filter {
         Some(filter) => parse_filter(filter)?,
@@ -140,10 +157,11 @@ pub fn init(
         tracing_subscriber::registry().with(stderr).init();
         return Ok(Telemetry { providers: None });
     };
-    let providers = build_providers(endpoint).map_err(|source| TelemetryError::Exporter {
-        endpoint: endpoint.to_owned(),
-        source,
-    })?;
+    let providers =
+        build_providers(endpoint, logs_exporter).map_err(|source| TelemetryError::Exporter {
+            endpoint: endpoint.to_owned(),
+            source,
+        })?;
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
     let traces = tracing_opentelemetry::layer()
@@ -151,16 +169,25 @@ pub fn init(
         .with_filter(export_filter(log_filter)?);
     let metrics = tracing_opentelemetry::MetricsLayer::new(providers.metrics.clone())
         .with_filter(export_filter(log_filter)?);
-    let logs =
-        opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&providers.logs)
-            .with_filter(export_filter(log_filter)?);
+    let logs = match &providers.logs {
+        Some(logs) => Some(
+            opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(logs)
+                .with_filter(export_filter(log_filter)?),
+        ),
+        None => None,
+    };
+    let exporting_logs = logs.is_some();
     tracing_subscriber::registry()
         .with(stderr)
         .with(traces)
         .with(metrics)
         .with(logs)
         .init();
-    tracing::info!(endpoint, "exporting traces, metrics and logs over OTLP");
+    if exporting_logs {
+        tracing::info!(endpoint, "exporting traces, metrics and logs over OTLP");
+    } else {
+        tracing::info!(endpoint, "exporting traces and metrics over OTLP");
+    }
 
     Ok(Telemetry {
         providers: Some(providers),
@@ -201,7 +228,10 @@ fn stderr_layer(log_format: LogFormat) -> Box<dyn Layer<Registry> + Send + Sync>
     }
 }
 
-fn build_providers(endpoint: &str) -> Result<Providers, opentelemetry_otlp::ExporterBuildError> {
+fn build_providers(
+    endpoint: &str,
+    logs_exporter: LogsExporter,
+) -> Result<Providers, opentelemetry_otlp::ExporterBuildError> {
     let resource = Resource::builder().with_service_name(SERVICE_NAME).build();
 
     let span_exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -212,10 +242,21 @@ fn build_providers(endpoint: &str) -> Result<Providers, opentelemetry_otlp::Expo
         .with_tonic()
         .with_endpoint(endpoint)
         .build()?;
-    let log_exporter = opentelemetry_otlp::LogExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint)
-        .build()?;
+    let logs = match logs_exporter {
+        LogsExporter::Otlp => {
+            let exporter = opentelemetry_otlp::LogExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()?;
+            Some(
+                SdkLoggerProvider::builder()
+                    .with_batch_exporter(exporter)
+                    .with_resource(resource.clone())
+                    .build(),
+            )
+        }
+        LogsExporter::Disabled => None,
+    };
 
     Ok(Providers {
         traces: SdkTracerProvider::builder()
@@ -224,12 +265,9 @@ fn build_providers(endpoint: &str) -> Result<Providers, opentelemetry_otlp::Expo
             .build(),
         metrics: SdkMeterProvider::builder()
             .with_periodic_exporter(metric_exporter)
-            .with_resource(resource.clone())
-            .build(),
-        logs: SdkLoggerProvider::builder()
-            .with_batch_exporter(log_exporter)
             .with_resource(resource)
             .build(),
+        logs,
     })
 }
 

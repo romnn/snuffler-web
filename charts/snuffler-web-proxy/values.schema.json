@@ -6489,6 +6489,9 @@
       "properties": {
         "endpoint": {
           "description": "An OpenTelemetry collector to export traces, metrics and logs to over OTLP gRPC, such as\n`http://otel-collector.observability:4317`; empty, the proxy only logs."
+        },
+        "exportLogs": {
+          "description": "Whether log events go to the collector too; off keeps them to stderr, for a cluster whose log\nshipper already collects it and would otherwise store every event twice."
         }
       },
       "type": "object"

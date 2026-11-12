@@ -23,6 +23,9 @@ otel:
   # An OpenTelemetry collector to export traces, metrics and logs to over OTLP gRPC, such as
   # `http://otel-collector.observability:4317`; empty, the proxy only logs.
   endpoint: ""
+  # Whether log events go to the collector too; off keeps them to stderr, for a cluster whose log
+  # shipper already collects it and would otherwise store every event twice.
+  exportLogs: true
 
 # Overrides the chart name in resource names and the `app.kubernetes.io/name` label.
 nameOverride: ""

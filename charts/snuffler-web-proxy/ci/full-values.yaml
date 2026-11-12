@@ -9,6 +9,7 @@ log:
   filter: info,cors_proxy=debug
 otel:
   endpoint: http://otel-collector.observability:4317
+  exportLogs: false
 commonLabels:
   team: seismology
 image:

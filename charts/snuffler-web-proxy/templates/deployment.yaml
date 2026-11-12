@@ -103,6 +103,10 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
             {{- end }}
+            {{- if not .Values.otel.exportLogs }}
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
