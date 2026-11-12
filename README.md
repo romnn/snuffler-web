@@ -5,13 +5,19 @@ pyrocko, numpy and scipy run unchanged, compiled to WebAssembly with
 [Pyodide](https://pyodide.org); only the user interface is new.
 Everything runs in the browser, and files you open are not uploaded.
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero-light.png">
-  <img alt="snuffler-web showing the 2015 Bonin Islands earthquake, with three components per station, sorted by distance" src="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero.png">
-</picture>
+<p align="center">
+  <br>
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero-light.png">
+    <img width="75%" alt="snuffler-web showing the 2015 Bonin Islands earthquake, with three components per station, sorted by distance" src="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero.png">
+  </picture>
+  <br>
+  <em>The 2015 Bonin Islands earthquake: three components per station, sorted by distance.</em>
+  <br><br>
+</p>
 
-The app is available at <https://romnn.github.io/snuffler-web/>, which serves the newest
-release; <https://romnn.github.io/snuffler-web/latest/> serves the current `main` branch.
+- [Stable version](https://romnn.github.io/snuffler-web/) — the latest release.
+- [Latest main branch](https://romnn.github.io/snuffler-web/latest/) — the current `main` build.
 
 ## What it does
 
@@ -39,7 +45,8 @@ browser cache.
 To run only the app, without snuffler-web-proxy:
 
 ```sh
-docker run --rm -p 8000:8080 ghcr.io/romnn/snuffler-web/web:latest   # http://127.0.0.1:8000
+# http://127.0.0.1:8000
+docker run --rm -p 8000:8080 ghcr.io/romnn/snuffler-web/web:latest
 ```
 
 Without snuffler-web-proxy there is no live data: live SeedLink streams use TCP, which a browser
