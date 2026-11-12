@@ -68,6 +68,14 @@ helm test snuffler-web
   `allowTcpTargets`.
 - **Logs and telemetry:** the proxy logs JSON; `log.filter` takes a `RUST_LOG`-style filter,
   and `otel.endpoint` exports traces, metrics and logs to an OpenTelemetry collector.
+  `otel.exportLogs: false` keeps the logs to stderr, where a cluster that collects pod logs
+  already finds them. The site's nginx logs neither query strings, referrers nor the
+  `X-Forwarded-For` header, so a log shipper never stores a visitor's address.
+- **Web analytics:** `analytics.scriptUrl` adds a script such as Umami's or Plausible's to the
+  page, and `analytics.attributes` its settings. The page loads it only once it is cross-origin
+  isolated, in CORS mode. Have it leave out the query string, such as with Umami's
+  `data-exclude-search: "true"`: a `?url=` deep link can carry a signed download URL. Unset,
+  nothing is tracked.
 - **Everything else**, such as autoscaling, disruption budgets, network policies and pod
   placement: `helm show values oci://ghcr.io/romnn/snuffler-web/charts/snuffler-web` lists each value with its
   description, and the charts reject a value they do not know.

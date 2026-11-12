@@ -296,23 +296,41 @@ stage_threaded_pyodide() {
 }
 
 # The page's runtime configuration (web/config.js documents it): Trunk copies the
-# repository's own, which names no proxy, unless SNUFFLER_PROXY_URL names one.
-# micromux sets it for the local proxy and the Pages build for the public one; a
-# Helm deployment mounts its own config.js over the image's instead.
+# repository's own, which names no proxy and tracks nothing, unless one of these is set:
+#
+# - SNUFFLER_PROXY_URL: `proxyUrl`.
+# - SNUFFLER_ANALYTICS_SCRIPT_URL: `analytics.scriptUrl`, and SNUFFLER_ANALYTICS_ATTRIBUTES,
+#   optional, a JSON object of string attributes, `analytics.attributes`.
+#
+# micromux sets the proxy for the local one, and the Pages build both for the public
+# deployment; a Helm deployment mounts its own config.js over the image's instead.
 write_runtime_config() {
-    if [ -z "${SNUFFLER_PROXY_URL:-}" ]; then
+    if [ -z "${SNUFFLER_PROXY_URL:-}" ] && [ -z "${SNUFFLER_ANALYTICS_SCRIPT_URL:-}" ]; then
         return
     fi
-    # json.dumps escapes the URL for the JavaScript object literal.
+    # json.dumps escapes the values for the JavaScript object literal.
     config=$(python3 -c '
-import json, os
-print(json.dumps({"proxyUrl": os.environ["SNUFFLER_PROXY_URL"]}))
+import json, os, sys
+config = {}
+if os.environ.get("SNUFFLER_PROXY_URL"):
+    config["proxyUrl"] = os.environ["SNUFFLER_PROXY_URL"]
+if os.environ.get("SNUFFLER_ANALYTICS_SCRIPT_URL"):
+    analytics = {"scriptUrl": os.environ["SNUFFLER_ANALYTICS_SCRIPT_URL"]}
+    attributes = json.loads(os.environ.get("SNUFFLER_ANALYTICS_ATTRIBUTES") or "{}")
+    if not isinstance(attributes, dict) or not all(
+        isinstance(value, str) for value in attributes.values()
+    ):
+        sys.exit("SNUFFLER_ANALYTICS_ATTRIBUTES must be a JSON object of strings")
+    if attributes:
+        analytics["attributes"] = attributes
+    config["analytics"] = analytics
+print(json.dumps(config))
 ')
     {
-        echo "// Written by scripts/trunk-post-build.sh from SNUFFLER_PROXY_URL."
+        echo "// Written by scripts/trunk-post-build.sh from the SNUFFLER_* environment."
         echo "globalThis.snufflerConfig = $config;"
     } > "$staging_dir/config.js"
-    echo "[config] proxyUrl=$SNUFFLER_PROXY_URL"
+    echo "[config] $config"
 }
 
 stage_bridge_module

@@ -7,6 +7,18 @@
 # cross-origin requests, and cannot stream live SeedLink data.
 proxyUrl: ""
 
+# A web analytics script for the page, such as Umami's or Plausible's; the page's `config.js`
+# carries it, and web/config.js in the repository documents it.
+analytics:
+  # The script, such as `https://stats.example/script.js`; empty, nothing is tracked.
+  # Its host must answer with CORS headers.
+  scriptUrl: ""
+  # The attributes the script reads its settings from, such as
+  # `{data-website-id: "…", data-exclude-search: "true"}` for Umami.
+  # Tell it to leave out the query string where it can: a `?url=` deep link can carry a signed
+  # download URL.
+  attributes: {}
+
 # Overrides the chart name in resource names and the `app.kubernetes.io/name` label.
 nameOverride: ""
 # Overrides the full resource name, which is otherwise the release name and the chart name.

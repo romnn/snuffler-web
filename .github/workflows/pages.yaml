@@ -253,9 +253,20 @@ jobs:
       # The site streams live SeedLink data, and makes the FDSN requests a browser cannot
       # make directly, through the project's public proxy (scripts/trunk-post-build.sh
       # writes it into config.js).
+      # Page views go to the project's Umami (web/config.js documents `analytics`), on the
+      # website that snuffler.romnn.com shares: its hostname and path tell the deployments
+      # apart, the release at the root from main under latest/.
+      # data-domains leaves out a fork's Pages, which serve under another hostname.
       - name: Trunk build (release, threaded)
         env:
           SNUFFLER_PROXY_URL: https://proxy.snuffler.romnn.com/
+          SNUFFLER_ANALYTICS_SCRIPT_URL: https://stats.romnn.com/t.js
+          # prettier-ignore
+          SNUFFLER_ANALYTICS_ATTRIBUTES: >-
+            {"data-website-id": "777a8ed2-7fa2-4108-a7d9-91dde317d1e1",
+            "data-domains": "romnn.github.io",
+            "data-exclude-search": "true",
+            "data-exclude-hash": "true"}
         # prettier-ignore
         run: >-
           task build -- --public-url

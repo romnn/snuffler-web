@@ -141,6 +141,7 @@ The app reaches a few other services directly, without the proxy:
 - Map tiles for the station map, from tile servers such as OpenStreetMap.
 - A Green's-function store URL entered in the seismosizer.
 - The SeisBench model host of a build that does not include the models.
+- The web analytics script a deployment's `config.js` names, if any (`web/analytics.js`).
 
 ## Cross-origin isolation
 

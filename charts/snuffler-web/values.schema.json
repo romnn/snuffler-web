@@ -4281,6 +4281,61 @@
         }
       ]
     },
+    "analytics": {
+      "additionalProperties": {},
+      "allOf": [
+        {
+          "if": {
+            "allOf": [
+              {
+                "properties": {
+                  "attributes": {
+                    "$ref": "#/$defs/t"
+                  }
+                },
+                "required": [
+                  "attributes"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "scriptUrl": {
+                    "$ref": "#/$defs/t"
+                  }
+                },
+                "required": [
+                  "scriptUrl"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "then": {
+            "additionalProperties": {},
+            "properties": {
+              "attributes": {
+                "description": "The attributes the script reads its settings from, such as\n`{data-website-id: \"…\", data-exclude-search: \"true\"}` for Umami.\nTell it to leave out the query string where it can: a `?url=` deep link can carry a signed\ndownload URL.",
+                "type": [
+                  "array",
+                  "null",
+                  "object"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "description": "A web analytics script for the page, such as Umami's or Plausible's; the page's `config.js`\ncarries it, and web/config.js in the repository documents it.",
+      "properties": {
+        "attributes": {
+          "description": "The attributes the script reads its settings from, such as\n`{data-website-id: \"…\", data-exclude-search: \"true\"}` for Umami.\nTell it to leave out the query string where it can: a `?url=` deep link can carry a signed\ndownload URL."
+        },
+        "scriptUrl": {
+          "description": "The script, such as `https://stats.example/script.js`; empty, nothing is tracked.\nIts host must answer with CORS headers."
+        }
+      }
+    },
     "autoscaling": {
       "additionalProperties": {},
       "allOf": [

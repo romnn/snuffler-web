@@ -1,5 +1,10 @@
 # Turns on everything the defaults leave off, so `task lint:charts` renders every template.
 proxyUrl: https://proxy.snuffler.example/
+analytics:
+  scriptUrl: https://stats.example/script.js
+  attributes:
+    data-website-id: 00000000-0000-4000-8000-000000000000
+    data-exclude-search: true
 commonLabels:
   team: seismology
 strategy:
