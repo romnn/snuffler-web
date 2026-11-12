@@ -85,6 +85,7 @@ type PendingRequest = {
   resolve: (reply: WorkerSuccessMessage) => void;
   reject: (error: Error) => void;
   jobId: bigint;
+  method: WorkerRequestMethod;
   control: Int32Array;
   deadlineTimer: number | null;
 };
@@ -141,6 +142,27 @@ function rejectAllPendingRequests(error: Error): void {
   }
 }
 
+function armRequestDeadline(key: string, pending: PendingRequest): void {
+  const target = worker;
+  const epoch = runtimeEpoch;
+  if (
+    target == null ||
+    latestRuntimeInfo == null ||
+    pending.deadlineTimer != null ||
+    !NON_CANCELLABLE_METHODS.includes(pending.method)
+  ) {
+    return;
+  }
+  // Boot has its own deadline; a queued request only starts timing once Python is ready.
+  pending.deadlineTimer = window.setTimeout(() => {
+    if (worker === target && runtimeEpoch === epoch && pendingRequests.get(key) === pending) {
+      recreateWorker(
+        new Error(`${String(pending.method)} exceeded ${NON_CANCELLABLE_REQUEST_TIMEOUT_MS} ms`)
+      );
+    }
+  }, NON_CANCELLABLE_REQUEST_TIMEOUT_MS);
+}
+
 function queueOperationEvent(event: Uint8Array): void {
   queuedOperationEvents.push(event);
   const overflow = queuedOperationEvents.length - MAX_QUEUED_OPERATION_EVENTS;
@@ -166,6 +188,7 @@ function handleWorkerEvent(message: WorkerEventMessage, epoch: number): void {
       clearBootDeadline();
       latestRuntimeInfo = event.value;
       consecutiveBootFailures = 0;
+      for (const [key, pending] of pendingRequests) armRequestDeadline(key, pending);
       break;
   }
 }
@@ -403,22 +426,13 @@ function send(
       resolve,
       reject,
       jobId: BigInt(jobId),
+      method,
       control,
       deadlineTimer: null,
     });
   });
-  if (NON_CANCELLABLE_METHODS.includes(method)) {
-    const pending = pendingRequests.get(key);
-    if (pending) {
-      pending.deadlineTimer = window.setTimeout(() => {
-        if (worker === target && runtimeEpoch === epoch && pendingRequests.has(key)) {
-          recreateWorker(
-            new Error(`${String(method)} exceeded ${NON_CANCELLABLE_REQUEST_TIMEOUT_MS} ms`)
-          );
-        }
-      }, NON_CANCELLABLE_REQUEST_TIMEOUT_MS);
-    }
-  }
+  const pending = pendingRequests.get(key);
+  if (pending) armRequestDeadline(key, pending);
 
   try {
     target.postMessage(message, transfer);

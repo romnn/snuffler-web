@@ -17,6 +17,13 @@ tasks:
       # every run, not only in the browser suites.
       - bun tests/execution_control_validate.ts
       - task: test:isolation:unit
+      - task: test:bridge:unit
+
+  test:bridge:unit:
+    desc: "check worker lifecycle and request deadlines with a deterministic clock"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/bridge_runtime_validate.ts
 
   test:isolation:unit:
     desc: "check deployment-scoped COI handshakes and worker activation"
