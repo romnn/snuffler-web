@@ -20,7 +20,7 @@ mod http_trace;
 pub mod telemetry;
 
 use std::future::pending;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +43,10 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 #[derive(Clone, Debug, Parser)]
 #[command(about = "snuffler-web local HTTP CORS and WebSocket TCP proxy")]
 pub struct Args {
+    /// Checks the running proxy's local /health endpoint and exits without starting a server.
+    #[arg(long)]
+    pub healthcheck: bool,
+
     /// HTTP listen address for both proxy endpoints.
     #[arg(long, env = "SNUFFLER_PROXY_BIND", default_value = DEFAULT_BIND)]
     pub bind: SocketAddr,
@@ -102,9 +106,15 @@ pub struct Args {
     pub allow_tcp_targets: Vec<String>,
 }
 
-/// Why the proxy could not start, or stopped serving.
+/// Why the proxy could not start, stopped serving, or failed its healthcheck.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
+    /// The local health endpoint could not be reached within two seconds.
+    #[error("proxy healthcheck request failed")]
+    Healthcheck(#[source] reqwest::Error),
+    /// The local health endpoint returned a status other than 200.
+    #[error("proxy healthcheck returned {0}")]
+    HealthStatus(reqwest::StatusCode),
     /// The `.env` file in the working directory exists but could not be read.
     #[error("failed to load the .env file")]
     EnvFile(#[source] dotenvy::Error),
@@ -153,18 +163,23 @@ struct ProxyState {
     tcp: tcp_over_ws_proxy::Proxy,
 }
 
-/// Loads `.env`, parses the command line, sets up telemetry and runs the local proxy until
-/// shutdown.
+/// Loads configuration and runs the proxy or checks its health.
 ///
 /// Variables already set in the environment win over the file.
+/// `--healthcheck` probes the listen address and exits without telemetry.
+/// Wildcard listen addresses are reached through loopback.
 ///
 /// # Errors
 ///
 /// Returns [`RunError::EnvFile`] for an unreadable `.env`, [`RunError::Telemetry`] when the
-/// OTLP exporters cannot be built, and fails like [`run`] otherwise.
+/// OTLP exporters cannot be built, [`RunError::Healthcheck`] or [`RunError::HealthStatus`]
+/// for a failed health probe, and fails like [`run`] otherwise.
 pub async fn run_from_env() -> Result<(), RunError> {
     let env_file = load_env_file()?;
     let args = Args::parse();
+    if args.healthcheck {
+        return check_health(args.bind).await;
+    }
     // Flushes the exported telemetry when the proxy stops.
     let _telemetry = telemetry::init(
         args.log_format,
@@ -178,6 +193,31 @@ pub async fn run_from_env() -> Result<(), RunError> {
         info!(path = %path.display(), "loaded environment file");
     }
     run(args).await
+}
+
+async fn check_health(mut address: SocketAddr) -> Result<(), RunError> {
+    // An unspecified listen address must be reached through its matching loopback family.
+    if address.ip().is_unspecified() {
+        address.set_ip(match address.ip() {
+            IpAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+            IpAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+        });
+    }
+    let response = reqwest::Client::builder()
+        // A liveness probe must never use a deployment's outbound proxy or follow redirects.
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(RunError::Healthcheck)?
+        .get(format!("http://{address}/health"))
+        .send()
+        .await
+        .map_err(RunError::Healthcheck)?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err(RunError::HealthStatus(response.status()));
+    }
+    Ok(())
 }
 
 /// Runs the local proxy with explicit configuration until shutdown.
@@ -329,5 +369,88 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use color_eyre::eyre;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    use super::{RunError, check_health};
+
+    #[tokio::test]
+    async fn healthcheck_accepts_only_ok() -> eyre::Result<()> {
+        for status in ["200 OK", "302 Found", "503 Service Unavailable"] {
+            let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
+            // Use the wildcard bind address to exercise loopback normalization as in Docker.
+            let address = listener.local_addr()?;
+            let server = async {
+                let (stream, _) = listener.accept().await?;
+                let mut stream = BufReader::new(stream);
+                loop {
+                    let mut line = String::new();
+                    eyre::ensure!(
+                        stream.read_line(&mut line).await? > 0,
+                        "request ended early"
+                    );
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nLocation: /health\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+                Ok::<(), eyre::Report>(())
+            };
+            let (result, response_result) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    tokio::join!(check_health(address), server)
+                })
+                .await?;
+            response_result?;
+            // Redirects and server errors must fail the probe instead of being followed.
+            if status == "200 OK" {
+                result?;
+            } else {
+                assert!(
+                    matches!(result, Err(RunError::HealthStatus(_))),
+                    "{result:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn healthcheck_rejects_a_closed_port() -> eyre::Result<()> {
+        let address = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            listener.local_addr()?
+        };
+        let result = check_health(address).await;
+        assert!(
+            matches!(result, Err(RunError::Healthcheck(_))),
+            "{result:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn healthcheck_times_out_without_a_response() -> eyre::Result<()> {
+        // Keep the listener open without serving HTTP so TCP connects but HTTP stalls.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            check_health(listener.local_addr()?),
+        )
+        .await?;
+        assert!(matches!(result, Err(RunError::Healthcheck(err)) if err.is_timeout()));
+        Ok(())
     }
 }

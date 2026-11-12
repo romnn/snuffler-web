@@ -6753,7 +6753,7 @@
           "$ref": "#/$defs/1"
         }
       ],
-      "description": "The image runs the proxy as user 10001."
+      "description": "The distroless image runs the proxy as user 65532."
     },
     "priorityClassName": {
       "anyOf": [
@@ -7481,7 +7481,7 @@
           "$ref": "#/$defs/15"
         }
       ],
-      "description": "The probes, each a Kubernetes probe plus `enabled`.",
+      "description": "The probes, each a Kubernetes probe plus `enabled`.\n`/health` checks the proxy process without depending on upstream services.",
       "properties": {
         "enabled": {}
       }

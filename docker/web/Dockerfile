@@ -37,7 +37,8 @@
 #   docker build -f docker/web/Dockerfile --build-arg CARGO_PROFILE=dev .
 
 ARG RUST_IMAGE=rust:1-trixie
-ARG NGINX_IMAGE=nginx:1.29-alpine
+# The slim variant omits optional nginx modules and their runtime libraries.
+ARG NGINX_IMAGE=nginx:1.30-alpine-slim
 ARG ALPINE_IMAGE=alpine:3.23
 ARG CARGO_CHEF_VERSION=0.1.78
 # github.com/google/ngx_brotli @ master, 2023-10-09.
@@ -171,7 +172,17 @@ RUN uv sync --locked --only-group codegen
 # example datasets under web/ and examples/, and the two pyrocko files
 # index.html stages.
 COPY Cargo.toml Cargo.lock buf.yaml buf.gen.yaml ./
-COPY crates crates
+# Keep real manifests for lint inheritance, but omit proxy sources so editing
+# them cannot invalidate the wasm build.
+COPY crates/cors-proxy/Cargo.toml crates/cors-proxy/Cargo.toml
+COPY crates/tcp-over-ws-proxy/Cargo.toml crates/tcp-over-ws-proxy/Cargo.toml
+COPY crates/snuffler-web-proxy/Cargo.toml crates/snuffler-web-proxy/Cargo.toml
+COPY crates/accesskit-dom crates/accesskit-dom
+COPY crates/egui-a11y crates/egui-a11y
+COPY crates/snuffler-web-core crates/snuffler-web-core
+COPY crates/snuffler-web-egui crates/snuffler-web-egui
+COPY crates/snuffler-web-proto crates/snuffler-web-proto
+COPY crates/snuffler-web-render crates/snuffler-web-render
 COPY proto proto
 COPY web web
 COPY scripts scripts
@@ -277,7 +288,7 @@ COPY --from=pyodide /site/py-mt/ /usr/share/nginx/html${PUBLIC_URL}py-mt/
 # 101 is the `nginx` user the upstream image creates; naming the uid numerically
 # keeps the container non-root under a Kubernetes `runAsNonRoot` check, which
 # cannot resolve a username.
-USER 101
+USER 101:101
 
 # 8080 rather than 80 so no capability is needed to bind it.
 EXPOSE 8080

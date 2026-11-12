@@ -22,6 +22,8 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     configs:
       - source: snuffler-config
@@ -39,6 +41,8 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     # The proxy is allowlisted, not open: it always allows the FDSN endpoints and
     # SeedLink servers the app uses, and a deployment allows more here (or with an

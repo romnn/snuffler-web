@@ -35,11 +35,11 @@ jobs:
     name: ${{ matrix.image }}
     runs-on: ubuntu-latest
     # A cold cache compiles the whole Rust dependency graph — for wasm32 with a
-    # std rebuild in the web image, and under emulation for the proxy's arm64
-    # half. Warm, both are a fraction of that, but the bound has to cover cold.
+    # std rebuild in the web image, and natively through Zig for both proxy
+    # architectures. Warm, both are a fraction of that, but the bound covers cold.
     # Generous is safe here: the concurrency group above cancels a superseded
     # run, so a wedged job blocks nothing.
-    timeout-minutes: 180
+    timeout-minutes: 45
     env:
       PUBLISH: ${{ startsWith(github.ref, 'refs/tags/') }}
       CARGO_PROFILE: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || 'dev' }}
@@ -59,10 +59,9 @@ jobs:
             description: "Pyrocko's snuffler seismic waveform inspector, in the browser"
             smoke-port: 8080
             smoke-path: /health
-            smoke-uid: 101
-          # arm64 IS emulated here, but cargo-chef puts the dependency graph in a
-          # layer of its own: only the first build (or a Cargo.lock change) pays
-          # for it, and an ordinary source edit recompiles one crate.
+            smoke-user: "101:101"
+          # Zig cross-compiles both architectures on the runner's native CPU.
+          # cargo-chef caches dependencies independently of application sources.
           - image: proxy
             context: .
             dockerfile: docker/proxy/Dockerfile
@@ -72,7 +71,7 @@ jobs:
             description: "Allowlisted CORS and WebSocket-to-TCP proxy for snuffler-web"
             smoke-port: 8080
             smoke-path: /health
-            smoke-uid: 10001
+            smoke-user: "65532:65532"
 
     steps:
       - uses: actions/checkout@v7
@@ -127,7 +126,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       # Read access is enough for the layer cache every run reads, so this runs
-      # for forks too; only a release tag pushes or writes the cache.
+      # for forks too; main and release tags write separate profile caches.
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -160,14 +159,19 @@ jobs:
           # dependency graph exported with mode=max is gigabytes, and the Actions
           # cache is one 10 GB quota shared with the Pages workflow, whose
           # ~1 h Pyodide artifacts would be the thing evicted to make room.
-          # Release tags write it; a `dev` build still reuses its toolchain layers.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
+          # Separate dev and release refs keep main's unoptimized dependencies
+          # from replacing the release cache.
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache-dev
+            type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache-dev,mode=max', github.repository, matrix.image) || '' }}
           # The docker exporter `load` uses cannot carry attestations.
           provenance: false
 
       - name: Smoke-test the image
         run: |
-          docker run -d --name smoke --read-only --tmpfs /tmp \
+          docker run -d --name smoke --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --cap-drop ALL --security-opt no-new-privileges:true \
             -p 18080:${{ matrix.smoke-port }} snuffler-smoke:${{ matrix.image }}
           for _ in $(seq 1 30); do
             curl -fsS "http://127.0.0.1:18080${{ matrix.smoke-path }}" >/dev/null && ready=1 && break
@@ -177,8 +181,10 @@ jobs:
           # Both images declare a non-root user and a read-only root filesystem;
           # either one regressing is invisible until something in production
           # refuses to schedule the container.
-          docker exec smoke id
-          test "$(docker exec smoke id -u)" = "${{ matrix.smoke-uid }}"
+          test "$(docker inspect --format '{{.Config.User}}' smoke)" = "${{ matrix.smoke-user }}"
+          if [ "${{ matrix.image }}" = proxy ]; then
+            docker exec smoke /usr/local/bin/snuffler-web-proxy --healthcheck
+          fi
 
       # The three things this image exists to get right, and the three a plain
       # static host gets wrong: cross-origin isolation, a precompressed body, and
@@ -199,8 +205,29 @@ jobs:
         if: always()
         run: docker rm -f smoke || true
 
+      # Compile the foreign target before setting up QEMU to ensure every Rust
+      # and C build step runs natively, including aws-lc's CMake build.
+      # The proxy's distroless runtime has no build commands.
+      - name: Cross-compile the arm64 proxy
+        if: matrix.image == 'proxy' && env.PUBLISH != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: builder
+          platforms: linux/arm64
+          outputs: type=cacheonly
+          build-args: CARGO_PROFILE=${{ env.CARGO_PROFILE }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository }}/proxy:buildcache-dev-arm64
+            type=registry,ref=ghcr.io/${{ github.repository }}/proxy:buildcache
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=registry,ref=ghcr.io/{0}/proxy:buildcache-dev-arm64,mode=max', github.repository) || '' }}
+
+      # Only the web image's nginx modules need QEMU.
       - uses: docker/setup-qemu-action@v4
-        if: env.PUBLISH == 'true' && contains(matrix.platforms, 'arm64')
+        if: matrix.image == 'web' && env.PUBLISH == 'true' && contains(matrix.platforms, 'arm64')
 
       - id: meta
         if: env.PUBLISH == 'true'
@@ -238,7 +265,10 @@ jobs:
             SNUFFLER_RELEASE=${{ env.SNUFFLER_RELEASE }}
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
+          cache-from: |
+            type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
+            type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache-dev
+            type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache-dev-arm64
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache,mode=max
           provenance: mode=max
           sbom: true

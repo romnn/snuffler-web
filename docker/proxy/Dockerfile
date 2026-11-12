@@ -12,6 +12,8 @@
 # — a cache mount is invisible to registry/GHA layer caching, so in CI it would
 # start empty on every run and the restored layers would re-download the whole
 # index.
+# All Rust and C compilation runs on BUILDPLATFORM through cargo-zigbuild.
+# The runtime has no build commands, so neither architecture needs emulation.
 #
 #   docker build -f docker/proxy/Dockerfile -t snuffler-proxy .
 #
@@ -22,20 +24,38 @@
 #   docker build -f docker/proxy/Dockerfile --build-arg CARGO_PROFILE=dev .
 
 ARG RUST_IMAGE=rust:1-trixie
-ARG RUNTIME_IMAGE=debian:trixie-slim
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian13:nonroot
 ARG CARGO_CHEF_VERSION=0.1.78
 
-FROM ${RUST_IMAGE} AS toolchain
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS toolchain
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_TERM_COLOR=never
 
 # cmake builds aws-lc-sys, the C library behind reqwest's rustls backend.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake \
+    && apt-get install -y --no-install-recommends cmake curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+
+# Use the same pinned cross toolchain as local builds and linting.
+# Keep it in ordinary layers so registry cache exports include the tools.
+ENV MISE_DATA_DIR=/opt/mise \
+    MISE_CACHE_DIR=/opt/mise/cache \
+    MISE_STATE_DIR=/opt/mise/state \
+    MISE_INSTALL_PATH=/usr/local/bin/mise \
+    MISE_TRUSTED_CONFIG_PATHS=/src \
+    MISE_YES=1 \
+    PATH=/opt/mise/shims:$PATH
+RUN curl -fsSL https://mise.run | sh
+COPY mise.toml mise.lock ./
+RUN --mount=type=secret,id=github_token <<'EOF'
+set -eu
+export MISE_GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"
+mise install zig github:rust-cross/cargo-zigbuild
+mise reshim
+EOF
 
 # rustup materializes rust-toolchain.toml on any proxied command, so this both
 # installs and pins the workspace's toolchain in a layer of its own.
@@ -57,6 +77,18 @@ COPY crates crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM toolchain AS builder
+ARG TARGETARCH
+
+# BuildKit architecture names differ from Rust's target triples.
+# Install std only after selecting the workspace's pinned toolchain.
+RUN case "${TARGETARCH}" in \
+        amd64) target=x86_64-unknown-linux-musl ;; \
+        arm64) target=aarch64-unknown-linux-musl ;; \
+        *) echo "Unsupported proxy architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && echo "${target}" > /opt/rust-target \
+    && rustup target add "${target}"
+
 ARG CARGO_PROFILE=release
 
 # `-p` matters: the recipe describes the whole workspace, including the wasm-only
@@ -68,45 +100,49 @@ COPY --from=planner /src/recipe.json recipe.json
 # nothing, so Cargo would report every one of their dependencies as unused; the
 # real build below reports any genuine warning.
 RUN CARGO_BUILD_WARNINGS=allow \
-    cargo chef cook --profile "${CARGO_PROFILE}" --recipe-path recipe.json -p snuffler-web-proxy
+    cargo chef cook --zigbuild --target "$(cat /opt/rust-target)" \
+    --profile "${CARGO_PROFILE}" --locked --recipe-path recipe.json -p snuffler-web-proxy
 
 COPY Cargo.toml Cargo.lock ./
-COPY crates crates
+# Keep real manifests for lint inheritance, but omit unrelated UI sources so
+# editing them cannot invalidate this compile layer.
+COPY crates/accesskit-dom/Cargo.toml crates/accesskit-dom/Cargo.toml
+COPY crates/egui-a11y/Cargo.toml crates/egui-a11y/Cargo.toml
+COPY crates/snuffler-web-core/Cargo.toml crates/snuffler-web-core/Cargo.toml
+COPY crates/snuffler-web-egui/Cargo.toml crates/snuffler-web-egui/Cargo.toml
+COPY crates/snuffler-web-proto/Cargo.toml crates/snuffler-web-proto/Cargo.toml
+COPY crates/snuffler-web-render/Cargo.toml crates/snuffler-web-render/Cargo.toml
+COPY crates/cors-proxy crates/cors-proxy
+COPY crates/tcp-over-ws-proxy crates/tcp-over-ws-proxy
+COPY crates/snuffler-web-proxy crates/snuffler-web-proxy
 # No `strip` afterwards: the workspace's release profile already sets strip=true.
 # Cargo writes the `dev` profile to target/debug and every other profile to a
 # directory of its own name, so the binary is staged at a fixed path for the
 # runtime stage.
-RUN cargo build --profile "${CARGO_PROFILE}" --locked -p snuffler-web-proxy --bin snuffler-web-proxy \
+RUN cargo zigbuild --target "$(cat /opt/rust-target)" \
+    --profile "${CARGO_PROFILE}" --locked -p snuffler-web-proxy --bin snuffler-web-proxy \
     && profile_dir="${CARGO_PROFILE}" \
     && if [ "${profile_dir}" = dev ]; then profile_dir=debug; fi \
-    && cp "target/${profile_dir}/snuffler-web-proxy" /usr/local/bin/snuffler-web-proxy
+    && cp "target/$(cat /opt/rust-target)/${profile_dir}/snuffler-web-proxy" /usr/local/bin/snuffler-web-proxy
 
+# The musl binary is static; only CA certificates and basic system data are needed.
+# No libc shared libraries, OpenSSL, shell or package manager are shipped.
 FROM ${RUNTIME_IMAGE} AS runtime
-
-ENV DEBIAN_FRONTEND=noninteractive
 
 LABEL org.opencontainers.image.title="snuffler-web-proxy" \
       org.opencontainers.image.description="Allowlisted CORS and TCP-over-WebSocket proxy for snuffler-web"
 
-# ca-certificates because rustls verifies outgoing FDSN requests against the
-# system trust store (rustls-platform-verifier); curl only so the HEALTHCHECK
-# below has something to ask /health with.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin snuffler
-
-COPY --from=builder /usr/local/bin/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
+COPY --from=builder --chmod=0555 /usr/local/bin/snuffler-web-proxy /usr/local/bin/snuffler-web-proxy
 
 # The binary defaults to 127.0.0.1:9000, which inside a container is reachable by nothing.
 # Its log defaults to readable lines for a terminal; a container's goes to a log shipper.
 ENV SNUFFLER_PROXY_BIND=0.0.0.0:8080 \
     SNUFFLER_PROXY_LOG_FORMAT=json
 
-USER 10001
+USER 65532:65532
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:8080/health || exit 1
+    CMD ["/usr/local/bin/snuffler-web-proxy", "--healthcheck"]
 
-ENTRYPOINT ["snuffler-web-proxy"]
+ENTRYPOINT ["/usr/local/bin/snuffler-web-proxy"]

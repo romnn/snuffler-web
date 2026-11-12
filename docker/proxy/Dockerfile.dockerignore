@@ -1,5 +1,6 @@
-# The proxy is a native Rust binary: it needs the workspace manifests and the
-# crates, and nothing else. Without this, its context would carry the 70 MB
+# The proxy is a native Rust binary: it needs the workspace manifests, the
+# crates, and the cross-toolchain pins.
+# Without this, its context would carry the 70 MB
 # Pyodide runtime, the example datasets and the SeisBench weights that only the
 # web image reads — none of which it would ever COPY, all of which it would wait
 # for. (BuildKit prefers a `<dockerfile>.dockerignore` over the root one.)
@@ -7,6 +8,8 @@
 !Cargo.toml
 !Cargo.lock
 !rust-toolchain.toml
+!mise.toml
+!mise.lock
 !.cargo
 !crates
 **/.DS_Store
