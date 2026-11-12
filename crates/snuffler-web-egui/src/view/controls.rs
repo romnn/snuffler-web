@@ -307,7 +307,14 @@ fn value_committed(ui: &egui::Ui, response: &egui::Response) -> bool {
 ///
 /// `track_count` is the pile's row count, and `deltat_range` the finest and coarsest
 /// sampling intervals, which bound the filter corners.
-pub fn show(ui: &mut egui::Ui, state: &mut AppState, track_count: usize, deltat_range: (f64, f64)) {
+/// `show_readout` fills the remaining space to the right of the marker controls.
+pub fn show(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    track_count: usize,
+    deltat_range: (f64, f64),
+    show_readout: impl FnOnce(&mut egui::Ui),
+) {
     let waterfall = state.view_mode == ViewMode::Waterfall;
     let (min_hz, max_hz) = filter_range(deltat_range);
     // Loading finer or coarser data moves the band; corners set for the old pile
@@ -349,6 +356,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, track_count: usize, deltat_
         track_height_controls(ui, state, track_count);
         ui.separator();
         marker_kind_buttons(ui, state);
+        show_readout(ui);
     });
 
     // Snuffler's `ColorbarControl`, shown only in waterfall mode

@@ -34,6 +34,8 @@ pub struct App {
     map: crate::view::map::MapState,
     /// Waveform central-panel rect from the current frame; the crop for PNG export.
     last_waveform_rect: egui::Rect,
+    /// Last time under the pointer, retained when it leaves the waveform.
+    last_cursor_time: Option<f64>,
     /// A "Save image (PNG)" menu click, handled after layout once the rect is known.
     png_request: bool,
     /// A "Save image (SVG)" menu click, handled after layout once the view is known.
@@ -56,7 +58,7 @@ pub struct App {
     png_prepare_job: Option<JobHandle>,
     /// Smoothed egui CPU time per frame, in milliseconds.
     frame_stats_ms: Option<f64>,
-    /// The frame rate the top bar is currently showing, and when it last changed.
+    /// The frame rate the control strip is currently showing, and when it last changed.
     frame_stats_shown_fps: Option<u32>,
     frame_stats_shown_at_s: f64,
     /// The light/dark preference to restore when leaving a theme that pins the
@@ -120,6 +122,7 @@ impl App {
             marker_table: crate::view::marker_table::MarkerTable::default(),
             map: crate::view::map::MapState::default(),
             last_waveform_rect: egui::Rect::ZERO,
+            last_cursor_time: None,
             png_request: false,
             svg_request: false,
             svg_prepare_job: None,
@@ -236,15 +239,20 @@ impl App {
         let deltatmin = self.session.scene_deltatmin();
         if self.session.state.show_controls {
             let deltat_range = self.session.scene_deltat_range();
+            let fps = self.frame_stats_shown_fps;
             egui::Panel::bottom("controls").show_inside(ui, |ui| {
+                let mut show_about = false;
                 controls::show(
                     ui,
                     &mut self.session.state,
                     total_tracks.max(1),
                     deltat_range,
+                    |ui| show_about = Self::show_build_readout(ui, fps),
                 );
+                self.session.state.show_about |= show_about;
             });
         }
+        self.show_marker_info_panel(ui);
         let central = egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {

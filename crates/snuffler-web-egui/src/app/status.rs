@@ -1,4 +1,4 @@
-//! The top bar: menus, the activity status line, and the right-hand readout.
+//! The menu bar, activity feedback, cursor clock, and build readouts.
 
 use std::fmt::Write as _;
 
@@ -9,18 +9,6 @@ use snuffler_web_core::activity::{
 
 use super::App;
 
-/// How much of the right-hand readout the menu row can afford this frame.
-struct RightReadout {
-    /// Width to keep clear at the right of the row; zero shows nothing at all.
-    width: f32,
-    /// Whether the build stamp fits beside the frame rate.
-    with_stamp: bool,
-}
-
-/// The widest the readout can get (the rate is capped at 60), used to reserve a
-/// width that does not change as the number does.
-const FRAME_STATS_WIDEST: &str = "60 fps";
-
 impl App {
     pub(super) fn show_status_panel(
         &mut self,
@@ -29,16 +17,15 @@ impl App {
         total_tracks: usize,
     ) {
         egui::Panel::top("menu").show_inside(ui, |ui| {
-            // This row has to stay exactly one line tall whatever it holds: a
-            // wrapped label would make the panel taller and push every panel below
-            // it down, moving the traces out from under the pointer.
-            // The row's contents come and go (the hover-only cursor clock, the PICK
-            // badge, a status message of any length), so truncating is what pins
-            // the height for any font, message and window width.
+            // Truncation keeps progress messages from changing the row height.
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             ui.horizontal(|ui| {
-                self.main_menus(ui);
-                // snuffler's menu-bar ':' button, which toggles the command line.
+                if ui.available_width() < 1000.0 {
+                    ui.menu_button("Menu", |ui| self.main_menus(ui));
+                } else {
+                    self.main_menus(ui);
+                }
+                // Snuffler's menu-bar ':' button toggles the command line.
                 if ui
                     .button(egui::RichText::new(":").monospace().strong())
                     .on_hover_text("Show command line.")
@@ -47,25 +34,11 @@ impl App {
                     self.session.state.command.toggle();
                 }
                 ui.separator();
-                // Hand the right edge to the build stamp and frame rate before the
-                // status message is laid out: a message of any length then truncates
-                // within what is left, instead of pushing the readout off the row.
-                let readout = Self::right_readout(ui);
-                let left = (ui.available_width() - readout.width).max(0.0);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(left, ui.available_height()),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| self.show_activity(ui, ctx, total_tracks),
-                );
-                if readout.width > 0.0 {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.show_frame_stats(ui);
-                        if readout.with_stamp {
-                            ui.separator();
-                            self.show_build_stamp(ui);
-                        }
-                    });
-                }
+                self.show_cursor_time(ui, ctx);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+                    self.show_activity(ui, ctx, total_tracks);
+                });
             });
         });
     }
@@ -117,8 +90,7 @@ impl App {
         }
     }
 
-    /// What the app is doing right now: the status line, the picking badge, and
-    /// the time under the pointer.
+    /// What the app is doing right now, including processing errors and recovery actions.
     fn show_activity(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, total_tracks: usize) {
         // The status line is the one place the app tells you that something
         // finished, failed, or is still running, and none of it is tied to a
@@ -131,8 +103,15 @@ impl App {
             ctx.request_repaint_after(delay);
         }
         let active = active_job(jobs, now_s);
-        let (status, urgency) = show_primary_activity(ui, &runtime, jobs, active, total_tracks);
-        self.show_recovery_actions(ui, &runtime, active);
+        // Reserve recovery buttons at the right edge before a long message truncates.
+        ui.push_id("recovery_actions", |ui| {
+            self.show_recovery_actions(ui, &runtime, active);
+        });
+        let (status, urgency) = ui
+            .push_id("primary_activity", |ui| {
+                show_primary_activity(ui, &runtime, jobs, active, total_tracks)
+            })
+            .inner;
         crate::a11y::announce_changes(ctx, &status, urgency);
         if let Some(error) = self.session.bridge.diagnostic() {
             ui.separator();
@@ -199,6 +178,22 @@ impl App {
                  set kind/phase and carry to the next pick.",
             );
         }
+    }
+
+    /// A permanent row below the time axis keeps marker hovers from moving the tracks.
+    pub(super) fn show_marker_info_panel(&self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        egui::Panel::bottom("marker_info").show_inside(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            ui.horizontal(|ui| {
+                ui.set_min_height(ui.text_style_height(&egui::TextStyle::Body));
+                self.show_marker_hit_overload(ui, &ctx);
+                self.show_marker_hover(ui, &ctx);
+            });
+        });
+    }
+
+    fn show_marker_hover(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // The hovered marker's metadata, as snuffler posts `hoover_message()` to
         // its status bar (pile_viewer.py:2200) — an event's origin fields or a
         // pick's polarity, readable without opening the marker table.
@@ -210,112 +205,100 @@ impl App {
             .map(snuffler_web_core::markers::Marker::hover_message)
             .filter(|msg| !msg.is_empty());
         if let Some(msg) = hover_msg {
-            ui.separator();
-            let label = ui.label(msg);
+            let label = ui.label(&msg).on_hover_text(&msg);
             crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
         }
-        self.show_marker_hit_overload(ui, ctx);
-        self.show_cursor_time(ui, ctx);
     }
 
     fn show_marker_hit_overload(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let Some(count) = self.session.state.marker_hit_overload else {
             return;
         };
-        ui.separator();
         let label = ui.label(format!(
             "{count} marker endpoints under the pointer; zoom in to select one"
         ));
         crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
     }
 
-    /// How much of the build stamp and frame rate the right of the menu row can
-    /// take without crowding out what is to their left.
-    ///
-    /// Measured rather than assumed: the menus are as wide as the font makes them,
-    /// the stamp is a timestamp with a zone or just `dev build`, and the window is
-    /// any size, so any fixed threshold is wrong for some combination of them.
-    fn right_readout(ui: &egui::Ui) -> RightReadout {
-        let font = egui::TextStyle::Monospace.resolve(ui.style());
-        let text_width = |text: String| {
-            ui.painter()
-                .layout_no_wrap(text, font.clone(), egui::Color32::PLACEHOLDER)
-                .size()
-                .x
-        };
-        let gap = ui.spacing().item_spacing.x;
-        // Reserved for the widest rate rather than the current one, so the status beside it does
-        // not resize when the first measurement lands or the number gains a digit.
-        // `6.0` is the width egui gives a vertical separator.
-        let rate = text_width(FRAME_STATS_WIDEST.to_owned()) + gap * 2.0;
-        let stamp = text_width(crate::view::about::build_stamp()) + 6.0 + gap * 2.0;
-        // What the menus and the status keep no matter what: below it the readout
-        // is the part worth dropping, and dropping it is what keeps it from
-        // painting over them.
-        let status_min = ui.text_style_height(&egui::TextStyle::Body) * 8.0;
-        let spare = ui.available_width() - status_min;
-        if spare >= rate + stamp {
-            RightReadout {
-                width: rate + stamp,
-                with_stamp: true,
-            }
-        } else if spare >= rate {
-            // The stamp is by far the longer of the two and never changes within a
-            // build; the rate is short and is the one worth watching.
-            RightReadout {
-                width: rate,
-                with_stamp: false,
-            }
-        } else {
-            RightReadout {
-                width: 0.0,
-                with_stamp: false,
-            }
+    /// Small build and performance readouts at the right of the marker controls.
+    pub(super) fn show_build_readout(ui: &mut egui::Ui, fps: Option<u32>) -> bool {
+        let stamp = crate::view::about::build_stamp();
+        let font = egui::FontId::monospace(11.0);
+        let width = ui
+            .painter()
+            .layout_no_wrap(format!("{stamp}  60 fps"), font, egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+            + ui.spacing().item_spacing.x * 2.0
+            + 6.0;
+        // Keep the existing controls on their row when the window is narrow.
+        if ui.available_width() < width {
+            return false;
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(fps) = fps {
+                ui.label(
+                    egui::RichText::new(format!("{fps} fps"))
+                        .monospace()
+                        .size(11.0)
+                        .weak(),
+                );
+                ui.separator();
+            }
+            let response = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(stamp).monospace().size(11.0).weak())
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if response.hovered() || response.has_focus() {
+                ui.painter().line_segment(
+                    [response.rect.left_bottom(), response.rect.right_bottom()],
+                    egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()),
+                );
+            }
+            response.clicked()
+        })
+        .inner
     }
 
-    /// When the published build was built, and the way into the About window it
-    /// is a one-line summary of.
-    fn show_build_stamp(&mut self, ui: &mut egui::Ui) {
-        let stamp = egui::RichText::new(crate::view::about::build_stamp())
-            .monospace()
-            .weak();
-        if ui
-            .add(egui::Label::new(stamp).sense(egui::Sense::click()))
-            .on_hover_text(crate::view::about::build_tooltip())
-            .clicked()
-        {
-            self.session.state.show_about = true;
-        }
-    }
-
-    fn show_frame_stats(&self, ui: &mut egui::Ui) {
-        let Some(fps) = self.frame_stats_shown_fps else {
-            return;
-        };
-        ui.label(egui::RichText::new(format!("{fps} fps")).monospace().weak())
-            .on_hover_text(
-                "Frames per second this machine could sustain, from egui's CPU time \
-                 per frame. Capped at 60; the view only redraws when something changes.",
-            );
-    }
-
-    fn show_cursor_time(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let Some(position) = ctx.pointer_hover_pos() else {
-            return;
-        };
-        // The whole rect, not just its horizontal span: the controls sit directly
-        // below the traces and share their x range, so testing x alone would show
-        // the clock while the pointer is on a slider down there.
+    fn show_cursor_time(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Test the full rect so moving over a control does not update the clock.
         let rect = self.last_waveform_rect;
-        if !rect.is_positive() || !rect.contains(position) {
-            return;
+        if let Some(position) = ctx.pointer_hover_pos()
+            && rect.is_positive()
+            && rect.contains(position)
+        {
+            let fraction = f64::from(((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
+            self.last_cursor_time = Some(
+                self.session.state.tmin
+                    + fraction * (self.session.state.tmax - self.session.state.tmin),
+            );
         }
-        let fraction = f64::from(((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
-        let time = self.session.state.tmin
-            + fraction * (self.session.state.tmax - self.session.state.tmin);
-        ui.separator();
-        ui.monospace(snuffler_web_core::timeaxis::format_timestamp(time));
+        let text = self.last_cursor_time.map_or_else(
+            || "---------- --:--:--.--- UTC".to_owned(),
+            |time| {
+                format!(
+                    "{} UTC",
+                    snuffler_web_core::timeaxis::format_timestamp(time)
+                )
+            },
+        );
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        let width = ui
+            .painter()
+            .layout_no_wrap(
+                "0000-00-00 00:00:00.000 UTC".to_owned(),
+                font,
+                egui::Color32::PLACEHOLDER,
+            )
+            .size()
+            .x;
+        ui.add_sized(
+            egui::vec2(width, ui.spacing().interact_size.y),
+            egui::Label::new(egui::RichText::new(text).monospace()).truncate(),
+        )
+        .on_hover_text("UTC time at the last pointer position over the tracks.");
     }
 }
 

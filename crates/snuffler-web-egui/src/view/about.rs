@@ -3,18 +3,10 @@
 use snuffler_web_core::bridge::RuntimeInfo;
 use snuffler_web_core::state::AppState;
 
-/// When the published build was built — Berlin time to the minute, naming its own zone — and
-/// the commit it came from.
-///
-/// Both are baked in from the environment by the deploy workflow, which is where the format
-/// lives.
-///
-/// Read with `option_env!` rather than produced by a build script on purpose: a script that
-/// stamped the current time would have to re-run — and so relink the wasm — on every local
-/// edit, and a local build's timestamp identifies nothing anyway.
-/// Unset means "built from a working tree", which is the honest answer.
+/// Deployment time, including its zone, supplied by the deployment workflow.
+/// Local builds use the build script's UTC timestamp instead.
 const BUILD_DATE: Option<&str> = option_env!("SNUFFLER_BUILD_DATE");
-const GIT_COMMIT: Option<&str> = option_env!("SNUFFLER_GIT_COMMIT");
+const GIT_COMMIT: &str = env!("SNUFFLER_BUILD_COMMIT");
 /// The release tag, such as `v0.1.0`, which only a release build sets.
 const RELEASE: Option<&str> = option_env!("SNUFFLER_RELEASE");
 
@@ -26,30 +18,38 @@ fn release() -> Option<&'static str> {
     RELEASE.filter(|tag| !tag.is_empty())
 }
 
-/// The stamp for the top bar.
+/// The stamp for the control strip.
 ///
 /// A release shows its tag alone.
-/// Any other build is labelled, because a bare timestamp in a row that also carries the
-/// cursor clock reads as just another time.
+/// Development builds show the package version and short commit.
 pub fn build_stamp() -> String {
     if let Some(tag) = release() {
         return tag.to_owned();
     }
-    BUILD_DATE.map_or_else(|| "dev build".to_owned(), |date| format!("built on {date}"))
+    version_identifier()
 }
 
-/// Hover text for the stamp — what does not fit in the top bar.
-pub fn build_tooltip() -> String {
-    // The date already names its own zone (see the deploy workflow).
-    let head = match BUILD_DATE {
-        Some(date) => format!("Built {date}"),
-        None => "Development build (built from a working tree)".to_owned(),
-    };
-    let release = release().map_or_else(String::new, |tag| format!("Release {tag} · "));
-    let commit = GIT_COMMIT.map_or_else(String::new, |sha| format!(" · commit {sha}"));
-    format!(
-        "{release}{head}{commit} · {}\nClick for the About window.",
-        profile()
+fn version_identifier() -> String {
+    let commit = GIT_COMMIT.get(..10).unwrap_or(GIT_COMMIT);
+    format!("{}+{commit}", env!("CARGO_PKG_VERSION"))
+}
+
+fn build_time() -> String {
+    BUILD_DATE.map_or_else(
+        || {
+            option_env!("SNUFFLER_LOCAL_BUILD_EPOCH")
+                .and_then(|epoch| epoch.parse::<f64>().ok())
+                .map_or_else(
+                    || "unknown".to_owned(),
+                    |time| {
+                        format!(
+                            "{} UTC",
+                            snuffler_web_core::timeaxis::format_timestamp(time)
+                        )
+                    },
+                )
+        },
+        str::to_owned,
     )
 }
 
@@ -140,13 +140,12 @@ fn contents(ui: &mut egui::Ui, runtime: Option<&RuntimeInfo>) {
 
     section(ui, "Build");
     table(ui, "about_build", |ui| {
+        fact(ui, "version", &version_identifier());
         if let Some(tag) = release() {
             fact(ui, "release", tag);
         }
-        fact(ui, "built", BUILD_DATE.unwrap_or("development build"));
-        if let Some(sha) = GIT_COMMIT {
-            fact(ui, "commit", sha);
-        }
+        fact(ui, "built", &build_time());
+        fact(ui, "commit", GIT_COMMIT);
         fact(ui, "profile", profile());
     });
 
