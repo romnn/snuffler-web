@@ -308,11 +308,6 @@ impl eframe::App for App {
         self.consume_keyboard_requests();
         self.load_dropped_files(&ctx);
         self.apply_pending_view();
-        // A dataset that describes itself introduces itself, once.
-        if self.session.bridge.take_unseen_dataset_note() {
-            self.session.state.show_dataset_note = true;
-        }
-
         let scene = self.session.bridge.scene();
         let total_tracks = scene
             .as_ref()

@@ -510,7 +510,7 @@ impl App {
             // opened an empty window would be worse than no entry.
             if self.session.bridge.has_dataset_note()
                 && ui
-                    .button("About this dataset")
+                    .button("About the dataset")
                     .on_hover_text("What the loaded dataset is, and what is unique about it.")
                     .clicked()
             {

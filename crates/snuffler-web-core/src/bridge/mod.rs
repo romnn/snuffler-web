@@ -152,13 +152,9 @@ struct Inner {
     /// cake model waits in `pending_cake_model`.
     pending_view: Option<BundleView>,
     /// What the loaded dataset says about itself.
-    /// Unlike the view, this is not spent on arrival: `Help ▸ About this dataset` shows
-    /// it again later.
+    /// Unlike the view, this is not spent on arrival: `Help ▸ About the dataset` can
+    /// show it whenever the user asks.
     dataset_note: Option<DatasetNote>,
-    /// Whether that note has yet to be put on screen.
-    /// A dataset introduces itself once, when it arrives, which is a fact known here
-    /// rather than something the frontend should infer from a generation change.
-    dataset_note_unseen: bool,
 }
 
 impl Inner {
@@ -592,13 +588,6 @@ impl Bridge {
         self.inner.borrow_mut().pending_view.take()
     }
 
-    /// Whether a dataset has just introduced itself and has not been shown yet.
-    /// True once per load, for the frontend to open the window with.
-    #[must_use]
-    pub fn take_unseen_dataset_note(&self) -> bool {
-        std::mem::take(&mut self.inner.borrow_mut().dataset_note_unseen)
-    }
-
     /// Whether the dataset now on screen says anything about itself, for the menu
     /// entry that only needs to exist or not, without cloning the prose.
     #[must_use]
@@ -848,7 +837,6 @@ mod tests {
             inner.pending_view.as_ref().map(|view| view.sort.as_str()),
             Some("distance")
         );
-        assert!(inner.dataset_note_unseen);
         assert_eq!(
             inner
                 .dataset_note

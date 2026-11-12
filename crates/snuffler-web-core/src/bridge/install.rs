@@ -98,7 +98,6 @@ impl Inner {
         about: Option<BundleAbout>,
     ) {
         self.pending_view = view;
-        self.dataset_note_unseen = about.is_some();
         self.dataset_note = about.map(|about| DatasetNote {
             scene_generation: self.scene_generation,
             about,

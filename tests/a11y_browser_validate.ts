@@ -112,8 +112,7 @@ function appUrl(params: Record<string, string>): string {
 // `demo=1` for the data, though.
 // This suite measures the projection: where proxies land, what they are named,
 // whether a press reaches the canvas.
-// Without it the app opens on a recorded dataset that introduces itself in a
-// window, and the canvas-reachability probe would measure that window instead.
+// A small synthetic pile keeps these checks independent of the shipped example datasets.
 async function boot(page: Page, params: Record<string, string> = {}): Promise<void> {
   await page.goto(appUrl({ demo: "1", ...params }), { waitUntil: "load" });
   // The boot overlay covers the app until Pyodide has imported pyrocko.
