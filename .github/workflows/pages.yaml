@@ -42,8 +42,11 @@ permissions:
   contents: read
 
 # Allow one concurrent deployment; don't cancel an in-progress one.
+# A group holds only one waiting run and cancels the one it replaces.
+# Release tags never deploy, so they queue apart: otherwise the deploy a tag starts on
+# main would cancel the waiting run of the push that came with the tag.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref_type }}
   cancel-in-progress: false
 
 env:
