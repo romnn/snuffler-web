@@ -23,6 +23,7 @@ use emath::{Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 use snuffler_web_core::state::AppState;
 
+pub use self::axis::station_place_text;
 pub use self::markers::marker_matches_track;
 use crate::draw::DrawTarget;
 use crate::layout::Layout;

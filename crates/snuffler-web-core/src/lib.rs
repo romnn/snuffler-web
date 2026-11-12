@@ -8,6 +8,7 @@
 pub mod activity;
 pub mod bridge;
 pub mod command;
+pub mod deployment;
 pub mod markers;
 pub mod seedlink;
 pub mod session;

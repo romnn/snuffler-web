@@ -12,7 +12,7 @@ import numpy as np
 from pyrocko import trace as ptrace
 from snuffler_web_proto import view_pb2
 
-from . import cutout, sorting, state, waterfall
+from . import cutout, sorting, state, station_places, waterfall
 from .nslc import NslcId
 
 _TraceRangeFunc = Callable[..., Mapping[Any, Tuple[Any, Any]]]
@@ -418,6 +418,7 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
         view_sequence=request.view_sequence,
         subsort=subsort,
     )
+    meta.event_locations.update(station_places.event_locations())
     meta.color_keys.extend(_color_keys(subsort))
     ys_parts: List[np.ndarray] = []
     range_traces: List[ptrace.Trace] = []
@@ -561,7 +562,16 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
         t = meta.tracks.add()
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
+        t.station_label = nslc_part
+        t.distance_label = (
+            annotation
+            if sort == "distance"
+            else sorting.sort_annotation(*head.nslc_id[:3], "distance", distances_3d)
+        )
         t.sort_annotation = annotation
+        place = station_places.for_station(net, sta, loc)
+        if place is not None:
+            t.place.CopyFrom(place)
         # Boxes only for the requested track page, like the spans: rows outside
         # it are stack placeholders the painter never shows.
         if want_samples:

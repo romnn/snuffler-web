@@ -5,7 +5,9 @@ if (typeof window === 'undefined') {
     self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
     self.addEventListener("message", (ev) => {
-        if (!ev.data) {
+        // A parent deployment's scope also covers nested deployments until they
+        // acquire their own controller, so only accept its own page handshake.
+        if (!ev.data || ev.data.deployment !== self.registration.scope) {
             return;
         } else if (ev.data.type === "deregister") {
             self.registration
@@ -60,9 +62,27 @@ if (typeof window === 'undefined') {
 
 } else {
     (() => {
-        const reloadedBySelf = window.sessionStorage.getItem("coiReloadedBySelf");
-        window.sessionStorage.removeItem("coiReloadedBySelf");
-        const coepDegrading = (reloadedBySelf == "coepdegrade");
+        const scriptUrl = new URL(window.document.currentScript.src);
+        const deployment = new URL(".", scriptUrl).href;
+        const sessionPrefix = `snuffler:${new URL(deployment).pathname}:coi.`;
+        // Refusing storage must not prevent isolation, including in private mode.
+        const session = {
+            get(name) {
+                try { return window.sessionStorage.getItem(sessionPrefix + name); }
+                catch { return null; }
+            },
+            set(name, value) {
+                try { window.sessionStorage.setItem(sessionPrefix + name, value); }
+                catch { /* Isolation can proceed without remembering the reload. */ }
+            },
+            remove(name) {
+                try { window.sessionStorage.removeItem(sessionPrefix + name); }
+                catch { /* Storage may be disabled independently of service workers. */ }
+            },
+        };
+        const reloadedBySelf = session.get("reloadedBySelf");
+        session.remove("reloadedBySelf");
+        const coepDegrading = reloadedBySelf === "coepdegrade";
 
         // You can customize the behavior of this script through a global `coi` variable.
         const coi = {
@@ -74,69 +94,72 @@ if (typeof window === 'undefined') {
             quiet: false,
             ...window.coi
         };
-
-        const n = navigator;
-        const controlling = n.serviceWorker && n.serviceWorker.controller;
-
-        // Record the failure if the page is served by serviceWorker.
-        if (controlling && !window.crossOriginIsolated) {
-            window.sessionStorage.setItem("coiCoepHasFailed", "true");
+        const workers = navigator.serviceWorker;
+        const ownController = () => {
+            const controller = workers && workers.controller;
+            return controller && controller.scriptURL === scriptUrl.href ? controller : null;
+        };
+        let reloading = false;
+        function reload(reason) {
+            if (reloading) return;
+            reloading = true;
+            session.set("reloadedBySelf", reason);
+            coi.doReload(reason);
         }
-        const coepHasFailed = window.sessionStorage.getItem("coiCoepHasFailed");
+        function configureController(diagnoseIsolation) {
+            const controller = ownController();
+            if (!controller) return;
 
-        if (controlling) {
-            // Reload only on the first failure.
-            const reloadToDegrade = coi.coepDegrade() && !(
-                coepDegrading || window.crossOriginIsolated
-            );
-            n.serviceWorker.controller.postMessage({
+            // Only this deployment's controller can diagnose its isolation failure.
+            const isolationFailed = diagnoseIsolation && !window.crossOriginIsolated;
+            if (isolationFailed) session.set("coepHasFailed", "true");
+            const reloadToDegrade = isolationFailed && coi.coepDegrade() && !coepDegrading;
+            controller.postMessage({
                 type: "coepCredentialless",
-                value: (reloadToDegrade || coepHasFailed && coi.coepDegrade())
+                deployment,
+                value: (reloadToDegrade || session.get("coepHasFailed") && coi.coepDegrade())
                     ? false
                     : coi.coepCredentialless(),
             });
             if (reloadToDegrade) {
                 !coi.quiet && console.log("Reloading page to degrade COEP.");
-                window.sessionStorage.setItem("coiReloadedBySelf", "coepdegrade");
-                coi.doReload("coepdegrade");
+                reload("coepdegrade");
             }
-
             if (coi.shouldDeregister()) {
-                n.serviceWorker.controller.postMessage({ type: "deregister" });
+                controller.postMessage({ type: "deregister", deployment });
             }
         }
+        configureController(true);
 
-        // If we're already coi: do nothing. Perhaps it's due to this script doing its job, or COOP/COEP are
-        // already set from the origin server. Also if the browser has no notion of crossOriginIsolated, just give up here.
-        if (window.crossOriginIsolated !== false || !coi.shouldRegister()) return;
-
+        // An isolated page may still be controlled by its parent deployment.
+        // It must acquire its own registration before participating in handshakes.
+        if (window.crossOriginIsolated === undefined || !coi.shouldRegister()) return;
+        if (window.crossOriginIsolated && !(workers && workers.controller)) return;
         if (!window.isSecureContext) {
             !coi.quiet && console.log("COOP/COEP Service Worker not registered, a secure context is required.");
             return;
         }
-
-        // In some environments (e.g. Firefox private mode) this won't be available
-        if (!n.serviceWorker) {
+        // In some environments (e.g. Firefox private mode) this won't be available.
+        if (!workers) {
             !coi.quiet && console.error("COOP/COEP Service Worker not registered, perhaps due to private mode.");
             return;
         }
 
-        n.serviceWorker.register(window.document.currentScript.src).then(
+        workers.addEventListener("controllerchange", () => {
+            if (!ownController()) return;
+            // Claiming a document cannot retroactively isolate its response.
+            // Diagnose COEP only after navigation through this controller.
+            configureController(false);
+            // Activation, rather than updatefound, makes the new worker usable.
+            !coi.quiet && console.log("Reloading page to use this deployment's COOP/COEP Service Worker.");
+            reload("controllerchange");
+        });
+        workers.register(scriptUrl.href, { scope: deployment }).then(
             (registration) => {
                 !coi.quiet && console.log("COOP/COEP Service Worker registered", registration.scope);
-
-                registration.addEventListener("updatefound", () => {
-                    !coi.quiet && console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
-                    window.sessionStorage.setItem("coiReloadedBySelf", "updatefound");
-                    coi.doReload();
-                });
-
-                // If the registration is active, but it's not controlling the page
-                if (registration.active && !n.serviceWorker.controller) {
-                    !coi.quiet && console.log("Reloading page to make use of COOP/COEP Service Worker.");
-                    window.sessionStorage.setItem("coiReloadedBySelf", "notcontrolling");
-                    coi.doReload();
-                }
+                // An already-active nested registration needs navigation to replace
+                // a parent controller; clients.claim() only runs at activation.
+                if (registration.active && !ownController()) reload("notcontrolling");
             },
             (err) => {
                 !coi.quiet && console.error("COOP/COEP Service Worker failed to register:", err);

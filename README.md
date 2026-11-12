@@ -18,7 +18,7 @@ Everything runs in the browser, and files you open are not uploaded.
 
 Try the live version in your browser without installing anything:
 
-- [romnn.github.io/snuffler-web/](https://romnn.github.io/snuffler-web/) — stable, the latest release.
+- [romnn.github.io/snuffler-web/](https://romnn.github.io/snuffler-web/) — latest stable release.
 - [romnn.github.io/snuffler-web/latest/](https://romnn.github.io/snuffler-web/latest/) — the latest `main` build.
 
 ## What it does

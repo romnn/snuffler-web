@@ -39,6 +39,7 @@ from . import (
     snufflings,
     staging,
     state,
+    station_places,
     stations,
     view,
     waveforms,
@@ -88,9 +89,10 @@ class BridgeServicer:
     ) -> data_pb2.BundleResult:
         return await bundles.load_requested(request)
 
-    def get_view(
+    async def get_view(
         self, request: view_pb2.ViewParams, data: Any
     ) -> Tuple[view_pb2.ViewMeta, np.ndarray]:
+        await station_places.prepare()
         return view.get_view_data(request)
 
     async def render_figure(

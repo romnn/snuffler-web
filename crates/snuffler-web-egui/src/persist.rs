@@ -8,6 +8,8 @@
 //! The set matches Qt's: demean, the two scale annotations, the scaling mode, show boxes,
 //! clip traces, and the chosen visible length (Qt persists the visible-length *table*; the
 //! web's entries are fixed, so the choice is what there is to keep).
+//! Keys include the deployment's base pathname, so stable and latest keep their own
+//! settings.
 //!
 //! Appearance settings specific to this frontend include the wiggle theme
 //! and light/dark preference.
@@ -15,11 +17,9 @@
 //! the one thing a user notices immediately — so they are kept here rather than in eframe's
 //! own storage, alongside everything else the reload restores.
 
+use snuffler_web_core::deployment::browser_storage_key;
 use snuffler_web_core::state::{AppState, ScalingBase, ScalingGroup, VisibleLength};
 use snuffler_web_core::theme::WiggleTheme;
-
-/// One key per setting under this prefix, like a `.pf` line per setting.
-const PREFIX: &str = "snuffler.settings.";
 
 /// What [`restore`] recovered that has no home in [`AppState`].
 pub struct Restored {
@@ -36,6 +36,7 @@ pub struct Snapshot {
     demean: bool,
     show_scale_ranges: bool,
     show_scale_axes: bool,
+    show_station_locations: bool,
     show_boxes: Option<bool>,
     clip_traces: bool,
     scaling_group: &'static str,
@@ -51,6 +52,7 @@ impl Snapshot {
             demean: state.demean,
             show_scale_ranges: state.show_scale_ranges,
             show_scale_axes: state.show_scale_axes,
+            show_station_locations: state.show_station_locations,
             show_boxes: state.show_boxes,
             clip_traces: state.clip_traces,
             scaling_group: state.scaling_group.as_str(),
@@ -91,7 +93,11 @@ fn storage() -> Option<web_sys::Storage> {
 }
 
 fn read(storage: &web_sys::Storage, key: &str) -> Option<String> {
-    storage.get_item(&format!("{PREFIX}{key}")).ok().flatten()
+    storage.get_item(&setting_key(key)?).ok().flatten()
+}
+
+fn setting_key(name: &str) -> Option<String> {
+    browser_storage_key(&format!("settings.{name}"))
 }
 
 /// Restores a setting that carries "no choice made" as a third state, leaving it
@@ -129,6 +135,11 @@ pub fn restore(state: &mut AppState) -> Restored {
     read_bool(&storage, "demean", &mut state.demean);
     read_bool(&storage, "show_scale_ranges", &mut state.show_scale_ranges);
     read_bool(&storage, "show_scale_axes", &mut state.show_scale_axes);
+    read_bool(
+        &storage,
+        "show_station_locations",
+        &mut state.show_station_locations,
+    );
     read_opt_bool(&storage, "show_boxes", &mut state.show_boxes);
     read_bool(&storage, "clip_traces", &mut state.clip_traces);
     if let Some(group) = read(&storage, "scaling_group")
@@ -189,26 +200,22 @@ pub fn save_if_changed(
         ("demean", snapshot.demean),
         ("show_scale_ranges", snapshot.show_scale_ranges),
         ("show_scale_axes", snapshot.show_scale_axes),
+        ("show_station_locations", snapshot.show_station_locations),
         ("clip_traces", snapshot.clip_traces),
     ] {
-        let _ = storage.set_item(
-            &format!("{PREFIX}{key}"),
-            if value { "true" } else { "false" },
-        );
+        let Some(key) = setting_key(key) else { return };
+        let _ = storage.set_item(&key, if value { "true" } else { "false" });
     }
     // A setting the user has not touched is stored as absent rather than as its
     // current value, so it keeps following the canvas default instead of freezing
     // at whatever the canvas happened to be the first time the settings were saved.
-    match snapshot.show_boxes {
-        Some(value) => {
-            let _ = storage.set_item(
-                &format!("{PREFIX}show_boxes"),
-                if value { "true" } else { "false" },
-            );
-        }
-        None => {
-            let _ = storage.remove_item(&format!("{PREFIX}show_boxes"));
-        }
+    let Some(key) = setting_key("show_boxes") else {
+        return;
+    };
+    if let Some(value) = snapshot.show_boxes {
+        let _ = storage.set_item(&key, if value { "true" } else { "false" });
+    } else {
+        let _ = storage.remove_item(&key);
     }
     for (key, value) in [
         ("scaling_group", snapshot.scaling_group),
@@ -217,7 +224,8 @@ pub fn save_if_changed(
         ("wiggle_theme", snapshot.wiggle_theme),
         ("theme_preference", snapshot.theme_preference),
     ] {
-        let _ = storage.set_item(&format!("{PREFIX}{key}"), value);
+        let Some(key) = setting_key(key) else { return };
+        let _ = storage.set_item(&key, value);
     }
     *last_saved = Some(snapshot);
 }

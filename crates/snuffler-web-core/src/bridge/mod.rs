@@ -68,8 +68,8 @@ pub use proto::pb::{
     RemoveEventsRequest, RmsSnufflingParams, RuntimeInfo, SceneMeta, SeisbenchSnufflingParams,
     SeismosizerSnufflingParams, SetActiveEventRequest, SnufMarker, SnufflingParams,
     SnufflingRequestParams, SnufflingResult, SnufflingSpan, SpectrogramSnufflingParams,
-    SpectrumSnufflingParams, StaltaSnufflingParams, StationRequest, TraceBox, ViewMeta, ViewParams,
-    ViewSpan, ViewTrack, WaveformDownloadRequest,
+    SpectrumSnufflingParams, StaltaSnufflingParams, StationPlace, StationRequest, TraceBox,
+    ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
 // Wire shapes only the wasm bridge implementation touches.
 #[cfg(target_arch = "wasm32")]

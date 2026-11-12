@@ -808,6 +808,26 @@ exception to the inventory or the shared control comparisons.
 """
 
 [[manual]]
+key = "station-place-readout"
+title = "Geographic context labels accompany tracks and the time axis"
+enforce = "test_station_places.py checks geographic containment, sparse coordinate caching, and boundary accuracy and current Luxembourg cantons; checkStationPlaces checks stable epicentres, track locations, and memory-only results"
+why = """
+The web adds a stable epicentral region beside the date without changing Qt's
+time ticks. An explicitly activated event takes precedence over a single selected
+event, then the first event; hovering never changes it. Offshore events use the
+bundled Flinn–Engdahl geographic regions rather than free-form catalog titles.
+View's Show station locations defaults on and persists per deployment; only this
+visibility preference is stored, never resolved locations. When enabled and both
+labels fit, station identity stays on the left; station region and event distance
+appear on the right, with a gap and distance aligned to the outer edge.
+The compact Qt label returns when the labels would overlap or the option is off.
+Python resolves distinct station and event positions once using bundled polygons.
+Shared boundaries are simplified together; missing regions are not borrowed from
+neighboring stations. Resolved labels remain in worker memory and travel as
+protobuf metadata; hovering never fetches or geocodes.
+"""
+
+[[manual]]
 key = "view-navigation-keys"
 title = "The axis pan strip keeps its own height"
 enforce = "a view time range in the tier-3 snapshot, plus a wheel action in the drivers"

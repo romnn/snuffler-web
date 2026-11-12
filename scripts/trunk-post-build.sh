@@ -333,9 +333,17 @@ print(json.dumps(config))
     echo "[config] $config"
 }
 
+stage_station_regions() {
+    for dir in "${build_dirs[@]}"; do
+        mkdir -p "$dir/assets"
+        copy_if_newer "$repo_dir/web/assets/station-regions.json" "$dir/assets/station-regions.json"
+    done
+}
+
 stage_bridge_module
 write_runtime_config
 stage_ort_runtime
+stage_station_regions
 stage_seisbench_models
 stage_examples
 optimize_app_wasm

@@ -800,3 +800,58 @@ fn track_labels_are_drawn_verbatim_as_the_bridge_composed_them() {
     assert!(svg.contains(">GE APE  HHN<"), "{svg}");
     assert!(!svg.contains("no coords"), "{svg}");
 }
+
+#[test]
+fn station_locations_and_distances_align_right_without_overlapping_station_identity() {
+    for (enabled, width, location_visible) in [
+        (true, 640.0, true),
+        (false, 640.0, false),
+        (true, 180.0, false),
+    ] {
+        let state = AppState {
+            tmin: 1_700_000_000.0,
+            tmax: 1_700_000_060.0,
+            show_station_locations: enabled,
+            hovered_track_row: Some(0),
+            ..AppState::default()
+        };
+        let view = ViewData {
+            meta: ViewMeta {
+                data_tmin: state.tmin,
+                data_tmax: state.tmax,
+                tracks: vec![ViewTrack {
+                    label: "12.3 km GE APE HHZ".to_owned(),
+                    station_label: "GE APE HHZ".to_owned(),
+                    distance_label: "12.3 km".to_owned(),
+                    place: Some(snuffler_web_core::bridge::StationPlace {
+                        region: "Bayern".to_owned(),
+                        country: "Germany".to_owned(),
+                        ..snuffler_web_core::bridge::StationPlace::default()
+                    }),
+                    ..ViewTrack::default()
+                }],
+                ..ViewMeta::default()
+            },
+            ys: Vec::new(),
+        };
+        let layout = compute_layout(
+            &state,
+            &view,
+            Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(width, 360.0)),
+        );
+        let colors = palette(Theme::Dark, WiggleTheme::Fieldbook);
+        let mut target = svg_target();
+        paint(&mut target, &state, &view, &colors, &layout, false, true);
+        let svg = target.finish();
+
+        // Narrow rows and the disabled option preserve the original compact label.
+        assert_eq!(svg.contains("Bayern, Germany"), location_visible, "{svg}");
+        assert_eq!(svg.contains(">GE APE HHZ<"), location_visible, "{svg}");
+        assert_eq!(svg.contains(">12.3 km<"), location_visible, "{svg}");
+        assert_eq!(
+            svg.contains("12.3 km GE APE HHZ"),
+            !location_visible,
+            "{svg}"
+        );
+    }
+}

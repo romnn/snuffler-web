@@ -53,6 +53,7 @@ fn convert_to_event(marker: &mut Marker) {
 
 /// `E`: deactivates every event, and asks Python to drop the active event too.
 pub(super) fn deactivate_events(state: &mut AppState) {
+    state.epicentre_event_hash = None;
     for marker in &mut state.markers {
         marker.active = false;
     }
@@ -124,6 +125,7 @@ pub(super) fn activate_selected_event(state: &mut AppState) {
             marker.event_time = Some(event_time);
         }
     }
+    state.epicentre_event_hash.clone_from(&event_hash);
     state.set_active_event_request = Some(ActiveEventRequest {
         deactivate: false,
         event_hash,

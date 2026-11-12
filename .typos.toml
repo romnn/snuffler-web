@@ -11,6 +11,8 @@
 ignore-files = true
 extend-exclude = [
   "web/assets/models/*.onnx",
+  # Generated geographic names and country codes retain their source spelling.
+  "web/assets/station-regions.json",
   "examples/*/meta/",
   "examples/*/*.mseed",
   "examples/*/catalog.yaml",

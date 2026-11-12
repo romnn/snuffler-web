@@ -20,7 +20,7 @@ use egui::{
 use snuffler_web_core::bridge::{ViewData, ViewSpan, ViewTrack};
 use snuffler_web_core::state::{AppState, ViewMode};
 use snuffler_web_render::layout::{AXIS_HEIGHT, Layout, compute_layout, track_geometry};
-use snuffler_web_render::paint::paint;
+use snuffler_web_render::paint::{paint, station_place_text};
 use snuffler_web_render::palette::Palette;
 
 use self::keyboard::KeyboardContext;
@@ -194,8 +194,48 @@ pub fn show(
     );
     let wave_response = ui.interact(wave_rect, canvas.id.with("wave"), Sense::click_and_drag());
     let lay = compute_layout(state, view, wave_rect);
+    let pointer_hit = update_hover(state, &lay, &wave_response);
     let mut target = EguiTarget::new(painter.clone(), &waterfall_cache.textures);
     paint(&mut target, state, view, &pal, &lay, waterfall, false);
+    if let Some(text) = state.epicentre_location(&view.meta) {
+        ui.interact(
+            Rect::from_min_max(
+                egui::pos2(wave_rect.left(), lay.track_area.bottom()),
+                wave_rect.max,
+            ),
+            canvas.id.with("event-place"),
+            Sense::hover(),
+        )
+        .widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("Epicentre: {text}"))
+        });
+    }
+
+    if state.show_station_locations {
+        for (index, track) in lay.visible_tracks.iter().enumerate() {
+            let Some(place) = track.place.as_ref() else {
+                continue;
+            };
+            let text = station_place_text(place);
+            if !text.is_empty() {
+                ui.interact(
+                    Rect::from_min_max(
+                        egui::pos2(wave_rect.left(), lay.row_top(index)),
+                        egui::pos2(wave_rect.right(), lay.row_top(index) + lay.row_height),
+                    ),
+                    canvas.id.with(("station-place", index)),
+                    Sense::hover(),
+                )
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Label,
+                        true,
+                        format!("Station location: {} · {text}", track.label),
+                    )
+                });
+            }
+        }
+    }
 
     if overflows {
         let strip = Rect::from_min_max(
@@ -214,7 +254,6 @@ pub fn show(
     }
 
     // Hover, then the input that acts on it
-    let pointer_hit = update_hover(state, &lay, &wave_response);
     draw_crosshair(ui, &painter, &pal, &lay, &wave_response, pointer_hit);
     pointer::handle_pointer(ui, &wave_response, state, &lay, pointer_hit);
     wave_response

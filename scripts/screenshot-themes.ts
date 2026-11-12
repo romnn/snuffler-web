@@ -169,7 +169,10 @@ async function main(): Promise<void> {
         for (const theme of themes) {
           await viewChoice(page, theme);
           await page.waitForFunction(
-            (expected) => localStorage.getItem("snuffler.settings.wiggle_theme") === expected,
+            (expected) =>
+              localStorage.getItem(
+                `snuffler:${new URL(document.baseURI).pathname}:settings.wiggle_theme`
+              ) === expected,
             theme
           );
           const directory = resolve(output, slug(theme));
@@ -181,7 +184,9 @@ async function main(): Promise<void> {
             if (theme !== "Snuffler Qt")
               await page.waitForFunction(
                 (expected) =>
-                  localStorage.getItem("snuffler.settings.theme_preference") === expected,
+                  localStorage.getItem(
+                    `snuffler:${new URL(document.baseURI).pathname}:settings.theme_preference`
+                  ) === expected,
                 mode
               );
             for (const grouping of groupings) {

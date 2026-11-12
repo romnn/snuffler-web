@@ -169,10 +169,11 @@ fn sample_range(start: f64, dt: f64, sample_count: usize, tmin: f64, tmax: f64) 
     (first, end)
 }
 
-/// The track label, exactly as the bridge composed it.
+/// Station identity at the left, with optional right-aligned location and distance.
 ///
 /// That is snuffler's space-joined gather key, sort value first (`plabel`,
 /// `pile_viewer.py:3521`), anchored middle-left at x = 10 as snuffler anchors it.
+/// Station locations use the same size and yield when the left label leaves no room.
 /// The font shrinks with the row until it would drop below snuffler's 6 pt floor.
 /// Below that only the hovered row keeps a label, drawn at the floor size
 /// (`pile_viewer.py:3505`, `:3526`).
@@ -194,11 +195,88 @@ pub(super) fn draw_track_label(
     if !drawn {
         return;
     }
-    let label = &row.track.label;
     let anchor = pos2(lay.track_area.left() + 10.0, row.middle);
+    if state.show_station_locations && draw_track_location(target, frame, row, label_pt, anchor) {
+        return;
+    }
+    let label = &row.track.label;
     let size = target.measure(label, label_pt);
     let plate = Rect::from_min_size(pos2(anchor.x, anchor.y - size.y * 0.5), size)
         .expand(pal.label_padding);
     target.fill_rect(plate, pal.label_rounding, pal.label_background);
     target.text(anchor, Align2::LEFT_CENTER, label, label_pt, pal.axis_text);
+}
+
+/// Keeps distance at the right edge, with geographic context separated by a small gap.
+fn draw_track_location(
+    target: &mut dyn DrawTarget,
+    frame: &Frame<'_>,
+    row: &Row<'_>,
+    label_pt: f32,
+    anchor: emath::Pos2,
+) -> bool {
+    let station = &row.track.station_label;
+    let location = row
+        .track
+        .place
+        .as_ref()
+        .map(super::axis::station_place_text)
+        .unwrap_or_default();
+    let distance = &row.track.distance_label;
+    if station.is_empty() || (location.is_empty() && distance.is_empty()) {
+        return false;
+    }
+    let Frame { pal, lay, .. } = *frame;
+    let station_size = target.measure(station, label_pt);
+    let location_size = target.measure(&location, label_pt);
+    let distance_size = target.measure(distance, label_pt);
+    let gap = if location.is_empty() || distance.is_empty() {
+        0.0
+    } else {
+        14.0
+    };
+    let right = pos2(lay.track_area.right() - 10.0, row.middle);
+    let width = location_size.x + gap + distance_size.x;
+    let height = location_size.y.max(distance_size.y);
+    let plate_right = Rect::from_min_size(
+        pos2(right.x - width, right.y - height * 0.5),
+        emath::vec2(width, height),
+    )
+    .expand(pal.label_padding);
+    let plate_left = Rect::from_min_size(
+        pos2(anchor.x, anchor.y - station_size.y * 0.5),
+        station_size,
+    )
+    .expand(pal.label_padding);
+    if plate_right.left() < plate_left.right() + 12.0 {
+        return false;
+    }
+    target.fill_rect(plate_left, pal.label_rounding, pal.label_background);
+    target.text(
+        anchor,
+        Align2::LEFT_CENTER,
+        station,
+        label_pt,
+        pal.axis_text,
+    );
+    target.fill_rect(plate_right, pal.label_rounding, pal.label_background);
+    if !distance.is_empty() {
+        target.text(
+            right,
+            Align2::RIGHT_CENTER,
+            distance,
+            label_pt,
+            pal.axis_text,
+        );
+    }
+    if !location.is_empty() {
+        target.text(
+            pos2(right.x - distance_size.x - gap, right.y),
+            Align2::RIGHT_CENTER,
+            &location,
+            label_pt,
+            pal.axis_text,
+        );
+    }
+    true
 }

@@ -911,6 +911,96 @@ async function checkOffSwitch(page: Page): Promise<void> {
   check("?a11y=0 builds no overlay at all", absent);
 }
 
+async function checkStationPlaces(page: Page): Promise<void> {
+  console.log("\nstation places");
+  const requests: string[] = [];
+  const record = (request: { url(): string }) => {
+    if (request.url().includes("station-regions.json")) requests.push(request.url());
+  };
+  page.context().on("request", record);
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page, { a11y: "debug", example: "sumatra-2004-12-26-m9.1-surface-waves" });
+    const location = page.getByText(/^Epicentre:/).first();
+    const stations = page.getByText(/^Station location:/);
+    await location.waitFor({ timeout: TIMEOUT_MS });
+    const initial = await location.textContent();
+    check(
+      "the first event supplies the epicentre before hovering",
+      Boolean(initial?.includes("Sumatra")),
+      initial ?? "missing"
+    );
+    await page.mouse.move(900, 400);
+    await page.waitForTimeout(200);
+    const hovered = await location.textContent();
+    await page.mouse.move(1439, 899);
+    await page.waitForTimeout(200);
+    check(
+      "the epicentre stays stable while hovering different tracks",
+      hovered === initial && (await location.textContent()) === initial,
+      hovered ?? "missing"
+    );
+    await page.mouse.move(900, 60);
+    await page.waitForTimeout(100);
+    const firstComponent = (await stations.nth(0).textContent())?.split(" · ").slice(1).join(" · ");
+    await page.mouse.move(900, 110);
+    await page.waitForTimeout(100);
+    check(
+      "components at one station share a consistent geographic label",
+      firstComponent === (await stations.nth(1).textContent())?.split(" · ").slice(1).join(" · ")
+    );
+    check(
+      "hovering uses the cached batch without more region downloads",
+      requests.length === 1,
+      `${requests.length} downloads`
+    );
+    const stored = await page.evaluate(() =>
+      Object.keys(localStorage).filter(
+        (key) =>
+          /station|place|region/i.test(key) && !key.endsWith("settings.show_station_locations")
+      )
+    );
+    check("resolved places are absent from localStorage", stored.length === 0, stored.join(", "));
+    const view = page.getByRole("button", { name: "View", exact: true });
+    await view.evaluate((element) => (element as HTMLElement).click());
+    const option = page.getByRole("checkbox", { name: "Show station locations", exact: true });
+    await option.waitFor();
+    check(
+      "station locations default on in View",
+      (await option.getAttribute("aria-checked")) === "true"
+    );
+    await option.evaluate((element) => (element as HTMLElement).click());
+    await page
+      .getByRole("checkbox", { name: "Show station locations", exact: true, checked: false })
+      .waitFor();
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await stations.first().waitFor({ state: "hidden" });
+    check(
+      "hiding station locations keeps the epicentre visible",
+      (await location.textContent()) === initial
+    );
+    await page.reload();
+    await page
+      .locator('#the_canvas_id[data-snuffler-ready="true"]')
+      .waitFor({ timeout: TIMEOUT_MS });
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await option.waitFor();
+    check(
+      "the station-location visibility preference survives reload",
+      (await option.getAttribute("aria-checked")) === "false"
+    );
+    await option.evaluate((element) => (element as HTMLElement).click());
+    await page
+      .getByRole("checkbox", { name: "Show station locations", exact: true, checked: true })
+      .waitFor();
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await stations.first().waitFor();
+    await location.waitFor();
+  } finally {
+    page.context().off("request", record);
+  }
+}
+
 async function main(): Promise<void> {
   const browser = await chromium.launch({ headless: HEADLESS });
   const page = await browser.newPage();
@@ -933,6 +1023,7 @@ async function main(): Promise<void> {
     await checkSvgExport(page, errors);
     await checkPickerExport(page, errors);
     await checkWorkerRecovery(page);
+    await checkStationPlaces(page);
     await checkOffSwitch(page);
 
     check("no console errors", errors.console.length === 0, errors.console.join(" | "));

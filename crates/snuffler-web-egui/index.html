@@ -5,6 +5,7 @@
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>snuffler-web — seismic waveform inspector</title>
+    <base data-trunk-public-url />
 
     <!-- Cross-origin isolation is always on. The app is a single threaded build:
          the egui wasm runs its PNG export on a wasm-bindgen-rayon worker pool and
@@ -35,7 +36,6 @@
          wasm-opt runs instead as a Trunk post-build hook with a mise-pinned
          binaryen (see Trunk.toml). -->
     <link data-trunk rel="rust" data-wasm-opt="0" />
-    <base data-trunk-public-url />
     <!-- the deployment's runtime configuration, such as where snuffler-web-proxy is
          (web/config.js documents it); a classic script, so it has run before the
          app's module scripts read it -->

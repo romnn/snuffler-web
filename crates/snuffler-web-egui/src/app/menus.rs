@@ -283,6 +283,10 @@ impl App {
             egui::Checkbox::new(&mut self.session.state.show_zero_lines, "Show zero lines"),
         );
         ui.checkbox(&mut self.session.state.show_time_grid, "Show time grid");
+        ui.checkbox(
+            &mut self.session.state.show_station_locations,
+            "Show station locations",
+        );
         let mut separators = self.session.state.track_separators();
         if ui
             .checkbox(&mut separators, "Show track separators")

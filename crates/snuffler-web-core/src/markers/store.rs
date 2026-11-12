@@ -124,6 +124,8 @@ struct TimeIndex {
     max_span: f64,
     selected: usize,
     single_selected: Option<MarkerId>,
+    first_event: Option<MarkerId>,
+    selected_event: Option<MarkerId>,
     earliest_marker_start: f64,
     latest_starting_marker_end: f64,
     active_hash: Option<String>,
@@ -147,6 +149,10 @@ pub struct MarkerSummary {
     pub selected: usize,
     /// Identity of the sole selected marker, or `None` for an empty or multiple selection.
     pub single_selected: Option<MarkerId>,
+    /// First event in insertion order, used before an event is selected.
+    pub first_event: Option<MarkerId>,
+    /// The sole selected event, or `None` when zero or several events are selected.
+    pub selected_event: Option<MarkerId>,
     /// Earliest marker start.
     pub earliest_marker_start: f64,
     /// End of the latest-starting marker.
@@ -439,6 +445,8 @@ impl MarkerStore {
         MarkerSummary {
             selected: index.selected,
             single_selected: index.single_selected,
+            first_event: index.first_event,
+            selected_event: index.selected_event,
             earliest_marker_start: index.earliest_marker_start,
             latest_starting_marker_end: index.latest_starting_marker_end,
             active_hash: index.active_hash.clone(),
@@ -502,6 +510,9 @@ impl MarkerStore {
         let mut max_span = 0.0_f64;
         let mut selected = 0;
         let mut single_selected = None;
+        let mut first_event = None;
+        let mut selected_event = None;
+        let mut selected_events = 0;
         let mut earliest_marker_start = f64::INFINITY;
         let mut latest_start = f64::NEG_INFINITY;
         let mut latest_starting_marker_end = f64::NEG_INFINITY;
@@ -513,6 +524,13 @@ impl MarkerStore {
                 endpoints.push((marker.tmax, id));
             }
             max_span = max_span.max(marker.tmax - marker.tmin);
+            if marker.is_event {
+                first_event.get_or_insert(id);
+                if marker.selected {
+                    selected_events += 1;
+                    selected_event = (selected_events == 1).then_some(id);
+                }
+            }
             if marker.selected {
                 selected += 1;
                 single_selected = (selected == 1).then_some(id);
@@ -535,6 +553,8 @@ impl MarkerStore {
             max_span,
             selected,
             single_selected,
+            first_event,
+            selected_event,
             earliest_marker_start,
             latest_starting_marker_end,
             active_hash,

@@ -379,6 +379,7 @@ const BRIDGE_PACKAGE_MODULES = [
   "marker_budget",
   "state",
   "fetch",
+  "station_places",
   "fdsn",
   "staging",
   "pyrocko_modules",

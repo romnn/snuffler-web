@@ -120,6 +120,12 @@ message TraceBox {
   uint32 style = 3;
 }
 
+message StationPlace {
+  string locality = 1;
+  string region = 2;
+  string country = 3;
+}
+
 message ViewTrack {
   string net = 1;
   string sta = 2;
@@ -147,6 +153,12 @@ message ViewTrack {
   // when `spans` is empty because the zoom put every channel below
   // `min_deltat_allow`.
   repeated TraceBox boxes = 10;
+  // Resolved in Python when station metadata changes, never in the hover path.
+  StationPlace place = 11;
+  // Station identity without the compact label's sort-value prefix.
+  string station_label = 12;
+  // Distance to the active event, formatted in Python independently of sorting.
+  string distance_label = 13;
 }
 
 message ViewMeta {
@@ -173,4 +185,6 @@ message ViewMeta {
   // whole round trip still paints the OLD reply's tracks and color_keys, and keying them
   // with the NEW subsort would produce a transient palette belonging to neither.
   string subsort = 8;
+  // Cached epicentral regions by event identity, including offshore catalog regions.
+  map<string, string> event_locations = 9;
 }

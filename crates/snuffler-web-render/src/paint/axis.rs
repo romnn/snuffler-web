@@ -14,7 +14,8 @@
 //! Each row under it stacks by the height of the label above.
 //! Measuring a digit stands in for `QFontMetrics.boundingRect`.
 
-use emath::{Align2, pos2};
+use emath::{Align2, Rect, pos2};
+use snuffler_web_core::bridge::StationPlace;
 use snuffler_web_core::timeaxis;
 
 use super::Frame;
@@ -52,6 +53,12 @@ struct DrawnLabels {
     first_context: u32,
     second_context: u32,
     first_labelled_tick: Option<f64>,
+    occupied: Vec<Rect>,
+}
+
+struct AxisGap {
+    start: f32,
+    end: f32,
 }
 
 pub(super) fn draw_time_axis(target: &mut dyn DrawTarget, frame: &Frame<'_>, export: bool) {
@@ -72,8 +79,9 @@ pub(super) fn draw_time_axis(target: &mut dyn DrawTarget, frame: &Frame<'_>, exp
 
     let (ticks, abbreviation_level) =
         draw_tick_marks(target, frame, &tick_times, tick_increment, export);
-    let drawn = draw_tick_labels(target, frame, &ticks, abbreviation_level, &rows);
-    draw_fallback_context(target, frame, &drawn, tick_increment, &rows);
+    let mut drawn = draw_tick_labels(target, frame, &ticks, abbreviation_level, &rows);
+    draw_fallback_context(target, frame, &mut drawn, tick_increment, &rows);
+    draw_epicentre(target, frame, &drawn.occupied, rows.first_context);
 
     // The axis baseline snuffler closes `drawit` with (pile_viewer.py:668).
     target.line(
@@ -175,6 +183,7 @@ fn draw_tick_labels(
         first_context: 0,
         second_context: 0,
         first_labelled_tick: None,
+        occupied: Vec::new(),
     };
     for tick in ticks {
         let tick_label = match abbreviation_level {
@@ -213,6 +222,10 @@ fn draw_tick_labels(
                 continue;
             };
             if fits(tick.x, target.measure(label, AXIS_PT).x) {
+                let size = target.measure(label, AXIS_PT);
+                drawn
+                    .occupied
+                    .push(Rect::from_min_size(pos2(tick.x - size.x * 0.5, y), size));
                 target.text(
                     pos2(tick.x, y),
                     Align2::CENTER_TOP,
@@ -232,7 +245,7 @@ fn draw_tick_labels(
 fn draw_fallback_context(
     target: &mut dyn DrawTarget,
     frame: &Frame<'_>,
-    drawn: &DrawnLabels,
+    drawn: &mut DrawnLabels,
     tick_increment: f64,
     rows: &LabelRows,
 ) {
@@ -252,6 +265,10 @@ fn draw_fallback_context(
 
     let left = lay.rect.left() + EDGE_PADDING_PX;
     if drawn.first_context == 0 && !first_context.is_empty() {
+        drawn.occupied.push(Rect::from_min_size(
+            pos2(left, rows.first_context),
+            target.measure(&first_context, AXIS_PT),
+        ));
         target.text(
             pos2(left, rows.first_context),
             Align2::LEFT_TOP,
@@ -261,12 +278,83 @@ fn draw_fallback_context(
         );
     }
     if drawn.second_context == 0 && !second_context.is_empty() {
+        drawn.occupied.push(Rect::from_min_size(
+            pos2(left, rows.second_context),
+            target.measure(&second_context, AXIS_PT),
+        ));
         target.text(
             pos2(left, rows.second_context),
             Align2::LEFT_TOP,
             &second_context,
             AXIS_PT,
             pal.axis_text,
+        );
+    }
+}
+
+/// Full station place name, shared by the painted readout and its accessibility label.
+#[must_use]
+pub fn station_place_text(place: &StationPlace) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in [&place.locality, &place.region, &place.country] {
+        let part = part.trim();
+        if !part.is_empty()
+            && !parts
+                .iter()
+                .any(|previous| previous.eq_ignore_ascii_case(part))
+        {
+            parts.push(part);
+        }
+    }
+    parts.join(", ")
+}
+
+fn draw_epicentre(target: &mut dyn DrawTarget, frame: &Frame<'_>, occupied: &[Rect], y: f32) {
+    let Some(text) = frame.state.epicentre_location(&frame.view.meta) else {
+        return;
+    };
+    let height = target.measure("0", AXIS_PT).y;
+    if y + height > frame.lay.rect.bottom() {
+        return;
+    }
+    let left = frame.lay.rect.left() + EDGE_PADDING_PX;
+    let right = frame.lay.rect.right() - EDGE_PADDING_PX;
+    let mut blocks: Vec<Rect> = occupied
+        .iter()
+        .copied()
+        .filter(|rect| rect.min.y < y + height && rect.max.y > y)
+        .collect();
+    blocks.sort_by(|a, b| a.left().total_cmp(&b.left()));
+    let mut cursor = left;
+    let mut gaps = Vec::new();
+    for block in blocks {
+        if block.left() - 12.0 > cursor {
+            gaps.push(AxisGap {
+                start: cursor,
+                end: block.left() - 12.0,
+            });
+        }
+        cursor = cursor.max(block.right() + 12.0);
+    }
+    if cursor < right {
+        gaps.push(AxisGap {
+            start: cursor,
+            end: right,
+        });
+    }
+    let Some(AxisGap { start, end }) = gaps
+        .into_iter()
+        .max_by(|a, b| (a.end - a.start).total_cmp(&(b.end - b.start)))
+    else {
+        return;
+    };
+    if target.measure(text, AXIS_PT).x <= end - start {
+        target.text(
+            pos2(start, y),
+            Align2::LEFT_TOP,
+            text,
+            AXIS_PT,
+            frame.pal.axis_text,
         );
     }
 }

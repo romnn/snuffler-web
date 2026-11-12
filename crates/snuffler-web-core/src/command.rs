@@ -260,8 +260,9 @@ pub fn parse_markers_command(line: &str) -> Option<MarkersCommand> {
 /// Where the browser keeps the command history.
 /// Snuffler writes `$HOME/.pyrocko/.snuffler_history`; `localStorage` is its counterpart
 /// for an app with no filesystem of its own.
+/// The deployment's base pathname qualifies this key when accessing storage.
 #[cfg(target_arch = "wasm32")]
-const HISTORY_KEY: &str = "snuffler.command_history";
+const HISTORY_KEY: &str = "command_history";
 
 #[cfg(target_arch = "wasm32")]
 fn history_storage() -> Option<web_sys::Storage> {
@@ -272,8 +273,10 @@ fn history_storage() -> Option<web_sys::Storage> {
 
 #[cfg(target_arch = "wasm32")]
 fn load_history() -> Vec<String> {
-    let Some(stored) = history_storage().and_then(|storage| storage.get_item(HISTORY_KEY).ok())
-    else {
+    let Some(key) = crate::deployment::browser_storage_key(HISTORY_KEY) else {
+        return Vec::new();
+    };
+    let Some(stored) = history_storage().and_then(|storage| storage.get_item(&key).ok()) else {
         return Vec::new();
     };
     stored
@@ -290,9 +293,12 @@ fn load_history() -> Vec<String> {
 
 #[cfg(target_arch = "wasm32")]
 fn save_history(history: &[String]) {
+    let Some(key) = crate::deployment::browser_storage_key(HISTORY_KEY) else {
+        return;
+    };
     // A refused write (quota, private mode) only costs the history across reloads.
     if let Some(storage) = history_storage()
-        && let Err(err) = storage.set_item(HISTORY_KEY, &history.join("\n"))
+        && let Err(err) = storage.set_item(&key, &history.join("\n"))
     {
         tracing::warn!(?err, "saving the command history failed");
     }

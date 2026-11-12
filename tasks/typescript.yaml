@@ -16,6 +16,19 @@ tasks:
       # Pure and synchronous, so the cancellation state machine is checked on
       # every run, not only in the browser suites.
       - bun tests/execution_control_validate.ts
+      - task: test:isolation:unit
+
+  test:isolation:unit:
+    desc: "check deployment-scoped COI handshakes and worker activation"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/deployment_isolation_validate.ts
+
+  test:isolation:browser:
+    desc: "check two same-origin deployments' settings, history, and service workers"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/deployment_isolation_browser_validate.ts
 
   format:js:
     desc: "format JavaScript bridge code"

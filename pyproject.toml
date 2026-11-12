@@ -93,6 +93,7 @@ include = [
     "pybuild/setup.py",
     "qt/driver.py",
     "scripts/build-examples.py",
+    "scripts/build-station-regions.py",
     "scripts/fetch-example.py",
     "scripts/fit-wiggle-themes.py",
     "tests/parity/**/*.py",

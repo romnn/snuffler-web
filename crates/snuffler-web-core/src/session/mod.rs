@@ -178,6 +178,7 @@ impl Session {
         self.state.snuffling_text.clear();
         self.state.show_snuffling_text = false;
         self.state.set_active_event_request = None;
+        self.state.epicentre_event_hash = None;
         self.state.remove_event_hashes.clear();
         self.state.picking = None;
         self.state.uncertainty_drag_last_y = None;

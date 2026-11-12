@@ -8,6 +8,7 @@
 //! - `forms`: what the download, catalog and live dialogs hold between openings;
 //! - `interaction`: in-progress drags and picks, and requests the session drains.
 
+use crate::bridge::ViewMeta;
 use crate::command::CommandLine;
 use crate::markers::{MarkerId, MarkerStore};
 use crate::theme::{Theme, WiggleTheme};
@@ -139,6 +140,8 @@ pub struct AppState {
     /// Reading a long window is easier with one, so the port offers it as something the
     /// user switches on, not as a difference it imposes.
     pub show_time_grid: bool,
+    /// Whether track locations are labeled on the right when space permits.
+    pub show_station_locations: bool,
     /// How the waterfall view maps spectral power to colour.
     pub waterfall: WaterfallSettings,
 
@@ -189,6 +192,8 @@ pub struct AppState {
     pub reload_snufflings_requested: bool,
     /// Set by `e`/`E`; the session drains it to send a `SetActiveEvent` to the bridge.
     pub set_active_event_request: Option<ActiveEventRequest>,
+    /// Event explicitly activated by the user, before click selection and the first event.
+    pub epicentre_event_hash: Option<String>,
     /// Event hashes whose final frontend event marker was deleted.
     /// The session drains them into Python's canonical registry before another
     /// scientific consumer can resolve the removed events.
@@ -305,6 +310,7 @@ impl Default for AppState {
             show_zero_lines: false,
             show_track_separators: None,
             show_time_grid: false,
+            show_station_locations: true,
             waterfall: WaterfallSettings::default(),
             snuffling_text: String::new(),
             show_snuffling_text: false,
@@ -323,6 +329,7 @@ impl Default for AppState {
             reload_files_requested: false,
             reload_snufflings_requested: false,
             set_active_event_request: None,
+            epicentre_event_hash: None,
             remove_event_hashes: Vec::new(),
             picking: None,
             uncertainty_drag_last_y: None,
@@ -354,6 +361,26 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Epicentral region: explicit activation, then single selection, then the first event.
+    #[must_use]
+    pub fn epicentre_location<'a>(&self, meta: &'a ViewMeta) -> Option<&'a str> {
+        let summary = self.markers.summary();
+        let explicit = self
+            .epicentre_event_hash
+            .as_deref()
+            .filter(|hash| summary.active_hash.as_deref() == Some(hash));
+        let event_hash = explicit.or_else(|| {
+            self.markers
+                .by_id(summary.selected_event.or(summary.first_event)?)?
+                .event_hash
+                .as_deref()
+        })?;
+        meta.event_locations
+            .get(event_hash)
+            .map(String::as_str)
+            .filter(|label| !label.is_empty())
+    }
+
     /// Visible track count after clamping to the pile and applying Snap.
     #[must_use]
     pub fn visible_track_count(&self, track_count: usize) -> f32 {
@@ -571,6 +598,54 @@ mod tests {
         marker.active = active;
         marker.event_hash = Some(hash.to_owned());
         marker
+    }
+
+    #[test]
+    fn epicentre_prefers_explicit_activation_then_selection_then_first_event() {
+        let mut state = AppState::default();
+        let meta = crate::bridge::ViewMeta {
+            event_locations: [
+                ("first".to_owned(), "First region".to_owned()),
+                ("clicked".to_owned(), "Clicked region".to_owned()),
+                ("active".to_owned(), "Active region".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            ..crate::bridge::ViewMeta::default()
+        };
+        assert_eq!(state.epicentre_location(&meta), None);
+        state.markers.insert(event("first", false, false));
+        let clicked = state.markers.insert(event("clicked", false, false));
+        let active = state.markers.insert(event("active", false, true));
+
+        // Automatic activation on catalog load does not override the first event.
+        assert_eq!(state.epicentre_location(&meta), Some("First region"));
+        assert_eq!(
+            state.markers.edit(clicked, |marker| marker.selected = true),
+            Some(())
+        );
+        assert_eq!(state.epicentre_location(&meta), Some("Clicked region"));
+        state.epicentre_event_hash = Some("active".to_owned());
+        assert_eq!(state.epicentre_location(&meta), Some("Active region"));
+        state.hovered_marker = Some(clicked);
+        state.show_station_locations = false;
+        assert_eq!(state.epicentre_location(&meta), Some("Active region"));
+
+        // Clearing or deleting the explicit activation restores the selection fallback.
+        assert_eq!(
+            state.markers.edit(active, |marker| marker.active = false),
+            Some(())
+        );
+        assert_eq!(state.epicentre_location(&meta), Some("Clicked region"));
+        assert_eq!(
+            state
+                .markers
+                .edit(clicked, |marker| marker.selected = false),
+            Some(())
+        );
+        assert_eq!(state.epicentre_location(&meta), Some("First region"));
+        state.markers.clear();
+        assert_eq!(state.epicentre_location(&meta), None);
     }
 
     #[test]

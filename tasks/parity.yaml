@@ -45,6 +45,7 @@ tasks:
         tests/parity/test_bridge_snufflings.py
         tests/parity/test_adaptive_visible_length.py
         tests/parity/test_view_span_order.py
+        tests/parity/test_station_places.py
         {{.CLI_ARGS}}
 
   test:parity:inventory:
