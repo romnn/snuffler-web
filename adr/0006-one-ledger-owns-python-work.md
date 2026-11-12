@@ -67,8 +67,10 @@ The RPC reply is the only terminal signal; a dead worker settles its jobs as `Lo
   rollback, defensive stale commits, terminal settlement, and SeedLink sequence fences.
   Browser tests exercise real Python interruption, partial-load cancellation, view recovery,
   explicit figure execution, and worker replacement.
-- Not built yet: a per-track index for marker hit-testing and a shared compute budget between
-  the rayon pool and OpenMP.
+- Rayon and OpenMP split one capped compute budget (`web/compute_budget.ts`); the worker sets
+  numerical thread limits before loading packages. The budget keeps a browser core free above
+  two cores and retains a rayon worker on dual-core devices.
+- Not built yet: a per-track index for marker hit-testing.
 
 ## References
 

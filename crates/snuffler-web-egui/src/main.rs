@@ -25,36 +25,35 @@ fn main() {
         // run on the main thread.
         #[cfg(feature = "threads")]
         {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "hardware_concurrency is a small non-negative integer core count"
-            )]
-            let cores =
-                web_sys::window().map_or(0, |w| w.navigator().hardware_concurrency() as usize);
-            // Cap the pool: spawning one Worker per core (e.g. 48) at page load,
-            // each re-instantiating the wasm, costs far more than it buys for the
-            // PNG and marker exports, where 4 is ample.
-            let threads = cores.clamp(1, 4);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "thread-pool initialization is startup infrastructure, not user work"
-            )]
-            wasm_bindgen_futures::spawn_local(async move {
-                let ready = wasm_bindgen_futures::JsFuture::from(
-                    snuffler_web_egui::init_thread_pool(threads),
-                )
-                .await
-                .is_ok();
-                snuffler_web_egui::set_pool_ready(ready);
-                if ready {
-                    tracing::info!(threads, "rayon pool up");
-                } else {
-                    tracing::warn!(
-                        "no rayon pool (no cross-origin isolation); running on the main thread"
-                    );
+            let threads = match snuffler_web_core::bridge::Bridge::compute_budget() {
+                Ok(budget) => usize::try_from(budget.rayon_threads).unwrap_or(0),
+                Err(error) => {
+                    tracing::error!(%error, "could not read the shared compute budget");
+                    0
                 }
-            });
+            };
+            // Small devices reserve their compute capacity for Python.
+            if threads > 0 {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "thread-pool initialization is startup infrastructure, not user work"
+                )]
+                wasm_bindgen_futures::spawn_local(async move {
+                    let ready = wasm_bindgen_futures::JsFuture::from(
+                        snuffler_web_egui::init_thread_pool(threads),
+                    )
+                    .await
+                    .is_ok();
+                    snuffler_web_egui::set_pool_ready(ready);
+                    if ready {
+                        tracing::info!(threads, "rayon pool up");
+                    } else {
+                        tracing::warn!(
+                            "no rayon pool (no cross-origin isolation); running on the main thread"
+                        );
+                    }
+                });
+            }
         }
 
         let Some(canvas) = web_sys::window()

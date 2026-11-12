@@ -119,6 +119,14 @@ tasks:
     cmds:
       - bun tests/seisbench_browser_validate.ts {{.CLI_ARGS}}
 
+  bench:compute:browser:
+    desc: "benchmark filtering and CPU SeisBench with 2 and 4 OpenMP threads in the served app"
+    dir: "{{.ROOT_DIR}}"
+    env:
+      SNUFFLER_BENCH_COMPUTE: "1"
+    cmds:
+      - bun tests/seisbench_browser_validate.ts
+
   test:a11y:browser:
     desc: "validate the accessibility overlay in the served wasm app (requires http://127.0.0.1:8000 or SNUFFLER_BROWSER_URL)"
     dir: "{{.ROOT_DIR}}"

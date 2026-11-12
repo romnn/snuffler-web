@@ -81,6 +81,13 @@ message RuntimeFailure {
   string message = 2;
 }
 
+// Concurrent CPU capacity shared by the frontend and Python runtime.
+message ComputeBudget {
+  uint32 total = 1;
+  uint32 rayon_threads = 2;
+  uint32 openmp_threads = 3;
+}
+
 // The booted runtime's build, for the About window.
 message RuntimeInfo {
   bool threaded = 1;
@@ -88,6 +95,7 @@ message RuntimeInfo {
   string numpy = 3;
   string pyrocko = 4;
   uint32 cores = 5;
+  ComputeBudget compute_budget = 6;
 }
 
 message WorkerEvent {

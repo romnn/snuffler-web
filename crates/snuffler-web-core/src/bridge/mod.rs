@@ -63,13 +63,13 @@ use tiles::{TILE_BATCH_SIZE, TILE_BATCHES_IN_FLIGHT, TileKey, TileState};
 
 pub use proto::pb::{
     ActiveEventResult, BundleAbout, BundleView, CakeSnufflingParams, CatalogRequest,
-    CommandRequest, EventKagan, EventSnapshot, ExampleDataset, FigureRequest, MapData, MapRequest,
-    MarkerFile, MarkerFileEntry, MomentTensor, Nslc, PolarizationSnufflingParams,
-    RemoveEventsRequest, RmsSnufflingParams, RuntimeInfo, SceneMeta, SeisbenchSnufflingParams,
-    SeismosizerSnufflingParams, SetActiveEventRequest, SnufMarker, SnufflingParams,
-    SnufflingRequestParams, SnufflingResult, SnufflingSpan, SpectrogramSnufflingParams,
-    SpectrumSnufflingParams, StaltaSnufflingParams, StationPlace, StationRequest, TraceBox,
-    ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
+    CommandRequest, ComputeBudget, EventKagan, EventSnapshot, ExampleDataset, FigureRequest,
+    MapData, MapRequest, MarkerFile, MarkerFileEntry, MomentTensor, Nslc,
+    PolarizationSnufflingParams, RemoveEventsRequest, RmsSnufflingParams, RuntimeInfo, SceneMeta,
+    SeisbenchSnufflingParams, SeismosizerSnufflingParams, SetActiveEventRequest, SnufMarker,
+    SnufflingParams, SnufflingRequestParams, SnufflingResult, SnufflingSpan,
+    SpectrogramSnufflingParams, SpectrumSnufflingParams, StaltaSnufflingParams, StationPlace,
+    StationRequest, TraceBox, ViewMeta, ViewParams, ViewSpan, ViewTrack, WaveformDownloadRequest,
 };
 // Wire shapes only the wasm bridge implementation touches.
 #[cfg(target_arch = "wasm32")]
@@ -460,6 +460,16 @@ impl Bridge {
         {
             None
         }
+    }
+
+    /// Returns the browser's shared startup budget before Python has booted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JavaScript startup message cannot be decoded.
+    #[cfg(target_arch = "wasm32")]
+    pub fn compute_budget() -> Result<ComputeBudget, BridgeError> {
+        web::compute_budget()
     }
 
     /// Returns the current inference device and the running `SeisBench` picker's progress.

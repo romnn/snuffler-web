@@ -2,6 +2,7 @@
 // operation progress, the runtime badge and boot failures.
 // Each is a `WorkerEvent` protobuf tagged with this worker's runtime epoch.
 import { create, toBinary } from "@bufbuild/protobuf";
+import { COMPUTE_BUDGET } from "./compute_budget.js";
 import {
   BootProgressSchema,
   MlDeviceStatusSchema,
@@ -141,6 +142,7 @@ export function postRuntimeInfo(pyodide: any) {
         pyodide.runPython("import pyrocko; getattr(pyrocko, '__version__', 'unknown')")
       ),
       cores: (self.navigator && self.navigator.hardwareConcurrency) || 0,
+      computeBudget: COMPUTE_BUDGET,
     }),
   });
 }

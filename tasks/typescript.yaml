@@ -16,6 +16,7 @@ tasks:
       # Pure and synchronous, so the cancellation state machine is checked on
       # every run, not only in the browser suites.
       - bun tests/execution_control_validate.ts
+      - bun tests/compute_budget_validate.ts
       - task: test:isolation:unit
       - task: test:bridge:unit
 

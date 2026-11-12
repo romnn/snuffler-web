@@ -51,5 +51,5 @@ use live::*;
 use runtime::*;
 
 pub(super) use runtime::{
-    cancel_job, restart_runtime, runtime_info, seisbench_device, sync_runtime,
+    cancel_job, compute_budget, restart_runtime, runtime_info, seisbench_device, sync_runtime,
 };

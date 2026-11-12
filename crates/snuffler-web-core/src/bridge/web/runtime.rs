@@ -203,3 +203,10 @@ pub(in crate::bridge) fn runtime_info() -> Option<pb::RuntimeInfo> {
     let bytes = uint8_array_bytes(info, "runtime_info").ok()?;
     proto::decode_message(&bytes, "runtimeInfo").ok()
 }
+
+pub(in crate::bridge) fn compute_budget() -> Result<pb::ComputeBudget, BridgeError> {
+    Ok(proto::decode_message(
+        &js_compute_budget(),
+        "computeBudget",
+    )?)
+}

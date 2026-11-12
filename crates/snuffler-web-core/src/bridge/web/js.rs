@@ -31,6 +31,9 @@ extern "C" {
     #[wasm_bindgen(js_name = runtimeInfo)]
     pub(super) fn js_runtime_info() -> JsValue;
 
+    #[wasm_bindgen(js_name = computeBudget)]
+    pub(super) fn js_compute_budget() -> Vec<u8>;
+
     #[wasm_bindgen(js_name = currentRuntimeEpoch)]
     pub(super) fn js_current_runtime_epoch() -> u32;
 

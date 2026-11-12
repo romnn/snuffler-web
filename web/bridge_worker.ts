@@ -10,6 +10,7 @@
 // - ort_client.ts runs SeisBench inference for Python on onnxruntime-web.
 // - execution_control.ts is the cancellation state machine shared with the page.
 import { create, toBinary } from "@bufbuild/protobuf";
+import { COMPUTE_BUDGET } from "./compute_budget.js";
 import {
   BridgeResultSchema,
   CancelledSchema,
@@ -489,7 +490,15 @@ async function boot() {
       // from the only base there is: our locally served py-mt/.
       setBootPhase("Starting Python runtime…");
       const { loadPyodide } = await import(PYODIDE_BASE + "pyodide.mjs");
-      pyodide = await loadPyodide({ indexURL: PYODIDE_BASE });
+      // Set limits before dlopen/import can initialize a numerical thread pool.
+      pyodide = await loadPyodide({
+        indexURL: PYODIDE_BASE,
+        env: {
+          OMP_NUM_THREADS: String(COMPUTE_BUDGET.openmpThreads),
+          OMP_THREAD_LIMIT: String(COMPUTE_BUDGET.openmpThreads),
+          OPENBLAS_NUM_THREADS: "1",
+        },
+      });
       const runtimeReadyMs = performance.now();
 
       // Install the packages.

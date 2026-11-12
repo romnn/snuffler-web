@@ -10,6 +10,7 @@ import {
   EmptySchema,
   MlDevice,
   MlDeviceStatusSchema,
+  RuntimeInfoSchema,
   WorkerEventSchema,
   type BridgeResult,
 } from "../web/proto/snuffler_web_proto/bridge_pb.js";
@@ -39,6 +40,7 @@ interface BridgeModule {
   call(method: string, request: Uint8Array, jobId: bigint): Promise<{ result: Uint8Array }>;
   seisbenchDevice(): Uint8Array;
   takeOperationEvents(): Uint8Array[];
+  runtimeInfo(): Uint8Array | null;
 }
 
 interface CallReply {
@@ -83,6 +85,7 @@ function demoUrl(base: string): string {
 
 const TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 const PICK_THRESHOLD = Number(process.env.SNUFFLER_BROWSER_PICK_THRESHOLD || 0.02);
+let benchmarkOpenmpThreads: 2 | 4 | null = null;
 
 const METHODS = {
   makeExample: "/snuffler_web_proto.BridgeService/MakeExample",
@@ -292,6 +295,19 @@ interface ConsoleLog {
 
 async function openHarnessPage(browser: Browser, log: ConsoleLog): Promise<Page> {
   const page = await browser.newPage();
+  if (benchmarkOpenmpThreads !== null) {
+    const cores = benchmarkOpenmpThreads === 2 ? 5 : 9;
+    await page.addInitScript((cores) => {
+      Object.defineProperty(navigator, "hardwareConcurrency", { value: cores });
+    }, cores);
+    await page.route("**/bridge_worker.js?*", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        body: `Object.defineProperty(navigator, "hardwareConcurrency", {value: ${cores}});\n${await response.text()}`,
+      });
+    });
+  }
   // This harness drives the transport directly, so the egui app must not submit its
   // own ledger-owned views into the same worker.
   await page.route(/\/snuffler-web-egui-[^/]+\.js$/, async (route) => {
@@ -452,6 +468,108 @@ function printResults(title: string, run: RunResult): void {
       )}, device=${result.device}, ${result.text}`
     );
   }
+}
+
+async function benchmarkCompute(): Promise<void> {
+  const model = manifest.models.find((spec) => spec.model === "PhaseNet");
+  if (!model) throw new Error("benchmark requires PhaseNet");
+  const median = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  const browser = await chromium.launch({ headless: HEADLESS, args: browserArgs(true) });
+  try {
+    for (const threads of [2, 4] as const) {
+      benchmarkOpenmpThreads = threads;
+      const log: ConsoleLog = { entries: [], errors: [] };
+      const page = await openHarnessPage(browser, log);
+      try {
+        const moduleUrl = await bridgeModuleUrl(page);
+        const scene = bridgeResult(
+          (
+            await callBridge(
+              page,
+              moduleUrl,
+              METHODS.makeExample,
+              toBinary(EmptySchema, create(EmptySchema))
+            )
+          ).result,
+          "MakeExample",
+          "scene"
+        );
+        const runtimeBytes = await page.evaluate(async (href) => {
+          const bridge = (await import(href)) as BridgeModule;
+          return Array.from(bridge.runtimeInfo() ?? []);
+        }, moduleUrl);
+        const runtime = fromBinary(RuntimeInfoSchema, new Uint8Array(runtimeBytes));
+        if (runtime.computeBudget?.openmpThreads !== threads || !runtime.threaded) {
+          throw new Error(`benchmark did not boot a threaded ${threads}-thread OpenMP budget`);
+        }
+        const filterMs: number[] = [];
+        const seisbenchMs: number[] = [];
+        for (let iteration = 0; iteration < 6; iteration += 1) {
+          // Change the passband so no cached processed cutout can satisfy this run.
+          const view = create(ViewParamsSchema, {
+            tmin: scene.tmin,
+            tmax: scene.tmax,
+            binsPerTrace: 1400,
+            highpass: 0.5,
+            lowpass: 4 + iteration * 0.01,
+          });
+          const filterStart = performance.now();
+          bridgeResult(
+            (await callBridge(page, moduleUrl, METHODS.getView, toBinary(ViewParamsSchema, view)))
+              .result,
+            "filtered GetView",
+            "view"
+          );
+          const filterElapsed = performance.now() - filterStart;
+          const seisbenchStart = performance.now();
+          const result = bridgeResult(
+            (
+              await callBridge(
+                page,
+                moduleUrl,
+                METHODS.runSnuffling,
+                toBinary(NamedSnufflingRequestSchema, seisbenchRequest(scene, model))
+              )
+            ).result,
+            "PhaseNet",
+            "snuffling"
+          );
+          const seisbenchElapsed = performance.now() - seisbenchStart;
+          if (!result.markers.length) throw new Error("benchmark produced no PhaseNet picks");
+          // The first iteration warms Python imports and the ONNX session.
+          if (iteration > 0) {
+            filterMs.push(filterElapsed);
+            seisbenchMs.push(seisbenchElapsed);
+          }
+        }
+        if (log.errors.length) throw new Error(log.errors.join("\n"));
+        console.log(
+          JSON.stringify({
+            openmp: threads,
+            rayon: runtime.computeBudget.rayonThreads,
+            traces: String(scene.trackCount),
+            duration: scene.tmax - scene.tmin,
+            model: `${model.model}/${model.weights}`,
+            provider: "CPU wasm (1 thread)",
+            filterMedianMs: median(filterMs),
+            seisbenchMedianMs: median(seisbenchMs),
+            filterMs,
+            seisbenchMs,
+          })
+        );
+      } finally {
+        await page.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+if (process.env.SNUFFLER_BENCH_COMPUTE === "1") {
+  await benchmarkCompute();
+  process.exit(0);
 }
 
 const requestedModels = (process.env.SNUFFLER_BROWSER_MODELS || "")

@@ -51,6 +51,7 @@ export {
 } from "./browser_files.js";
 export { fetchTiles } from "./map_tiles.js";
 export { downloadFile, savePng, saveSvg } from "./save_file.js";
+export { computeBudget } from "./compute_budget.js";
 
 // A worker that has not reported its runtime by then is presumed hung and replaced.
 const WORKER_BOOT_TIMEOUT_MS = 300_000;
