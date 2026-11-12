@@ -1,4 +1,4 @@
-//! The "Main Controls" panel: filters, gain, rotation, track height, marker kind,
+//! The "Main Controls" panel: filters, gain, rotation, visible tracks, marker kind,
 //! and the waterfall colorbar.
 //!
 //! It mirrors snuffler's bottom control strip (`pile_viewer.py` `controls()` and
@@ -9,10 +9,7 @@
 use std::ops::RangeInclusive;
 
 use egui::AtomExt as _;
-use snuffler_web_core::state::{
-    AppState, ColorScale, Colormap, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, ViewMode,
-    WaterfallSettings,
-};
+use snuffler_web_core::state::{AppState, ColorScale, Colormap, ViewMode, WaterfallSettings};
 
 /// Width of a control row's label column.
 const LABEL_WIDTH_PX: f32 = 120.0;
@@ -317,6 +314,7 @@ pub fn show(
     deltat_range: (f64, f64),
     show_readout: impl FnOnce(&mut egui::Ui, &mut AppState),
 ) {
+    ui.add_space(4.0);
     let waterfall = state.view_mode == ViewMode::Waterfall;
     let (min_hz, max_hz) = filter_range(deltat_range);
     // Loading finer or coarser data moves the band; corners set for the old pile
@@ -355,7 +353,7 @@ pub fn show(
 
     ui.separator();
     ui.horizontal_wrapped(|ui| {
-        track_height_controls(ui, state, track_count);
+        visible_tracks_controls(ui, state, track_count);
         ui.separator();
         trace_display_button(ui, state);
         ui.separator();
@@ -465,26 +463,85 @@ fn trace_display_button(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// Track height in pixels per row, and the Align toggle.
-///
-/// With Align on, the layout snaps the height to one that tiles the canvas with
-/// whole tracks; off lets rows take the exact height and scroll continuously.
-fn track_height_controls(ui: &mut egui::Ui, state: &mut AppState, track_count: usize) {
-    let mut height = if state.track_height > 0.0 {
-        state.track_height
+/// Visible rows per page; Snap selects whole rows and aligns scrolling.
+fn visible_tracks_controls(ui: &mut egui::Ui, state: &mut AppState, track_count: usize) {
+    let mut count = state.visible_track_count(track_count);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "track counts are within f32's exact integer range"
+    )]
+    let maximum = track_count.max(1) as f32;
+    // Slow pointer dragging while retaining useful keyboard and assistive increments.
+    let speed = if ui.input(|input| input.pointer.primary_down()) {
+        (f64::from(maximum) / 400.0).max(if state.snap_tracks { 0.05 } else { 0.01 })
+    } else if state.snap_tracks {
+        1.0
     } else {
-        40.0
+        0.1
     };
-    ui.label("Track height:");
-    let response = ui.add(
-        egui::Slider::new(&mut height, MIN_TRACK_HEIGHT_PX..=MAX_TRACK_HEIGHT_PX).suffix(" px"),
-    );
-    if response.changed() {
-        state.track_height = height;
+    // Reserve the widest count, including a decimal even while Snap is on.
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let value_width = ui.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                format!("{maximum:.1} tracks"),
+                font,
+                ui.visuals().text_color(),
+            )
+            .size()
+            .x
+    }) + 2.0 * ui.spacing().button_padding.x
+        + 4.0;
+    let decimals = usize::from(!state.snap_tracks);
+    let value = ui
+        .scope(|ui| {
+            ui.style_mut().drag_value_text_style = egui::TextStyle::Monospace;
+            ui.add_sized(
+                egui::vec2(value_width.max(112.0), ui.spacing().interact_size.y),
+                egui::DragValue::new(&mut count)
+                    .range(1.0..=maximum)
+                    .speed(speed)
+                    .max_decimals(decimals)
+                    .custom_formatter(move |value, _| format!("{value:.decimals$} tracks"))
+                    .custom_parser(|text| {
+                        text.trim().trim_end_matches("tracks").trim().parse().ok()
+                    }),
+            )
+        })
+        .inner;
+    value.widget_info(|| {
+        let mut info = egui::WidgetInfo::drag_value(value.enabled(), f64::from(count));
+        info.label = Some("Visible track count".to_owned());
+        info
+    });
+    let mut slider = egui::Slider::new(&mut count, 1.0..=maximum).show_value(false);
+    if state.snap_tracks {
+        slider = slider.integer();
+    } else {
+        slider = slider.max_decimals(1).step_by(0.1);
     }
-    response.on_hover_text(format!("{} tracks total", track_count.max(1)));
-    ui.checkbox(&mut state.snap_tracks, "Align")
-        .on_hover_text("Snap track height and scrolling to whole traces");
+    let response = ui.add(slider);
+    response.widget_info(|| {
+        egui::WidgetInfo::slider(response.enabled(), f64::from(count), "Visible tracks")
+    });
+    let slider_changed = response.changed();
+    response.on_hover_text(format!(
+        "Choose how many tracks are visible ({} total)",
+        track_count.max(1)
+    ));
+    if slider_changed || value.changed() {
+        state.tracks_per_page = Some(count);
+    }
+    if ui
+        .checkbox(&mut state.snap_tracks, "Snap")
+        .on_hover_text(
+            "Snap to whole visible tracks and align scrolling; turn off to show fractional tracks.",
+        )
+        .changed()
+        && state.snap_tracks
+    {
+        state.tracks_per_page = Some(state.visible_track_count(track_count));
+    }
 }
 
 /// The pointer twin of the digit keys.

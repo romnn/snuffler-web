@@ -399,6 +399,97 @@ async function checkTraceDisplayShortcut(page: Page): Promise<void> {
   await stroke.waitFor();
 }
 
+async function checkVisibleTracks(page: Page): Promise<void> {
+  console.log("\nvisible tracks");
+  const slider = page.getByRole("slider", { name: "Visible tracks", exact: true });
+  const snap = page.getByRole("checkbox", { name: "Snap", exact: true });
+  const value = async () => Number(await slider.getAttribute("aria-valuenow"));
+  const waitForValue = async (expected: number) => {
+    await page.waitForFunction((count) => {
+      const slider = [...document.querySelectorAll("#snuffler-a11y [role=slider]")].find(
+        (element) => {
+          const label = element.getAttribute("aria-labelledby");
+          return (
+            (element.getAttribute("aria-label") ||
+              (label && document.getElementById(label)?.textContent)) === "Visible tracks"
+          );
+        }
+      );
+      return Math.abs(Number(slider?.getAttribute("aria-valuenow")) - count) < 0.0001;
+    }, expected);
+  };
+  check("Snap defaults to whole tracks", (await snap.getAttribute("aria-checked")) === "true");
+
+  // The whole-track slider steps by one, independently of the canvas size.
+  await slider.focus();
+  await page.waitForTimeout(100);
+  for (let count = await value(); count > 3; count -= 1) {
+    await page.keyboard.press("ArrowLeft");
+    await waitForValue(count - 1);
+  }
+  check("the control selects three visible tracks", (await value()) === 3);
+  await page.getByRole("spinbutton", { name: "Visible track count", exact: true }).focus();
+  await page.waitForTimeout(100);
+  await page.keyboard.press("ArrowUp");
+  await waitForValue(4);
+  await page.keyboard.press("ArrowDown");
+  await waitForValue(3);
+  check("the value field keeps whole-track keyboard increments", (await value()) === 3);
+  const wholeValueBox = await page
+    .getByRole("spinbutton", { name: "Visible track count", exact: true })
+    .boundingBox();
+  const wholeSnapBox = await snap.boundingBox();
+
+  await snap.click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('#snuffler-a11y [role=checkbox][aria-label="Snap"]')
+        ?.getAttribute("aria-checked") === "false"
+  );
+  await slider.focus();
+  await page.waitForTimeout(100);
+  for (const count of [3.1, 3.2, 3.3, 3.4, 3.5]) {
+    await page.keyboard.press("ArrowRight");
+    await waitForValue(count);
+  }
+  check("disabling Snap permits 3.5 visible tracks", (await value()) === 3.5);
+  const fractionalValueBox = await page
+    .getByRole("spinbutton", { name: "Visible track count", exact: true })
+    .boundingBox();
+  const fractionalSnapBox = await snap.boundingBox();
+  check(
+    "whole and fractional counts keep the field width and Snap position stable",
+    wholeValueBox !== null &&
+      fractionalValueBox !== null &&
+      wholeSnapBox !== null &&
+      fractionalSnapBox !== null &&
+      wholeValueBox.width === fractionalValueBox.width &&
+      wholeSnapBox.x === fractionalSnapBox.x
+  );
+
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await page.waitForTimeout(400);
+  check("resizing preserves the fractional visible count", (await value()) === 3.5);
+  if (viewport) await page.setViewportSize(viewport);
+
+  await snap.click();
+  await waitForValue(4);
+  check("enabling Snap rounds to four whole tracks", (await value()) === 4);
+
+  // Canvas shortcuts update the same count the control displays.
+  await page.locator("#the_canvas_id").click({ position: { x: 500, y: 300 } });
+  await page.waitForTimeout(100);
+  await page.keyboard.press("+");
+  await waitForValue(5);
+  await page.keyboard.press("-");
+  await waitForValue(4);
+  check("keyboard zoom updates the visible-track control", (await value()) === 4);
+  await page.keyboard.press("=");
+  await waitForValue(Math.min(24, Number(await slider.getAttribute("aria-valuemax"))));
+}
+
 async function checkKeyboard(page: Page): Promise<void> {
   console.log("\nkeyboard");
   await page.$eval(`${OVERLAY} [aria-label="Options"]`, (element) =>
@@ -503,16 +594,17 @@ async function checkEifelMarkerBounds(page: Page): Promise<void> {
   await page.setViewportSize({ width: 1200, height: 781 });
   await boot(page, { a11y: "pointer", example: "eifel" });
   await page.getByText("Ready · 1061 traces").first().waitFor({ timeout: TIMEOUT_MS });
-  const defaultTrackHeight = Number(
-    await page.getByRole("slider", { name: "Track height:" }).getAttribute("aria-valuenow")
+  const defaultTrackCount = Number(
+    await page.getByRole("slider", { name: "Visible tracks" }).getAttribute("aria-valuenow")
   );
   check(
     "the default layout keeps several tracks visible",
-    Number.isFinite(defaultTrackHeight) && defaultTrackHeight < 200,
-    `${defaultTrackHeight}px`
+    Number.isFinite(defaultTrackCount) && defaultTrackCount > 1 && defaultTrackCount <= 24,
+    `${defaultTrackCount} tracks`
   );
-  const trackHeight = page.getByRole("slider", { name: "Track height:" });
-  await trackHeight.focus();
+  await checkEifelTrackCountLayout(page);
+  const trackCount = page.getByRole("slider", { name: "Visible tracks" });
+  await trackCount.focus();
   await page.keyboard.press("ArrowRight");
   await page.waitForTimeout(100);
   const transientStatuses = await page.locator("#snuffler-a11y [aria-live]").allTextContents();
@@ -577,6 +669,72 @@ async function checkEifelMarkerBounds(page: Page): Promise<void> {
     frameStats.emaMs > 0 && frameStats.emaMs < 40,
     `${frameStats.emaMs.toFixed(1)}ms (${frameStats.fps.toFixed(1)} fps)`
   );
+}
+
+async function checkEifelTrackCountLayout(page: Page): Promise<void> {
+  const slider = page.getByRole("slider", { name: "Visible tracks", exact: true });
+  const value = page.getByRole("spinbutton", { name: "Visible track count", exact: true });
+  const snap = page.getByRole("checkbox", { name: "Snap", exact: true });
+  const fill = page.getByRole("button", { name: /Trace display:/ });
+  const setCount = async (count: number) => {
+    await value.evaluate((element) => (element as HTMLElement).blur());
+    await value.focus();
+    await page.waitForTimeout(100);
+    await page.keyboard.press("Control+A");
+    await page.keyboard.type(String(count));
+    await page.keyboard.press("Enter");
+    await value.evaluate((element) => (element as HTMLElement).blur());
+    await page.waitForFunction(
+      (count) =>
+        Math.abs(
+          Number(
+            document
+              .querySelector('#snuffler-a11y [role=slider][aria-label="Visible tracks"]')
+              ?.getAttribute("aria-valuenow")
+          ) - count
+        ) < 0.0001,
+      count
+    );
+  };
+  await snap.click();
+  await page.waitForTimeout(100);
+  const positions = [];
+  // A four-digit pile exercises the reserved width beyond the small demo's range.
+  for (const count of [3.5, 99, 100, 999, 1000, 1060.5, 1061]) {
+    await setCount(count);
+    const field = await value.boundingBox();
+    const sliderBox = await slider.boundingBox();
+    const snapBox = await snap.boundingBox();
+    const fillBox = await fill.boundingBox();
+    if (!field || !sliderBox || !snapBox || !fillBox) throw new Error("track controls are missing");
+    positions.push({ width: field.width, slider: sliderBox.x, snap: snapBox.x, fill: fillBox.x });
+  }
+  await snap.click();
+  await page.waitForTimeout(100);
+  const snappedField = await value.boundingBox();
+  const snappedSlider = await slider.boundingBox();
+  const snappedSnap = await snap.boundingBox();
+  const snappedFill = await fill.boundingBox();
+  if (!snappedField || !snappedSlider || !snappedSnap || !snappedFill)
+    throw new Error("track controls are missing");
+  positions.push({
+    width: snappedField.width,
+    slider: snappedSlider.x,
+    snap: snappedSnap.x,
+    fill: snappedFill.x,
+  });
+  const baseline = positions[0];
+  check(
+    "Eifel keeps the track controls fixed through four-digit fractional counts and Snap changes",
+    positions.every((position) =>
+      Object.entries(position).every(
+        ([key, coordinate]) => Math.abs(coordinate - baseline[key as keyof typeof baseline]) < 0.01
+      )
+    ),
+    JSON.stringify(positions)
+  );
+  await setCount(24);
+  await page.locator('#the_canvas_id[data-snuffler-ready="true"]').waitFor({ timeout: TIMEOUT_MS });
 }
 
 async function checkPngExport(page: Page, errors: PageErrors): Promise<void> {
@@ -765,6 +923,7 @@ async function main(): Promise<void> {
     await checkBorrowedNames(page);
     await checkPointerMode(page);
     await checkTraceDisplayShortcut(page);
+    await checkVisibleTracks(page);
     await checkKeyboard(page);
     await checkResize(page);
     await checkCanvasStillReachable(page);

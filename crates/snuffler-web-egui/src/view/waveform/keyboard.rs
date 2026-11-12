@@ -3,16 +3,12 @@
 use egui::{InputState, Key};
 use snuffler_web_core::bridge::ViewTrack;
 use snuffler_web_core::markers::PHASE_KEYS;
-use snuffler_web_core::state::{
-    AppState, MIN_TRACK_HEIGHT_PX, PickingState, ScalingGroup, SortMode,
-};
+use snuffler_web_core::state::{AppState, PickingState, ScalingGroup, SortMode};
 
 use super::marker_edits::{self, deselect_all};
-use super::track_zoom;
 
 /// The canvas facts the keyboard commands need besides the app state.
 pub(super) struct KeyboardContext {
-    pub(super) track_area_height: f32,
     pub(super) canvas_width: f32,
     /// The whole pile's time span, for `g` with nothing selected.
     pub(super) scene_range: Option<(f64, f64)>,
@@ -29,7 +25,7 @@ struct FrameStart<'a> {
     widget_focused: bool,
     /// The view's duration in seconds.
     duration: f64,
-    /// How many rows the canvas shows, rounded.
+    /// How many rows the canvas shows, including a partial row when Snap is off.
     rows_shown: f32,
 }
 
@@ -87,14 +83,11 @@ pub(super) fn handle_keyboard(
     // On the web that surfaced as an `Instant::now` panic out of the lock's debug
     // timeout.
     let widget_focused = ui.ctx().memory(|memory| memory.focused().is_some());
-    let area_height = context.track_area_height;
     let frame = FrameStart {
         context,
         widget_focused,
         duration: (state.tmax - state.tmin).max(1e-9),
-        rows_shown: (area_height.max(1.0) / track_zoom::resolved_height(state, area_height))
-            .round()
-            .max(1.0),
+        rows_shown: state.visible_track_count(tracks.len()),
     };
     ui.input(|input| {
         // Qt dispatches its letter commands on the typed text, so a Ctrl, Cmd or
@@ -207,26 +200,21 @@ fn view_keys(input: &InputState, state: &mut AppState, track_count: usize, frame
         state.tmax -= duration;
     }
 
-    // Track zoom (snuffler: + shows one track more, - one less, = resets to the
-    // initial count), applied as a track height: more tracks means shorter rows.
+    // Track zoom: + shows one track more, - one less, = resets to the initial count.
     // Plus is Shift+Equals on most layouts, so accept either for "more".
-    // Bare Equals (no shift) is the reset (the auto-fit sentinel).
-    let area_height = frame.context.track_area_height;
-    let max_height = track_zoom::max_height(area_height);
+    // Bare Equals (no shift) resets the preferred count.
     if input.key_pressed(Key::Plus) || (input.key_pressed(Key::Equals) && shift) {
-        state.track_height =
-            (area_height.max(1.0) / (rows_shown + 1.0)).clamp(MIN_TRACK_HEIGHT_PX, max_height);
+        state.tracks_per_page = Some(rows_shown + 1.0);
     }
     if input.key_pressed(Key::Minus) && !shift {
-        state.track_height = (area_height.max(1.0) / (rows_shown - 1.0).max(1.0))
-            .clamp(MIN_TRACK_HEIGHT_PX, max_height);
+        state.tracks_per_page = Some((rows_shown - 1.0).max(1.0));
     }
     // Shift+Minus is `_`, snuffler's Demean toggle (its menu shortcut).
     if input.key_pressed(Key::Minus) && shift {
         state.demean = !state.demean;
     }
     if input.key_pressed(Key::Equals) && !shift {
-        state.track_height = 0.0;
+        state.tracks_per_page = None;
     }
 
     // Track paging

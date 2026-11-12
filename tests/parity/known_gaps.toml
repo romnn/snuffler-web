@@ -789,6 +789,25 @@ avoids by eating those two keys in the table.
 """
 
 [[manual]]
+key = "visible-track-count-control"
+title = "Visible track count and optional fractional rows replace pixel-based track sizing"
+enforce = "checkVisibleTracks in tests/a11y_browser_validate.ts checks whole and fractional values, Snap rounding, resize stability, and keyboard zoom; snuffler-web-render layout tests verify the number and geometry of visible rows"
+why = """
+Accepted drift: the web exposes the number of visible tracks instead of a row
+height in pixels. This directly describes what fits on the canvas and retains the
+same count across window resizing. Snap defaults on, restricting the count to
+whole tracks and aligning vertical scrolling. With Snap off, values such as 3.5
+show a partial track and permit continuous scrolling. Enabling Snap rounds the
+current visible count to the nearest whole track.
+
+The count is bounded by the available tracks without replacing a larger preference
+when a transient view has fewer rows. The initial target and the `=` reset remain
+24 tracks, matching the Qt application; `+`, `-`, and Ctrl+wheel update the same
+count. These web-only controls add no missing Qt feature and require no broad
+exception to the inventory or the shared control comparisons.
+"""
+
+[[manual]]
 key = "view-navigation-keys"
 title = "The axis pan strip keeps its own height"
 enforce = "a view time range in the tier-3 snapshot, plus a wheel action in the drivers"
@@ -796,8 +815,8 @@ why = """
 The navigation keys follow Qt's arithmetic: `g`/`G` and `goto` re-fit through a
 transcription of `make_good_looking_time_range` (`good_looking_time_range` in
 `session.rs`), Ctrl+wheel steps the shown track count by `max(1, n/5)` per notch,
-the arrows nudge a selected marker by one screen pixel of time, and the track-height
-cap grows with the canvas so a single-track view is always reachable.
+the arrows nudge a selected marker by one screen pixel of time, and a single-track
+view is always reachable through the visible-track count.
 
 Signed off: the pan-only strip under the time axis is 80 px in Qt and 52 px in the
 web (`pile_viewer.py:810`, `layout.rs:8`). The strip is exactly each side's drawn
@@ -862,7 +881,7 @@ Two harness blind spots: `inventory_qt` builds a bare `PileViewer` with no panel
 parent, so Qt's togglers never exist on the Qt side of the tier-2 diff (the web's two
 show up as web-only extras); and the menu bar's corner strip is skipped as a layout,
 so Qt's `+`/`-`/`:` corner buttons are never compared — the web carries `:` with Qt's
-tooltip, and the `+`/`-` keys plus the Track height slider cover the other two.
+tooltip, and the `+`/`-` keys plus the Visible tracks slider cover the other two.
 """
 
 [[manual]]
@@ -992,7 +1011,7 @@ The rest of Qt's options stay deliberately unported:
   * `--pattern`, `--cache`, `--force-cache`, `--store-path` name filesystem paths a
     browser cannot read.
   * `--ntracks`, `--hptime`, `--disable-marker-sorting` tune what the web handles
-    differently by construction: the shown track count follows the Track height
+    differently by construction: the shown track count follows the Visible tracks
     slider, times are always f64, and the marker table always sorts.
   * `--follow N` lives on the Live SeedLink form (see `live-acquisition`).
   * The phase-key map is a fixed table (see `phase-key-names`).

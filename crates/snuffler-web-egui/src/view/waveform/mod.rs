@@ -159,7 +159,6 @@ pub fn show(
     painter.rect_filled(full_rect, 0.0, pal.background);
     let track_area_height = (full_rect.height() - AXIS_HEIGHT).max(1.0);
     let keyboard_context = KeyboardContext {
-        track_area_height,
         canvas_width: full_rect.width(),
         scene_range,
         deltatmin,
@@ -234,7 +233,6 @@ pub fn show(
 /// A page reaching past the last row just returns fewer rows.
 fn fit_track_rows(state: &mut AppState, track_count: usize, track_area_height: f32) -> bool {
     let geometry = track_geometry(state, track_count, track_area_height);
-    state.track_height = geometry.track_height;
     state.track_scroll = geometry.scroll;
     state.track_offset = geometry.first_row;
     state.ntracks_shown = geometry.rows_per_page.max(1);

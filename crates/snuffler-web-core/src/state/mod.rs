@@ -23,7 +23,7 @@ pub use settings::{
     WaterfallSettings,
 };
 
-/// Number of tracks the auto-fit track height targets on first load, and the
+/// Number of visible tracks on first load, and the
 /// reset target for the "=" key.
 ///
 /// 24, because that is what the `snuffler` application passes its viewer
@@ -31,11 +31,6 @@ pub use settings::{
 /// Upstream is internally inconsistent here (the library entry point defaults to 12 and
 /// the widget to 20), but the shell is the program this port is measured against.
 pub const DEFAULT_NTRACKS_SHOWN: usize = 24;
-
-/// Smallest user-selected track-row height, in logical pixels.
-pub const MIN_TRACK_HEIGHT_PX: f32 = 8.0;
-/// Largest user-selected track-row height, in logical pixels.
-pub const MAX_TRACK_HEIGHT_PX: f32 = 400.0;
 
 /// Marker details and their color identity for the information strip.
 #[derive(Debug, PartialEq, Eq)]
@@ -156,10 +151,10 @@ pub struct AppState {
     /// text lives in the bridge, with the scene it describes.
     pub show_dataset_note: bool,
 
-    /// Pixels per track row, with `0.0` keeping automatic [`DEFAULT_NTRACKS_SHOWN`]
-    /// fitting active until the user chooses a height.
-    pub track_height: f32,
-    /// Whether visible rows are aligned to complete trace boundaries.
+    /// Desired visible track count, with `None` using [`DEFAULT_NTRACKS_SHOWN`].
+    /// The layout clamps this to the loaded tracks without replacing the preference.
+    pub tracks_per_page: Option<f32>,
+    /// Whether the visible count and scroll position snap to whole tracks.
     pub snap_tracks: bool,
     /// Fractional index of the first visible track row.
     pub track_scroll: f32,
@@ -314,8 +309,8 @@ impl Default for AppState {
             snuffling_text: String::new(),
             show_snuffling_text: false,
             show_dataset_note: false,
-            // Zero keeps the default automatic fitting active.
-            track_height: 0.0,
+            // No preference keeps the default visible count active.
+            tracks_per_page: None,
             snap_tracks: true,
             track_scroll: 0.0,
             ntracks_shown: DEFAULT_NTRACKS_SHOWN,
@@ -359,6 +354,30 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Visible track count after clamping to the pile and applying Snap.
+    #[must_use]
+    pub fn visible_track_count(&self, track_count: usize) -> f32 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "track counts are within f32's exact integer range"
+        )]
+        let maximum = track_count.max(1) as f32;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "the default count is 24, exactly representable in f32"
+        )]
+        let default_count = DEFAULT_NTRACKS_SHOWN as f32;
+        let count = self
+            .tracks_per_page
+            .unwrap_or(default_count)
+            .clamp(1.0, maximum);
+        if self.snap_tracks {
+            count.round()
+        } else {
+            count
+        }
+    }
+
     /// Removes selected markers and queues registry removal for orphaned events.
     pub fn remove_selected_markers(&mut self) {
         let removed_active = self

@@ -2,7 +2,7 @@
 
 use emath::{Rect, pos2};
 use snuffler_web_core::bridge::{ViewData, ViewTrack};
-use snuffler_web_core::state::{AppState, DEFAULT_NTRACKS_SHOWN, MIN_TRACK_HEIGHT_PX};
+use snuffler_web_core::state::AppState;
 
 /// Height reserved below the track rows for the shared time axis.
 pub const AXIS_HEIGHT: f32 = 52.0;
@@ -21,6 +21,8 @@ pub struct Layout<'a> {
     pub view_tmax: f64,
     /// Duration of the visible time window in seconds, never zero.
     pub window_duration: f64,
+    /// Total track rows in the pile, including rows outside the visible page.
+    pub track_count: usize,
     /// Tracks intersecting the visible vertical window.
     pub visible_tracks: &'a [ViewTrack],
     /// Index of the first visible track.
@@ -56,7 +58,7 @@ impl Layout<'_> {
     }
 }
 
-/// Vertical row geometry resolved from track-height, snapping, and scroll state.
+/// Vertical row geometry resolved from visible track count, snapping, and scroll state.
 pub struct TrackGeometry {
     /// Resolved height of one row in logical points.
     pub row_height: f32,
@@ -75,8 +77,6 @@ pub struct TrackGeometry {
     pub first_row_clipped: f32,
     /// Clamped fractional row offset.
     pub scroll: f32,
-    /// Track height to retain, or zero while automatic fitting remains active.
-    pub track_height: f32,
 }
 
 /// Resolves vertical track controls into concrete row geometry.
@@ -90,21 +90,16 @@ pub struct TrackGeometry {
 pub fn track_geometry(state: &AppState, track_count: usize, area_height: f32) -> TrackGeometry {
     let area = area_height.max(1.0);
     let track_count_f = track_count.max(1) as f32;
-    let automatic = state.track_height <= 0.0;
-    let mut height = if automatic {
-        area / DEFAULT_NTRACKS_SHOWN as f32
-    } else {
-        state.track_height
-    };
-    height = height.clamp(MIN_TRACK_HEIGHT_PX, area.max(MIN_TRACK_HEIGHT_PX));
+    let rows_in_area = state.visible_track_count(track_count);
+    let height = area / rows_in_area;
 
     if state.snap_tracks {
         // Snapped: a whole number of rows stretched to fill the area exactly
-        let rows_per_page = (area / height).round().clamp(1.0, track_count_f) as usize;
+        let rows_per_page = rows_in_area as usize;
         let row_height = area / rows_per_page as f32;
         let max_first_row = track_count.saturating_sub(rows_per_page);
-        let scroll = state.track_scroll.clamp(0.0, max_first_row as f32);
-        let first_row = scroll.round().clamp(0.0, max_first_row as f32) as usize;
+        let scroll = state.track_scroll.round().clamp(0.0, max_first_row as f32);
+        let first_row = scroll as usize;
         let rows_drawn = rows_per_page.min(track_count.saturating_sub(first_row));
         TrackGeometry {
             row_height,
@@ -113,12 +108,10 @@ pub fn track_geometry(state: &AppState, track_count: usize, area_height: f32) ->
             rows_per_page,
             first_row_clipped: 0.0,
             scroll,
-            track_height: if automatic { 0.0 } else { row_height },
         }
     } else {
         // Continuous: rows keep their height and the first one may be cut off
         let row_height = height;
-        let rows_in_area = area / row_height;
         let max_scroll = (track_count_f - rows_in_area).max(0.0);
         let scroll = state.track_scroll.clamp(0.0, max_scroll);
         let first_row = scroll.floor() as usize;
@@ -132,7 +125,6 @@ pub fn track_geometry(state: &AppState, track_count: usize, area_height: f32) ->
             rows_per_page,
             first_row_clipped,
             scroll,
-            track_height: if automatic { 0.0 } else { height },
         }
     }
 }
@@ -155,6 +147,7 @@ pub fn compute_layout<'a>(state: &AppState, view: &'a ViewData, rect: Rect) -> L
         view_tmin: state.tmin,
         view_tmax: state.tmax,
         window_duration: (state.tmax - state.tmin).max(1e-9),
+        track_count,
         visible_tracks,
         first_row: geometry.first_row,
         rows_drawn: geometry.rows_drawn,
@@ -172,7 +165,7 @@ mod tests {
     #[test]
     fn snapped_rows_tile_the_available_height() {
         let state = AppState {
-            track_height: 40.0,
+            tracks_per_page: Some(5.0),
             snap_tracks: true,
             ..AppState::default()
         };
@@ -185,7 +178,7 @@ mod tests {
     #[test]
     fn continuous_scroll_keeps_a_partial_first_row() {
         let state = AppState {
-            track_height: 40.0,
+            tracks_per_page: Some(2.5),
             snap_tracks: false,
             track_scroll: 2.25,
             ..AppState::default()
@@ -198,14 +191,43 @@ mod tests {
 
     /// A transient one-track view cannot turn automatic fitting into a one-track preference.
     #[test]
-    fn automatic_height_survives_a_transient_one_track_view() {
-        let mut state = AppState::default();
+    fn default_count_survives_a_transient_one_track_view() {
+        let state = AppState::default();
         let transient = track_geometry(&state, 1, 480.0);
-        state.track_height = transient.track_height;
 
         let loaded = track_geometry(&state, 100, 480.0);
 
-        assert!(state.track_height.abs() < f32::EPSILON);
+        assert_eq!(transient.rows_drawn, 1);
+        assert_eq!(state.tracks_per_page, None);
         assert_eq!(loaded.rows_drawn, DEFAULT_NTRACKS_SHOWN);
+    }
+
+    #[test]
+    fn fractional_count_survives_resizing_and_fills_the_canvas() {
+        let state = AppState {
+            tracks_per_page: Some(3.5),
+            snap_tracks: false,
+            ..AppState::default()
+        };
+        for area in [350.0, 700.0] {
+            let geometry = track_geometry(&state, 20, area);
+            assert_eq!(geometry.rows_drawn, 4);
+            assert!((area / geometry.row_height - 3.5).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn snap_rounds_fractional_count_and_scroll_to_whole_tracks() {
+        let state = AppState {
+            tracks_per_page: Some(3.5),
+            snap_tracks: true,
+            track_scroll: 2.25,
+            ..AppState::default()
+        };
+        let geometry = track_geometry(&state, 20, 400.0);
+        assert_eq!(geometry.rows_drawn, 4);
+        assert!((geometry.row_height - 100.0).abs() < f32::EPSILON);
+        assert!((geometry.scroll - 2.0).abs() < f32::EPSILON);
+        assert!(geometry.first_row_clipped.abs() < f32::EPSILON);
     }
 }

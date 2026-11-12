@@ -180,7 +180,7 @@ fn scroll_wheel(ui: &egui::Ui, response: &egui::Response, state: &mut AppState, 
         });
         let notches = wheel_notches(state, ctrl_wheel);
         if notches != 0.0 {
-            track_zoom::zoom_tracks(state, area.height(), anchor, notches);
+            track_zoom::zoom_tracks(state, lay.track_count, anchor, notches);
         }
     } else if scroll != 0.0 {
         if state.snap_tracks {
