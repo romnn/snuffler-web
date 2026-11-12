@@ -30,7 +30,7 @@ pedantic = true
 maximal_features = true
 
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 
 [profile.release]

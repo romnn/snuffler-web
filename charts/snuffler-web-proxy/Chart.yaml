@@ -3,8 +3,8 @@ name: snuffler-web-proxy
 description: Allowlisted CORS and TCP-over-WebSocket proxy that lets snuffler-web reach FDSN data centers and live SeedLink servers
 type: application
 # Both versions follow the release; bumpversion updates them (.bumpversion.toml).
-version: 0.0.3
-appVersion: "0.0.3"
+version: 0.0.4
+appVersion: "0.0.4"
 kubeVersion: ">=1.23.0-0"
 home: https://github.com/romnn/snuffler-web
 icon: https://romnn.github.io/snuffler-web/favicon.png
