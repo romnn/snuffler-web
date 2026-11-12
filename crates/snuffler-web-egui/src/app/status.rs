@@ -190,24 +190,28 @@ impl App {
             ui.horizontal(|ui| {
                 ui.set_min_height(ui.text_style_height(&egui::TextStyle::Body));
                 self.show_marker_hit_overload(ui, &ctx);
-                self.show_marker_hover(ui, &ctx);
+                self.show_marker_info(ui, &ctx);
             });
         });
     }
 
-    fn show_marker_hover(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // The hovered marker's metadata, as snuffler posts `hoover_message()` to
-        // its status bar (pile_viewer.py:2200) — an event's origin fields or a
-        // pick's polarity, readable without opening the marker table.
-        let hover_msg = self
-            .session
-            .state
-            .hovered_marker
-            .and_then(|id| self.session.state.markers.by_id(id))
-            .map(snuffler_web_core::markers::Marker::hover_message)
-            .filter(|msg| !msg.is_empty());
-        if let Some(msg) = hover_msg {
-            let label = ui.label(&msg).on_hover_text(&msg);
+    fn show_marker_info(&self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Event origins and pick polarities remain readable without opening the marker table.
+        // Selection supplies the details after the pointer leaves a marker.
+        if let Some(info) = self.session.state.marker_info() {
+            let size = egui::TextStyle::Body.resolve(ui.style()).size;
+            let font = egui::FontId::new(
+                size,
+                egui::FontFamily::Name(crate::fonts::EMPHASIS_FAMILY.into()),
+            );
+            let palette = crate::view::palette_for(ctx.theme(), self.session.state.wiggle_theme);
+            let color = info.kind.map_or_else(
+                || ui.visuals().text_color(),
+                |kind| palette.markers.kind(kind, true),
+            );
+            let label = ui
+                .label(egui::RichText::new(&info.text).font(font).color(color))
+                .on_hover_text(&info.text);
             crate::a11y::announce_changes(ctx, &label, crate::a11y::Urgency::Polite);
         }
     }

@@ -123,6 +123,7 @@ struct TimeIndex {
     /// began before the window.
     max_span: f64,
     selected: usize,
+    single_selected: Option<MarkerId>,
     earliest_marker_start: f64,
     latest_starting_marker_end: f64,
     active_hash: Option<String>,
@@ -144,6 +145,8 @@ fn inclusive_time_range(
 pub struct MarkerSummary {
     /// Number of selected markers.
     pub selected: usize,
+    /// Identity of the sole selected marker, or `None` for an empty or multiple selection.
+    pub single_selected: Option<MarkerId>,
     /// Earliest marker start.
     pub earliest_marker_start: f64,
     /// End of the latest-starting marker.
@@ -435,6 +438,7 @@ impl MarkerStore {
         let index = self.time_index.borrow();
         MarkerSummary {
             selected: index.selected,
+            single_selected: index.single_selected,
             earliest_marker_start: index.earliest_marker_start,
             latest_starting_marker_end: index.latest_starting_marker_end,
             active_hash: index.active_hash.clone(),
@@ -497,6 +501,7 @@ impl MarkerStore {
         let mut endpoints = Vec::with_capacity(self.markers.len().saturating_mul(2));
         let mut max_span = 0.0_f64;
         let mut selected = 0;
+        let mut single_selected = None;
         let mut earliest_marker_start = f64::INFINITY;
         let mut latest_start = f64::NEG_INFINITY;
         let mut latest_starting_marker_end = f64::NEG_INFINITY;
@@ -508,7 +513,10 @@ impl MarkerStore {
                 endpoints.push((marker.tmax, id));
             }
             max_span = max_span.max(marker.tmax - marker.tmin);
-            selected += usize::from(marker.selected);
+            if marker.selected {
+                selected += 1;
+                single_selected = (selected == 1).then_some(id);
+            }
             earliest_marker_start = earliest_marker_start.min(marker.tmin);
             if marker.tmin > latest_start {
                 latest_start = marker.tmin;
@@ -526,6 +534,7 @@ impl MarkerStore {
             endpoints,
             max_span,
             selected,
+            single_selected,
             earliest_marker_start,
             latest_starting_marker_end,
             active_hash,

@@ -37,6 +37,15 @@ pub const MIN_TRACK_HEIGHT_PX: f32 = 8.0;
 /// Largest user-selected track-row height, in logical pixels.
 pub const MAX_TRACK_HEIGHT_PX: f32 = 400.0;
 
+/// Marker details and their color identity for the information strip.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MarkerInfo {
+    /// Metadata for one marker, or a count for multiple selected markers.
+    pub text: String,
+    /// The displayed marker's kind, or `None` when describing a multiple selection.
+    pub kind: Option<u8>,
+}
+
 /// Complete frontend-independent state edited and rendered by a viewer frontend.
 pub struct AppState {
     /// Lower edge of the visible time window, in epoch seconds.
@@ -454,6 +463,39 @@ impl AppState {
         self.visible_marker_kinds.contains(&kind)
     }
 
+    /// Marker details for the information strip, with meaningful hover details taking priority.
+    ///
+    /// Away from a marker, the sole selected marker supplies its details.
+    /// Multiple selected markers show their count instead.
+    #[must_use]
+    pub fn marker_info(&self) -> Option<MarkerInfo> {
+        let details = |marker: &crate::markers::Marker| {
+            let text = marker.hover_message();
+            (!text.is_empty()).then_some(MarkerInfo {
+                text,
+                kind: Some(marker.kind),
+            })
+        };
+        if let Some(info) = self
+            .hovered_marker
+            .and_then(|id| self.markers.by_id(id))
+            .and_then(details)
+        {
+            return Some(info);
+        }
+        let selection = self.markers.summary();
+        if selection.selected > 1 {
+            return Some(MarkerInfo {
+                text: format!("{} markers selected", selection.selected),
+                kind: None,
+            });
+        }
+        selection
+            .single_selected
+            .and_then(|id| self.markers.by_id(id))
+            .and_then(details)
+    }
+
     /// Set the visible marker kinds (from the `:markers` command).
     /// Deselects all markers, mirroring snuffler's `markers` command which also clears
     /// the selection.
@@ -510,6 +552,114 @@ mod tests {
         marker.active = active;
         marker.event_hash = Some(hash.to_owned());
         marker
+    }
+
+    #[test]
+    fn selected_marker_details_return_after_a_temporary_hover() {
+        let mut state = AppState::default();
+        let mut selected = event("selected", true, false);
+        selected.event_name = Some("Selected event".to_owned());
+        selected.kind = 1;
+        state.markers.insert(selected);
+        let mut hovered = event("hovered", false, false);
+        hovered.event_name = Some("Hovered event".to_owned());
+        hovered.kind = 2;
+        let hovered_id = state.markers.insert(hovered);
+        let plain_id = state.markers.insert(Marker::new(1.0, 1.0, 0));
+
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = Selected event")
+        );
+        assert_eq!(state.marker_info().and_then(|info| info.kind), Some(1));
+        state.hovered_marker = Some(hovered_id);
+        assert_eq!(state.marker_info().and_then(|info| info.kind), Some(2));
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = Hovered event")
+        );
+
+        // Leaving the hovered event, including for a marker without details, restores selection.
+        state.hovered_marker = None;
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = Selected event")
+        );
+        assert_eq!(state.marker_info().and_then(|info| info.kind), Some(1));
+        state.hovered_marker = Some(plain_id);
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = Selected event")
+        );
+    }
+
+    #[test]
+    fn marker_details_follow_multiple_selection_and_deselection() {
+        let mut state = AppState::default();
+        let mut first = event("first", true, false);
+        first.event_name = Some("First event".to_owned());
+        let first_id = state.markers.insert(first);
+        let second_id = state.markers.insert(event("second", true, false));
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("2 markers selected")
+        );
+
+        assert!(
+            state
+                .markers
+                .edit(second_id, |marker| marker.selected = false)
+                .is_some()
+        );
+        assert_eq!(state.markers.summary().single_selected, Some(first_id));
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = First event")
+        );
+
+        assert!(
+            state
+                .markers
+                .edit(first_id, |marker| marker.selected = false)
+                .is_some()
+        );
+        assert_eq!(state.markers.summary().single_selected, None);
+        assert_eq!(state.marker_info(), None);
+    }
+
+    #[test]
+    fn marker_details_refresh_on_edits_and_clear_on_deletion() {
+        let mut state = AppState::default();
+        let mut selected = event("selected", true, false);
+        selected.event_name = Some("Before edit".to_owned());
+        let id = state.markers.insert(selected);
+        state.hovered_marker = Some(id);
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = Before edit")
+        );
+
+        assert!(
+            state
+                .markers
+                .edit(id, |marker| {
+                    marker.event_name = Some("After edit".to_owned());
+                    marker.kind = 3;
+                })
+                .is_some()
+        );
+        assert_eq!(
+            state.marker_info().map(|info| info.text).as_deref(),
+            Some("name = After edit")
+        );
+
+        assert_eq!(state.marker_info().and_then(|info| info.kind), Some(3));
+
+        // A stale hover identity must not retain details or attach to a reused slot.
+        state.remove_selected_markers();
+        state.markers.insert(event("replacement", false, false));
+        assert_eq!(state.markers.summary().single_selected, None);
+        assert_eq!(state.marker_info(), None);
     }
 
     #[test]

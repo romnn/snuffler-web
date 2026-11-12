@@ -2,12 +2,15 @@
 
 /// The bold font family used to draw and measure waveform labels.
 pub(crate) const CANVAS_FAMILY: &str = "canvas";
+/// Medium-weight Geist for emphasized interface text.
+pub(crate) const EMPHASIS_FAMILY: &str = "emphasis";
 
 /// Proportional UI text and regular exported text.
 pub(crate) const REGULAR: &[u8] = include_bytes!("../assets/fonts/Geist-Regular.ttf");
 /// Waveform labels, axis ticks, and bold exported text.
 pub(crate) const BOLD: &[u8] = include_bytes!("../assets/fonts/Geist-Bold.ttf");
 const MONO: &[u8] = include_bytes!("../assets/fonts/GeistMono-Regular.ttf");
+const MEDIUM: &[u8] = include_bytes!("../assets/fonts/Geist-Medium.ttf");
 const SYMBOLS: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
 /// Applies Geist throughout the UI, retaining egui's missing-glyph fallbacks.
@@ -17,6 +20,7 @@ pub(crate) fn configure(ctx: &egui::Context) {
         ("geist_regular", REGULAR),
         ("geist_bold", BOLD),
         ("geist_mono", MONO),
+        ("geist_medium", MEDIUM),
         ("jetbrains_fallback", SYMBOLS),
     ] {
         fonts.font_data.insert(
@@ -41,6 +45,15 @@ pub(crate) fn configure(ctx: &egui::Context) {
             .or_default()
             .push("jetbrains_fallback".to_owned());
     }
+    let mut emphasis = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    emphasis.insert(0, "geist_medium".to_owned());
+    fonts
+        .families
+        .insert(egui::FontFamily::Name(EMPHASIS_FAMILY.into()), emphasis);
     fonts.families.insert(
         egui::FontFamily::Name(CANVAS_FAMILY.into()),
         vec![
