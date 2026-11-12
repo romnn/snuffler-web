@@ -25,6 +25,8 @@ const { values } = parseArgs({
     grouping: { type: "string", default: "grouped,separate" },
     framing: { type: "string", default: "fitted,zoomed" },
     url: { type: "string", default: BASE_URL },
+    scale: { type: "string", default: "1" },
+    viewport: { type: "string", default: "1440x1000" },
     output: { type: "string", default: "tests/parity/.artifacts/screenshots/themes" },
     help: { type: "boolean", default: false },
   },
@@ -44,12 +46,14 @@ Comma-separated filters:
   --traces on,off                --grouping grouped,separate
   --framing fitted,zoomed
   --url <base URL>               Default: http://127.0.0.1:8000/
+  --scale <device scale>         Default: 1; 2 for high-resolution images
+  --viewport <width>x<height>    Default: 1440x1000, in CSS pixels
   --output <directory>           Default: tests/parity/.artifacts/screenshots/themes (gitignored)
   SNUFFLER_BROWSER_HEADLESS=0    Show the capture browser (same as parity tests)
 
 Output: <directory>/<theme-name>/<example>__<mode>__boxes-<on|off>__traces-<on|off>__<grouping>__<framing>.png
 Control states and URLs are appended to captures.jsonl in the output directory.
-The viewport is 1440×1000 at device scale 1; zoomed means a vertical canvas drag
+The viewport is in CSS pixels, at the given device scale; zoomed means a vertical canvas drag
 that narrows the time window around 40% of the fitted extent.
 Marker kind 0 is selected; all eight swatches remain visible in the bottom bar.
 The script uses fresh contexts, leaves personal browser settings alone, and
@@ -74,6 +78,12 @@ function slug(name: string): string {
 }
 
 const modes = choices(values.modes, ["light", "dark"]);
+const scale = Number(values.scale);
+if (!(scale > 0)) throw new Error(`Invalid --scale ${JSON.stringify(values.scale)}`);
+const [width, height] = values.viewport.split("x").map(Number);
+if (!(width > 0 && height > 0))
+  throw new Error(`Invalid --viewport ${JSON.stringify(values.viewport)}`);
+const viewport = { width, height };
 const boxes = choices(values.boxes, ["on", "off"]);
 const traces = choices(values.traces, ["on", "off"]);
 const groupings = choices(values.grouping, ["grouped", "separate"]);
@@ -125,8 +135,8 @@ async function main(): Promise<void> {
     const examples = values.examples ? choices(values.examples, available) : available;
     for (const example of examples) {
       const context = await browser.newContext({
-        viewport: { width: 1440, height: 1000 },
-        deviceScaleFactor: 1,
+        viewport,
+        deviceScaleFactor: scale,
       });
       try {
         const page = await context.newPage();
