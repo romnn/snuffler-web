@@ -481,13 +481,26 @@ The trace *boxes* are not a departure under any theme: every palette colours a b
 by the pile's `determine_box_styles` index, as Qt's `box_styles[istyle % 7]` does.
 
 Defaults follow the theme until the user clicks the option, and an untouched setting
-is persisted as absent so it keeps following. Color Traces boots off under Snuffler
-Qt, as upstream does (`pile_viewer.py:1076` adds it without `setChecked`), and on
-under the web themes built around coloured strokes; the mood themes that keep
-snuffler's grey wiggle turn it on exactly where the boxes stop separating the
-traces. Show Boxes follows the canvas: drawn on light, hidden on dark, where a
-screen of dark tinted blocks reads as banding. Snuffler has no dark canvas, so this
-cannot diverge on the canvas snuffler owns.
+is persisted as absent so it keeps following. Fieldbook and Snuffler Qt default to
+Fill: boxes on and Color Traces off, as upstream does (`pile_viewer.py:1076` adds
+Color Traces without `setChecked`). Fieldbook keeps its boxes in light and dark;
+the other themes draw boxes on light only. The disabled mood themes color strokes
+where boxes cannot separate the traces. Explicit View choices override these defaults.
+Snuffler has no dark canvas, so Fieldbook's dark default cannot diverge on the
+canvas snuffler owns.
+"""
+
+[[manual]]
+key = "trace-display-shortcut"
+title = "Stroke/Fill is a web-only shortcut for existing View options"
+enforce = "checkTraceDisplayShortcut in tests/a11y_browser_validate.ts verifies both View checkboxes, mixed-state disabling, and preservation of custom combinations; tier 2 reports web-only controls without treating them as missing Qt features"
+why = """
+The bottom-row button adds no setting: Stroke is Show boxes off and Color Traces
+on; Fill is the inverse. Clicking either switches both existing options, exactly
+as setting them individually in View does. With both on or both off, the button
+shows a disabled Mixed state and explains how to restore a complementary pair.
+It is also disabled in Waterfall, where Color Traces is unavailable.
+The original Qt menu options remain available and retain their own semantics.
 """
 
 [[manual]]

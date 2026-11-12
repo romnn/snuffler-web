@@ -446,7 +446,7 @@ impl AppState {
     /// Whether the trace boxes are drawn: the user's choice if they made one,
     /// otherwise what the theme defaults to for the current canvas.
     ///
-    /// Fieldbook hides boxes on both canvases; other themes draw them on light only.
+    /// Fieldbook draws boxes on both canvases; other themes draw them on light only.
     /// The user's explicit choice overrides either default.
     #[must_use]
     pub fn boxes_visible(&self, theme: Theme) -> bool {
@@ -517,20 +517,20 @@ mod tests {
     use super::AppState;
 
     #[test]
-    fn fieldbook_defaults_to_colored_traces_without_boxes_on_both_canvases() {
+    fn fieldbook_defaults_to_filled_boxes_with_monochrome_traces_on_both_canvases() {
         let mut state = AppState::default();
         assert_eq!(state.wiggle_theme, WiggleTheme::Fieldbook);
         for theme in Theme::ALL {
-            assert!(!state.boxes_visible(theme));
-            assert!(state.color_traces(theme));
+            assert!(state.boxes_visible(theme));
+            assert!(!state.color_traces(theme));
         }
 
         // Explicit drawing choices still override the theme defaults.
-        state.show_boxes = Some(true);
-        state.show_color_traces = Some(false);
+        state.show_boxes = Some(false);
+        state.show_color_traces = Some(true);
         for theme in Theme::ALL {
-            assert!(state.boxes_visible(theme));
-            assert!(!state.color_traces(theme));
+            assert!(!state.boxes_visible(theme));
+            assert!(state.color_traces(theme));
         }
     }
 

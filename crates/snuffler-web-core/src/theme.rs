@@ -77,7 +77,7 @@ pub enum WiggleTheme {
     SnufflerQt,
     /// Mineral blues, brick red and leaf green, balanced by quieter
     /// supporting inks.
-    /// The one web theme that colours every stroke, see [`Self::stroke_policy`].
+    /// Colored boxes with monochrome strokes by default.
     Fieldbook,
     /// Fired clay and ochre, balanced by indigo, sage and glazed teal.
     Kiln,
@@ -172,7 +172,7 @@ impl WiggleTheme {
             }
             WiggleTheme::Fieldbook => {
                 "Balanced mineral blues, brick red and leaf green, with quieter supporting inks. \
-                 Coloured strokes without trace boxes by default."
+                 Coloured trace boxes with monochrome strokes by default."
             }
             WiggleTheme::Kiln => {
                 "Fired clay and ochre, balanced by indigo, sage and glazed teal. \
@@ -206,23 +206,22 @@ impl WiggleTheme {
     }
 
     /// Whether trace boxes are drawn when the user has not chosen an override.
-    /// Fieldbook leaves its coloured strokes on the plain canvas in both polarities.
+    /// Fieldbook draws boxes in both polarities; other themes draw them on light only.
     #[must_use]
     pub const fn default_boxes(self, theme: Theme) -> bool {
-        !matches!(self, Self::Fieldbook) && matches!(theme, Theme::Light)
+        matches!(self, Self::Fieldbook) || matches!(theme, Theme::Light)
     }
 
     /// How this theme colours strokes, absent an explicit choice from the user.
     ///
     /// [`Self::SnufflerQt`] claims fidelity, so it boots monochrome as snuffler does.
-    /// [`Self::Fieldbook`] is built around coloured strokes; the mood themes keep
-    /// snuffler's single ink while the box colours carry the mood, and hand the
+    /// [`Self::Fieldbook`] also boots monochrome while its boxes carry the colors.
+    /// The mood themes keep snuffler's single ink while the box colours carry the mood, and hand the
     /// colouring to the strokes exactly when the boxes stop separating the traces.
     #[must_use]
     pub const fn stroke_policy(self) -> StrokePolicy {
         match self {
-            WiggleTheme::SnufflerQt => StrokePolicy::Monochrome,
-            WiggleTheme::Fieldbook => StrokePolicy::Colored,
+            WiggleTheme::SnufflerQt | WiggleTheme::Fieldbook => StrokePolicy::Monochrome,
             WiggleTheme::Kiln
             | WiggleTheme::Fjord
             | WiggleTheme::Daybreak

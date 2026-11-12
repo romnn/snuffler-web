@@ -246,7 +246,9 @@ function controlsFrom(nodes: OverlayNode[]): Record<string, unknown>[] {
   const controls: Record<string, unknown>[] = [];
   const seen = new Set<string>();
   for (const node of nodes) {
-    if (!interactiveRoles.has(node.role) || seen.has(node.name)) continue;
+    const traceDisplayShortcut = node.role === "button" && node.name.startsWith("Trace display: ");
+    if ((!interactiveRoles.has(node.role) && !traceDisplayShortcut) || seen.has(node.name))
+      continue;
     seen.add(node.name);
     controls.push({
       name: node.name,

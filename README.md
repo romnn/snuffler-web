@@ -9,10 +9,10 @@ Everything runs in the browser, and files you open are not uploaded.
   <br>
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero-light.png">
-    <img width="75%" alt="snuffler-web showing the 2015 Bonin Islands earthquake, with three components per station, sorted by distance" src="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero.png">
+    <img width="90%" alt="snuffler-web showing surface waves from the 2004 Sumatra earthquake, with three components per station, sorted by distance" src="https://raw.githubusercontent.com/romnn/snuffler-web/main/docs/screenshots/hero.png">
   </picture>
   <br>
-  <em>The 2015 Bonin Islands earthquake: three components per station, sorted by distance.</em>
+  Surface waves from the 2004 Sumatra earthquake: three components per station, sorted by distance.
   <br><br>
 </p>
 

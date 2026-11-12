@@ -313,6 +313,92 @@ async function checkPointerMode(page: Page): Promise<void> {
   await page.waitForTimeout(300);
 }
 
+async function checkTraceDisplayShortcut(page: Page): Promise<void> {
+  console.log("\ntrace display shortcut");
+  const view = page.getByRole("button", { name: "View", exact: true });
+  const stroke = page.getByRole("button", { name: "Trace display: Stroke", exact: true });
+  const fill = page.getByRole("button", { name: "Trace display: Fill", exact: true });
+  const mixed = page.getByRole("button", { name: "Trace display: Mixed", exact: true });
+  const boxesControl = page.getByRole("checkbox", { name: "Show boxes", exact: true });
+  const settings = async () => {
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await boxesControl.waitFor();
+    const result = {
+      boxes:
+        (await page
+          .getByRole("checkbox", { name: "Show boxes", exact: true })
+          .getAttribute("aria-checked")) === "true",
+      colored:
+        (await page
+          .getByRole("checkbox", { name: "Color traces", exact: true })
+          .getAttribute("aria-checked")) === "true",
+    };
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await boxesControl.waitFor({ state: "hidden" });
+    return result;
+  };
+  const setSettings = async (boxes: boolean, colored: boolean) => {
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await boxesControl.waitFor();
+    for (const option of [
+      { name: "Show boxes", checked: boxes },
+      { name: "Color traces", checked: colored },
+    ]) {
+      const control = page.getByRole("checkbox", { name: option.name, exact: true });
+      if ((await control.getAttribute("aria-checked")) !== String(option.checked)) {
+        await control.evaluate((element) => (element as HTMLElement).click());
+        await page.waitForFunction(
+          ({ name, checked }) =>
+            [...document.querySelectorAll("#snuffler-a11y [role=checkbox]")].some(
+              (element) =>
+                element.getAttribute("aria-label") === name &&
+                element.getAttribute("aria-checked") === String(checked)
+            ),
+          option
+        );
+      }
+    }
+    await view.evaluate((element) => (element as HTMLElement).click());
+    await boxesControl.waitFor({ state: "hidden" });
+  };
+
+  await setSettings(false, true);
+  await stroke.waitFor();
+  const strokeBox = await stroke.boundingBox();
+  await stroke.click();
+  await fill.waitFor();
+  const fillBox = await fill.boundingBox();
+  let options = await settings();
+  check("Stroke switches both View options to Fill", options.boxes && !options.colored);
+  check("the shortcut keeps its width when toggled", strokeBox?.width === fillBox?.width);
+
+  await fill.click();
+  await stroke.waitFor();
+  options = await settings();
+  check("Fill switches both View options to Stroke", !options.boxes && options.colored);
+
+  for (const enabled of [true, false]) {
+    await setSettings(enabled, enabled);
+    await mixed.waitFor();
+    check(
+      `both options ${enabled ? "on" : "off"} disable the Mixed shortcut`,
+      !(await mixed.isEnabled())
+    );
+    await mixed.evaluate((element) => (element as HTMLButtonElement).click());
+    options = await settings();
+    check(
+      "the disabled shortcut preserves custom View settings",
+      options.boxes === enabled && options.colored === enabled
+    );
+  }
+
+  await setSettings(true, false);
+  await fill.waitFor();
+  check("complementary View settings re-enable the shortcut", await fill.isEnabled());
+  await fill.click();
+  await stroke.waitFor();
+}
+
 async function checkKeyboard(page: Page): Promise<void> {
   console.log("\nkeyboard");
   await page.$eval(`${OVERLAY} [aria-label="Options"]`, (element) =>
@@ -678,6 +764,7 @@ async function main(): Promise<void> {
     await checkStructure(page);
     await checkBorrowedNames(page);
     await checkPointerMode(page);
+    await checkTraceDisplayShortcut(page);
     await checkKeyboard(page);
     await checkResize(page);
     await checkCanvasStillReachable(page);

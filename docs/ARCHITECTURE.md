@@ -7,7 +7,13 @@ The two exchange protobuf messages.
 An optional server, snuffler-web-proxy, is needed for live data, because live streams use TCP,
 which a browser cannot open.
 
-<img alt="Diagram of the three places code runs. In the browser, the main thread runs the Rust frontend in WebAssembly and TypeScript glue in the JavaScript engine; a Pyodide worker runs a TypeScript relay and the Python bridge on CPython in WebAssembly; an ONNX worker runs the SeisBench models. An optional backend server runs snuffler-web-proxy. FDSN requests go to the external data centers directly, or through the proxy when the browser cannot reach them; live SeedLink streams go through the proxy, and map tiles come straight from the tile servers. Files the user opens go through the main thread, and a Green's-function store folder is mounted into the Pyodide worker." src="architecture.svg">
+<p align="center">
+  <br>
+  <img width="90%" alt="Diagram of the three places code runs. In the browser, the main thread runs the Rust frontend in WebAssembly and TypeScript glue in the JavaScript engine; a Pyodide worker runs a TypeScript relay and the Python bridge on CPython in WebAssembly; an ONNX worker runs the SeisBench models. An optional backend server runs snuffler-web-proxy. FDSN requests go to the external data centers directly, or through the proxy when the browser cannot reach them; live SeedLink streams go through the proxy, and map tiles come straight from the tile servers. Files the user opens go through the main thread, and a Green's-function store folder is mounted into the Pyodide worker." src="architecture.svg">
+  <br>
+  The browser threads, their runtimes, and the optional proxy.
+  <br><br>
+</p>
 
 ## Division of work
 

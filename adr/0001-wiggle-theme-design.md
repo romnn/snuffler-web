@@ -105,9 +105,15 @@ A saved disabled theme falls back to Fieldbook.
 | Setting | Snuffler Qt | Fieldbook | Disabled web themes |
 | --- | --- | --- | --- |
 | Canvas | light, pinned | follows the app | follows the app |
-| Show boxes | on | off in light and dark | on light, off dark |
-| Color traces | off (upstream boots so) | on | only when the boxes cannot separate |
+| Show boxes | on | on in light and dark | on light, off dark |
+| Color traces | off (upstream boots so) | off | only when the boxes cannot separate |
 | Track separators | off | on | on |
+
+The bottom-row Stroke/Fill button is a shortcut for Show boxes and Color traces:
+Stroke has boxes off and colored traces on; Fill has boxes on and colored traces off.
+Both themes default to Fill.
+The button derives its state from those options and shows a disabled Mixed state when
+both are on or both are off.
 
 "Only when the boxes cannot separate" means the boxes are hidden **or** the subsort groups
 locations. All three are `Option<bool>`: the user's click outranks the default and is what

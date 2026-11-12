@@ -238,7 +238,7 @@ impl App {
             + ui.spacing().item_spacing.x * 2.0
             + 6.0;
         // Keep the existing controls on their row when the window is narrow.
-        if ui.available_width() < width {
+        if ui.available_size_before_wrap().x < width {
             return;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -8,6 +8,7 @@
 
 use std::ops::RangeInclusive;
 
+use egui::AtomExt as _;
 use snuffler_web_core::state::{
     AppState, ColorScale, Colormap, MAX_TRACK_HEIGHT_PX, MIN_TRACK_HEIGHT_PX, ViewMode,
     WaterfallSettings,
@@ -356,6 +357,8 @@ pub fn show(
     ui.horizontal_wrapped(|ui| {
         track_height_controls(ui, state, track_count);
         ui.separator();
+        trace_display_button(ui, state);
+        ui.separator();
         marker_kind_buttons(ui, state);
         show_readout(ui, state);
     });
@@ -363,6 +366,102 @@ pub fn show(
     // Snuffler's `ColorbarControl`, shown only in waterfall mode
     if waterfall {
         ui.horizontal_wrapped(|ui| colorbar_controls(ui, &mut state.waterfall));
+    }
+}
+
+/// A shortcut for the two complementary combinations of the existing drawing options.
+fn trace_display_button(ui: &mut egui::Ui, state: &mut AppState) {
+    let canvas = crate::view::palette_for(ui.ctx().theme(), state.wiggle_theme).theme;
+    let boxes = state.boxes_visible(canvas);
+    let colored = state.color_traces(canvas);
+    let label = match (boxes, colored) {
+        (false, true) => "Stroke",
+        (true, false) => "Fill",
+        _ => "Mixed",
+    };
+    let waterfall = state.view_mode == ViewMode::Waterfall;
+    let enabled = boxes != colored && !waterfall;
+    let tooltip = if waterfall {
+        "Disabled in Waterfall view; switch to Wiggle to toggle colored strokes and filled boxes."
+    } else {
+        match (boxes, colored) {
+            (false, true) => {
+                "Switch to filled boxes with monochrome traces instead of colored strokes."
+            }
+            (true, false) => "Switch to colored strokes without boxes.",
+            (true, true) => {
+                "Disabled because Show boxes and Color traces are both on; change one in View to toggle colored strokes and filled boxes."
+            }
+            (false, false) => {
+                "Disabled because Show boxes and Color traces are both off; change one in View to toggle colored strokes and filled boxes."
+            }
+        }
+    };
+    let icon_id = ui.make_persistent_id("trace-display-icon");
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            let output = egui::Button::new((
+                egui::Atom::custom(icon_id, egui::vec2(20.0, 16.0)),
+                label
+                    .atom_grow(true)
+                    .atom_align(egui::Align2::CENTER_CENTER),
+            ))
+            .min_size(egui::vec2(104.0, ui.spacing().interact_size.y))
+            .atom_ui(ui);
+            if let Some(rect) = output.rect(icon_id) {
+                let ink = ui.style().interact(&output.response).fg_stroke.color;
+                let rect = rect.shrink(1.0);
+                let painter = ui.painter();
+                if boxes == colored {
+                    painter.rect_stroke(
+                        rect,
+                        2.0,
+                        egui::Stroke::new(1.5_f32, ink),
+                        egui::StrokeKind::Inside,
+                    );
+                    painter.line_segment(
+                        [
+                            rect.left_center() + egui::vec2(4.0, 0.0),
+                            rect.right_center() - egui::vec2(4.0, 0.0),
+                        ],
+                        egui::Stroke::new(1.5_f32, ink),
+                    );
+                } else {
+                    if boxes {
+                        let opacity = if ui.visuals().dark_mode { 0.35 } else { 0.18 };
+                        painter.rect_filled(rect, 2.0, ink.gamma_multiply(opacity));
+                    }
+                    let point = |x, y| rect.lerp_inside(egui::vec2(x, y));
+                    painter.add(egui::Shape::line(
+                        vec![
+                            point(0.0, 0.5),
+                            point(0.25, 0.5),
+                            point(0.4, 0.1),
+                            point(0.6, 0.9),
+                            point(0.75, 0.5),
+                            point(1.0, 0.5),
+                        ],
+                        egui::Stroke::new(1.5_f32, ink),
+                    ));
+                }
+            }
+            output.response
+        })
+        .inner;
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            response.enabled(),
+            format!("Trace display: {label}"),
+        )
+    });
+    if response
+        .on_hover_text(tooltip)
+        .on_disabled_hover_text(tooltip)
+        .clicked()
+    {
+        state.show_boxes = Some(!boxes);
+        state.show_color_traces = Some(!colored);
     }
 }
 
