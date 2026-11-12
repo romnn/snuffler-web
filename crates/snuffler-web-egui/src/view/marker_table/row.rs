@@ -13,6 +13,7 @@ pub(super) fn marker_row(
     ui: &mut egui::Ui,
     row: MarkerId,
     marker: &mut Marker,
+    selected: bool,
     marker_palette: &MarkerPalette,
     edit: &mut Option<CellEdit>,
     output: &mut TableOutput,
@@ -27,13 +28,13 @@ pub(super) fn marker_row(
     // A plain click *replaces* the selection, as clicking a Qt table row does; Ctrl/Cmd/Shift
     // adds or removes the row.
     // A double click re-centres the view on the marker, Qt's non-editable-cell double-click.
-    let symbol_cell = ui.selectable_label(marker.selected, symbol);
-    crate::a11y::publish_selected(ui.ctx(), &symbol_cell, marker.selected);
+    let symbol_cell = ui.selectable_label(selected, symbol);
+    crate::a11y::publish_selected(ui.ctx(), &symbol_cell, selected);
     let time_cell = ui.selectable_label(
-        marker.selected,
+        selected,
         snuffler_web_core::timeaxis::format_timestamp(marker.tmin),
     );
-    crate::a11y::publish_selected(ui.ctx(), &time_cell, marker.selected);
+    crate::a11y::publish_selected(ui.ctx(), &time_cell, selected);
     if symbol_cell.double_clicked() || time_cell.double_clicked() {
         output.center_time = Some(f64::midpoint(marker.tmin, marker.tmax));
     } else if symbol_cell.clicked() || time_cell.clicked() {
@@ -41,8 +42,7 @@ pub(super) fn marker_row(
             input.modifiers.ctrl || input.modifiers.command || input.modifiers.shift
         });
         if additive {
-            marker.selected = !marker.selected;
-            changed = true;
+            output.toggle_selection = Some(row);
         } else {
             output.replace_selection = Some(row);
         }

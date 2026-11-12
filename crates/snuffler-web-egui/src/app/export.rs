@@ -159,12 +159,7 @@ impl App {
     pub(super) fn request_marker_export(&mut self, scope: MarkerExportScope) {
         if self.preparing_marker_export.is_some()
             || matches!(scope, MarkerExportScope::Selected)
-                && !self
-                    .session
-                    .state
-                    .markers
-                    .iter()
-                    .any(|marker| marker.selected)
+                && self.session.state.markers.summary().selected == 0
         {
             return;
         }
@@ -225,14 +220,7 @@ impl App {
             return;
         };
         let markers: Vec<Marker> = match scope {
-            MarkerExportScope::Selected => self
-                .session
-                .state
-                .markers
-                .iter()
-                .filter(|marker| marker.selected)
-                .cloned()
-                .collect(),
+            MarkerExportScope::Selected => self.session.state.markers.selected().cloned().collect(),
             MarkerExportScope::All => self.session.state.markers.iter().cloned().collect(),
         };
 

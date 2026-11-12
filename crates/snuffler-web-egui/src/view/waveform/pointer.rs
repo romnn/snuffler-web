@@ -5,7 +5,6 @@ use egui::PointerButton;
 use snuffler_web_core::markers::{MarkerCandidates, MarkerId};
 use snuffler_web_core::state::{AppState, PickingState, ViewDrag};
 use snuffler_web_render::layout::Layout;
-use snuffler_web_render::paint::marker_matches_track;
 
 use super::marker_edits::deselect_all;
 use super::{picking, track_zoom};
@@ -62,15 +61,11 @@ pub(super) fn marker_hit_at(state: &AppState, lay: &Layout<'_>, position: egui::
     let Some(track) = row_at(lay, position.y) else {
         return MarkerHit::None;
     };
+    let on_track = state.markers.for_track(track);
     ids.into_iter()
         .find(|&id| {
             state.markers.by_id(id).is_some_and(|marker| {
-                state.marker_kind_visible(marker.kind)
-                    && (marker.nslc_ids.is_empty()
-                        || marker
-                            .nslc_ids
-                            .iter()
-                            .any(|nslc| marker_matches_track(nslc, track)))
+                state.marker_kind_visible(marker.kind) && on_track.contains(id)
             })
         })
         .map_or(MarkerHit::None, MarkerHit::Marker)
@@ -250,7 +245,7 @@ fn press_on_marker(
     if !shift {
         deselect_all(state);
     }
-    state.markers.edit(pressed, |marker| marker.selected = true);
+    state.markers.set_selected(pressed, true);
     Some(pressed)
 }
 
@@ -278,7 +273,7 @@ fn start_drags(
         // The uncertainty drag is latched at press, so it survives a mid-drag
         // Shift release.
         if let Some(hit) = pointer_hit.marker() {
-            state.markers.edit(hit, |marker| marker.selected = true);
+            state.markers.set_selected(hit, true);
         }
         state.uncertainty_drag_last_y = Some(position.y);
     } else if !pressed_on_marker {
@@ -310,8 +305,8 @@ fn drag_uncertainty(response: &egui::Response, state: &mut AppState, lay: &Layou
     };
     let seconds_per_px = lay.window_duration / f64::from(lay.rect.width().max(1.0));
     let delta = f64::from(position.y - last_y) * seconds_per_px;
-    for marker in &mut state.markers {
-        if marker.selected && marker.phase.is_some() {
+    for marker in state.markers.selected_mut() {
+        if marker.phase.is_some() {
             marker.uncertainty = Some((marker.uncertainty.unwrap_or(0.0) + delta).max(0.0));
         }
     }

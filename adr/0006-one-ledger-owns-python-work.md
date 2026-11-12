@@ -70,12 +70,15 @@ The RPC reply is the only terminal signal; a dead worker settles its jobs as `Lo
 - Rayon and OpenMP split one capped compute budget (`web/compute_budget.ts`); the worker sets
   numerical thread limits before loading packages. The budget keeps a browser core free above
   two cores and retains a rayon worker on dual-core devices.
-- Not built yet: a per-track index for marker hit-testing.
+- Channel scopes are indexed by exact station/channel and unique glob pattern, with cached
+  membership shared by painting and hit-testing. Selection uses an inclusion or exclusion set;
+  selecting everything does not materialize every identity or invalidate content indexes.
 
 ## References
 
 - `crates/snuffler-web-core/src/activity/` (`ActivityLedger`, `Outcome`)
 - `proto/snuffler_web_proto/activity.proto`, `crates/snuffler-web-proto/build/activity.rs`
 - `crates/snuffler-web-core/src/markers/store.rs`, `web/execution_control.ts`, `web/snuffler_bridge/service.py`
+- `crates/snuffler-web-core/src/markers/scope.rs`, `crates/snuffler-web-core/src/markers/selection.rs`
 - `tests/codegen_missing_activity.py`, `tests/execution_control_validate.ts`
 - `tests/bridge_runtime_validate.ts`, `tests/activity_browser_validate.ts`

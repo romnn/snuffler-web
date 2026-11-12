@@ -48,8 +48,9 @@ struct TableOutput {
     /// A plain row click replaces the whole selection with this row (Qt table
     /// semantics).
     ///
-    /// It is applied after the draw pass because it touches every marker.
+    /// It is applied after the row has released its content borrow.
     replace_selection: Option<MarkerId>,
+    toggle_selection: Option<MarkerId>,
     event_updates: Vec<EventSnapshot>,
 }
 
@@ -117,8 +118,17 @@ impl MarkerTable {
                             let Some(&id) = self.order.get(visible_row - 1) else {
                                 continue;
                             };
+                            let selected = state.markers.is_selected(id);
                             state.markers.edit_with_change_flag(id, |marker| {
-                                row::marker_row(ui, id, marker, &marker_palette, &mut edit, output)
+                                row::marker_row(
+                                    ui,
+                                    id,
+                                    marker,
+                                    selected,
+                                    &marker_palette,
+                                    &mut edit,
+                                    output,
+                                )
                             });
                         }
                     });
@@ -136,18 +146,12 @@ impl MarkerTable {
 /// Applies what the rows asked for, and returns the requested beachball.
 fn apply_output(state: &mut AppState, bridge: &Bridge, output: TableOutput) -> Option<[f64; 6]> {
     if let Some(row) = output.replace_selection {
-        let ids: Vec<MarkerId> = state.markers.iter_with_ids().map(|(id, _)| id).collect();
-        for id in ids {
-            let selected = id == row;
-            // Only real changes go through `edit`, which bumps the store generation.
-            if state
-                .markers
-                .by_id(id)
-                .is_some_and(|marker| marker.selected != selected)
-            {
-                let _ = state.markers.edit(id, |marker| marker.selected = selected);
-            }
-        }
+        state.markers.select_only(row);
+    }
+    if let Some(id) = output.toggle_selection {
+        state
+            .markers
+            .set_selected(id, !state.markers.is_selected(id));
     }
     if let Some(time) = output.center_time {
         let duration = (state.tmax - state.tmin).max(1.0);
@@ -173,14 +177,10 @@ fn marker_toolbar(ui: &mut egui::Ui, state: &mut AppState, marker_update_active:
             state.markers.len()
         ));
         if ui.button("Select all").clicked() {
-            for marker in &mut state.markers {
-                marker.selected = true;
-            }
+            state.markers.select_all();
         }
         if ui.button("Deselect all").clicked() {
-            for marker in &mut state.markers {
-                marker.selected = false;
-            }
+            state.markers.deselect_all();
         }
         if ui
             .add_enabled(!marker_update_active, egui::Button::new("Delete selected"))

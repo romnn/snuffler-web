@@ -12,6 +12,7 @@ const BASE_URL = process.env.SNUFFLER_BROWSER_URL || "http://127.0.0.1:8000/";
 const HEADLESS = process.env.SNUFFLER_BROWSER_HEADLESS !== "0";
 const TIMEOUT_MS = Number(process.env.SNUFFLER_BROWSER_TEST_TIMEOUT_MS || 300_000);
 const OVERLAY = "#snuffler-a11y";
+const FULL_MARKER_BUDGET = process.env.SNUFFLER_A11Y_FULL_MARKER_BUDGET === "1";
 
 // What `snuffler_a11y_stats` reports (crates/snuffler-web-egui/src/a11y.rs).
 interface A11yStats {
@@ -591,6 +592,31 @@ async function checkProjectionCost(page: Page): Promise<void> {
 
 async function checkEifelMarkerBounds(page: Page): Promise<void> {
   console.log("\neifel marker bounds");
+  if (FULL_MARKER_BUDGET) {
+    await page.route("**/snuffler_bridge/service.py", async (route) => {
+      const response = await route.fetch();
+      // Test-only markers keep fewer than 2000 visible, exercising indexed painting
+      // rather than the dense-marker overload shortcut at the full 20000-marker budget.
+      const fixture = `
+_budget_load_bundle = BridgeServicer.load_bundle
+async def _test_budget_load_bundle(self, request, data):
+    result = await _budget_load_bundle(self, request, data)
+    if "eifel" in request.url:
+        channels = list(dict.fromkeys(trace.nslc_id for trace in state.traces))
+        channel_offset = len(result.info.nslc_table)
+        for net, sta, loc, cha in channels:
+            result.info.nslc_table.add(net=net, sta=sta, loc=loc, cha=cha)
+        original = len(result.info.markers)
+        for index in range(20000 - original):
+            time = result.scene.tmin + (result.scene.tmax - result.scene.tmin) * (index + 0.5) / 1000 if index < 1000 else result.scene.tmax + 1000000 + index
+            result.info.markers.add(tmin=time, tmax=time, phase="P", nslc_indexes=[channel_offset + index % len(channels)])
+        result.info.marker_budget = 20000
+    return result
+BridgeServicer.load_bundle = _test_budget_load_bundle
+`;
+      await route.fulfill({ response, body: (await response.text()) + fixture });
+    });
+  }
   await page.setViewportSize({ width: 1200, height: 781 });
   await boot(page, { a11y: "pointer", example: "eifel" });
   await page.getByText("Ready · 1061 traces").first().waitFor({ timeout: TIMEOUT_MS });
@@ -646,9 +672,20 @@ async function checkEifelMarkerBounds(page: Page): Promise<void> {
   check(
     "the eifel marker table projects only visible rows",
     markerProjection.nodes < 800 &&
-      markerProjection.names.some((name) => name.includes("717 markers")),
+      markerProjection.names.some((name) =>
+        name.includes(`${FULL_MARKER_BUDGET ? 20000 : 717} markers`)
+      ),
     `${markerProjection.nodes} nodes`
   );
+  if (FULL_MARKER_BUDGET) {
+    const dialog = page.getByRole("dialog", { name: "Markers" });
+    await dialog.getByRole("button", { name: "Select all", exact: true }).click();
+    await dialog.getByText("20000 markers · 20000 selected", { exact: true }).waitFor();
+    check("select all includes the full marker budget", true);
+    await dialog.getByRole("button", { name: "Deselect all", exact: true }).click();
+    await dialog.getByText("20000 markers · 0 selected", { exact: true }).waitFor();
+    check("deselect all clears the full marker budget", true);
+  }
 
   const canvas = page.locator("#the_canvas_id");
   const canvasBox = await canvas.boundingBox();
@@ -666,8 +703,11 @@ async function checkEifelMarkerBounds(page: Page): Promise<void> {
   });
   check(
     "the open eifel marker editor stays within the frame budget",
-    frameStats.emaMs > 0 && frameStats.emaMs < 40,
+    frameStats.emaMs > 0 && frameStats.emaMs < (FULL_MARKER_BUDGET ? 1000 / 60 : 40),
     `${frameStats.emaMs.toFixed(1)}ms (${frameStats.fps.toFixed(1)} fps)`
+  );
+  console.log(
+    `  eifel ${FULL_MARKER_BUDGET ? 20000 : 717} markers: ${frameStats.emaMs.toFixed(2)} ms, ${frameStats.fps.toFixed(1)} fps capacity`
   );
 }
 

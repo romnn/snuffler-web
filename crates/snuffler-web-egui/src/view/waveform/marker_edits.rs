@@ -4,16 +4,13 @@
 use std::cmp::Ordering;
 
 use snuffler_web_core::bridge::ViewTrack;
-use snuffler_web_core::markers::Marker;
+use snuffler_web_core::markers::{Marker, marker_matches_track};
 use snuffler_web_core::session::{TimeJump, TimeWindow, good_looking_time_range};
 use snuffler_web_core::state::{ActiveEventRequest, AppState};
-use snuffler_web_render::paint::marker_matches_track;
 
 /// Clears the marker selection.
 pub(super) fn deselect_all(state: &mut AppState) {
-    for marker in &mut state.markers {
-        marker.selected = false;
-    }
+    state.markers.deselect_all();
 }
 
 /// Snuffler's `a` and `A` (`pile_viewer.py:2381-2392`); both skip hidden kinds.
@@ -24,16 +21,16 @@ pub(super) fn deselect_all(state: &mut AppState) {
 pub(super) fn select_all(state: &mut AppState, additive: bool) {
     let kinds = state.visible_marker_kinds.clone();
     let (tmin, tmax) = (state.tmin, state.tmax);
-    for marker in &mut state.markers {
-        if additive {
-            if kinds.contains(&marker.kind) {
-                marker.selected = true;
-            }
-        } else {
+    if additive {
+        state
+            .markers
+            .add_selection_where(|marker| kinds.contains(&marker.kind));
+    } else {
+        state.markers.select_where(|marker| {
             let endpoint_in_view = (tmin <= marker.tmin && marker.tmin <= tmax)
                 || (tmin <= marker.tmax && marker.tmax <= tmax);
-            marker.selected = endpoint_in_view && kinds.contains(&marker.kind);
-        }
+            endpoint_in_view && kinds.contains(&marker.kind)
+        });
     }
 }
 
@@ -77,9 +74,11 @@ pub(super) fn activate_selected_event(state: &mut AppState) {
     // plain markers that can convert, never a selected phase pick.
     let candidates: Vec<usize> = state
         .markers
-        .iter()
+        .iter_with_ids()
         .enumerate()
-        .filter(|(_, marker)| marker.selected && (marker.is_event || marker.phase.is_none()))
+        .filter(|(_, (id, marker))| {
+            state.markers.is_selected(*id) && (marker.is_event || marker.phase.is_none())
+        })
         .map(|(index, _)| index)
         .collect();
     let &[index] = candidates.as_slice() else {
@@ -119,8 +118,8 @@ pub(super) fn activate_selected_event(state: &mut AppState) {
     let (event_hash, event_time) = state.markers.get(index).map_or((None, 0.0), |marker| {
         (marker.event_hash.clone(), marker.tmin)
     });
-    for marker in &mut state.markers {
-        if marker.selected && marker.phase.is_some() {
+    for marker in state.markers.selected_mut() {
+        if marker.phase.is_some() {
             marker.event_hash.clone_from(&event_hash);
             marker.event_time = Some(event_time);
         }
@@ -161,8 +160,8 @@ pub(super) fn set_polarity(state: &mut AppState, up: bool, undecided: bool) {
         }
         return;
     }
-    for marker in &mut state.markers {
-        if marker.selected && marker.phase.is_some() {
+    for marker in state.markers.selected_mut() {
+        if marker.phase.is_some() {
             marker.polarity = toggle(marker.polarity);
         }
     }
@@ -179,10 +178,8 @@ pub(super) fn set_kind(state: &mut AppState, kind: u8) {
         pick.kind = kind;
         return;
     }
-    for marker in &mut state.markers {
-        if marker.selected {
-            marker.kind = kind;
-        }
+    for marker in state.markers.selected_mut() {
+        marker.kind = kind;
     }
 }
 
@@ -205,8 +202,8 @@ pub(super) fn set_phase(state: &mut AppState, phase: &str) {
         pick.event_time = event_time;
         return;
     }
-    for marker in &mut state.markers {
-        if marker.selected && !marker.is_event {
+    for marker in state.markers.selected_mut() {
+        if !marker.is_event {
             if marker.phase.is_none() {
                 marker.polarity = None;
             }
@@ -230,8 +227,8 @@ pub(super) fn clear_phase(state: &mut AppState) {
         pick.event_time = None;
         return;
     }
-    for marker in &mut state.markers {
-        if marker.selected && marker.phase.is_some() {
+    for marker in state.markers.selected_mut() {
+        if marker.phase.is_some() {
             marker.phase = None;
             marker.polarity = None;
             marker.uncertainty = None;
@@ -243,8 +240,8 @@ pub(super) fn clear_phase(state: &mut AppState) {
 
 /// Moves the selected non-event markers by `seconds`.
 pub(super) fn nudge_selected(state: &mut AppState, seconds: f64) {
-    for marker in &mut state.markers {
-        if marker.selected && !marker.is_event {
+    for marker in state.markers.selected_mut() {
+        if !marker.is_event {
             marker.tmin += seconds;
             marker.tmax += seconds;
         }
@@ -259,11 +256,7 @@ pub(super) fn go_to_selection(
     scene_range: Option<(f64, f64)>,
     deltatmin: f64,
 ) {
-    let selected: Vec<&Marker> = state
-        .markers
-        .iter()
-        .filter(|marker| marker.selected)
-        .collect();
+    let selected: Vec<&Marker> = state.markers.selected().collect();
     let (tmin, tmax) = if !selected.is_empty() {
         (
             selected
@@ -317,18 +310,18 @@ pub(super) fn select_relative(state: &mut AppState, forward: bool, events_only: 
     // That is an upstream slip, reproduced deliberately: the same keystrokes land
     // on the same marker on both sides.
     let take_max = forward && !events_only;
-    let selected_reference = state
-        .markers
-        .iter()
-        .filter(|marker| marker.selected)
-        .map(|marker| marker.tmin)
-        .reduce(|reference, time| {
-            if take_max {
-                reference.max(time)
-            } else {
-                reference.min(time)
-            }
-        });
+    let selected_reference =
+        state
+            .markers
+            .selected()
+            .map(|marker| marker.tmin)
+            .reduce(|reference, time| {
+                if take_max {
+                    reference.max(time)
+                } else {
+                    reference.min(time)
+                }
+            });
     let reference = selected_reference.unwrap_or_else(|| f64::midpoint(state.tmin, state.tmax));
 
     let next = state
@@ -358,8 +351,8 @@ pub(super) fn select_relative(state: &mut AppState, forward: bool, events_only: 
     // time: `tgo` was already set before the search.
     let mut center_on = selected_reference;
     if let Some((target, time)) = next {
-        for (index, marker) in state.markers.iter_mut().enumerate() {
-            marker.selected = index == target;
+        if let Some(id) = state.markers.id_at(target) {
+            state.markers.select_only(id);
         }
         center_on = Some(time);
     }
@@ -442,8 +435,8 @@ pub(super) fn cycle_selection(
     let last_selected = stops.iter().rposition(|stop| {
         state
             .markers
-            .get(stop.marker_index)
-            .is_some_and(|marker| marker.selected)
+            .id_at(stop.marker_index)
+            .is_some_and(|id| state.markers.is_selected(id))
     });
     let next = last_selected.map_or(0, |position| position + 1);
     let Some(&TabStop {
@@ -455,12 +448,9 @@ pub(super) fn cycle_selection(
         return;
     };
 
-    let mut target_time = None;
-    for (index, marker) in state.markers.iter_mut().enumerate() {
-        marker.selected = index == target;
-        if marker.selected {
-            target_time = Some(marker.tmin);
-        }
+    let target_time = state.markers.get(target).map(|marker| marker.tmin);
+    if let Some(id) = state.markers.id_at(target) {
+        state.markers.select_only(id);
     }
     if let Some(time) = target_time
         && !(state.tmin < time && time < state.tmax)

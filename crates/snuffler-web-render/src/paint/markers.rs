@@ -56,106 +56,6 @@ fn is_shown(state: &AppState, marker: &Marker) -> bool {
     marker.tmin < state.tmax && state.tmin < marker.tmax && state.marker_kind_visible(marker.kind)
 }
 
-/// Shell-style glob match (`*`, `?`, `[seq]`, `[!seq]`), anchored at both ends.
-///
-/// This is the dialect `util.match_nslc` builds from `fnmatch.translate`, which is
-/// what snuffler matches a marker's channel patterns with (`marker.py:220`).
-/// Patterns are a handful of characters, so the backtracking `*` is harmless.
-fn glob_match(pattern: &str, value: &str) -> bool {
-    fn matches(pattern: &[char], value: &[char]) -> bool {
-        match pattern.split_first() {
-            None => value.is_empty(),
-            Some(('*', rest)) => {
-                (0..=value.len()).any(|skip| matches(rest, value.get(skip..).unwrap_or(&[])))
-            }
-            Some(('?', rest)) => value
-                .split_first()
-                .is_some_and(|(_, value_rest)| matches(rest, value_rest)),
-            Some(('[', rest)) => {
-                let Some(end) = rest.iter().position(|&c| c == ']') else {
-                    // An unterminated class matches a literal '[', as fnmatch's does.
-                    return value.split_first().is_some_and(|(&first, value_rest)| {
-                        first == '[' && matches(rest, value_rest)
-                    });
-                };
-                let (class, tail) = rest.split_at(end);
-                let tail = tail.get(1..).unwrap_or(&[]);
-                let (negated, class) = match class.split_first() {
-                    Some(('!', class)) => (true, class),
-                    _ => (false, class),
-                };
-                let Some((&candidate, value_rest)) = value.split_first() else {
-                    return false;
-                };
-                class_contains(class, candidate) != negated && matches(tail, value_rest)
-            }
-            Some((&literal, rest)) => value
-                .split_first()
-                .is_some_and(|(&first, value_rest)| first == literal && matches(rest, value_rest)),
-        }
-    }
-    let pattern: Vec<char> = pattern.chars().collect();
-    let value: Vec<char> = value.chars().collect();
-    matches(&pattern, &value)
-}
-
-/// Whether a glob character class contains `candidate`.
-///
-/// The class is walked as `low-high` ranges and single characters; a dash without a
-/// following bound is a literal, as in fnmatch.
-fn class_contains(class: &[char], candidate: char) -> bool {
-    let mut contained = false;
-    let mut cursor = class;
-    while let Some((&first, rest)) = cursor.split_first() {
-        if let Some(('-', after_dash)) = rest.split_first()
-            && let Some((&high, after_range)) = after_dash.split_first()
-        {
-            contained |= first <= candidate && candidate <= high;
-            cursor = after_range;
-        } else {
-            contained |= first == candidate;
-            cursor = rest;
-        }
-    }
-    contained
-}
-
-/// Whether an NSLC-scoped marker belongs on a row.
-///
-/// This is per-component fnmatch, exactly `util.match_nslc` over a pattern tuple: a
-/// partial wildcard like `BH?` or `6*` matches, and an empty component matches only
-/// an empty code.
-/// Qt's Cake Phase writes `('*', '*')` for "any location, any channel", and `''`
-/// means "the blank location".
-/// A track that groups over a component reports `'*'` for it and accepts any
-/// pattern there, since the row holds every value.
-/// Matching the identity rather than the spans keeps a marker on its row even when
-/// the marker's own location has no data in the window.
-#[must_use]
-pub fn marker_matches_track(nslc: &(String, String, String, String), track: &ViewTrack) -> bool {
-    let (net, sta, loc, cha) = nslc;
-    let component = |pattern: &str, code: &str| code == "*" || glob_match(pattern, code);
-    component(net, &track.net)
-        && component(sta, &track.sta)
-        && component(loc, &track.loc)
-        && component(cha, &track.cha)
-}
-
-/// Whether a marker's patterns take one concrete trace of a row, with `loc` (the
-/// span's) standing in for the grouped rows' `'*'`.
-///
-/// This is what Qt's `draw_trace` matches (`match_nslc(tr.nslc_id)`,
-/// `marker.py:387`) before highlighting the snippet under a span marker.
-fn marker_matches_trace(marker: &Marker, track: &ViewTrack, loc: &str) -> bool {
-    marker.nslc_ids.is_empty()
-        || marker.nslc_ids.iter().any(|(net, sta, marker_loc, cha)| {
-            glob_match(net, &track.net)
-                && glob_match(sta, &track.sta)
-                && glob_match(marker_loc, loc)
-                && glob_match(cha, &track.cha)
-        })
-}
-
 /// The samples of one span, for [`draw_marker_snippets`].
 #[derive(Clone, Copy)]
 pub(super) struct MarkerSnippet<'a> {
@@ -221,16 +121,17 @@ pub(super) fn draw_marker_snippets(
         Some((first, (last_covered as usize).min(last)))
     };
 
+    let on_trace = state.markers.for_trace(track, &span.loc);
     for (id, marker) in resolve(state, marker_ids) {
         // The same visibility filter the marker layers apply, plus Qt's per-trace
         // pattern match against this concrete trace.
-        if marker.is_event
-            || !is_shown(state, marker)
-            || !marker_matches_trace(marker, track, &span.loc)
-        {
+        if marker.is_event || !is_shown(state, marker) || !on_trace.contains(id) {
             continue;
         }
-        let color = marker.color_in(&pal.markers, state.hovered_marker == Some(id));
+        let color = marker.color_in(
+            &pal.markers,
+            state.markers.is_selected(id) || state.hovered_marker == Some(id),
+        );
 
         if marker.is_span() {
             // Span marker: re-draw the covered samples, square both ends
@@ -460,11 +361,19 @@ fn draw_per_track_layer(target: &mut dyn DrawTarget, frame: &Frame<'_>, marker_i
         state, pal, lay, ..
     } = *frame;
     let active_event_hash = state.markers.summary().active_hash;
+    let row_markers: Vec<_> = lay
+        .visible_tracks
+        .iter()
+        .map(|track| state.markers.for_track(track))
+        .collect();
     for (id, marker) in resolve(state, marker_ids) {
         if marker.is_event || !is_shown(state, marker) {
             continue;
         }
-        let color = marker.color_in(&pal.markers, state.hovered_marker == Some(id));
+        let color = marker.color_in(
+            &pal.markers,
+            state.markers.is_selected(id) || state.hovered_marker == Some(id),
+        );
         let x_min = lay.time_to_x(marker.tmin);
         let x_max = lay.time_to_x(marker.tmax);
         let label = phase_label(marker);
@@ -473,17 +382,10 @@ fn draw_per_track_layer(target: &mut dyn DrawTarget, frame: &Frame<'_>, marker_i
         let outlined = marker.event_hash.is_some() && marker.event_hash == active_event_hash;
         let label_shift = if outlined { -7.0 } else { -5.0 };
 
-        let matching_rows = lay
-            .visible_tracks
+        let matching_rows = row_markers
             .iter()
             .enumerate()
-            .filter(|(_, track)| {
-                marker.nslc_ids.is_empty()
-                    || marker
-                        .nslc_ids
-                        .iter()
-                        .any(|nslc| marker_matches_track(nslc, track))
-            })
+            .filter(|(_, members)| members.contains(id))
             .map(|(index, _)| index);
         for index in matching_rows {
             let top = lay.row_top(index);
@@ -541,20 +443,21 @@ fn draw_overview_layer(target: &mut dyn DrawTarget, frame: &Frame<'_>, marker_id
             continue;
         }
         let hovered = state.hovered_marker == Some(id);
-        let color = marker.color_in(&pal.markers, hovered);
+        let color = marker.color_in(&pal.markers, state.markers.is_selected(id) || hovered);
         let x_min = lay.time_to_x(marker.tmin);
         let x_max = lay.time_to_x(marker.tmax);
         // The short span line every marker gets at the top of the track area
         // (marker.py:335), one pixel proud of each end.
         target.line(pos2(x_min - 1.0, top), pos2(x_max + 1.0, top), 2.0, color);
 
-        if marker.selected || hovered || marker.nslc_ids.is_empty() {
+        let selected = state.markers.is_selected(id);
+        if selected || hovered || marker.nslc_ids.is_empty() {
             // Full-height guides at both ends: dashed 5-3 (in pen widths) when
             // selected or hovered, grey when hovered but unselected.
             // The dash is what shows which markers the next keystroke acts on.
             // An event draws them only when selected or hovered (`draw_line=False`).
-            let dashed = marker.selected || hovered;
-            let guide_color = if hovered && !marker.selected {
+            let dashed = selected || hovered;
+            let guide_color = if hovered && !selected {
                 Color32::from_rgb(150, 150, 150)
             } else {
                 color

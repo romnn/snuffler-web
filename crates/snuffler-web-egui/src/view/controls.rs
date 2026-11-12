@@ -570,10 +570,8 @@ fn marker_kind_buttons(ui: &mut egui::Ui, state: &mut AppState) {
         if let Some(pick) = state.picking.as_mut() {
             pick.kind = kind;
         } else {
-            for marker in &mut state.markers {
-                if marker.selected {
-                    marker.kind = kind;
-                }
+            for marker in state.markers.selected_mut() {
+                marker.kind = kind;
             }
         }
     }

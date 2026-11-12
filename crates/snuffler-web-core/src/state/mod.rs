@@ -409,17 +409,17 @@ impl AppState {
     pub fn remove_selected_markers(&mut self) {
         let removed_active = self
             .markers
-            .iter()
-            .filter(|marker| marker.selected && marker.is_event && marker.active)
+            .selected()
+            .filter(|marker| marker.is_event && marker.active)
             .filter_map(|marker| marker.event_hash.clone())
             .collect::<std::collections::HashSet<_>>();
         let removed = self
             .markers
-            .iter()
-            .filter(|marker| marker.selected && marker.is_event)
+            .selected()
+            .filter(|marker| marker.is_event)
             .filter_map(|marker| marker.event_hash.clone())
             .collect::<Vec<_>>();
-        self.markers.retain(|marker| !marker.selected);
+        self.markers.remove_selected();
         for event_hash in removed_active {
             if let Some(marker) = self
                 .markers
@@ -548,9 +548,7 @@ impl AppState {
     pub fn set_visible_marker_kinds(&mut self, mut kinds: Vec<u8>) {
         kinds.sort_unstable();
         kinds.dedup();
-        for marker in &mut self.markers {
-            marker.selected = false;
-        }
+        self.markers.deselect_all();
         self.visible_marker_kinds = kinds;
     }
 }
@@ -591,10 +589,9 @@ mod tests {
         assert!(!state.track_separators());
     }
 
-    fn event(hash: &str, selected: bool, active: bool) -> Marker {
+    fn event(hash: &str, active: bool) -> Marker {
         let mut marker = Marker::new(0.0, 0.0, 0);
         marker.is_event = true;
-        marker.selected = selected;
         marker.active = active;
         marker.event_hash = Some(hash.to_owned());
         marker
@@ -614,16 +611,13 @@ mod tests {
             ..crate::bridge::ViewMeta::default()
         };
         assert_eq!(state.epicentre_location(&meta), None);
-        state.markers.insert(event("first", false, false));
-        let clicked = state.markers.insert(event("clicked", false, false));
-        let active = state.markers.insert(event("active", false, true));
+        state.markers.insert(event("first", false));
+        let clicked = state.markers.insert(event("clicked", false));
+        let active = state.markers.insert(event("active", true));
 
         // Automatic activation on catalog load does not override the first event.
         assert_eq!(state.epicentre_location(&meta), Some("First region"));
-        assert_eq!(
-            state.markers.edit(clicked, |marker| marker.selected = true),
-            Some(())
-        );
+        state.markers.set_selected(clicked, true);
         assert_eq!(state.epicentre_location(&meta), Some("Clicked region"));
         state.epicentre_event_hash = Some("active".to_owned());
         assert_eq!(state.epicentre_location(&meta), Some("Active region"));
@@ -637,12 +631,7 @@ mod tests {
             Some(())
         );
         assert_eq!(state.epicentre_location(&meta), Some("Clicked region"));
-        assert_eq!(
-            state
-                .markers
-                .edit(clicked, |marker| marker.selected = false),
-            Some(())
-        );
+        state.markers.set_selected(clicked, false);
         assert_eq!(state.epicentre_location(&meta), Some("First region"));
         state.markers.clear();
         assert_eq!(state.epicentre_location(&meta), None);
@@ -651,11 +640,12 @@ mod tests {
     #[test]
     fn selected_marker_details_return_after_a_temporary_hover() {
         let mut state = AppState::default();
-        let mut selected = event("selected", true, false);
+        let mut selected = event("selected", false);
         selected.event_name = Some("Selected event".to_owned());
         selected.kind = 1;
-        state.markers.insert(selected);
-        let mut hovered = event("hovered", false, false);
+        let selected_id = state.markers.insert(selected);
+        state.markers.set_selected(selected_id, true);
+        let mut hovered = event("hovered", false);
         hovered.event_name = Some("Hovered event".to_owned());
         hovered.kind = 2;
         let hovered_id = state.markers.insert(hovered);
@@ -690,33 +680,25 @@ mod tests {
     #[test]
     fn marker_details_follow_multiple_selection_and_deselection() {
         let mut state = AppState::default();
-        let mut first = event("first", true, false);
+        let mut first = event("first", false);
         first.event_name = Some("First event".to_owned());
         let first_id = state.markers.insert(first);
-        let second_id = state.markers.insert(event("second", true, false));
+        state.markers.set_selected(first_id, true);
+        let second_id = state.markers.insert(event("second", false));
+        state.markers.set_selected(second_id, true);
         assert_eq!(
             state.marker_info().map(|info| info.text).as_deref(),
             Some("2 markers selected")
         );
 
-        assert!(
-            state
-                .markers
-                .edit(second_id, |marker| marker.selected = false)
-                .is_some()
-        );
+        state.markers.set_selected(second_id, false);
         assert_eq!(state.markers.summary().single_selected, Some(first_id));
         assert_eq!(
             state.marker_info().map(|info| info.text).as_deref(),
             Some("name = First event")
         );
 
-        assert!(
-            state
-                .markers
-                .edit(first_id, |marker| marker.selected = false)
-                .is_some()
-        );
+        state.markers.set_selected(first_id, false);
         assert_eq!(state.markers.summary().single_selected, None);
         assert_eq!(state.marker_info(), None);
     }
@@ -724,9 +706,10 @@ mod tests {
     #[test]
     fn marker_details_refresh_on_edits_and_clear_on_deletion() {
         let mut state = AppState::default();
-        let mut selected = event("selected", true, false);
+        let mut selected = event("selected", false);
         selected.event_name = Some("Before edit".to_owned());
         let id = state.markers.insert(selected);
+        state.markers.set_selected(id, true);
         state.hovered_marker = Some(id);
         assert_eq!(
             state.marker_info().map(|info| info.text).as_deref(),
@@ -751,7 +734,7 @@ mod tests {
 
         // A stale hover identity must not retain details or attach to a reused slot.
         state.remove_selected_markers();
-        state.markers.insert(event("replacement", false, false));
+        state.markers.insert(event("replacement", false));
         assert_eq!(state.markers.summary().single_selected, None);
         assert_eq!(state.marker_info(), None);
     }
@@ -759,8 +742,9 @@ mod tests {
     #[test]
     fn marker_deletion_queues_only_hashes_without_a_remaining_event() {
         let mut state = AppState::default();
-        state.markers.insert(event("shared", true, true));
-        state.markers.insert(event("shared", false, false));
+        let id = state.markers.insert(event("shared", true));
+        state.markers.set_selected(id, true);
+        state.markers.insert(event("shared", false));
 
         state.remove_selected_markers();
 
@@ -775,18 +759,14 @@ mod tests {
                 .is_some_and(|marker| marker.active)
         );
 
-        let Some(marker) = state.markers.iter_mut().next() else {
-            assert_eq!(state.markers.len(), 1);
-            return;
-        };
-        marker.selected = true;
+        state.markers.select_all();
         state.remove_selected_markers();
 
         // Removing the final, active marker queues one canonical deletion.
         assert!(state.markers.is_empty());
         assert_eq!(state.remove_event_hashes, ["shared"]);
 
-        state.markers.insert(event("other", false, false));
+        state.markers.insert(event("other", false));
         state.markers.insert(Marker::new(1.0, 1.0, 0));
         state.clear_markers();
 

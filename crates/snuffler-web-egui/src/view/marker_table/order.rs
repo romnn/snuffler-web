@@ -157,7 +157,7 @@ impl MarkerTable {
     /// until the marker store or sort selection changes.
     pub(super) fn ensure_order(&mut self, state: &AppState) {
         let key = OrderKey {
-            generation: state.markers.generation(),
+            generation: state.markers.content_generation(),
             column: self.sort_column,
             ascending: self.sort_ascending,
         };

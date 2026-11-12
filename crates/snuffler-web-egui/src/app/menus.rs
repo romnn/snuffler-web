@@ -183,11 +183,7 @@ impl App {
         }
         if ui
             .add_enabled(
-                self.session
-                    .state
-                    .markers
-                    .iter()
-                    .any(|marker| marker.selected),
+                self.session.state.markers.summary().selected > 0,
                 egui::Button::new("Save selected markers…"),
             )
             .clicked()

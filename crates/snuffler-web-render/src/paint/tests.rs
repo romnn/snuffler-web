@@ -13,8 +13,9 @@ use crate::layout::compute_layout;
 use crate::palette::{Palette, Theme, palette};
 
 use super::colors::{color_key, stroke_color_map};
-use super::markers::{MarkerSnippet, draw_marker_snippets, marker_matches_track};
+use super::markers::{MarkerSnippet, draw_marker_snippets};
 use super::{Frame, paint};
+use snuffler_web_core::markers::marker_matches_track;
 
 /// A 640 × 360 SVG target whose text measures half its point size per character.
 fn svg_target() -> SvgTarget {
@@ -318,9 +319,9 @@ fn thousands_of_markers_collapse_to_the_count_readout() {
     };
     for k in 0..2001 {
         let t = state.tmin + f64::from(k) * 0.01;
-        let mut m = snuffler_web_core::markers::Marker::new(t, t, 0);
-        m.selected = k < 5;
-        state.markers.insert(m);
+        let m = snuffler_web_core::markers::Marker::new(t, t, 0);
+        let id = state.markers.insert(m);
+        state.markers.set_selected(id, k < 5);
     }
     let view = ViewData {
         meta: ViewMeta {

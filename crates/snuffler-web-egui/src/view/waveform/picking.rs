@@ -127,9 +127,8 @@ fn commit_pick(
     marker.event_hash.clone_from(&pick.event_hash);
     marker.event_time = pick.event_time;
     marker.nslc_ids = nslc_ids;
-    marker.selected = true;
-    deselect_all(state);
-    state.markers.insert(marker);
+    let id = state.markers.insert(marker);
+    state.markers.select_only(id);
 
     state.picking = pick.batch_mode.then(|| PickingState {
         batch_mode: true,

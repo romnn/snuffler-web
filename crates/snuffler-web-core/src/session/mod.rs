@@ -331,8 +331,8 @@ impl Session {
             selected_spans: self
                 .state
                 .markers
-                .iter()
-                .filter(|marker| marker.selected && !marker.is_event)
+                .selected()
+                .filter(|marker| !marker.is_event)
                 .map(|marker| SnufflingSpan {
                     tmin: marker.tmin,
                     tmax: marker.tmax,

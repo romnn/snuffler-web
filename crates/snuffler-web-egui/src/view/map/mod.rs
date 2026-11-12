@@ -331,18 +331,18 @@ fn toolbar(
 
 /// Selects the event-marker projection Qt hands to its map snuffling.
 fn map_request(state: &AppState, only_active_event: bool) -> MapRequest {
-    let any_selected = state.markers.iter().any(|marker| marker.selected);
+    let any_selected = state.markers.summary().selected > 0;
     let active_event = state
         .markers
         .iter()
         .find(|marker| marker.is_event && marker.active);
     let mut event_hashes = Vec::new();
-    for marker in &state.markers {
+    for (id, marker) in state.markers.iter_with_ids() {
         let included = marker.is_event
             && if only_active_event {
                 marker.active
             } else if any_selected {
-                marker.selected
+                state.markers.is_selected(id)
             } else {
                 marker.tmin >= state.tmin && marker.tmax <= state.tmax
             };
@@ -413,9 +413,9 @@ mod tests {
 
         assert_eq!(map_request(&state, false).event_hashes, ["visible"]);
 
-        for marker in &mut state.markers {
-            marker.selected = marker.event_hash.as_deref() == Some("outside");
-        }
+        state
+            .markers
+            .select_where(|marker| marker.event_hash.as_deref() == Some("outside"));
         assert_eq!(map_request(&state, false).event_hashes, ["outside"]);
 
         for marker in &mut state.markers {

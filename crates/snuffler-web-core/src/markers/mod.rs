@@ -12,9 +12,12 @@
 use ecolor::Color32;
 
 mod palette;
+mod scope;
+mod selection;
 mod store;
 
 pub use palette::MarkerPalette;
+pub use scope::{TrackMarkers, marker_matches_track};
 pub use store::{
     DEFAULT_MARKER_BUDGET, MAX_MARKER_BUDGET, MarkerBudget, MarkerCandidates, MarkerCommitOutcome,
     MarkerId, MarkerStore, MarkerSummary, StagedMarkers,
@@ -60,8 +63,6 @@ pub struct Marker {
     pub polarity: Option<i8>,
     /// Event markers are drawn as a triangle on the time axis.
     pub is_event: bool,
-    /// Whether the marker participates in the next selection-based operation.
-    pub selected: bool,
     /// Focal-mechanism moment tensor (NED m6: mnn, mee, mdd, mne, mnd, med) for a
     /// catalog event, used to render a beachball; `None` when the event has no MT.
     pub moment_tensor: Option<[f64; 6]>,
@@ -167,7 +168,6 @@ impl Marker {
             phase: None,
             polarity: None,
             is_event: false,
-            selected: false,
             moment_tensor: None,
             kagan_deg: None,
             uncertainty: None,
@@ -215,8 +215,8 @@ impl Marker {
     /// marker.py:306): the palette's lit shade when selected or hovered, its idle
     /// shade otherwise.
     #[must_use]
-    pub fn color_in(&self, palette: &MarkerPalette, hovered: bool) -> Color32 {
-        palette.kind(self.kind, self.selected || hovered)
+    pub fn color_in(&self, palette: &MarkerPalette, highlighted: bool) -> Color32 {
+        palette.kind(self.kind, highlighted)
     }
 
     /// True if this marker spans a time range (vs. a single instant).
@@ -340,9 +340,9 @@ mod tests {
     }
 
     #[test]
-    fn color_in_reads_marker_state_the_way_select_color_does() {
+    fn color_in_uses_the_requested_highlight_state() {
         let palette = MarkerPalette::SNUFFLER_QT;
-        let mut marker = Marker::new(0.0, 0.0, 3);
+        let marker = Marker::new(0.0, 0.0, 3);
         // Idle markers wear the darker "3" shade; hovering (Qt's `alerted`) or
         // selecting brightens to the "2" shade — the shade change is how a
         // selected marker reads as selected.
@@ -352,11 +352,6 @@ mod tests {
         );
         assert_eq!(
             marker.color_in(&palette, true),
-            Color32::from_rgb(245, 121, 0)
-        );
-        marker.selected = true;
-        assert_eq!(
-            marker.color_in(&palette, false),
             Color32::from_rgb(245, 121, 0)
         );
     }

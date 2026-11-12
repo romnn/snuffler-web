@@ -3,8 +3,12 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::num::NonZeroU32;
+use std::rc::Rc;
 
 use super::Marker;
+use super::scope::{ScopeIndex, TrackMarkers};
+use super::selection::Selection;
+use crate::bridge::ViewTrack;
 
 /// Default producer-side marker response bound.
 pub const DEFAULT_MARKER_BUDGET: u32 = 20_000;
@@ -122,13 +126,19 @@ struct TimeIndex {
     /// The longest marker span, which widens a start-time query to catch spans that
     /// began before the window.
     max_span: f64,
-    selected: usize,
-    single_selected: Option<MarkerId>,
     first_event: Option<MarkerId>,
-    selected_event: Option<MarkerId>,
+    events: Vec<MarkerId>,
     earliest_marker_start: f64,
     latest_starting_marker_end: f64,
     active_hash: Option<String>,
+}
+
+#[derive(Default)]
+struct SelectionSummary {
+    revision: u64,
+    selected: usize,
+    single_selected: Option<MarkerId>,
+    selected_event: Option<MarkerId>,
 }
 
 /// The index range of `entries` whose times lie in `lower..=upper`.
@@ -168,6 +178,10 @@ pub struct MarkerStore {
     slots: Vec<Slot>,
     free_slots: Vec<u32>,
     store_generation: u64,
+    revision: u64,
+    selection: Selection,
+    selection_summary: RefCell<SelectionSummary>,
+    scope_index: RefCell<ScopeIndex>,
     time_index: RefCell<TimeIndex>,
 }
 
@@ -179,6 +193,10 @@ impl Default for MarkerStore {
             slots: Vec::new(),
             free_slots: Vec::new(),
             store_generation: 1,
+            revision: 1,
+            selection: Selection::default(),
+            selection_summary: RefCell::new(SelectionSummary::default()),
+            scope_index: RefCell::new(ScopeIndex::default()),
             time_index: RefCell::new(TimeIndex::default()),
         }
     }
@@ -200,7 +218,123 @@ impl MarkerStore {
     /// Returns the generation that changes whenever marker content may have changed.
     #[must_use]
     pub fn generation(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the content generation, unchanged by selection-only edits.
+    #[must_use]
+    pub fn content_generation(&self) -> u64 {
         self.store_generation
+    }
+
+    /// Reports whether a current marker participates in selection-based operations.
+    #[must_use]
+    pub fn is_selected(&self, id: MarkerId) -> bool {
+        self.index_of(id).is_some() && self.selection.contains(id)
+    }
+
+    /// Changes one current marker's selection without invalidating content indexes.
+    pub fn set_selected(&mut self, id: MarkerId, selected: bool) {
+        if self.index_of(id).is_some() && self.selection.set(id, selected) {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// Selects all current markers using an empty exclusion set.
+    pub fn select_all(&mut self) {
+        self.selection = Selection::AllExcept(HashSet::new());
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Clears selection without walking the markers.
+    pub fn deselect_all(&mut self) {
+        self.selection = Selection::default();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Replaces the selection with one current marker, or clears it for a stale id.
+    pub fn select_only(&mut self, id: MarkerId) {
+        self.deselect_all();
+        self.set_selected(id, true);
+    }
+
+    /// Replaces selection with markers satisfying a content predicate.
+    pub fn select_where(&mut self, mut select: impl FnMut(&Marker) -> bool) {
+        let excluded: HashSet<_> = self
+            .iter_with_ids()
+            .filter_map(|(id, marker)| (!select(marker)).then_some(id))
+            .collect();
+        self.selection = if excluded.len() <= self.len() / 2 {
+            Selection::AllExcept(excluded)
+        } else {
+            Selection::Only(
+                self.ids
+                    .iter()
+                    .copied()
+                    .filter(|id| !excluded.contains(id))
+                    .collect(),
+            )
+        };
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Adds matching markers without materializing an intermediate identity list.
+    pub fn add_selection_where(&mut self, mut select: impl FnMut(&Marker) -> bool) {
+        for (&id, marker) in self.ids.iter().zip(&self.markers) {
+            if select(marker) {
+                self.selection.set(id, true);
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Iterates over selected markers in insertion order.
+    pub fn selected(&self) -> impl Iterator<Item = &Marker> {
+        self.iter_with_ids()
+            .filter(|(id, _)| self.selection.contains(*id))
+            .map(|(_, marker)| marker)
+    }
+
+    /// Edits selected markers, invalidating content indexes once for the batch.
+    pub fn selected_mut(&mut self) -> impl Iterator<Item = &mut Marker> {
+        self.bump_generation();
+        let selection = &self.selection;
+        self.ids
+            .iter()
+            .zip(&mut self.markers)
+            .filter_map(move |(&id, marker)| selection.contains(id).then_some(marker))
+    }
+
+    /// Returns the stable identity at an insertion-order index.
+    #[must_use]
+    pub fn id_at(&self, index: usize) -> Option<MarkerId> {
+        self.ids.get(index).copied()
+    }
+
+    /// Returns cached channel membership for a row, including grouped components.
+    #[must_use]
+    pub fn for_track(&self, track: &ViewTrack) -> Rc<TrackMarkers> {
+        self.scope_members(track, &track.loc, true)
+    }
+
+    /// Returns cached membership for a concrete span within a row.
+    #[must_use]
+    pub fn for_trace(&self, track: &ViewTrack, loc: &str) -> Rc<TrackMarkers> {
+        self.scope_members(track, loc, false)
+    }
+
+    fn scope_members(&self, track: &ViewTrack, loc: &str, grouped: bool) -> Rc<TrackMarkers> {
+        let mut index = self.scope_index.borrow_mut();
+        if index.generation != self.store_generation {
+            *index = ScopeIndex::build(self.store_generation, self.iter_with_ids());
+        }
+        index.matching(track, loc, grouped)
+    }
+
+    /// Removes the current selection while preserving surviving identities.
+    pub fn remove_selected(&mut self) {
+        let selection = std::mem::take(&mut self.selection);
+        self.retain_with_ids(|id, _| !selection.contains(id));
     }
 
     /// Borrows all markers in insertion order.
@@ -318,6 +452,7 @@ impl MarkerStore {
             });
         self.markers.push(marker);
         self.ids.push(id);
+        self.selection.set(id, false);
         self.bump_generation();
         id
     }
@@ -369,10 +504,14 @@ impl MarkerStore {
 
     /// Retains markers that satisfy `keep` without changing surviving identities.
     pub fn retain(&mut self, mut keep: impl FnMut(&Marker) -> bool) {
+        self.retain_with_ids(|_, marker| keep(marker));
+    }
+
+    fn retain_with_ids(&mut self, mut keep: impl FnMut(MarkerId, &Marker) -> bool) {
         let old_markers = std::mem::take(&mut self.markers);
         let old_ids = std::mem::take(&mut self.ids);
         for (marker, id) in old_markers.into_iter().zip(old_ids) {
-            if keep(&marker) {
+            if keep(id, &marker) {
                 let index = self.markers.len();
                 if let Some(slot) = usize::try_from(id.slot)
                     .ok()
@@ -393,6 +532,7 @@ impl MarkerStore {
     pub fn clear(&mut self) {
         let ids = std::mem::take(&mut self.ids);
         self.markers.clear();
+        self.selection = Selection::default();
         for id in ids {
             self.release(id);
         }
@@ -442,11 +582,36 @@ impl MarkerStore {
     pub fn summary(&self) -> MarkerSummary {
         self.ensure_time_index();
         let index = self.time_index.borrow();
+        let mut selection = self.selection_summary.borrow_mut();
+        if selection.revision != self.revision {
+            let selected = self.selection.count(self.len());
+            let single_selected = (selected == 1)
+                .then(|| {
+                    self.ids
+                        .iter()
+                        .copied()
+                        .find(|id| self.selection.contains(*id))
+                })
+                .flatten();
+            let mut events = index
+                .events
+                .iter()
+                .copied()
+                .filter(|id| self.selection.contains(*id));
+            let first = events.next();
+            let selected_event = if events.next().is_none() { first } else { None };
+            *selection = SelectionSummary {
+                revision: self.revision,
+                selected,
+                single_selected,
+                selected_event,
+            };
+        }
         MarkerSummary {
-            selected: index.selected,
-            single_selected: index.single_selected,
+            selected: selection.selected,
+            single_selected: selection.single_selected,
             first_event: index.first_event,
-            selected_event: index.selected_event,
+            selected_event: selection.selected_event,
             earliest_marker_start: index.earliest_marker_start,
             latest_starting_marker_end: index.latest_starting_marker_end,
             active_hash: index.active_hash.clone(),
@@ -487,9 +652,11 @@ impl MarkerStore {
 
     fn bump_generation(&mut self) {
         self.store_generation = self.store_generation.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
     }
 
     fn release(&mut self, id: MarkerId) {
+        self.selection.remove(id);
         let Some(slot) = usize::try_from(id.slot)
             .ok()
             .and_then(|slot| self.slots.get_mut(slot))
@@ -508,11 +675,8 @@ impl MarkerStore {
         let mut starts = Vec::with_capacity(self.markers.len());
         let mut endpoints = Vec::with_capacity(self.markers.len().saturating_mul(2));
         let mut max_span = 0.0_f64;
-        let mut selected = 0;
-        let mut single_selected = None;
         let mut first_event = None;
-        let mut selected_event = None;
-        let mut selected_events = 0;
+        let mut events = Vec::new();
         let mut earliest_marker_start = f64::INFINITY;
         let mut latest_start = f64::NEG_INFINITY;
         let mut latest_starting_marker_end = f64::NEG_INFINITY;
@@ -526,14 +690,7 @@ impl MarkerStore {
             max_span = max_span.max(marker.tmax - marker.tmin);
             if marker.is_event {
                 first_event.get_or_insert(id);
-                if marker.selected {
-                    selected_events += 1;
-                    selected_event = (selected_events == 1).then_some(id);
-                }
-            }
-            if marker.selected {
-                selected += 1;
-                single_selected = (selected == 1).then_some(id);
+                events.push(id);
             }
             earliest_marker_start = earliest_marker_start.min(marker.tmin);
             if marker.tmin > latest_start {
@@ -551,10 +708,8 @@ impl MarkerStore {
             starts,
             endpoints,
             max_span,
-            selected,
-            single_selected,
             first_event,
-            selected_event,
+            events,
             earliest_marker_start,
             latest_starting_marker_end,
             active_hash,
@@ -583,11 +738,111 @@ impl<'a> IntoIterator for &'a mut MarkerStore {
 
 #[cfg(test)]
 mod tests {
+    use color_eyre::eyre::{self, OptionExt as _};
+    use std::rc::Rc;
+
+    use super::Selection;
     use super::{
         MAX_MARKER_BUDGET, MarkerBudget, MarkerCandidates, MarkerCommitOutcome, MarkerStore,
         StagedMarkers,
     };
+    use crate::bridge::ViewTrack;
     use crate::markers::Marker;
+
+    #[test]
+    fn all_except_selection_is_compact_and_does_not_rebuild_content_indexes() -> eyre::Result<()> {
+        let mut store = MarkerStore::default();
+        for index in 0..MAX_MARKER_BUDGET {
+            store.insert(Marker::new(f64::from(index), f64::from(index), 0));
+        }
+        let track = ViewTrack::default();
+        let membership = store.for_track(&track);
+        let generation = store.content_generation();
+        let first = store.id_at(0).ok_or_eyre("missing first marker")?;
+        store.select_all();
+        assert!(matches!(&store.selection, Selection::AllExcept(ids) if ids.is_empty()));
+        let total = usize::try_from(MAX_MARKER_BUDGET)?;
+        assert_eq!(store.summary().selected, total);
+        store.set_selected(first, false);
+        assert!(matches!(&store.selection, Selection::AllExcept(ids) if ids.len() == 1));
+        assert_eq!(store.summary().selected, total - 1);
+        assert_eq!(store.content_generation(), generation);
+        assert!(Rc::ptr_eq(&membership, &store.for_track(&track)));
+        let inserted = store.insert(Marker::new(-1.0, -1.0, 0));
+        assert!(!store.is_selected(inserted));
+        store.select_only(first);
+        assert_eq!(store.summary().single_selected, Some(first));
+        store.remove_selected();
+        assert!(!store.is_selected(first));
+        let reused = store.insert(Marker::new(-2.0, -2.0, 0));
+        assert_ne!(first, reused);
+        assert!(!store.is_selected(reused));
+        store.set_selected(first, true);
+        assert_eq!(store.summary().selected, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn channel_membership_matches_globs_and_grouping_and_refreshes_after_edits() -> eyre::Result<()>
+    {
+        let mut store = MarkerStore::default();
+        store.insert(Marker::new(0.0, 1.0, 0));
+        for (net, sta, loc, cha) in [
+            ("XX", "ONE", "", "BHZ"),
+            ("YY", "TWO", "10", "BHN"),
+            ("X?", "O*", "*", "BH[ZNE]"),
+            ("*", "*", "", "BH[!Z]"),
+            ("XX", "ONE", "10", "BHZ"),
+        ] {
+            let mut marker = Marker::new(0.0, 1.0, 0);
+            marker.nslc_ids.push((
+                net.to_owned(),
+                sta.to_owned(),
+                loc.to_owned(),
+                cha.to_owned(),
+            ));
+            store.insert(marker);
+        }
+        for net in ["XX", "YY", "*"] {
+            for sta in ["ONE", "TWO", "*"] {
+                for loc in ["", "10", "*"] {
+                    for cha in ["BHZ", "BHN", "*"] {
+                        let track = ViewTrack {
+                            net: net.to_owned(),
+                            sta: sta.to_owned(),
+                            loc: loc.to_owned(),
+                            cha: cha.to_owned(),
+                            ..ViewTrack::default()
+                        };
+                        let indexed = store.for_track(&track);
+                        for (id, marker) in store.iter_with_ids() {
+                            let expected = marker.nslc_ids.is_empty()
+                                || marker
+                                    .nslc_ids
+                                    .iter()
+                                    .any(|nslc| super::super::marker_matches_track(nslc, &track));
+                            assert_eq!(indexed.contains(id), expected, "{net}.{sta}.{loc}.{cha}");
+                        }
+                    }
+                }
+            }
+        }
+        let track = ViewTrack {
+            net: "XX".to_owned(),
+            sta: "ONE".to_owned(),
+            loc: "*".to_owned(),
+            cha: "BHZ".to_owned(),
+            ..ViewTrack::default()
+        };
+        let id = store.id_at(1).ok_or_eyre("missing scoped marker")?;
+        assert!(store.for_track(&track).contains(id));
+        assert!(!store.for_trace(&track, "10").contains(id));
+        assert!(store.edit(id, |marker| marker.nslc_ids.clear()).is_some());
+        assert!(store.for_trace(&track, "10").contains(id));
+        store.retain(|marker| !marker.nslc_ids.is_empty());
+        assert!(!store.for_track(&track).contains(id));
+        Ok(())
+    }
 
     /// Surviving markers keep their identity when a preceding slot is removed and reused.
     #[test]
