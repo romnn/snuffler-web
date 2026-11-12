@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Shows architecture.svg on GitHub's light and dark backgrounds; open it and refresh after an edit. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>architecture.svg preview</title>
+  <style>
+    body { margin: 0; display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; font: 14px sans-serif; }
+    section { padding: 24px; }
+    /* The image takes its colour scheme from the element showing it, as on GitHub. */
+    .light { background: #ffffff; color: #1f2328; color-scheme: light; }
+    .dark { background: #0d1117; color: #e6edf3; color-scheme: dark; }
+    img { width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <section class="light"><p>Light</p><img alt="architecture, light" src="architecture.svg"></section>
+  <section class="dark"><p>Dark</p><img alt="architecture, dark" src="architecture.svg"></section>
+  <script>
+    // Bypass the image cache, so a refresh always shows the file as saved.
+    for (const img of document.images) img.src = `architecture.svg?${Date.now()}`;
+  </script>
+</body>
+</html>

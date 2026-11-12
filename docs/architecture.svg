@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 950" width="1180" height="950" role="img" aria-labelledby="title desc">
+  <title id="title">snuffler-web architecture</title>
+  <desc id="desc">The browser runs three separate threads, each with its own memory: the page's main thread and two Web Workers, the Pyodide worker and the ONNX worker. In each, WebAssembly code and JavaScript code are separate and call each other through bindings: the Rust frontend, snuffler-web-egui, through wasm-bindgen, the Python bridge through Pyodide, onnxruntime through its JavaScript API. The threads only exchange messages with postMessage: protobuf bytes between the main thread and the Pyodide worker, tensors between the Pyodide worker and the ONNX worker. An optional backend server runs snuffler-web-proxy, which live data needs: SeedLink runs over TCP, which a browser cannot open, so the proxy carries it on a WebSocket. Files the user opens go through the main thread, and a Green's-function store folder is mounted into the Pyodide worker's file system. The Pyodide worker fetches FDSN data directly, or through the proxy when the browser refuses; the main thread streams live SeedLink data through the proxy over a WebSocket, and fetches map tiles directly from the tile servers.</desc>
+  <style>
+    /*
+      Light boxes and black text; a dark page gets its own colours, with white text, below.
+    */
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .zone { stroke: #8b949e; stroke-width: 1.6; stroke-dasharray: 8 5; }
+    /* Translucent, so the zones tint whatever background GitHub draws. */
+    .browser { fill: #2f81f7; fill-opacity: 0.07; }
+    .backend { fill: #2f9e44; fill-opacity: 0.08; }
+    .external { fill: #8b949e; fill-opacity: 0.12; }
+    .thread { fill: none; stroke: #8b949e; stroke-width: 1.3; }
+    .zone-title { font-size: 18px; font-weight: 700; fill: #1f2328; }
+    .thread-title { font-size: 14.5px; font-weight: 700; fill: #1f2328; }
+    .thread-kind { font-size: 12px; fill: #1f2328; }
+    .flow { fill: none; stroke: #2f81f7; stroke-width: 2; }
+    .dashed { stroke-dasharray: 6 4; }
+    .head { fill: #2f81f7; }
+    .label { font-size: 13px; font-weight: 600; fill: #2f81f7; }
+    .via { font-size: 12px; fill: #1f2328; }
+    .legend { font-size: 13px; fill: #1f2328; }
+    .wasm { fill: #f3ecff; stroke: #7048e8; stroke-width: 2; }
+    .js { fill: #e9f7ec; stroke: #2f9e44; stroke-width: 2; }
+    .rust { fill: #ffd8b8; stroke: #e8590c; stroke-width: 1.3; }
+    .python { fill: #cfe4ff; stroke: #1971c2; stroke-width: 1.3; }
+    .ts { fill: #fff1a8; stroke: #d4a000; stroke-width: 1.3; }
+    .plain { fill: #e9ecef; stroke: #868e96; stroke-width: 1.3; }
+    .runtime { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; }
+    .wasm-text { fill: #6741d9; }
+    .js-text { fill: #2b8a3e; }
+    .name { font-size: 14.5px; font-weight: 600; fill: #1f2328; }
+    .note { font-size: 13px; fill: #1f2328; }
+    /*
+      On a dark page the same hues become translucent fills with bright outlines and light text.
+      Browsers evaluate this query from the embedding page's colour scheme, so it follows
+      GitHub's theme.
+    */
+    @media (prefers-color-scheme: dark) {
+      .name, .note { fill: #f0f6fc; }
+      .rust { fill: #e8590c; fill-opacity: 0.28; stroke: #ff8c42; }
+      .python { fill: #1971c2; fill-opacity: 0.38; stroke: #4dabf7; }
+      .ts { fill: #d4a000; fill-opacity: 0.26; stroke: #ffd43b; }
+      .plain { fill: #868e96; fill-opacity: 0.22; stroke: #8b949e; }
+      .wasm { fill: #7048e8; fill-opacity: 0.16; stroke: #9775fa; }
+      .js { fill: #2f9e44; fill-opacity: 0.14; stroke: #51cf66; }
+      .wasm-text { fill: #b197fc; }
+      .js-text { fill: #69db7c; }
+      .flow { stroke: #58a6ff; }
+      .head, .label { fill: #58a6ff; }
+      .zone-title, .thread-title, .legend, .thread-kind, .via { fill: #f0f6fc; }
+      .zone, .thread { stroke: #6e7781; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path class="head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <!-- Local file system -->
+  <rect class="zone external" x="20" y="16" width="1140" height="60" rx="12"/>
+  <text class="zone-title" x="40" y="52">Local file system</text>
+  <rect class="plain" x="306" y="24" width="224" height="44" rx="6"/>
+  <text class="name" x="318" y="42">Your files</text>
+  <text class="note" x="318" y="60">waveforms, markers, exports</text>
+  <rect class="plain" x="650" y="24" width="224" height="44" rx="6"/>
+  <text class="name" x="662" y="42">Green's-function stores</text>
+  <text class="note" x="662" y="60">a folder you pick</text>
+
+  <g transform="translate(0 100)">
+    <!-- Browser -->
+    <rect class="zone browser" x="20" y="20" width="1140" height="510" rx="12"/>
+    <text class="zone-title" x="40" y="48">Browser</text>
+    <text class="legend" x="1140" y="47" text-anchor="end">Three threads with separate memory, which only exchange messages.</text>
+
+    <!-- Main thread -->
+    <rect class="thread" x="40" y="62" width="300" height="448" rx="9"/>
+    <text class="thread-title" x="56" y="86">Main thread</text>
+    <text class="thread-kind" x="152" y="86">the page</text>
+    <rect class="wasm" x="54" y="98" width="272" height="238" rx="7"/>
+    <text class="runtime wasm-text" x="68" y="117">WEBASSEMBLY (RUST)</text>
+    <rect class="rust" x="66" y="126" width="248" height="60" rx="5"/>
+    <text class="name" x="78" y="150">snuffler-web-egui</text>
+    <text class="note" x="78" y="171">the egui frontend: menus, canvas</text>
+    <rect class="rust" x="66" y="194" width="248" height="60" rx="5"/>
+    <text class="name" x="78" y="218">snuffler-web-render</text>
+    <text class="note" x="78" y="239">waveforms, axes, SVG export</text>
+    <rect class="rust" x="66" y="262" width="248" height="60" rx="5"/>
+    <text class="name" x="78" y="286">snuffler-web-core</text>
+    <text class="note" x="78" y="307">state, worker client, SeedLink</text>
+    <rect class="js" x="54" y="392" width="272" height="104" rx="7"/>
+    <text class="runtime js-text" x="68" y="411">JAVASCRIPT (TYPESCRIPT)</text>
+    <rect class="ts" x="66" y="420" width="248" height="60" rx="5"/>
+    <text class="name" x="78" y="444">Glue</text>
+    <text class="note" x="78" y="465">files, downloads, map tiles</text>
+
+    <!-- Pyodide worker -->
+    <rect class="thread" x="440" y="62" width="300" height="448" rx="9"/>
+    <text class="thread-title" x="456" y="86">Pyodide worker</text>
+    <text class="thread-kind" x="574" y="86">a Web Worker</text>
+    <rect class="wasm" x="454" y="98" width="272" height="238" rx="7"/>
+    <text class="runtime wasm-text" x="468" y="117">WEBASSEMBLY (CPYTHON)</text>
+    <rect class="python" x="466" y="126" width="248" height="196" rx="5"/>
+    <text class="name" x="478" y="150">snuffler_bridge (Python)</text>
+    <text class="note" x="478" y="172">with pyrocko, numpy and scipy:</text>
+    <text class="note" x="478" y="191">reading files, filtering, views,</text>
+    <text class="note" x="478" y="210">snufflings, figures</text>
+    <rect class="js" x="454" y="392" width="272" height="104" rx="7"/>
+    <text class="runtime js-text" x="468" y="411">JAVASCRIPT (TYPESCRIPT)</text>
+    <rect class="ts" x="466" y="420" width="248" height="60" rx="5"/>
+    <text class="name" x="478" y="444">Relay</text>
+    <text class="note" x="478" y="465">boot, dispatch, cancellation</text>
+
+    <!-- ONNX worker -->
+    <rect class="thread" x="840" y="62" width="300" height="448" rx="9"/>
+    <text class="thread-title" x="856" y="86">ONNX worker</text>
+    <text class="thread-kind" x="962" y="86">a Web Worker</text>
+    <rect class="wasm" x="854" y="98" width="272" height="238" rx="7"/>
+    <text class="runtime wasm-text" x="868" y="117">WEBASSEMBLY OR WEBGPU</text>
+    <rect class="plain" x="866" y="126" width="248" height="196" rx="5"/>
+    <text class="name" x="878" y="150">onnxruntime-web</text>
+    <text class="note" x="878" y="172">runs the SeisBench</text>
+    <text class="note" x="878" y="191">picker models</text>
+    <rect class="js" x="854" y="392" width="272" height="104" rx="7"/>
+    <text class="runtime js-text" x="868" y="411">JAVASCRIPT (TYPESCRIPT)</text>
+    <rect class="ts" x="866" y="420" width="248" height="60" rx="5"/>
+    <text class="name" x="878" y="444">ort_worker</text>
+    <text class="note" x="878" y="465">model sessions</text>
+
+    <!-- WebAssembly and JavaScript call each other through bindings -->
+    <path class="flow" d="M290 322 V420" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="280" y="368" text-anchor="end">calls</text>
+    <text class="via" x="280" y="384" text-anchor="end">wasm-bindgen</text>
+    <path class="flow" d="M690 322 V420" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="680" y="368" text-anchor="end">calls</text>
+    <text class="via" x="680" y="384" text-anchor="end">Pyodide</text>
+    <path class="flow" d="M1090 322 V420" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="1080" y="368" text-anchor="end">calls</text>
+    <text class="via" x="1080" y="384" text-anchor="end">JS API</text>
+
+    <!-- The threads only exchange messages -->
+    <path class="flow" d="M314 464 H466" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="390" y="483" text-anchor="middle">operations</text>
+    <text class="via" x="390" y="498" text-anchor="middle">protobuf via</text>
+    <text class="via" x="390" y="512" text-anchor="middle">postMessage</text>
+    <path class="flow" d="M714 464 H866" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="790" y="483" text-anchor="middle">tensors</text>
+    <text class="via" x="790" y="498" text-anchor="middle">postMessage</text>
+
+    <!-- Map tile services, which the main thread fetches directly -->
+    <rect class="zone external" x="20" y="590" width="202" height="206" rx="12"/>
+    <text class="zone-title" x="36" y="618">Map tiles</text>
+    <rect class="plain" x="36" y="632" width="170" height="82" rx="6"/>
+    <text class="name" x="48" y="656">Tile servers</text>
+    <text class="note" x="48" y="678">OpenStreetMap, Carto,</text>
+    <text class="note" x="48" y="696">ArcGIS</text>
+
+    <!-- Backend server -->
+    <rect class="zone backend" x="242" y="590" width="318" height="206" rx="12"/>
+    <text class="zone-title" x="316" y="618">Backend server</text>
+    <rect class="rust" x="262" y="632" width="260" height="144" rx="6"/>
+    <text class="name" x="276" y="657">snuffler-web-proxy (optional)</text>
+    <text class="note" x="276" y="679">Live data: SeedLink runs over TCP,</text>
+    <text class="note" x="276" y="697">which browsers cannot open, so</text>
+    <text class="note" x="276" y="715">the proxy carries it on a WebSocket.</text>
+    <text class="note" x="276" y="739">Downloads: retries the requests a</text>
+    <text class="note" x="276" y="757">data center refuses to browsers.</text>
+
+    <!-- Seismic data services -->
+    <rect class="zone external" x="660" y="590" width="280" height="206" rx="12"/>
+    <text class="zone-title" x="732" y="618">Seismic data services</text>
+    <rect class="plain" x="680" y="632" width="240" height="72" rx="6"/>
+    <text class="name" x="694" y="655">FDSN data centers</text>
+    <text class="note" x="694" y="675">downloads: waveforms, stations,</text>
+    <text class="note" x="694" y="693">events; eida.bgr.de via the proxy</text>
+    <rect class="plain" x="680" y="714" width="240" height="72" rx="6"/>
+    <text class="name" x="694" y="737">SeedLink servers</text>
+    <text class="note" x="694" y="757">live: rtserve.earthscope.org,</text>
+    <text class="note" x="694" y="775">geofon.gfz.de</text>
+
+    <!-- Network: fetch and WebSocket are JavaScript APIs; arrows point the way the data flows. -->
+    <path class="flow" d="M196 480 V632" marker-start="url(#arrow)"/>
+    <text class="label" x="188" y="560" text-anchor="end">map tiles</text>
+    <text class="via" x="188" y="576" text-anchor="end">HTTP</text>
+    <path class="flow" d="M300 480 V632" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="308" y="560">live stream</text>
+    <text class="via" x="308" y="576">via WebSocket</text>
+    <path class="flow dashed" d="M490 480 V632" marker-start="url(#arrow)"/>
+    <text class="label" x="498" y="560">refused downloads</text>
+    <text class="via" x="498" y="576">retried through the proxy</text>
+    <path class="flow" d="M700 480 V632" marker-start="url(#arrow)"/>
+    <text class="label" x="708" y="560">downloads</text>
+    <text class="via" x="708" y="576">HTTP, direct</text>
+    <path class="flow" d="M522 668 H680" marker-start="url(#arrow)"/>
+    <text class="label" x="601" y="660" text-anchor="middle">downloads</text>
+    <text class="via" x="601" y="685" text-anchor="middle">HTTP</text>
+    <path class="flow" d="M522 750 H680" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="label" x="601" y="742" text-anchor="middle">live stream</text>
+    <text class="via" x="601" y="767" text-anchor="middle">TCP</text>
+
+    <!-- Legend, aligned with the zones beside it -->
+    <rect class="rust" x="980" y="600" width="16" height="16" rx="3"/>
+    <text class="legend" x="1004" y="613">Rust</text>
+    <rect class="python" x="980" y="626" width="16" height="16" rx="3"/>
+    <text class="legend" x="1004" y="639">Python</text>
+    <rect class="ts" x="980" y="652" width="16" height="16" rx="3"/>
+    <text class="legend" x="1004" y="665">TypeScript</text>
+    <rect class="wasm" x="980" y="678" width="16" height="16" rx="3"/>
+    <text class="legend" x="1004" y="691">WebAssembly</text>
+    <rect class="js" x="980" y="704" width="16" height="16" rx="3"/>
+    <text class="legend" x="1004" y="717">JavaScript engine</text>
+    <rect class="plain" x="980" y="730" width="16" height="16" rx="3"/>
+    <text class="legend" x="1004" y="743">other</text>
+    <text class="legend" x="20" y="832">The protobuf messages are generated from proto/ for Rust, Python and TypeScript.</text>
+  </g>
+
+  <!--
+    Picked files go through the glue, and exports come back as downloads; a store folder is
+    mounted into Python's file system. Drawn last, so no box covers their arrowheads.
+  -->
+  <path class="flow" d="M372 68 V530 H314" marker-end="url(#arrow)"/>
+  <text class="label" x="364" y="94" text-anchor="end">open</text>
+  <text class="via" x="364" y="110" text-anchor="end">file picker</text>
+  <path class="flow" d="M314 544 H388 V68" marker-end="url(#arrow)"/>
+  <text class="label" x="396" y="94">save</text>
+  <text class="via" x="396" y="110">download</text>
+  <path class="flow" d="M700 68 V226" marker-end="url(#arrow)"/>
+  <text class="label" x="708" y="94">store files</text>
+  <text class="via" x="708" y="110">mounted folder</text>
+</svg>
