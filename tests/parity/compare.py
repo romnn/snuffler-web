@@ -43,6 +43,7 @@ CHECK_KINDS = (
     "menu_state",
     "controls",
     "markers",
+    "window",
 )
 
 

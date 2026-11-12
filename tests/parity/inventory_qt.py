@@ -64,8 +64,8 @@ def walk_menu(menu: qw.QWidget, path: Tuple[str, ...] = ()) -> Iterator[Dict[str
             yield from walk_menu(submenu, here)
 
 
-def parameter_entry(param: Any) -> Dict[str, Any]:
-    """Flatten one Param / Switch / Choice declaration."""
+def parameter_entry(param: Any, control: Any) -> Dict[str, Any]:
+    """Read one parameter after the panel has adjusted to the loaded pile."""
     entry: Dict[str, Any] = {
         "name": getattr(param, "name", ""),
         "ident": getattr(param, "ident", ""),
@@ -73,11 +73,16 @@ def parameter_entry(param: Any) -> Dict[str, Any]:
     }
     if hasattr(param, "choices"):
         entry["type"] = "choice"
-        entry["choices"] = list(param.choices)
+        entry["choices"] = list(control.choices)
+        if param.ident == "store_id":
+            # Qt's unloaded-store placeholder is not a selectable GF store.
+            entry["choices"] = [
+                choice for choice in entry["choices"] if choice != "<not loaded yet>"
+            ]
     elif hasattr(param, "minimum"):
         entry["type"] = "param"
-        entry["minimum"] = param.minimum
-        entry["maximum"] = param.maximum
+        entry["minimum"] = control.mi
+        entry["maximum"] = control.ma
     else:
         entry["type"] = "switch"
     return entry
@@ -95,17 +100,26 @@ def snufflings(view: Any) -> List[Dict[str, Any]]:
         view.snuffling_paths = [scratch]
         view.setup_snufflings()
 
+    class PanelParent(qw.QWidget):
+        def get_panel_parent_widget(self) -> qw.QWidget:
+            return self
+
+    parent = PanelParent()
     out = []
     for snuffling in view.snufflings:
+        snuffling.make_panel(parent)
+        snuffling.panel_visibility_changed(True)
         out.append(
             {
                 "name": snuffling.get_name(),
                 "parameters": [
-                    parameter_entry(parameter) for parameter in snuffling.get_parameters()
+                    parameter_entry(parameter, snuffling._param_controls[parameter.ident])
+                    for parameter in snuffling.get_parameters()
                 ],
                 "triggers": [name for name, _method in getattr(snuffling, "_triggers", [])],
             }
         )
+        snuffling.panel_visibility_changed(False)
     return sorted(out, key=lambda item: item["name"])
 
 
@@ -294,6 +308,17 @@ def controls(frame: Any) -> Tuple[List[Dict[str, Any]], Any]:
     for widget in strip.findChildren(qw.QWidget):
         text = qt_oracle.clean_menu_text(widget.text()) if hasattr(widget, "text") else ""
         name = text or widget.toolTip().strip()
+        if isinstance(widget, qw.QComboBox) and not name:
+            layout = strip.layout()
+            position = layout.indexOf(widget)
+            if position >= 0 and isinstance(layout, qw.QGridLayout):
+                row, _column, _rows, _columns = layout.getItemPosition(position)
+                label = layout.itemAtPosition(row, 0)
+                if label is not None and isinstance(label.widget(), qw.QLabel):
+                    name = label.widget().text()
+        if isinstance(widget, qw.QComboBox) and name in seen:
+            out = [entry for entry in out if entry["name"] != name]
+            seen.remove(name)
         if not name or name in seen:
             continue
         kind = type(widget).__name__

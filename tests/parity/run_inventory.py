@@ -65,10 +65,28 @@ def regenerate(want_qt: bool, want_web: bool) -> None:
         # The web probe presses exactly the keys Qt turned out to bind, so the two
         # halves of the key diff are asking about the same set.
         if QT_JSON.exists():
-            tokens = [entry["key"] for entry in json.loads(QT_JSON.read_text()).get("keys", [])]
+            qt_inventory = json.loads(QT_JSON.read_text())
+            tokens = [entry["key"] for entry in qt_inventory.get("keys", [])]
             probe = ARTIFACTS / "probe-keys.json"
             probe.write_text(json.dumps(tokens))
             command += ["--probe-keys", str(probe)]
+            aliases = gaps.Register.load().aliases
+            plans = []
+            for snuffling in qt_inventory.get("snufflings", []):
+                if not snuffling["parameters"]:
+                    continue
+                source = "Snufflings/Run Snuffling/" + snuffling["name"]
+                target = aliases.get(normalize_path(source))
+                if target is None:
+                    continue
+                menu, item = target.split("/", 1)
+                plan = {"name": snuffling["name"], "menu": menu, "item": item}
+                if snuffling["name"].startswith("Seismosizer:"):
+                    plan["source"] = snuffling["name"].split(":", 1)[1].split()[0]
+                plans.append(plan)
+            plan_path = ARTIFACTS / "snufflings-plan.json"
+            plan_path.write_text(json.dumps(plans, indent=2) + "\n")
+            command += ["--snufflings-plan", str(plan_path)]
         subprocess.run(command, check=True, cwd=ROOT)
 
 
@@ -163,7 +181,12 @@ def diff_keys(qt: Dict[str, Any], web: Dict[str, Any], aliases: gaps.AliasMap) -
 def _index(entries: Iterable[Dict[str, Any]], key: str) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     for entry in entries:
-        out.setdefault(normalize_path(str(entry[key])), entry)
+        path = str(entry[key])
+        normalized = normalize_path(path)
+        if entry.get("case_sensitive"):
+            parent, leaf = path.rsplit("/", 1)
+            normalized = normalize_path(parent) + "/" + leaf
+        out.setdefault(normalized, entry)
     return out
 
 
@@ -242,6 +265,60 @@ def state_differences(result: Dict[str, Any]) -> List[str]:
     return out
 
 
+def compare_capabilities(result: Dict[str, Any], aliases: gaps.AliasMap) -> None:
+    """Require every Qt option and numeric range to remain reachable on the web."""
+    for qt_path, web_path in result["matched"] + result["moved"]:
+        qt_entry, web_entry = result["qt_index"][qt_path], result["web_index"][web_path]
+        roles = {
+            "param": {"slider", "spinbutton"},
+            "switch": {"checkbox"},
+            "choice": {"combobox", "choice"},
+        }
+        expected_role = roles.get(qt_entry.get("type"))
+        if expected_role is not None and web_entry.get("role") not in expected_role:
+            result["missing"].append(qt_path + "/type")
+        web_choices = {normalize_path(str(choice)) for choice in web_entry.get("choices", [])}
+        for choice in qt_entry.get("choices", []):
+            option = qt_path + "/" + normalize_path(str(choice))
+            target = aliases.get(option, web_path + "/" + normalize_path(str(choice)))
+            if target not in {web_path + "/" + value for value in web_choices}:
+                result["missing"].append(option)
+        for bound in ("minimum", "maximum"):
+            expected = qt_entry.get(bound)
+            if expected is None:
+                continue
+            expected *= aliases.scales.get(qt_path, 1.0)
+            actual = web_entry.get(bound)
+            tolerance = 1e-8 * max(1.0, abs(expected))
+            covers = actual is not None and (
+                actual <= expected + tolerance
+                if bound == "minimum"
+                else actual >= expected - tolerance
+            )
+            if not covers:
+                result["missing"].append(qt_path + "/" + bound)
+
+
+def parameter_entries(inventory: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Give panel parameters stable, scoped addresses for aliases and gap enforcement."""
+    return [
+        dict(
+            parameter,
+            path=f"Snufflings/Run Snuffling/{panel['name']}/{parameter['name']}",
+            # Cake phase names distinguish P from p; UI wording elsewhere does not.
+            case_sensitive=panel["name"].startswith("Cake Phase")
+            and (
+                parameter.get("ident", "").startswith("wantphase_")
+                or (
+                    parameter.get("role") == "checkbox" and parameter["name"] != "Use station depth"
+                )
+            ),
+        )
+        for panel in inventory.get("snufflings", [])
+        for parameter in panel["parameters"]
+    ]
+
+
 def report(
     result: Dict[str, Any], features: gaps.Allowlist, verbose: bool
 ) -> Tuple[List[str], List[str]]:
@@ -298,7 +375,10 @@ def run(args: argparse.Namespace) -> int:
     results = [
         diff_section("menus", qt["menus"], web["menus"], "path", aliases, match_leaf=True),
         diff_section("controls", qt["controls"], web["controls"], "name", aliases),
+        diff_section("parameters", parameter_entries(qt), parameter_entries(web), "path", aliases),
     ]
+    for result in results[1:]:
+        compare_capabilities(result, aliases)
     results.append(diff_keys(qt, web, aliases))
     for section in ("Mouse", "Command"):
         results.append(

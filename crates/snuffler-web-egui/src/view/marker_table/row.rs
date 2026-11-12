@@ -30,6 +30,17 @@ pub(super) fn marker_row(
     // A double click re-centres the view on the marker, Qt's non-editable-cell double-click.
     let symbol_cell = ui.selectable_label(selected, symbol);
     crate::a11y::publish_selected(ui.ctx(), &symbol_cell, selected);
+    ui.ctx()
+        .accesskit_node_builder(symbol_cell.id, |node| {
+            node.set_description(if marker.active {
+                "Active event"
+            } else if marker.is_event {
+                "Event"
+            } else {
+                "Marker"
+            });
+        })
+        .unwrap_or_default();
     let time_cell = ui.selectable_label(
         selected,
         snuffler_web_core::timeaxis::format_timestamp(marker.tmin),

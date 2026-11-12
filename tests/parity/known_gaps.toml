@@ -420,24 +420,14 @@ document element, the one path that works on the web, since eframe's
 # [[manual]] entries: differences no tier can observe yet.
 # `enforce` names the check that would observe each one, which is the path out of
 # this section.
-# Three blind spots account for most of what follows, and closing any of them
-# would graduate a whole group at once:
-#
-#   * tier 2 diffs menu, control and key *names*.
-#     It never compares a combo box's option set, a control's range, a menu
-#     item's enabled or checked state, or the `snufflings` section its own Qt
-#     extractor already emits in full.
-#   * tier 3 snapshots menu checkables, four control values and marker identity.
-#     It does not carry the view time range, the track order, marker placement,
-#     or any state belonging to a window it did not open.
-#   * no tier compares rendering, by design, so anything whose only symptom is
-#     what is drawn lands here even when it changes information rather than
-#     appearance.
+# Tier 2 now compares panel parameters, numeric range coverage and choice sets.
+# Tier 3 carries time windows and active-event identity. Remaining blind spots
+# include exact pointer placement, unexercised window state and rendering.
 
 [[manual]]
-key = "waterfall-colormap-set"
+key = "waterfall-reversal-representation"
 title = "The Reverse toggle inverts the value where snuffler renames the colormap"
-enforce = "a tier-2 control diff that compares combo box choices, not just names"
+enforce = "rendered colormap reversal; the nine choices are now enforced by tier 2"
 why = """
 The colormap set is snuffler's nine — viridis, plasma, magma, binary, Reds, copper,
 seismic, RdBu and YlGn, in snuffler's order (`ColorbarControl.AVAILABLE_CMAPS`,
@@ -758,7 +748,7 @@ would be its own feature (`startup-and-persistence`).
 [[manual]]
 key = "active-event-lifecycle"
 title = "Catalog loads auto-activate the largest event"
-enforce = "tier-1 `annotations` — a scenario that loads the eifel catalog, sorts by distance, and either activates a non-largest event or deletes the active one"
+enforce = "a catalog load/deletion scenario; ui-active-events now enforces explicit e/E activation across two picked events"
 why = """
 Qt never activates an event on its own; the web does on catalog search and
 event-file load, so distance sorting works out of the box on a page anyone can open
@@ -834,9 +824,9 @@ protobuf metadata; hovering never fetches or geocodes.
 """
 
 [[manual]]
-key = "view-navigation-keys"
+key = "axis-pan-strip-height"
 title = "The axis pan strip keeps its own height"
-enforce = "a view time range in the tier-3 snapshot, plus a wheel action in the drivers"
+enforce = "a wheel action in both drivers or rendering checks for axis geometry; g/G time windows are enforced by ui-navigation"
 why = """
 The navigation keys follow Qt's arithmetic: `g`/`G` and `goto` re-fit through a
 transcription of `make_good_looking_time_range` (`good_looking_time_range` in
@@ -939,9 +929,9 @@ when nothing is selected. Polarization *requires* a selection, as Qt's does.
 """
 
 [[manual]]
-key = "snuffling-control-surface"
+key = "seismosizer-shared-choices"
 title = "The Seismosizer shares its store and waveform-type choices across source types"
-enforce = "a fourth tier-2 diff over the `snufflings` section — the Qt extractor already emits every Param, Switch and Choice with name, default, minimum, maximum and choices, and nothing consumes it"
+enforce = "a scenario that edits shared Seismosizer choices and switches source type; tier 2 now enforces the parameters, bounds and option sets for all five types"
 why = """
 The snuffling controls carry Qt's shapes: every `Param` with a positive minimum is
 logarithmic (`gui/util.py:512`); the filter-corner range runs from
@@ -958,9 +948,9 @@ and the choice carries no cross-source bounds to clamp by.
 """
 
 [[manual]]
-key = "snuffling-computations"
-title = "What the snufflings compute matches snuffler, with three named residues"
-enforce = "tier-1 `presence`/`tracks`/`samples` over derived traces for STA/LTA and RMS; tier-3 `markers` for Cake; no tier for the figures; `task test:parity:bridge` pins the minmax folding, the chopper adapter, polarization's windowing and the Seismosizer failure contract in CPython"
+key = "snuffling-output-residues"
+title = "Remaining snuffling output coverage and three accepted residues"
+enforce = "upstream-call oracles for remaining Cake, polarization, spectrogram and Seismosizer outputs; RMS/STA-LTA traces, STA-LTA picks, minmax reports and spectrum plot data are now compared directly by test_snuffling_outputs.py"
 why = """
 Every snuffling consumes the pile's data, never the screen's: the GUI Rotate control
 is not applied (`chopper_selected_traces` does not respect it, snuffling.py:985),
@@ -978,24 +968,14 @@ matplotlib's layout, not Qt's smartplot frame chrome.
 """
 
 [[manual]]
-key = "snuffling-service-surfaces"
-title = "The service forms carry Qt's workflows, minus what CORS and GMT forbid"
-enforce = "the same tier-2 `snufflings` diff, plus reading the controls of windows the inventory does not currently open"
+key = "seisbench-defaults-and-scheduling"
+title = "SeisBench uses calibrated thresholds and runs on demand"
+enforce = "comparing parameter defaults and a scenario observing run scheduling; model/weight coverage is now enforced by tier-2 feature entries"
 why = """
-Catalog search, the radius-around-the-active-event download with its Save of
-MiniSEED plus a station file, the map, the five Seismosizer sources and the
-SeisBench controls follow Qt's workflows.
-
-Signed off, with reasons:
-
-  * Global-CMT and Saxony are HTML/text scrapes over endpoints without CORS; the
-    native-catalog list stays FDSN-only.
-  * SeisBench ships three model/weights exports (a build-size decision), its
-    threshold defaults come from each export's calibration metadata rather than
-    Qt's flat 0.3, and it runs on Run rather than live on every pile change — a
-    WebGPU forward pass is not a keystroke-rate operation.
-  * "Open in external browser" and the GMT map provider shell out to things a page
-    cannot reach.
+The three bundled model/weight pairs use their calibrated thresholds instead of
+Qt's flat 0.3. Inference starts on Run instead of every pile change, because a
+WebGPU forward pass is not a keystroke-rate operation. Choice-list and service
+omissions have moved to individual tier-2 feature entries.
 """
 
 [[manual]]
@@ -1071,7 +1051,7 @@ Signed off:
 [[manual]]
 key = "network-reach"
 title = "Fewer reachable services than Qt, said plainly instead of reported as no data"
-enforce = "a tier-2 control diff that compares combo box choices — the same extension `waterfall-colormap-set` needs"
+enforce = "live HTTP/CORS and SeedLink reachability; the advertised service choices are now compared by tier 2"
 why = """
 A failed station, response or event query surfaces as the error it is: only 204 and
 404, FDSN's own no-data codes, read as empty, and a 403 from the local proxy's
@@ -1156,3 +1136,275 @@ snuffler's own numbers. Signed off, and written down because it moves what the a
 shows out of the box: a channel present here and absent in Qt is this entry, not a
 fetch defect.
 """
+
+# Panel wording and display units; scale converts Qt values to web display units.
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Cake Phase/Global shift"
+web = "Snufflings/Run Snuffling/Cake Phase/Global shift [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Polarization/Δ Azimuth"
+web = "Snufflings/Run Snuffling/Polarization/Delta Azimuth"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/STA LTA Detector/Scaling/Normalization method"
+web = "Snufflings/Run Snuffling/STA LTA Detector/Scaling/Normalization"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Datecenter" # spellcheck:ignore-line
+web = "Snufflings/Run Snuffling/Download Waveforms/Data center"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Channels"
+web = "Snufflings/Run Snuffling/Download Waveforms/Channel"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Use coordinates of selected event as origin"
+web = "Snufflings/Run Snuffling/Download Waveforms/Around active event"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Map/Provider"
+web = "Snufflings/Run Snuffling/Map/Basemap"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: DCSource/Time"
+web = "Snufflings/Run Snuffling/Seismosizer: DCSource/Time [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: DCSource/North shift"
+web = "Snufflings/Run Snuffling/Seismosizer: DCSource/North shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: DCSource/East shift"
+web = "Snufflings/Run Snuffling/Seismosizer: DCSource/East shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: DCSource/Depth"
+web = "Snufflings/Run Snuffling/Seismosizer: DCSource/Depth [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: DCSource/STF duration"
+web = "Snufflings/Run Snuffling/Seismosizer: DCSource/STF duration [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: MTSource/Time"
+web = "Snufflings/Run Snuffling/Seismosizer: MTSource/Time [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: MTSource/North shift"
+web = "Snufflings/Run Snuffling/Seismosizer: MTSource/North shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: MTSource/East shift"
+web = "Snufflings/Run Snuffling/Seismosizer: MTSource/East shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: MTSource/Depth"
+web = "Snufflings/Run Snuffling/Seismosizer: MTSource/Depth [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: MTSource/STF duration"
+web = "Snufflings/Run Snuffling/Seismosizer: MTSource/STF duration [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/Time"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/Time [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/North shift"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/North shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/East shift"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/East shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/Depth"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/Depth [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/STF duration"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/STF duration [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Time"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Time [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/North shift"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/North shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/East shift"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/East shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Depth"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Depth [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/STF duration"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/STF duration [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Time"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Time [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/North shift"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/North shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/East shift"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/East shift [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Depth"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Depth [km]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/STF duration"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/STF duration [s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Length"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Length [km]"
+scale = 0.001
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Width"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Width [km]"
+scale = 0.001
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Length"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Length [km]"
+scale = 0.001
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Width"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Width [km]"
+scale = 0.001
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Slip"
+web = "Snufflings/Run Snuffling/Seismosizer: PseudoDynamicRupture/Slip [m]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Rupture velocity"
+web = "Snufflings/Run Snuffling/Seismosizer: RectangularSource/Rupture velocity [m/s]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/North force"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/North force [N]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/East force"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/East force [N]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Seismosizer: SFSource/Down force"
+web = "Snufflings/Run Snuffling/Seismosizer: SFSource/Down force [N]"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/USGS/NEIC US"
+web = "Snufflings/Run Snuffling/Catalog Search/Catalog/usgs"
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/IRIS"
+web = "Snufflings/Run Snuffling/Catalog Search/Catalog/iris"
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/Global-CMT"
+title = "The catalog preset list is limited to the browser service set"
+why = "The missing service presets are now measured individually. HTML scrapes lack CORS; other FDSN hosts can be entered through Custom base URL when reachable."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/Saxony (Uni-Leipzig)"
+title = "The catalog preset list is limited to the browser service set"
+why = "The missing service presets are now measured individually. HTML scrapes lack CORS; other FDSN hosts can be entered through Custom base URL when reachable."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/ISC"
+title = "The catalog preset list is limited to the browser service set"
+why = "The missing service presets are now measured individually. HTML scrapes lack CORS; other FDSN hosts can be entered through Custom base URL when reachable."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/SCEDC"
+title = "The catalog preset list is limited to the browser service set"
+why = "The missing service presets are now measured individually. HTML scrapes lack CORS; other FDSN hosts can be entered through Custom base URL when reachable."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/NCEDC"
+title = "The catalog preset list is limited to the browser service set"
+why = "The missing service presets are now measured individually. HTML scrapes lack CORS; other FDSN hosts can be entered through Custom base URL when reachable."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Catalog Search/Catalog/GEONET"
+title = "The catalog preset list is limited to the browser service set"
+why = "The missing service presets are now measured individually. HTML scrapes lack CORS; other FDSN hosts can be entered through Custom base URL when reachable."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/SeisBench: ML Picker/Network"
+title = "Three paired model/weight exports replace independent network and weight selectors"
+why = "The web bundles PhaseNet/instance, EQTransformer/original and GPD/stead to bound download size. The actual web Model choices remain in the inventory."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/SeisBench: ML Picker/Training model"
+title = "Three paired model/weight exports replace independent network and weight selectors"
+why = "The web bundles PhaseNet/instance, EQTransformer/original and GPD/stead to bound download size. The actual web Model choices remain in the inventory."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Map/Provider/GMT"
+title = "The browser map uses its tile basemaps"
+why = "GMT requires a native executable; the Google Maps export/provider is replaced by the in-page map and its public tile basemaps."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Map/Provider/Google Maps"
+title = "The browser map uses its tile basemaps"
+why = "GMT requires a native executable; the Google Maps export/provider is replaced by the in-page map and its public tile basemaps."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Map/Open in external browser"
+title = "The map is already in the browser"
+why = "Qt exports a map to a separate browser; the web draws the map in the current page."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Min Radius [deg]"
+todo = true
+title = "The download form lacks this Qt origin/radius control"
+why = "Tier 2 now exposes this missing control rather than hiding it behind the manual service-workflow entry."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Origin latitude [deg]"
+todo = true
+title = "The download form lacks this Qt origin/radius control"
+why = "Tier 2 now exposes this missing control rather than hiding it behind the manual service-workflow entry."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Origin longitude [deg]"
+todo = true
+title = "The download form lacks this Qt origin/radius control"
+why = "Tier 2 now exposes this missing control rather than hiding it behind the manual service-workflow entry."
+
+[[feature]]
+qt_prefix = "Snufflings/Run Snuffling/Download Waveforms/Channels/"
+title = "Channel patterns are typed into a free-form field"
+why = "The web accepts arbitrary NSLC wildcards in Channel instead of offering Qt's preset list."
+
+[[alias]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Max Radius [deg]"
+web = "Snufflings/Run Snuffling/Download Waveforms/radius [°]"
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Max Radius [deg]/minimum"
+todo = true
+title = "The radius slider starts at 0.1 degrees"
+why = "Qt allows zero radius; the web currently starts at 0.1 degrees."
+
+[[feature]]
+qt = "Snufflings/Run Snuffling/Download Waveforms/Max Radius [deg]/maximum"
+todo = true
+title = "The radius slider stops at 30 degrees"
+why = "Qt permits a 180-degree search; the web currently stops at 30 degrees."

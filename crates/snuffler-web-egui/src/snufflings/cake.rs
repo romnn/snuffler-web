@@ -13,7 +13,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        ui.add_sized(
+        let caption = ui.add_sized(
             [LABEL_WIDTH_PX, 0.0],
             egui::Label::new("Model").halign(Align::Max),
         );
@@ -33,7 +33,9 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
                         };
                     ui.selectable_value(&mut config.model, model.clone(), label);
                 }
-            });
+            })
+            .response
+            .labelled_by(caption.id);
         if ui.button("Add Model…").clicked() {
             action = Some(Action::AddCakeModel);
         }

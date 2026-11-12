@@ -7,13 +7,15 @@ numbers belongs in tier 1, where it runs a thousand times faster and cannot flak
 
 Two things are deliberately *not* compared:
 
-* **The view time range and the track order.** The web frontend paints them; it does
-  not publish them to its accessibility layer, so there is nothing on that side to
-  read. Extending the a11y layer to expose them is the natural way to widen tier 3.
+* **The track order.** Neither driver currently snapshots row membership.
+  Time windows are read from the real protobuf requests on the web side and
+  the viewer on the Qt side.
 * **Where a pick landed.** A fractional canvas position becomes a different time and a
   different track under the two layouts, and this suite never asserts on layout.
   The marker's *identity* — kind, phase, polarity, selection, and whether it is
   channel-scoped at all — is compared; its time and channel are recorded for a human.
+  Event origin times distinguish otherwise identical events at millisecond precision;
+  event scenarios use exact fractional picks on fixed canvases.
 
     python tests/parity/run_scenarios.py          # needs the app served
 """
@@ -108,6 +110,9 @@ def marker_identity(marker: Dict[str, Any]) -> Tuple[Any, ...]:
         # double-click pick is bound to *a* track is placement-independent, and
         # is exactly what an unscoped-pick regression would flip.
         bool(marker.get("nslc")),
+        bool(marker.get("is_event", False)),
+        bool(marker.get("active", False)),
+        round(float(marker["origin_time"]) * 1000) if marker.get("is_event") else None,
     )
 
 
@@ -116,6 +121,20 @@ def compare_step(
 ) -> List[compare.Finding]:
     findings: List[compare.Finding] = []
     label = qt["step"]
+    qt_window, web_window = qt["window"], web["window"]
+    span = max(1.0, abs(float(qt_window[1]) - float(qt_window[0])))
+    findings.append(
+        compare.Finding(
+            kind="window",
+            subject=label,
+            ok=all(
+                abs(float(a) - float(b)) <= 1e-6 * span
+                for a, b in zip(qt_window, web_window, strict=True)
+            ),
+            detail=f"Qt {qt_window}, web {web_window}",
+            metrics={"qt": qt_window, "web": web_window},
+        )
+    )
 
     qt_menus = normalized_menu_state(qt["menu_state"])
     web_menus = normalized_menu_state(web["menu_state"])

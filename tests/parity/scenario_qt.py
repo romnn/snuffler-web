@@ -25,6 +25,7 @@ from corpus import build as corpus_build
 from PyQt5 import QtCore as qc
 from PyQt5 import QtGui as qg
 from PyQt5 import QtWidgets as qw
+from pyrocko.gui.snuffler.marker import EventMarker
 from scenario import DATASETS, Scenario, Step, load_all
 
 
@@ -58,10 +59,14 @@ class QtDriver:
         # does; see `qt_oracle.host_window`.
         self.window = qt_oracle.host_window(self.frame, self.controls, self.marker_editor)
         self.frame.resize(*qt_oracle.CANVAS_SIZE)
-        self.view.resize(*qt_oracle.CANVAS_SIZE)
+        # Keep fractional picks exact when the dock layout negotiates its minimum size.
+        self.view.setFixedSize(*qt_oracle.CANVAS_SIZE)
         self.view.set_time_range(self.viewer.pile.tmin, self.viewer.pile.tmax)
         self.view.sortingmode_change()
         self.view.set_tracks_range((0, max(1, self.view.ntracks)))
+        # Sorting in show-all mode adds a pixel margin; fixtures explicitly start at the data bounds.
+        self.view.show_all = False
+        self.view.set_time_range(self.viewer.pile.tmin, self.viewer.pile.tmax)
         self.settle()
 
     def settle(self) -> None:
@@ -170,6 +175,10 @@ class QtDriver:
                 "phase": getattr(marker, "_phasename", None) or "",
                 "polarity": getattr(marker, "_polarity", None),
                 "selected": bool(marker.selected),
+                "is_event": isinstance(marker, EventMarker),
+                "active": marker is view.get_active_event_marker(),
+                "origin_time": marker.tmin if isinstance(marker, EventMarker) else None,
+                "time": marker.tmin,
             }
             for marker in view.get_markers()
         ]
@@ -187,6 +196,7 @@ class QtDriver:
             },
             "markers": markers,
             "selected_count": selected,
+            "window": list(view.get_time_range()),
         }
 
     def close(self) -> None:

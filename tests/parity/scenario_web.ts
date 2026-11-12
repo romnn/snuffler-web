@@ -27,6 +27,7 @@ import {
   waitForAppReady,
 } from "./parity_browser";
 import { pressKey } from "./parity_keys";
+import { installTransportProbe, transportState } from "./transport_probe";
 
 const OVERLAY = "#snuffler-a11y";
 
@@ -55,6 +56,9 @@ interface MarkerRow {
   polarity: number | null;
   selected: boolean;
   time: string;
+  is_event: boolean;
+  active: boolean;
+  origin_time?: number;
 }
 
 interface Snapshot {
@@ -63,6 +67,7 @@ interface Snapshot {
   controls: Record<string, number | null>;
   markers: MarkerRow[];
   selected_count: number;
+  window: [number, number];
 }
 
 async function boot(page: Page): Promise<void> {
@@ -148,12 +153,24 @@ async function applyStep(page: Page, step: PlanStep): Promise<void> {
     return;
   }
   if (step.action === "key") {
+    const activeCalls = await page.evaluate(
+      () => window.__parityCalls.filter((call) => call.method.endsWith("/SetActiveEvent")).length
+    );
     // No canvas click first, on purpose.
     // Single-key shortcuts have to keep working after a menu is operated from the
     // accessibility layer.
     // A driver that clicks the canvas before every keystroke would paper over exactly
     // the kind of dead keyboard a screen-reader user would be left with.
     await pressKey(page.keyboard, step.key!);
+    if (step.key === "e" || step.key === "E") {
+      await page.waitForFunction(
+        (before) =>
+          window.__parityCalls.filter((call) => call.method.endsWith("/SetActiveEvent")).length >
+          before,
+        activeCalls,
+        { timeout: 5000 }
+      );
+    }
     await page.waitForTimeout(500);
     return;
   }
@@ -239,6 +256,7 @@ async function readMarkers(page: Page): Promise<{ rows: MarkerRow[]; selected: n
       .map((cell) => ({
         text: (cell.getAttribute("aria-label") ?? cell.textContent ?? "").trim(),
         selected: cell.getAttribute("aria-selected"),
+        description: cell.getAttribute("aria-description"),
       }));
   });
   if (cells === null) throw new Error("the Markers window is not open");
@@ -260,6 +278,8 @@ async function readMarkers(page: Page): Promise<{ rows: MarkerRow[]; selected: n
       polarity: polarity === "—" ? null : Number(polarity),
       selected: cells[rowStart]?.selected === "true",
       time: cell(1),
+      is_event: symbol === "▲",
+      active: cells[rowStart]?.description === "Active event",
     });
     // A row is sixteen grid cells wide (symbol, time, span, label, pol, unc,
     // kind, NSLCs, dist, Kagan, mag, depth, lat, lon, hash, actions).
@@ -275,7 +295,26 @@ async function readMarkers(page: Page): Promise<{ rows: MarkerRow[]; selected: n
 }
 
 async function snapshot(page: Page, label: string, menus: string[]): Promise<Snapshot> {
+  const transport = await transportState(page);
   const { rows, selected } = await readMarkers(page);
+  for (const row of rows) {
+    if (row.is_event) row.phase = "";
+    const epoch = Date.parse(row.time.replace(" ", "T") + "Z") / 1000;
+    if (row.is_event) row.origin_time = epoch;
+  }
+  const activeRows = rows.filter((row) => row.active);
+  const activeTime = activeRows[0]?.origin_time ?? null;
+  if (
+    activeRows.length > 1 ||
+    (activeTime === null) !== (transport.activeTime === null) ||
+    (activeTime !== null &&
+      transport.activeTime !== null &&
+      Math.abs(activeTime - transport.activeTime) >= 0.001)
+  ) {
+    throw new Error(
+      `frontend active event ${activeTime} disagrees with worker ${transport.activeTime}`
+    );
+  }
   rows.sort(
     (a, b) =>
       a.kind - b.kind ||
@@ -288,6 +327,7 @@ async function snapshot(page: Page, label: string, menus: string[]): Promise<Sna
     controls: await readControls(page),
     markers: rows,
     selected_count: selected,
+    window: transport.window,
   };
 }
 
@@ -306,6 +346,7 @@ async function main(): Promise<void> {
 
   const browser = await launchParityBrowser();
   const page = await browser.newPage();
+  await installTransportProbe(page);
   await page.setViewportSize({ width: 1600, height: 1000 });
   const snapshotsByPlan: Record<string, Snapshot[]> = {};
   let rendererReported = false;

@@ -29,20 +29,21 @@ pub fn optional_freq_row(
     max: f64,
     low_is_none: bool,
 ) {
-    let mut pos = match *value {
-        Some(v) => freq_to_pos(v, min, max),
-        None if low_is_none => 0.0,
-        None => 1.0,
-    };
+    let mut frequency = value.unwrap_or(if low_is_none { min } else { max });
     ui.horizontal(|ui| {
-        ui.add_sized([160.0, 0.0], egui::Label::new(label).halign(Align::Max));
+        let caption = ui.add_sized([160.0, 0.0], egui::Label::new(label).halign(Align::Max));
         ui.label(value.map_or_else(|| "off".to_owned(), |v| format!("{v:.4}")));
-        ui.add(Slider::new(&mut pos, 0.0..=1.0).show_value(false));
+        ui.add(
+            Slider::new(&mut frequency, min..=max)
+                .logarithmic(true)
+                .show_value(false),
+        )
+        .labelled_by(caption.id);
     });
-    *value = if (low_is_none && pos <= 0.0) || (!low_is_none && pos >= 1.0) {
+    *value = if (low_is_none && frequency <= min) || (!low_is_none && frequency >= max) {
         None
     } else {
-        Some(pos_to_freq(pos, min, max))
+        Some(frequency)
     };
 }
 
@@ -89,14 +90,16 @@ pub fn checkbox_row(ui: &mut egui::Ui, value: &mut bool, label: &str) {
 /// A labelled drop-down over a fixed set of string options.
 pub fn choice_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str]) {
     ui.horizontal(|ui| {
-        ui.add_sized([160.0, 0.0], egui::Label::new(label).halign(Align::Max));
+        let caption = ui.add_sized([160.0, 0.0], egui::Label::new(label).halign(Align::Max));
         egui::ComboBox::from_id_salt(label)
             .selected_text(value.as_str())
             .show_ui(ui, |ui| {
                 for opt in options {
                     ui.selectable_value(value, (*opt).to_owned(), *opt);
                 }
-            });
+            })
+            .response
+            .labelled_by(caption.id);
     });
 }
 
@@ -107,12 +110,4 @@ pub fn run_button(ui: &mut egui::Ui) -> bool {
         ui.button("Run").clicked()
     })
     .inner
-}
-
-fn freq_to_pos(value: f64, min: f64, max: f64) -> f64 {
-    ((value.clamp(min, max).ln() - min.ln()) / (max.ln() - min.ln())).clamp(0.0, 1.0)
-}
-
-fn pos_to_freq(pos: f64, min: f64, max: f64) -> f64 {
-    (min.ln() + pos.clamp(0.0, 1.0) * (max.ln() - min.ln())).exp()
 }

@@ -156,7 +156,7 @@ fn s_chord(input: &InputState, state: &mut AppState) -> bool {
         }
         return true;
     }
-    if input.key_pressed(Key::S) && !input.modifiers.shift {
+    if input.key_pressed(Key::S) && !shifted(input, Key::S) {
         state.pending_s_chord = true;
         return true;
     }
@@ -172,7 +172,6 @@ fn s_chord(input: &InputState, state: &mut AppState) -> bool {
 /// sees them.
 /// Here the widget keeps them while it has focus.
 fn view_keys(input: &InputState, state: &mut AppState, track_count: usize, frame: &FrameStart<'_>) {
-    let shift = input.modifiers.shift;
     let FrameStart {
         widget_focused,
         duration,
@@ -203,17 +202,19 @@ fn view_keys(input: &InputState, state: &mut AppState, track_count: usize, frame
     // Track zoom: + shows one track more, - one less, = resets to the initial count.
     // Plus is Shift+Equals on most layouts, so accept either for "more".
     // Bare Equals (no shift) resets the preferred count.
-    if input.key_pressed(Key::Plus) || (input.key_pressed(Key::Equals) && shift) {
+    if input.key_pressed(Key::Plus)
+        || (input.key_pressed(Key::Equals) && shifted(input, Key::Equals))
+    {
         state.tracks_per_page = Some(rows_shown + 1.0);
     }
-    if input.key_pressed(Key::Minus) && !shift {
+    if input.key_pressed(Key::Minus) && !shifted(input, Key::Minus) {
         state.tracks_per_page = Some((rows_shown - 1.0).max(1.0));
     }
     // Shift+Minus is `_`, snuffler's Demean toggle (its menu shortcut).
-    if input.key_pressed(Key::Minus) && shift {
+    if input.key_pressed(Key::Minus) && shifted(input, Key::Minus) {
         state.demean = !state.demean;
     }
-    if input.key_pressed(Key::Equals) && !shift {
+    if input.key_pressed(Key::Equals) && !shifted(input, Key::Equals) {
         state.tracks_per_page = None;
     }
 
@@ -238,7 +239,6 @@ fn marker_keys(
     tracks: &[ViewTrack],
     frame: &FrameStart<'_>,
 ) {
-    let shift = input.modifiers.shift;
     let FrameStart {
         widget_focused,
         duration,
@@ -258,29 +258,36 @@ fn marker_keys(
 
     // Selection navigation (snuffler keyPressEvent, pile_viewer.py:2258-2368)
     if input.key_pressed(Key::Tab) {
-        marker_edits::cycle_selection(state, !shift, tracks, rows_shown, scene_range, deltatmin);
+        marker_edits::cycle_selection(
+            state,
+            !shifted(input, Key::Tab),
+            tracks,
+            rows_shown,
+            scene_range,
+            deltatmin,
+        );
     }
     // Shift+N and Shift+P step through events only.
     if input.key_pressed(Key::N) {
-        marker_edits::select_relative(state, true, shift);
+        marker_edits::select_relative(state, true, shifted(input, Key::N));
     }
     if input.key_pressed(Key::P) {
-        marker_edits::select_relative(state, false, shift);
+        marker_edits::select_relative(state, false, shifted(input, Key::P));
     }
     if input.key_pressed(Key::A) {
-        marker_edits::select_all(state, shift);
+        marker_edits::select_all(state, shifted(input, Key::A));
     }
     if input.key_pressed(Key::D) {
         deselect_all(state);
     }
     // Shift+G fits the selection tightly.
     if input.key_pressed(Key::G) {
-        marker_edits::go_to_selection(state, shift, scene_range, deltatmin);
+        marker_edits::go_to_selection(state, shifted(input, Key::G), scene_range, deltatmin);
     }
 
     // Active event
     if input.key_pressed(Key::E) {
-        if shift {
+        if shifted(input, Key::E) {
             marker_edits::deactivate_events(state);
         } else {
             marker_edits::activate_selected_event(state);
@@ -290,10 +297,10 @@ fn marker_keys(
     // First-motion polarity on the floating pick or the selected phase picks
     // (pile_viewer.py:2233-2251)
     if input.key_pressed(Key::ArrowUp) && !widget_focused {
-        marker_edits::set_polarity(state, true, shift);
+        marker_edits::set_polarity(state, true, shifted(input, Key::ArrowUp));
     }
     if input.key_pressed(Key::ArrowDown) && !widget_focused {
-        marker_edits::set_polarity(state, false, shift);
+        marker_edits::set_polarity(state, false, shifted(input, Key::ArrowDown));
     }
 
     // Nudge the selected picks by exactly one screen pixel of time, as snuffler
@@ -305,7 +312,12 @@ fn marker_keys(
         } else {
             1.0
         };
-        let pixels = if shift { 10.0 } else { 1.0 };
+        let key = if direction < 0.0 {
+            Key::ArrowLeft
+        } else {
+            Key::ArrowRight
+        };
+        let pixels = if shifted(input, key) { 10.0 } else { 1.0 };
         marker_edits::nudge_selected(
             state,
             direction * pixels * duration / f64::from(canvas_width.max(1.0)),
@@ -342,7 +354,6 @@ fn marker_keys(
 
 /// Keys that open windows or reload.
 fn app_keys(input: &InputState, state: &mut AppState) {
-    let shift = input.modifiers.shift;
     if input.key_pressed(Key::M) {
         state.show_marker_editor = !state.show_marker_editor;
     }
@@ -353,18 +364,32 @@ fn app_keys(input: &InputState, state: &mut AppState) {
     // snufflings.
     // The App consumes the flags, since keyboard handlers may not touch the bridge.
     if input.key_pressed(Key::R) {
-        if shift {
+        if shifted(input, Key::R) {
             state.reload_snufflings_requested = true;
         } else {
             state.reload_files_requested = true;
         }
     }
-    if input.key_pressed(Key::Questionmark) || (input.key_pressed(Key::Slash) && shift) {
+    if input.key_pressed(Key::Questionmark)
+        || (input.key_pressed(Key::Slash) && shifted(input, Key::Slash))
+    {
         state.show_help = true;
     }
     // ':' is Shift+Semicolon on most layouts; egui reports either depending on
     // whether the browser gave it a logical or a physical key.
-    if input.key_pressed(Key::Colon) || (input.key_pressed(Key::Semicolon) && shift) {
+    if input.key_pressed(Key::Colon)
+        || (input.key_pressed(Key::Semicolon) && shifted(input, Key::Semicolon))
+    {
         state.command.show();
     }
+}
+
+/// Reads Shift from the press itself; a release can arrive before the frame is drawn.
+fn shifted(input: &InputState, key: Key) -> bool {
+    input.events.iter().any(|event| {
+        matches!(event,
+            egui::Event::Key { key: pressed_key, pressed: true, modifiers, .. }
+                if *pressed_key == key && modifiers.shift
+        )
+    })
 }

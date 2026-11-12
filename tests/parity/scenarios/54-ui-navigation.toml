@@ -1,0 +1,22 @@
+name = "ui-navigation"
+title = "Go to selected marker, fit all data, and return to the marker"
+dataset = "demo"
+tiers = [3]
+watch_menus = []
+
+[[step]]
+action = "pick"
+x = 0.25
+y = 0.4
+
+[[step]]
+action = "key"
+target = "g"
+
+[[step]]
+action = "key"
+target = "G"
+
+[[step]]
+action = "key"
+target = "g"

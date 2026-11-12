@@ -49,6 +49,9 @@ interface OverlayNode {
   valuemax: number | null;
   valuenow: number | null;
   focusable: boolean;
+  dialog: string | null;
+  label: string;
+  branch: string;
 }
 
 interface MenuEntry {
@@ -149,6 +152,17 @@ function readOverlay(): OverlayNode[] {
       valuemax: numberAttribute(element, "aria-valuemax"),
       valuenow: numberAttribute(element, "aria-valuenow"),
       focusable: element.getAttribute("tabindex") === "0",
+      dialog: element.closest('[role="dialog"]')?.getAttribute("aria-label") ?? null,
+      label:
+        document
+          .getElementById(element.getAttribute("aria-labelledby") ?? "")
+          ?.textContent?.trim() ?? "",
+      branch: (() => {
+        let ancestor = element;
+        while (ancestor.parentElement && ancestor.parentElement !== root)
+          ancestor = ancestor.parentElement;
+        return ancestor.getAttribute("data-ak") ?? "";
+      })(),
     }))
     .filter((node) => node.name.length > 0);
 }
@@ -159,6 +173,35 @@ async function snapshot(
   const nodes = await page.evaluate(readOverlay);
   const actions = await page.evaluate(() => window.__parityActions ?? {});
   return { nodes, actions };
+}
+
+async function comboChoices(page: Page, id: string): Promise<string[]> {
+  const before = new Set(
+    await page
+      .locator(`${OVERLAY} > [data-ak]`)
+      .evaluateAll((elements) => elements.map((element) => element.getAttribute("data-ak")))
+  );
+  const combo = page.locator(`[data-ak="${id}"]`).first();
+  await combo.evaluate((element) => (element as HTMLElement).focus());
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(150);
+  const choices = (await snapshot(page)).nodes
+    .filter((node) => !before.has(node.branch) && ["button", "radio", "option"].includes(node.role))
+    .map((node) => node.name);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(100);
+  return [...new Set(choices)];
+}
+
+async function enrichChoices(
+  page: Page,
+  controls: Record<string, unknown>[],
+  nodes: OverlayNode[]
+): Promise<void> {
+  for (const control of controls) {
+    const combo = nodes.find((node) => node.role === "combobox" && node.name === control.name);
+    if (combo) control.choices = await comboChoices(page, combo.id);
+  }
 }
 
 function entryKind(node: OverlayNode): string {
@@ -246,6 +289,20 @@ function controlsFrom(nodes: OverlayNode[]): Record<string, unknown>[] {
   const controls: Record<string, unknown>[] = [];
   const seen = new Set<string>();
   for (const node of nodes) {
+    if (node.role === "button" && node.label) {
+      const choices = nodes.filter(
+        (other) => other.role === "button" && other.label === node.label
+      );
+      if (choices.length > 1 && !seen.has(node.label)) {
+        seen.add(node.label);
+        controls.push({
+          name: node.label,
+          role: "choice",
+          choices: choices.map((choice) => choice.name),
+        });
+      }
+      if (choices.length > 1) continue;
+    }
     const traceDisplayShortcut = node.role === "button" && node.name.startsWith("Trace display: ");
     if ((!interactiveRoles.has(node.role) && !traceDisplayShortcut) || seen.has(node.name))
       continue;
@@ -277,7 +334,9 @@ async function collectControls(
   await activate(page, "Waterfall");
   await toggleMenu(page, "View");
   await page.waitForTimeout(800);
-  const waterfall = controlsFrom((await snapshot(page)).nodes);
+  const waterfallNodes = (await snapshot(page)).nodes;
+  const waterfall = controlsFrom(waterfallNodes);
+  await enrichChoices(page, waterfall, waterfallNodes);
 
   await toggleMenu(page, "View");
   await activate(page, "Wiggle plot");
@@ -289,6 +348,95 @@ async function collectControls(
     if (!merged.has(String(control.name))) merged.set(String(control.name), control);
   }
   return [...merged.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+interface SnufflingPlan {
+  name: string;
+  menu: string;
+  item: string;
+  source?: string;
+}
+
+async function collectSnufflings(
+  page: Page,
+  plans: SnufflingPlan[],
+  menus: MenuEntry[]
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (const plan of plans) {
+    const normalized = (path: string) =>
+      path
+        .normalize("NFKC")
+        .replaceAll("…", "...")
+        .replaceAll("&", "")
+        .split("/")
+        .map((part) =>
+          part
+            .trim()
+            .replace(/\s*\(builtin\)$/, "")
+            .replace(/(?:\.\.\.|:)$/, "")
+            .replace(/\s+/g, " ")
+            .toLowerCase()
+        )
+        .join("/");
+    const address = `${plan.menu}/${plan.item}`;
+    const entry = menus.find((entry) => normalized(entry.path) === address);
+    if (!entry) throw new Error(`missing panel menu entry ${address}`);
+    const [menu, ...rest] = entry.path.split("/");
+    const item = rest.join("/");
+    await toggleMenu(page, menu);
+    await activate(page, item);
+    // The action closes its own menu; a second toggle would reopen it over the panel.
+    await page.waitForTimeout(200);
+    let nodes = (await snapshot(page)).nodes;
+    const dialog = nodes
+      .filter(
+        (node) => node.role === "dialog" && !["Snuffler controls", "Markers"].includes(node.name)
+      )
+      .at(-1);
+    if (!dialog) throw new Error(`${plan.item} did not open a parameter panel`);
+    if (plan.name.startsWith("Download Waveforms")) {
+      const radius = nodes.find(
+        (node) => node.dialog === dialog.name && node.name === "Around active event"
+      );
+      if (radius?.checked === "false") {
+        await activate(page, radius.name);
+        nodes = (await snapshot(page)).nodes;
+      }
+    }
+    if (plan.source) {
+      const source = nodes.find(
+        (node) =>
+          node.dialog === dialog.name && node.role === "combobox" && node.name === "Source type"
+      );
+      if (!source) throw new Error("Seismosizer source choice missing");
+      await page
+        .locator(`[data-ak="${source.id}"]`)
+        .evaluate((element) => (element as HTMLElement).focus());
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(100);
+      await activate(page, plan.source);
+      nodes = (await snapshot(page)).nodes;
+    }
+    const panelNodes = nodes.filter((node) => node.dialog === dialog.name);
+    const parameters = controlsFrom(panelNodes);
+    await enrichChoices(page, parameters, panelNodes);
+    out.push({
+      name: plan.name,
+      menu: `${plan.menu}/${plan.item}`,
+      source: plan.source,
+      parameters,
+    });
+    console.log(`panel inventory: ${plan.name}: ${parameters.length} parameters`);
+    const close = panelNodes.find((node) => node.name === "Close window");
+    if (!close) throw new Error(`cannot close ${dialog.name}`);
+    await page
+      .locator(`[data-ak="${close.id}"]`)
+      .evaluate((element) => (element as HTMLElement).focus());
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(150);
+  }
+  return out;
 }
 
 // The Key / Mouse / Command reference, read out of the app's own help window.
@@ -532,6 +680,10 @@ async function main(): Promise<void> {
   // The tokens to press, handed in by run_inventory.py: whatever Qt turned out to
   // bind, so the probe asks about exactly the keys the diff is about to ask about.
   const probeKeysPath = argumentValue("--probe-keys");
+  const snufflingsPath = argumentValue("--snufflings-plan");
+  const snufflingPlans = snufflingsPath
+    ? (JSON.parse(readFileSync(snufflingsPath, "utf8")) as SnufflingPlan[])
+    : [];
   const probeTokens: string[] = probeKeysPath
     ? JSON.parse(readFileSync(probeKeysPath, "utf8"))
     : [];
@@ -547,6 +699,7 @@ async function main(): Promise<void> {
     if (screenshotsPath) await saveWebScreenshots(page, screenshotsPath);
     const menus = await collectMenus(page, baseSnapshot.nodes);
     const controls = await collectControls(page, baseSnapshot.nodes);
+    const snufflings = await collectSnufflings(page, snufflingPlans, menus);
     const help = await collectHelp(page);
     // Last, and after a fresh boot: the probe presses real keys, so everything read
     // off an undisturbed app is already in hand by the time it runs.
@@ -559,6 +712,7 @@ async function main(): Promise<void> {
       side: "web",
       menus,
       controls,
+      snufflings,
       help,
       keys,
     };

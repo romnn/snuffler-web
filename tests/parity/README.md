@@ -109,19 +109,25 @@ own help page understates its marker-kind and phase-key ranges.
 projection for role, name, state and value range, and `?a11y=debug`'s AccessKit tree
 for supported actions. It walks every menu, captures the control strip in both view
 modes, reads the app's own help window, and **presses every key Qt binds** to see
-whether anything observable happens.
+whether anything observable happens. It opens every mapped snuffling panel and reads
+its parameters, numeric bounds and dropdown choices from the same projection.
 
 `run_inventory.py` diffs them. The rule is one-directional: anything Qt offers that the
 web does not and `known_gaps.toml` does not excuse fails the build. Web-only entries
-are reported and never fail — the port is allowed to be more than a copy.
+are reported and never fail — the port is allowed to be more than a copy. Numeric
+ranges must contain Qt's range; wider web ranges are allowed. Choice sets use the
+same one-directional rule. Defaults are recorded for inspection, not enforced.
 
 Wording differences between the two frontends live in the `[[alias]]` table, decided
-once by a human, so the diff stays exact everywhere else.
+once by a human, so the diff stays exact everywhere else. A positive `scale` on a
+parameter alias converts Qt bounds to the web display units (metres to kilometres).
 
 ## Tier 3 — scenario parity through both GUIs
 
 One scenario format, two drivers, one snapshot schema per step:
-menu checkbox states, control-strip values, and the marker table.
+menu checkbox states, control-strip values, the marker table including each event's
+active state, and the visible time window. A test-only transport observer decodes
+the actual protobuf requests and replies; the product needs no debug API.
 
 The Qt driver drives a real offscreen viewer inside a real `QMainWindow` — menu actions
 triggered, key events delivered, picks placed through the same `start_picking` /
@@ -131,12 +137,12 @@ the accessibility overlay with `?a11y=pointer`, exactly as
 
 Two things are deliberately **not** compared:
 
-- **View time range and track order.** The web frontend paints them and does not
-  publish them to its accessibility layer, so there is nothing on that side to read.
-  Extending the a11y layer is the natural way to widen tier 3.
+- **Track order.** The drivers do not yet snapshot row membership.
 - **Where a pick landed.** A fractional canvas position becomes a different time and a
   different track under the two layouts. What the marker *is* — kind, phase, polarity,
   and whether it is selected — is compared; where it went is recorded for a human.
+  Event origins are also compared at millisecond precision to distinguish otherwise
+  identical events. Their scenarios use exact fractional picks on fixed canvases.
 
 The web driver deliberately does *not* click the canvas before sending a keystroke:
 single-key shortcuts must keep working after a menu was operated from the
@@ -145,10 +151,11 @@ keyboard-only user would hit.
 
 ## The corpus
 
-The synthetic datasets are generated, not checked in: `demo.mseed` alone is 4 MB.
-What *is* checked in is `corpus/manifest.json`, the sha256 of every file, verified on
-every run — the corpus is the fixed input each number is measured against, so silent
-drift is never ignorable.
+The synthetic datasets are checked in as `corpus/synthetic.zip` (about 5.2 MiB).
+Ordinary runs extract missing files and verify all inputs against `corpus/manifest.json`.
+Canonical bytes avoid NumPy/libm differences preventing comparisons across machines;
+the generators remain available for deliberate updates. The archive is test data
+and is not deployed with the app.
 
 | dataset | what it is for |
 | --- | --- |
@@ -196,8 +203,9 @@ of magnitude apart, a −515 000-count offset beside a partner at −628, and se
 depths that differ where the coordinates do not, which only the 3D distance sort
 sees.
 
-To rebuild after changing a generator: `python tests/parity/corpus/build.py --force
---update-manifest`, and review the parity deltas in the same commit.
+To rebuild after changing a generator: `task build:parity:corpus -- --regenerate
+--update-manifest`, and review the archive, manifest and parity deltas in the same
+commit. `--force` restores canonical bytes without regenerating.
 
 ## known_gaps.toml
 
@@ -241,20 +249,13 @@ to keep reproducing inside its own scope.
 
 ### What the register does not yet reach
 
-Most of `[[manual]]` traces back to three blind spots, and closing any one of them
-would graduate a whole group of entries at once:
-
-- **Tier 2 diffs names.** It never compares a combo box's option set, a control's
-  range, a menu item's enabled or checked state — or the `snufflings` section, which
-  its own Qt extractor already emits in full, with every `Param`, `Switch` and `Choice`
-  and their defaults, bounds and choices. Nothing consumes it. That single missing
-  `diff_section` is what leaves the whole snuffling parameter surface unenforced.
-- **Tier 3 snapshots a narrow slice.** Menu checkables, four control values, marker
-  identity. Not the view time range, the track order, marker placement, or any state
-  belonging to a window it did not open — which is why no waterfall control is compared
-  by anything.
-- **No tier compares rendering, by design.** Anything whose only symptom is what gets
-  drawn lands in `[[manual]]` even when it changes information rather than appearance.
+The remaining blind spots are track order, exact mouse placement, state in windows
+not exercised by a scenario, engine-specific services, and rendering differences.
+The inventory now enforces panel parameters, numeric range coverage and choice sets;
+scenarios compare time windows and active-event identity as well as their earlier
+state. Upstream-call oracles compare RMS and STA/LTA traces, STA/LTA picks,
+minimum/maximum reports and amplitude-spectrum plot data. Remaining snuffling
+output gaps stay explicit in the register.
 
 The enforcement is itself tested: `test_gaps.py` pins the edge cases of
 `gaps.evaluate` and the register validation — scoping, per-kind staleness, the
@@ -298,7 +299,7 @@ python tests/parity/run_scenarios.py --no-qt     # reuse the last Qt snapshots
 ## Layout
 
 ```
-corpus/build.py     deterministic corpus + sha256 manifest
+corpus/build.py     canonical corpus extraction/regeneration + sha256 manifest
 (the checked-in real-world datasets live in ../../examples/, shared with the app)
 scenarios/*.toml    declarative scenarios, shared by tiers 1 and 3
 scenario.py         the scenario and dataset model both tiers read

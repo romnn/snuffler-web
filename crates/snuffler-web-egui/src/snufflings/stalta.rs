@@ -34,12 +34,14 @@ pub fn panel(
         "Show trigger level traces",
     );
     ui.horizontal(|ui| {
-        ui.add_sized([160.0, 0.0], egui::Label::new("Variant").halign(Align::Max));
-        ui.selectable_value(&mut config.centered_variant, true, "centered");
-        ui.selectable_value(&mut config.centered_variant, false, "right");
+        let caption = ui.add_sized([160.0, 0.0], egui::Label::new("Variant").halign(Align::Max));
+        ui.selectable_value(&mut config.centered_variant, true, "centered")
+            .labelled_by(caption.id);
+        ui.selectable_value(&mut config.centered_variant, false, "right")
+            .labelled_by(caption.id);
     });
     ui.horizontal(|ui| {
-        ui.add_sized(
+        let caption = ui.add_sized(
             [160.0, 0.0],
             egui::Label::new("Scaling/Normalization").halign(Align::Max),
         );
@@ -52,7 +54,9 @@ pub fn panel(
                 {
                     ui.selectable_value(&mut config.scaling_method, idx, *label);
                 }
-            });
+            })
+            .response
+            .labelled_by(caption.id);
     });
     checkbox_row(ui, &mut config.apply_to_sum, "Detect on sum trace");
     copy_passband_row(

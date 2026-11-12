@@ -61,7 +61,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
     });
 
     ui.horizontal(|ui| {
-        ui.add_sized(
+        let caption = ui.add_sized(
             [LABEL_WIDTH_PX, 0.0],
             egui::Label::new("Model").halign(Align::Max),
         );
@@ -77,7 +77,9 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config, runtime: &RuntimeStatus) ->
                         config.s_threshold = choice.s_threshold;
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(caption.id);
     });
 
     // Always-visible threshold controls, as Qt's picker shows them; picking a
@@ -125,12 +127,8 @@ fn threshold_row(ui: &mut egui::Ui, label: &str, value: &mut f64) {
             [LABEL_WIDTH_PX, 0.0],
             egui::Label::new(label).halign(Align::Max),
         );
-        ui.add(
-            egui::DragValue::new(value)
-                .speed(0.002)
-                .range(0.001..=0.999),
-        );
-        ui.add(egui::Slider::new(value, 0.001..=0.999).show_value(false));
+        ui.add(egui::DragValue::new(value).speed(0.002).range(0.0..=1.0));
+        ui.add(egui::Slider::new(value, 0.0..=1.0).show_value(false));
     });
 }
 

@@ -7,6 +7,12 @@ version: "3"
 # Qt side only moves when the pin is bumped.
 
 tasks:
+  build:parity:corpus:
+    desc: "extract fixed parity inputs, or deliberately regenerate their canonical archive"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - uv run --project qt --group parity python tests/parity/corpus/build.py {{.CLI_ARGS}}
+
   test:parity:
     desc: "tier 1 parity: Qt snuffler's own paint output vs the Python bridge, plus the bridge snuffling tests; headless, no browser"
     dir: "{{.ROOT_DIR}}"
@@ -31,6 +37,7 @@ tasks:
         uv run --project qt --only-group parity python -m pytest -q
         tests/parity/test_gaps.py
         tests/parity/test_reload_keep.py
+        tests/parity/test_surface_comparison.py
         {{.CLI_ARGS}}
 
   test:parity:bridge:
@@ -46,6 +53,7 @@ tasks:
         tests/parity/test_adaptive_visible_length.py
         tests/parity/test_view_span_order.py
         tests/parity/test_station_places.py
+        tests/parity/test_snuffling_outputs.py
         {{.CLI_ARGS}}
 
   test:parity:inventory:

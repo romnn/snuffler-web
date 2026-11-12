@@ -120,9 +120,12 @@ export async function saveWebScreenshots(page: Page, directory: string): Promise
   await fileMenu.evaluate((element) => (element as HTMLElement).click());
 
   const exportButton = page.getByRole("button", { name: "Save image (PNG)…", exact: true }).first();
-  await exportButton.waitFor({ state: "visible" });
-  const download = page.waitForEvent("download", { timeout: BOOT_TIMEOUT_MS });
-  await exportButton.evaluate((element) => (element as HTMLElement).click());
+  const enabledExport = exportButton.and(page.locator(":enabled"));
+  await enabledExport.waitFor({ state: "visible", timeout: BOOT_TIMEOUT_MS });
+  const [download] = await Promise.all([
+    page.waitForEvent("download", { timeout: BOOT_TIMEOUT_MS }),
+    enabledExport.evaluate((element) => (element as HTMLElement).click()),
+  ]);
   await exportButton.waitFor({ state: "hidden", timeout: BOOT_TIMEOUT_MS });
-  await (await download).saveAs(join(directory, "web-waveforms.png"));
+  await download.saveAs(join(directory, "web-waveforms.png"));
 }

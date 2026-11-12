@@ -1,0 +1,43 @@
+name = "ui-active-events"
+title = "Activate, replace and clear the active event from picked markers"
+dataset = "demo"
+tiers = [3]
+watch_menus = []
+
+[[step]]
+action = "pick"
+x = 0.25
+y = 0.4
+
+[[step]]
+action = "key"
+target = "3"
+
+[[step]]
+action = "key"
+target = "e"
+
+[[step]]
+action = "pick"
+x = 0.75
+y = 0.4
+
+[[step]]
+action = "key"
+target = "4"
+
+[[step]]
+action = "key"
+target = "e"
+
+[[step]]
+action = "key"
+target = "p"
+
+[[step]]
+action = "key"
+target = "e"
+
+[[step]]
+action = "key"
+target = "E"

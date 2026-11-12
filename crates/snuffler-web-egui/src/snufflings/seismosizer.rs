@@ -35,7 +35,7 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
     let mut action = None;
 
     ui.horizontal(|ui| {
-        ui.add_sized(
+        let caption = ui.add_sized(
             [160.0, 0.0],
             egui::Label::new("GF Store").halign(egui::Align::Max),
         );
@@ -50,7 +50,9 @@ pub fn panel(ui: &mut egui::Ui, config: &mut Config) -> Option<Action> {
                 for s in &stores {
                     ui.selectable_value(&mut config.store, s.clone(), s);
                 }
-            });
+            })
+            .response
+            .labelled_by(caption.id);
         #[cfg(feature = "gf")]
         if ui
             .button("Add GF Store…")

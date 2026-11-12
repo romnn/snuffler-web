@@ -1,15 +1,14 @@
 """Build and verify the pinned parity corpus.
 
-The synthetic corpus is generated rather than checked in: the demo dataset alone
-is 4 MB of float64 MiniSEED. What is checked in is ``manifest.json`` — the sha256
-of every corpus file — so a corpus that silently changes shape (a different numpy
-RNG stream, an edited generator) fails loudly instead of quietly moving the
-numbers every parity run is measured against.
+The checked-in ``synthetic.zip`` supplies canonical inputs on every platform.
+Even analytic generators can differ in their last bits across NumPy/libm builds;
+regenerating on every run made a checksum failure prevent numerical comparisons.
+``manifest.json`` verifies the extracted bytes and the real recordings alike.
 
-Determinism is the whole point. Only the ``demo`` dataset uses an RNG, and only
-because it has to: it is byte-for-byte the dataset
-``snuffler_bridge.waveforms.make_example_scene`` synthesizes, so the corpus really is "the demo both
-frontends already show". Everything else is analytic and stable under any numpy.
+The generators remain here for deliberate fixture updates. Run
+``task build:parity:corpus -- --regenerate --update-manifest``, then review both
+the archive/manifest changes and the resulting parity differences. Ordinary runs
+only extract missing files; ``--force`` restores the canonical files.
 
 The real recordings are the exception to generation. They live in the repository's
 ``examples/`` directory rather than here, because they are not only test input — the
@@ -22,9 +21,7 @@ barometer sampling a pressure wave for a day beside a seismometer, or a hundred 
 volcanic earthquakes at 100 Hz. The manifest covers them too, so a locally edited copy
 fails the same way a drifted generator does.
 
-Run directly to (re)build::
-
-    python tests/parity/corpus/build.py [--force] [--update-manifest]
+Run through ``task build:parity:corpus``.
 """
 
 from __future__ import annotations
@@ -34,6 +31,8 @@ import hashlib
 import json
 import math
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 
@@ -44,6 +43,7 @@ from pyrocko.io import stationxml
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 MANIFEST = HERE / "manifest.json"
+SYNTHETIC = HERE / "synthetic.zip"
 # The checked-in real-world datasets, shared with the app's example bundles.
 EXAMPLES = HERE.parents[2] / "examples"
 
@@ -413,12 +413,14 @@ def build(force: bool = False) -> Dict[str, str]:
     """
     DATA.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
-    for name, builder in BUILDERS.items():
-        marker = DATA / f"{name}.mseed"
-        if marker.exists() and not force:
-            written.extend(sorted(DATA.glob(f"{name}.*")))
-            continue
-        written.extend(builder(DATA))
+    with zipfile.ZipFile(SYNTHETIC) as archive:
+        for name in archive.namelist():
+            if Path(name).name != name:
+                raise ValueError(f"unexpected corpus archive path: {name}")
+            target = DATA / name
+            if force or not target.exists():
+                target.write_bytes(archive.read(name))
+            written.append(target)
     manifest = {path.name: _sha256(path) for path in sorted(set(written))}
     for rel in CHECKED_IN:
         target = EXAMPLES / rel
@@ -429,6 +431,17 @@ def build(force: bool = False) -> Dict[str, str]:
             )
         manifest[rel] = _sha256(target)
     return manifest
+
+
+def regenerate() -> None:
+    """Deliberately replace canonical inputs using the locked numerical environment."""
+    with tempfile.TemporaryDirectory(prefix="snuffler-corpus-") as scratch:
+        paths = [path for builder in BUILDERS.values() for path in builder(Path(scratch))]
+        with zipfile.ZipFile(SYNTHETIC, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(paths):
+                entry = zipfile.ZipInfo(path.name, date_time=(2023, 11, 14, 22, 13, 20))
+                entry.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(entry, path.read_bytes())
 
 
 def verify(update: bool = False) -> Dict[str, str]:
@@ -476,8 +489,16 @@ def path(name: str) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--force", action="store_true", help="rebuild existing datasets")
+    parser.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="replace the canonical synthetic archive from the generators",
+    )
     parser.add_argument("--update-manifest", action="store_true", help="bless the current corpus")
     args = parser.parse_args()
+    if args.regenerate:
+        regenerate()
+        build(force=True)
     if args.force:
         build(force=True)
     manifest = verify(update=args.update_manifest)

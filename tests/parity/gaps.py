@@ -17,6 +17,7 @@ instead of rotting into folklore.
 from __future__ import annotations
 
 import fnmatch
+import math
 import re
 import tomllib
 import unicodedata
@@ -66,8 +67,9 @@ class AliasMap(Dict[str, str]):
     not a use.
     """
 
-    def __init__(self, entries: Dict[str, str]) -> None:
+    def __init__(self, entries: Dict[str, str], scales: Optional[Dict[str, float]] = None) -> None:
         super().__init__(entries)
+        self.scales = scales or {}
         self.used: set[str] = set()
 
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:  # type: ignore[override]
@@ -209,11 +211,22 @@ class Register:
                 )
             seen_manual.add(key)
             manual.append(entry)
+        for entry in raw.get("alias", []):
+            scale = entry.get("scale", 1.0)
+            if not isinstance(scale, (float, int)) or not math.isfinite(scale) or scale <= 0:
+                raise SystemExit(
+                    f"{path.name}: alias scale must be finite and positive: {entry['qt']}"
+                )
         aliases = AliasMap(
             {
                 normalize_path(entry["qt"]): normalize_path(entry["web"])
                 for entry in raw.get("alias", [])
-            }
+            },
+            {
+                normalize_path(entry["qt"]): float(entry["scale"])
+                for entry in raw.get("alias", [])
+                if "scale" in entry
+            },
         )
         return cls(entries, Allowlist(raw.get("feature", [])), aliases, manual)
 
