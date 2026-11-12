@@ -197,45 +197,7 @@ pub fn show(
     let pointer_hit = update_hover(state, &lay, &wave_response);
     let mut target = EguiTarget::new(painter.clone(), &waterfall_cache.textures);
     paint(&mut target, state, view, &pal, &lay, waterfall, false);
-    if let Some(text) = state.epicentre_location(&view.meta) {
-        ui.interact(
-            Rect::from_min_max(
-                egui::pos2(wave_rect.left(), lay.track_area.bottom()),
-                wave_rect.max,
-            ),
-            canvas.id.with("event-place"),
-            Sense::hover(),
-        )
-        .widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("Epicentre: {text}"))
-        });
-    }
-
-    if state.show_station_locations {
-        for (index, track) in lay.visible_tracks.iter().enumerate() {
-            let Some(place) = track.place.as_ref() else {
-                continue;
-            };
-            let text = station_place_text(place);
-            if !text.is_empty() {
-                ui.interact(
-                    Rect::from_min_max(
-                        egui::pos2(wave_rect.left(), lay.row_top(index)),
-                        egui::pos2(wave_rect.right(), lay.row_top(index) + lay.row_height),
-                    ),
-                    canvas.id.with(("station-place", index)),
-                    Sense::hover(),
-                )
-                .widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Label,
-                        true,
-                        format!("Station location: {} · {text}", track.label),
-                    )
-                });
-            }
-        }
-    }
+    publish_annotations(ui, state, view, canvas.id, &lay);
 
     if overflows {
         let strip = Rect::from_min_max(
@@ -257,6 +219,65 @@ pub fn show(
     draw_crosshair(ui, &painter, &pal, &lay, &wave_response, pointer_hit);
     pointer::handle_pointer(ui, &wave_response, state, &lay, pointer_hit);
     wave_response
+}
+
+/// Exposes the drawn loading state and geographic annotations to accessibility tools.
+fn publish_annotations(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    view: &ViewData,
+    canvas_id: egui::Id,
+    lay: &snuffler_web_render::layout::Layout<'_>,
+) {
+    if snuffler_web_render::paint::awaiting_samples(view, lay) {
+        ui.interact(
+            lay.track_area,
+            canvas_id.with("view-loading"),
+            Sense::hover(),
+        )
+        .widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Updating traces…")
+        });
+    }
+    if let Some(text) = state.epicentre_location(&view.meta) {
+        ui.interact(
+            Rect::from_min_max(
+                egui::pos2(lay.rect.left(), lay.track_area.bottom()),
+                lay.rect.max,
+            ),
+            canvas_id.with("event-place"),
+            Sense::hover(),
+        )
+        .widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("Epicentre: {text}"))
+        });
+    }
+
+    if state.show_station_locations {
+        for (index, track) in lay.visible_tracks.iter().enumerate() {
+            let Some(place) = track.place.as_ref() else {
+                continue;
+            };
+            let text = station_place_text(place);
+            if !text.is_empty() {
+                ui.interact(
+                    Rect::from_min_max(
+                        egui::pos2(lay.rect.left(), lay.row_top(index)),
+                        egui::pos2(lay.rect.right(), lay.row_top(index) + lay.row_height),
+                    ),
+                    canvas_id.with(("station-place", index)),
+                    Sense::hover(),
+                )
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Label,
+                        true,
+                        format!("Station location: {} · {text}", track.label),
+                    )
+                });
+            }
+        }
+    }
 }
 
 /// Resolves the track controls into row geometry and caches the on-screen window,

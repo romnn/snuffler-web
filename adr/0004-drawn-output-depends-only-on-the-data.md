@@ -29,6 +29,17 @@ In practice:
   row's own data, never from whatever page or window happens to be loaded;
 - the view reply is the whole row universe, including rows with no span in the window.
 
+**Integrated waterfall has a fixed origin.** The inclusive cumulative sum starts at the first
+sample of each continuous source segment, with gaps resetting the sum. Filtering and demeaning
+use that whole segment; integration precedes display decimation and cropping. Only the requested
+rows (and any rotation partners) are processed. This deliberately differs from Qt's crop-relative
+integral, whose level changes while panning.
+
+**Missing payload is visible.** Rows omitted from a sparse reply carry that fact explicitly.
+While a scroll exposes them or a pan extends beyond the last reply's time bounds, the canvas
+keeps its latest snapshot and displays `Updating traces…` until the replacement arrives.
+An empty row whose payload was fetched remains an ordinary empty row.
+
 **Upstream's own window-dependence is reproduced, not fixed.**
 Where Qt snuffler itself depends on the window, the web app follows it, because parity with
 upstream outranks this rule (see ADR 2):
@@ -44,7 +55,8 @@ upstream outranks this rule (see ADR 2):
 - A new rendering input has to say what it is anchored to; "the current window" is only an
   acceptable answer where upstream says the same.
 - Some state that was free to compute per reply now has to be carried per row, such as the
-  subsort a reply was painted with.
+  subsort a reply was painted with. Scale annotations use the scaling group's identity, so
+  equal autoscaled numbers do not merge two sensors' annotations.
 - These were checked and hold, so they need no re-examination: the reply pipeline cannot
   interleave (one view job in flight, `ViewData` swapped as one `Arc`, colours built from the
   reply they paint), `relative_start_s` arithmetic is exact, and pile chops are sorted by

@@ -98,16 +98,15 @@ def _stable_bin_stride(samples_per_bin: float) -> int:
     That only holds while the stride itself holds still, and an unquantised
     stride would change with every pixel of zoom.
     Quantising to powers of 2**0.25 keeps it constant across small zooms.
-    The double ceiling (once on the input, once on the ladder value) makes the
-    worst case about 25 % coarser than asked.
+    Integer rounding happens only after choosing the ladder rung. A tolerance
+    absorbs multiplication roundoff at exact powers of two.
     """
-    stride = max(1, int(math.ceil(samples_per_bin)))
-    if stride <= 1:
+    if samples_per_bin <= 1:
         return 1
     value = 1.0
-    while value < stride:
+    while value < samples_per_bin * (1.0 - 1e-12):
         value *= 2.0**0.25
-    return max(1, int(math.ceil(value)))
+    return max(1, int(math.ceil(value - 1e-12 * value)))
 
 
 def _display_envelope(
@@ -370,6 +369,25 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
         )
     liberal_fetch = bool(request.liberal_fetch)
 
+    distances_3d = bool(request.distances_3d)
+    perm = sorting.subsort_permutation(subsort)
+    rows = sorting.row_universe(sort, subsort, distances_3d)
+    row_index = {key: idx for idx, (key, _head) in enumerate(rows)}
+    full_segments = mode == "waterfall" and waterfall_integrate
+    selected_nslcs = None
+    if full_segments:
+        wanted_rows = {key for key, _head in rows[track_offset:track_end]}
+        selected_nslcs = frozenset(
+            trace.nslc_id
+            for trace in state.visible_traces()
+            if sorting.gather_key(trace, perm, sort, distances_3d) in wanted_rows
+        )
+        if rotate != 0.0:
+            sites = {nslc[:3] for nslc in selected_nslcs}
+            selected_nslcs = frozenset(
+                trace.nslc_id for trace in state.visible_traces() if trace.nslc_id[:3] in sites
+            )
+
     # Cut out and process the traces
     state.view_notices.clear()
     traces = cutout.prepare_cutout(
@@ -387,14 +405,12 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
         remove_resp=remove_response,
         rotate=rotate,
         liberal_fetch=liberal_fetch,
+        full_segments=full_segments,
+        selected_nslcs=selected_nslcs,
     )
     perf_visible = time.monotonic()
 
     # Assign the traces to rows
-    distances_3d = bool(request.distances_3d)
-    perm = sorting.subsort_permutation(subsort)
-    rows = sorting.row_universe(sort, subsort, distances_3d)
-    row_index = {key: idx for idx, (key, _head) in enumerate(rows)}
     members_by_row: List[List[Tuple[int, ptrace.Trace]]] = [[] for _ in rows]
     for index, trace in enumerate(traces):
         row = row_index.get(sorting.gather_key(trace, perm, sort, distances_3d))
@@ -427,6 +443,14 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
     # each one on its own trace rather than on the row it happens to share.
     scaled_spans: List[Tuple[view_pb2.ViewSpan, ptrace.Trace]] = []
     fast_individual_minmax = base == "minmax" and scaling_group == "individual"
+    scale_keys = {
+        key: index + 1
+        for index, key in enumerate(
+            sorted(
+                {_scaling_key(trace, scaling_group) for trace in state.visible_traces()}, key=repr
+            )
+        )
+    }
     offset = 0
     view_idx = 0
     wanted_tracks = 0
@@ -478,7 +502,11 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
             )
 
             if mode == "waterfall":
-                sliced = _slice_segment(entry, tmin, tmax, 4.0)
+                sliced = (
+                    (entry[2], entry[0], entry[1], 0)
+                    if full_segments
+                    else _slice_segment(entry, tmin, tmax, 4.0)
+                )
                 if sliced is None:
                     continue
                 yview, ytmin, deltat, _sample_offset = sliced
@@ -530,36 +558,25 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
                 waterfall_integrate,
                 waterfall_color_scale,
             )
-            for (strip, t0, dt), (_y, _t0, _dt, trace) in zip(
-                strips, waterfall_slices, strict=True
-            ):
-                if not strip.size:
+            for strip, (_y, _t0, _dt, trace) in zip(strips, waterfall_slices, strict=True):
+                if not strip.data.size:
                     continue
                 frequency_bin_count = 1
-                waterfall_range = (
-                    (float(strip.min()), float(strip.max())) if waterfall_absolute else None
-                )
                 spans.append(
-                    _SpanBuild(t0 - tmin, dt, int(strip.size), strip, trace, waterfall_range)
+                    _SpanBuild(
+                        strip.tmin - tmin,
+                        strip.deltat,
+                        int(strip.data.size),
+                        strip.data,
+                        trace,
+                        strip.amplitude_range,
+                    )
                 )
-            if waterfall_absolute and spans:
-                # One colour range per row, spanning its segments: the clip
-                # sliders are relative to each track's own range, and a page-wide
-                # range would recolour a track when a louder neighbour scrolls in.
-                row_lo = min(build.waterfall_range[0] for build in spans if build.waterfall_range)
-                row_hi = max(build.waterfall_range[1] for build in spans if build.waterfall_range)
-                if row_hi <= row_lo:
-                    row_hi = row_lo + 1e-12
-                spans = [
-                    build._replace(waterfall_range=(row_lo, row_hi))
-                    if build.waterfall_range
-                    else build
-                    for build in spans
-                ]
         # A row without spans is kept in both modes: the frontend treats
         # `meta.tracks` as the full row universe and derives the scroll range and
         # the next page request from its length.
         t = meta.tracks.add()
+        t.samples_omitted = not want_samples
         t.net, t.sta, t.loc, t.cha = net, sta, loc, cha
         t.label = label
         t.station_label = nslc_part
@@ -589,6 +606,7 @@ def get_view_data(request: view_pb2.ViewParams) -> Tuple[view_pb2.ViewMeta, np.n
             span.count = build.npoints
             span.offset = int(offset)
             span.loc = build.source.nslc_id[2]
+            span.scale_key = scale_keys[_scaling_key(build.source, scaling_group)]
             span.ymax = 1.0
             span.yscale = 1.0
             if mode == "waterfall":

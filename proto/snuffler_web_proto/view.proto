@@ -101,6 +101,9 @@ message ViewSpan {
   // A `ytick_step` of 0 means no ticks.
   double ytick_step = 10;
   sint32 ytick_exponent = 11;
+  // Identity of the scaling group in this reply, independent of its numeric range.
+  // Gapped segments share it; distinct sensors keep distinct identities even at equal ranges.
+  uint32 scale_key = 12;
 }
 
 // Where data exists on a row, from the pile rather than the fetched cutout.
@@ -159,6 +162,8 @@ message ViewTrack {
   string station_label = 12;
   // Distance to the active event, formatted in Python independently of sorting.
   string distance_label = 13;
+  // This row is present for navigation but its samples were outside the requested page.
+  bool samples_omitted = 14;
 }
 
 message ViewMeta {

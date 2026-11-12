@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, List, Optional
+from typing import Any, FrozenSet, List, Optional, Tuple
 
 import numpy as np
 from pyrocko import trace as ptrace
@@ -34,6 +34,8 @@ def prepare_cutout(
     remove_resp: bool,
     rotate: float,
     liberal_fetch: bool,
+    full_segments: bool = False,
+    selected_nslcs: Optional[FrozenSet[Tuple[str, str, str, str]]] = None,
 ) -> List[ptrace.Trace]:
     """The traces snuffler would draw for this window: a transcription of
     `PileViewerMain.prepare_cutout2` (pile_viewer.py:3590) running the same
@@ -58,6 +60,14 @@ def prepare_cutout(
     p = state.pile()
     if p.is_empty():
         return []
+
+    # An integral starts at each continuous source segment, never at a moving crop.
+    # Process only the requested rows, at native sampling, and cache that fixed extent.
+    if full_segments:
+        tmin, tmax = float(p.tmin), float(p.tmax)
+        visible_length = None
+        ads = False
+        liberal_fetch = False
 
     # The finest sampling the window fetches
     tsee = tmax - tmin
@@ -118,6 +128,8 @@ def prepare_cutout(
         remove_resp,
         state.data_generation,
         state.response_generation,
+        full_segments,
+        selected_nslcs,
     )
 
     if (
@@ -144,7 +156,11 @@ def prepare_cutout(
                 return bool(gr.deltatmax >= min_deltat_allow)
 
             def select_trace(trace: ptrace.Trace) -> bool:
-                return trace.deltat >= min_deltat_allow and state.is_trace_visible(trace)
+                return (
+                    trace.deltat >= min_deltat_allow
+                    and state.is_trace_visible(trace)
+                    and (selected_nslcs is None or trace.nslc_id in selected_nslcs)
+                )
 
             for traces in p.chopper(
                 tmin=tmin,
@@ -196,6 +212,9 @@ def prepare_cutout(
         state.cutout_key = key
         state.cutout_traces = processed_traces
         state.cutout_notices[:] = state.view_notices[notices_before:]
+
+    if full_segments:
+        return processed_traces
 
     # Chop back to the requested window plus four samples per side
     chopped_traces = []

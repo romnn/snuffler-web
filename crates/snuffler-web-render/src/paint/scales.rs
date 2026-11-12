@@ -129,7 +129,7 @@ fn draw_scale_axis(
             SCALE_PT,
             color,
         );
-        drawn.next_offset = drawn.next_offset.max(width + 30.0);
+        drawn.next_offset = drawn.next_offset.max(offset + width + 30.0);
         if value == 0.0 {
             drawn.zero_line_end = Some(right - 20.0 - width - 10.0 - offset);
         }
@@ -166,7 +166,7 @@ fn draw_scale_range(
         .x
         .max(target.measure(&low, SCALE_PT).x);
     DrawnScale {
-        next_offset: offset.max(width + 10.0),
+        next_offset: offset + width + 10.0,
         zero_line_end: None,
     }
 }
@@ -181,10 +181,7 @@ fn draw_scale_range(
 fn distinct_span_scales(spans: &[ViewSpan]) -> Vec<&ViewSpan> {
     let mut distinct: Vec<&ViewSpan> = Vec::new();
     for span in spans {
-        let same_scale = |other: &&ViewSpan| {
-            (other.ymin, other.ymax, other.ymean, other.yscale)
-                == (span.ymin, span.ymax, span.ymean, span.yscale)
-        };
+        let same_scale = |other: &&ViewSpan| other.scale_key == span.scale_key;
         if !distinct.iter().any(same_scale) {
             distinct.push(span);
         }
@@ -225,5 +222,42 @@ fn format_g(value: f64) -> String {
     } else {
         let mantissa = value / 10_f64.powi(exponent);
         format!("{} ×10^{exponent}", trim_zeros(format!("{mantissa:.5}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ViewSpan, distinct_span_scales};
+
+    #[test]
+    fn equal_numeric_ranges_keep_distinct_sensor_scales() {
+        let spans = [
+            ViewSpan {
+                scale_key: 1,
+                ymin: -1.0,
+                ymax: 1.0,
+                ..ViewSpan::default()
+            },
+            ViewSpan {
+                scale_key: 2,
+                ymin: -1.0,
+                ymax: 1.0,
+                ..ViewSpan::default()
+            },
+            ViewSpan {
+                scale_key: 1,
+                ymin: -1.0,
+                ymax: 1.0,
+                ..ViewSpan::default()
+            },
+        ];
+        let distinct = distinct_span_scales(&spans);
+        assert_eq!(
+            distinct
+                .iter()
+                .map(|span| span.scale_key)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
     }
 }

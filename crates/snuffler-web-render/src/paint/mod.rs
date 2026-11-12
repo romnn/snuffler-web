@@ -154,6 +154,31 @@ pub fn paint(
     target.push_clip(lay.track_area);
     markers::draw_floating_pick(target, &frame);
     target.pop_clip();
+
+    if !export && awaiting_samples(view, lay) {
+        let text = "Updating traces…";
+        let size = target.measure(text, 11.0);
+        let origin = pos2(lay.track_area.right() - 8.0, lay.track_area.top() + 6.0);
+        target.fill_rect(
+            Rect::from_min_max(
+                pos2(origin.x - size.x - 4.0, origin.y - 2.0),
+                pos2(origin.x + 4.0, origin.y + size.y + 2.0),
+            ),
+            2.0,
+            pal.background,
+        );
+        target.text(origin, emath::Align2::RIGHT_TOP, text, 11.0, pal.axis_text);
+    }
+}
+
+/// Reports when the drawn page or time window extends beyond the latest payload.
+#[must_use]
+pub fn awaiting_samples(view: &ViewData, lay: &Layout<'_>) -> bool {
+    let meta = &view.meta;
+    lay.visible_tracks.iter().any(|track| track.samples_omitted)
+        || (meta.data_tmax > meta.data_tmin
+            && (lay.view_tmin < meta.data_tmin
+                || lay.view_tmin + lay.window_duration > meta.data_tmax))
 }
 
 /// The waterfall cell outline and the separator line above a row.

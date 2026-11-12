@@ -584,6 +584,12 @@ decimation stride per row, so the two segments of a gapped channel share one col
 scale and one time resolution on their shared row — the row-scope analogue of
 snuffler's per-row normalisation (`pile_viewer_waterfall.py:148`).
 
+Integration also has a fixed source origin: it sums native samples from the beginning of each
+continuous segment, before display decimation, and normalises the full segment before cropping.
+Filtering and demeaning use the whole segment, restricted to requested rows and rotation partners.
+Qt integrates its current crop, which shifts the level under a pan. The bridge's pan-invariance
+tests pin this deliberate difference (`test_integrated_waterfall_overlap_is_identical_after_a_pan`).
+
 What would show against `TraceWaterfall.get_image` is the row identity itself and
 Qt's `num.interp` resampling against plain striding, both consequences of the
 placement above.

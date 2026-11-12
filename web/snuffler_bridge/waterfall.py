@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 from snuffler_web_proto import view_pb2
+
+
+class WaterfallStrip(NamedTuple):
+    data: np.ndarray
+    tmin: float
+    deltat: float
+    amplitude_range: Optional[Tuple[float, float]]
 
 
 def row_strips(
@@ -16,7 +23,7 @@ def row_strips(
     want_abs: bool,
     want_integrate: bool,
     color_scale: str = "lin",
-) -> "List[Tuple[np.ndarray, float, float]]":
+) -> List[WaterfallStrip]:
     """Snuffler-style waterfall strips for one track row: normalized amplitude
     over time, on one shared amplitude scale and one shared time resolution.
 
@@ -25,8 +32,8 @@ def row_strips(
     A row here is a track that can carry several segments, so the peak and the
     decimation stride are shared across every strip of the row.
 
-    Takes ``(yview, t0, deltat)`` per segment; returns ``(strip, t0, dt)`` per
-    segment, strips as little-endian float32.
+    Takes ``(yview, t0, deltat)`` per segment; returns little-endian float32
+    strips with their time grid and row-wide colour bounds.
     ``color_scale`` (``lin`` | ``sqrt`` | ``log``) compresses the envelope before
     colour-mapping; snuffler only has ``lin``.
     """
@@ -49,16 +56,17 @@ def row_strips(
         # (pile_viewer_waterfall.py:124), so a pan slides the strip.
         base = int(math.floor(float(t0) / float(deltat) + 0.5))
         offset = (-base) % step
-        data = np.ascontiguousarray(np.asarray(y, dtype=np.float64)[offset::step])
+        data = np.asarray(y, dtype=np.float64)
         if want_integrate:
             data = np.cumsum(data) * float(deltat)
+        data = np.ascontiguousarray(data[offset::step])
         prepared.append((data, float(t0) + offset * float(deltat), float(deltat) * step))
 
     peak = max(
         (float(np.abs(data).max()) if data.size else 0.0 for data, _t0, _dt in prepared),
         default=0.0,
     )
-    out: "List[Tuple[np.ndarray, float, float]]" = []
+    transformed: List[Tuple[np.ndarray, float, float]] = []
     for data, t0, dt in prepared:
         if peak > 0.0:
             data = data / peak
@@ -70,7 +78,23 @@ def row_strips(
             elif color_scale == "log":
                 # map [0, 1] -> [0, 1] with log compression (log10(1)=0, log10(10)=1).
                 data = np.log10(data * 9.0 + 1.0)
-        out.append((np.ascontiguousarray(data, dtype="<f4"), t0, dt))
+        transformed.append((np.ascontiguousarray(data, dtype="<f4"), t0, dt))
+
+    amplitude_range = None
+    if want_abs:
+        nonempty = [data for data, _t0, _dt in transformed if data.size]
+        if nonempty:
+            lo = min(float(data.min()) for data in nonempty)
+            hi = max(float(data.max()) for data in nonempty)
+            amplitude_range = (lo, max(hi, lo + 1e-12))
+    out: List[WaterfallStrip] = []
+    for data, t0, dt in transformed:
+        if want_integrate:
+            first = max(0, int(math.floor((window[0] - t0) / dt)) - 4)
+            stop = min(data.size, int(math.ceil((window[1] - t0) / dt)) + 5)
+            data = data[first : max(first, stop)]
+            t0 += first * dt
+        out.append(WaterfallStrip(data, t0, dt, amplitude_range))
     return out
 
 

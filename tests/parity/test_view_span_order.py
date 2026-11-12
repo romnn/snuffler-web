@@ -172,3 +172,104 @@ def test_grouped_span_stack_is_identical_across_shifted_windows() -> None:
     ]
     assert all(stack == stacks[0] for stack in stacks), stacks
     assert stacks[0] == ["00", "10", "60"], "the stack is the nslc order"
+
+
+@pytest.mark.parametrize("stride", [1, 2, 4, 8, 16, 1024])
+def test_exact_power_of_two_keeps_its_envelope_stride(stride: int) -> None:
+    assert view._stable_bin_stride(float(stride)) == stride
+
+
+def test_envelope_selects_a_ladder_rung_before_integer_rounding() -> None:
+    assert view._stable_bin_stride(2.001) == 3
+    assert view._stable_bin_stride(4.001) == 5
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("absolute", [False, True])
+def test_integrated_waterfall_overlap_is_identical_after_a_pan(
+    filtered: bool, absolute: bool
+) -> None:
+    samples = np.arange(10000, dtype=float)
+    state.set_traces(
+        [
+            ptrace.Trace(
+                network="XX",
+                station="AAA",
+                channel="BHZ",
+                tmin=0.0,
+                deltat=0.1,
+                ydata=3.0 + np.sin(samples * 0.03),
+            )
+        ]
+    )
+
+    def pixels(start: float) -> dict[int, int]:
+        request = view_pb2.ViewParams(
+            tmin=start,
+            tmax=start + 200.0,
+            bins_per_trace=3000,
+            mode="waterfall",
+            waterfall_integrate=True,
+            waterfall_absolute_amplitudes=absolute,
+            adaptive_visible_length=True,
+            track_count=1,
+            demean=filtered,
+        )
+        if filtered:
+            request.highpass = 0.1
+        meta, payload = view.get_view_data(request)
+        output: dict[int, int] = {}
+        for span in meta.tracks[0].spans:
+            rgba = payload[int(span.offset) : int(span.offset + span.count)].view("<u4")
+            for index, pixel in enumerate(rgba):
+                sample = round((meta.data_tmin + span.relative_start_s + index * span.deltat) / 0.1)
+                output[sample] = int(pixel)
+        return output
+
+    first, panned = pixels(100.0), pixels(175.03)
+    overlap = first.keys() & panned.keys()
+    assert len(overlap) > 1000
+    assert all(first[sample] == panned[sample] for sample in overlap)
+
+
+def test_scale_identity_survives_equal_ranges_and_panning() -> None:
+    source = located_trace("00", 0.1, 10000)
+    second = source.copy()
+    second.set_codes(location="10")
+    state.set_traces([source, second])
+
+    def keys(start: float, group: str) -> dict[str, int]:
+        meta, _payload = view.get_view_data(
+            view_pb2.ViewParams(
+                tmin=start,
+                tmax=start + 200,
+                bins_per_trace=1200,
+                subsort="nsc_l",
+                scaling_group=group,
+                track_count=1,
+                adaptive_visible_length=True,
+            )
+        )
+        spans = meta.tracks[0].spans
+        assert len({(span.ymin, span.ymax) for span in spans}) == 1
+        return {span.loc: span.scale_key for span in spans}
+
+    individual = keys(100.0, "individual")
+    assert len(set(individual.values())) == 2
+    assert keys(120.0, "individual") == individual
+    assert len(set(keys(100.0, "common").values())) == 1
+
+
+def test_unfetched_rows_are_distinct_from_rows_without_data() -> None:
+    state.set_traces([located_trace("00", 0.1, 1000), located_trace("10", 0.1, 1000)])
+    request = view_pb2.ViewParams(
+        tmin=2000.0,
+        tmax=2100.0,
+        bins_per_trace=1200,
+        track_offset=1,
+        track_count=1,
+        adaptive_visible_length=True,
+    )
+    meta, _payload = view.get_view_data(request)
+    assert [track.samples_omitted for track in meta.tracks] == [True, False]
+    assert all(not track.spans for track in meta.tracks)

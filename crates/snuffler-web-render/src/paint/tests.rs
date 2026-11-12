@@ -40,6 +40,109 @@ fn track(net: &str, sta: &str, loc: &str, cha: &str, label: &str) -> ViewTrack {
     }
 }
 
+#[test]
+fn loading_feedback_distinguishes_missing_payloads_from_empty_rows() {
+    let mut state = AppState {
+        tmin: 10.0,
+        tmax: 20.0,
+        tracks_per_page: Some(1.0),
+        ..AppState::default()
+    };
+    let view = ViewData {
+        meta: ViewMeta {
+            data_tmin: 10.0,
+            data_tmax: 20.0,
+            tracks: vec![
+                ViewTrack::default(),
+                ViewTrack {
+                    samples_omitted: true,
+                    ..ViewTrack::default()
+                },
+            ],
+            ..ViewMeta::default()
+        },
+        ..ViewData::default()
+    };
+    let rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0));
+    assert!(!super::awaiting_samples(
+        &view,
+        &compute_layout(&state, &view, rect)
+    ));
+    state.track_scroll = 1.0;
+    assert!(super::awaiting_samples(
+        &view,
+        &compute_layout(&state, &view, rect)
+    ));
+    state.track_scroll = 0.0;
+    state.tmin = 9.0;
+    assert!(super::awaiting_samples(
+        &view,
+        &compute_layout(&state, &view, rect)
+    ));
+}
+
+#[test]
+fn three_sensor_scale_annotations_have_distinct_horizontal_positions() {
+    for axes in [false, true] {
+        let state = AppState {
+            tmin: 0.0,
+            tmax: 10.0,
+            show_scale_ranges: !axes,
+            show_scale_axes: axes,
+            ..AppState::default()
+        };
+        let view = ViewData {
+            meta: ViewMeta {
+                tracks: vec![ViewTrack {
+                    spans: (1..=3)
+                        .map(|scale_key| ViewSpan {
+                            scale_key,
+                            ymin: -1.0,
+                            ymax: 1.0,
+                            yscale: 1.0,
+                            ytick_step: 1.0,
+                            ..ViewSpan::default()
+                        })
+                        .collect(),
+                    ..ViewTrack::default()
+                }],
+                ..ViewMeta::default()
+            },
+            ..ViewData::default()
+        };
+        let lay = compute_layout(
+            &state,
+            &view,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(640.0, 360.0)),
+        );
+        let mut target = svg_target();
+        paint(
+            &mut target,
+            &state,
+            &view,
+            &palette(Theme::Light, WiggleTheme::Fieldbook),
+            &lay,
+            false,
+            true,
+        );
+        let svg = target.finish();
+        let positions: std::collections::HashSet<_> = svg
+            .split("<text ")
+            .filter(|tag| {
+                tag.split("</text>")
+                    .next()
+                    .is_some_and(|text| text.ends_with(">-1"))
+            })
+            .filter_map(|tag| tag.split("x=\"").nth(1)?.split('"').next())
+            .collect();
+        assert_eq!(
+            positions.len(),
+            3,
+            "three sensors need three number columns (axes={axes})"
+        );
+    }
+}
+
 // These pin the half of `color-traces-theming` (tests/parity/known_gaps.toml) that mirrors
 // snuffler: the per-subsort coloring keys and the sorted-key numbering.
 // The palette itself is deliberately this frontend's own.

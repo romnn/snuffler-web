@@ -32,6 +32,12 @@ tasks:
     cmds:
       - bun tests/activity_browser_validate.ts
 
+  test:view:browser:
+    desc: "check loading feedback for sparse snapshots during scroll and pan"
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bun tests/view_browser_validate.ts
+
   test:isolation:unit:
     desc: "check deployment-scoped COI handshakes and worker activation"
     dir: "{{.ROOT_DIR}}"
