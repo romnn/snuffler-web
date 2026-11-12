@@ -1,4 +1,4 @@
-//! A slippy-map view: OSM / Carto / satellite raster tiles with station and event
+//! A slippy-map view: OSM / satellite raster tiles with station and event
 //! overlays.
 //!
 //! The browser fetches and decodes the tiles (CORS-clean providers), and pyrocko

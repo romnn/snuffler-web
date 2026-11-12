@@ -17,8 +17,6 @@ use super::overlay::LabelStyle;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter)]
 pub(super) enum Basemap {
     OpenStreetMap,
-    CartoLight,
-    CartoDark,
     Satellite,
 }
 
@@ -27,8 +25,6 @@ impl Basemap {
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::OpenStreetMap => "OpenStreetMap",
-            Self::CartoLight => "Carto light",
-            Self::CartoDark => "Carto dark",
             Self::Satellite => "Satellite",
         }
     }
@@ -39,8 +35,6 @@ impl Basemap {
     fn url_template(self) -> &'static str {
         match self {
             Self::OpenStreetMap => "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-            Self::CartoLight => "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-            Self::CartoDark => "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
             Self::Satellite => {
                 "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             }
@@ -51,7 +45,6 @@ impl Basemap {
     pub(super) fn attribution(self) -> &'static str {
         match self {
             Self::OpenStreetMap => "© OpenStreetMap contributors",
-            Self::CartoLight | Self::CartoDark => "© OpenStreetMap contributors, © CARTO",
             Self::Satellite => "Esri, Maxar, Earthstar Geographics",
         }
     }
@@ -59,20 +52,14 @@ impl Basemap {
     /// How to paint labels straight onto this basemap's tiles, with no plate
     /// behind them.
     ///
-    /// The pale basemaps need dark ink and the dark one needs light ink.
-    /// No single colour reads on both, which is why this is a property of the
-    /// provider rather than a constant.
+    /// OpenStreetMap uses dark ink.
     /// Satellite imagery does not settle for either: snow, ocean, desert and forest
     /// can pass under one label, so its glyphs carry their own halo instead of
     /// trusting the ground.
     pub(super) fn label_style(self) -> LabelStyle {
         match self {
-            Self::OpenStreetMap | Self::CartoLight => LabelStyle {
+            Self::OpenStreetMap => LabelStyle {
                 ink: Color32::BLACK,
-                halo: None,
-            },
-            Self::CartoDark => LabelStyle {
-                ink: Color32::WHITE,
                 halo: None,
             },
             Self::Satellite => LabelStyle {
